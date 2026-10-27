@@ -46,6 +46,118 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bump serde from 1.0.219 to 1.0.228, update private API usage for compatibility
   ([#2089](https://github.com/o1-labs/mina-rust/pull/2089))
 
+## [0.20.0] - Unreleased
+
+0.20.0 is a beta release for devnet. See
+[the release notes](docs/release/0.20.0.md) for upgrade notes and known issues.
+
+PR numbers below are historical references to the preparation repository. A
+squashed public import does not transfer PRs or preserve their numbers. No
+public mapping exists; these plain numbers must not be linked to unrelated
+public PRs. Upstream PR links elsewhere are unchanged.
+
+### OCaml node
+
+- **Compatibility**: follow Mesa chains with fork-aware constants, circuits,
+  block verification and OCaml peer RPCs (PR #3, #9, #13, #26).
+- **Interoperability**: serve history and ledgers to OCaml peers and produce
+  proved blocks on public devnet (PR #14, #17, #18, #32, #39).
+- **Ledger**: keep the root staged ledger over the root snarked ledger after a
+  detach, with ledger correctness matching OCaml (PR #141, #144).
+
+### Added
+
+- **Dashboard**: embed the dashboard in `mina`, with node status, block
+  production, SNARK worker controls and local bug reports
+  (PR #51, #55, #65, #70, #80, #85).
+- **Block production**: embed Mesa devnet prover circuits, persist slot
+  checking and support native SNARK work including zkApps
+  (PR #20, #33, #43, #57, #68).
+- **Operations**: add Prometheus metrics, `mina report`, `mina triage`,
+  saved frontier state enabled by default and checked restores
+  (PR #30, #33, #35, #45, #53).
+- **Ledger**: keep the staking, next epoch and root snarked ledgers' accounts
+  on disk; a bootstrap holds one full ledger in memory
+  (PR #106, #107, #127).
+- **Light client**: add `/light/best-tip`, `/light/account/{pk}` and OCaml's
+  account Merkle path GraphQL fields (PR #108).
+- **Release**: add Linux x86_64 and arm64 archive tooling, build provenance,
+  checksums, licence material and SSH-signed `SHA256SUMS`
+  (PR #46, #52, #54, #56, #90, #93).
+- **Docker**: add a multi-arch image built from the release archives, with
+  compose files for a full node, a block producer and a relay (PR #105).
+- **Documentation**: add node-runner guides, requirements and dashboard
+  screenshots for minanode.org (PR #64, #67, #71, #78, #81, #83, #126).
+- **Networking**: add an optional signaling-only listener for web nodes
+  and a persisted peer identity option (PR #82, #100).
+
+### Changed
+
+- **HTTP**: bind the operator HTTP API and dashboard to `127.0.0.1` by
+  default; use `--http-addr` to change the binding (PR #69).
+- **HTTP**: a dashboard opened at a host name needs `--http-cors-origin`;
+  `localhost` and IP addresses work without it (PR #128).
+- **CLI**: read key passwords from `MINA_PRIVKEY_PASS` and `MINA_LIBP2P_PASS`,
+  never from the command line (PR #136).
+- **CLI**: refuse key files that other users can access (PR #128).
+- **CLI**: `--network mainnet` selects the embedded mainnet genesis (PR #98).
+- **CLI**: give every environment variable the `MINA_` prefix, take wallet
+  amounts and fees in MINA, name the node `--node` everywhere, rename `misc` to
+  `keys`, and remove `mina snark`, the catch-up RPC options and
+  `wallet send --fee-payer`; see the 0.20.0 CLI upgrade note.
+- **GraphQL**: admit zkApp commands as o1js sends them, up to 1.25 MiB, with
+  bounded memory per request (PR #137).
+- **Memory**: share transaction and zkApp proofs across holders and cache
+  native SNARK-pool proofs on disk by default (PR #75).
+- **Memory**: cache scan-state, block and zkApp proofs on disk; producers keep
+  proofs in memory unless started with `--proof-cache` (PR #101, #118).
+- **Memory**: share scan-tree chunks between snapshots, bound diagnostic stats
+  and release the last ledger write (PR #115, #116, #135).
+- **Memory**: use jemalloc `narenas:4` by default on x86_64 and check it in
+  release packaging (PR #131, #132).
+- **Memory**: use jemalloc on arm64, built for 64 KiB pages, with the same
+  `narenas:4` default.
+- **Memory**: cap per-block action statistics and reduce temporary web-node
+  block-apply allocations (PR #58, #66, #72, #120).
+- **Startup**: run the frontier-store load on at most four threads; a restore
+  timeout follows progress (PR #125, #139).
+- **Networking**: server-side WebRTC uses the vendored rustrtc 0.4.9 by
+  default through `p2p-webrtc`; `--features p2p-webrtc-rs` opts into the
+  previous webrtc-rs backend at build time, with no automatic fallback.
+  `mina --version` names the backend.
+- **SNARK worker**: select jobs randomly by default, with sequential selection
+  available through `--snarker-strategy seq` (PR #59).
+- **Operations**: quiet routine logs and rotate log files (PR #31).
+- **Build**: make Swagger UI opt-in and regenerate default-build notices
+  (PR #55, #56, #73).
+- **Development**: make public-network tests opt-in (PR #124).
+
+### Fixed
+
+- **Sync**: handle backward epoch changes and retry rejected ledger answers;
+  delay peer refusals and avoid serving incomplete child hashes
+  (PR #62, #76).
+- **Sync**: back off and fail over after block-fetch errors, refresh stale tip
+  hints, and retry ledger, staged-ledger and block queries that never got an
+  answer (PR #86, #103, #104).
+- **Ledger**: retry unreadable disk reads, then exit cleanly instead of
+  aborting (PR #129).
+- **Ledger**: back off after a failed refreeze and remove stale accounts files
+  (PR #143).
+- **Ledger**: write the genesis ledger cache atomically (PR #132).
+- **Reliability**: input checks, resource limits and request handling
+  (PR #128).
+- **Networking**: retain useful advertised addresses, bound Kademlia buffers
+  and support OCaml's parallel Yamux RPCs (PR #38, #39).
+- **Block production**: prioritize block proving when the native SNARK
+  worker also runs; a proof that cannot be read no longer stops the
+  node during block validation; that block still fails validation (PR #63,
+  #118).
+
+### Dependencies
+
+- **Proof systems**: update the Mesa proof-system integration (PR #9).
+
 ## [0.19.0] - 2026-01-08
 
 ### Added

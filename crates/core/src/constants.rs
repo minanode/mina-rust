@@ -6,32 +6,99 @@ use mina_p2p_messages::{bigint, number, v2};
 
 pub const GENESIS_PRODUCER_SK: &str = "EKFKgDtU3rcuFTVSEpmpXSkukjmX4cKefYREi6Sdsk7E7wsT7KRw";
 
+/// Mesa (4.0.0) raised the transaction version to 4. It is part of
+/// `Account.empty` and default permissions, so it changes ledger hashes.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/node_config/version/node_config_version.ml#L2-L6>
 pub const PROTOCOL_VERSION: v2::ProtocolVersionStableV2 = v2::ProtocolVersionStableV2 {
-    transaction: number::Number(3),
+    transaction: number::Number(4),
     network: number::Number(0),
     patch: number::Number(0),
 };
 
 pub fn constraint_constants() -> &'static ConstraintConstants {
-    CONSTRAINT_CONSTANTS_OVERRIDE
+    RUNTIME_CONSTANTS
         .get()
+        .map(|config| &config.0)
         .unwrap_or(NetworkConfig::global().constraint_constants)
 }
 
-static CONSTRAINT_CONSTANTS_OVERRIDE: OnceLock<ConstraintConstants> = OnceLock::new();
+static RUNTIME_CONSTANTS: OnceLock<(ConstraintConstants, StopSlots)> = OnceLock::new();
+
+/// Initialize before constructing consensus, ledgers or provers. A process runs
+/// one network. Repeated identical initialization is safe; conflicting configs
+/// are an error, rather than silently retaining the first fork.
+pub fn initialize_runtime_constants(
+    constants: ConstraintConstants,
+    stop_slots: StopSlots,
+) -> Result<(), String> {
+    let config = (constants, stop_slots);
+    if RUNTIME_CONSTANTS.get_or_init(|| config.clone()) != &config {
+        return Err("conflicting runtime constants: restart for a different fork".into());
+    }
+    Ok(())
+}
+
+pub fn stop_slots() -> StopSlots {
+    RUNTIME_CONSTANTS
+        .get()
+        .map(|config| config.1)
+        .unwrap_or_default()
+}
+
+/// Inclusive boundaries, measured since this hard fork, not since genesis.
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/block_producer/block_producer.ml#L177-L237>
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StopSlots {
+    pub slot_tx_end: Option<u32>,
+    pub slot_chain_end: Option<u32>,
+    /// Slots from `slot_chain_end` to the next chain's genesis. It schedules
+    /// the next fork's genesis; it does not stop anything.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/runtime_config/runtime_config.ml#L480-L487>
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hard_fork_genesis_slot_delta: Option<u32>,
+}
+
+impl StopSlots {
+    /// Whether either stop slot is set. The genesis slot delta alone stops
+    /// nothing.
+    pub fn any_stop(self) -> bool {
+        self.slot_tx_end.is_some() || self.slot_chain_end.is_some()
+    }
+
+    /// The next chain's genesis slot, in slots since this hard fork:
+    /// `slot_chain_end + hard_fork_genesis_slot_delta`, if both are set.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/runtime_config/runtime_config.ml#L1689-L1697>
+    pub fn scheduled_hard_fork_genesis_slot(self) -> Option<u32> {
+        self.slot_chain_end?
+            .checked_add(self.hard_fork_genesis_slot_delta?)
+    }
+
+    pub fn transactions_allowed(self, slot_since_hard_fork: u32) -> bool {
+        self.slot_tx_end
+            .is_none_or(|end| slot_since_hard_fork < end)
+    }
+
+    pub fn blocks_allowed(self, slot_since_hard_fork: u32) -> bool {
+        self.slot_chain_end
+            .is_none_or(|end| slot_since_hard_fork < end)
+    }
+}
 
 /// Override the fork constants used during genesis computation. (interop testing)
 pub fn set_fork_override(fork: ForkConstants) {
     let mut cc = NetworkConfig::global().constraint_constants.clone();
     cc.fork = Some(fork);
-    let _ = CONSTRAINT_CONSTANTS_OVERRIDE.set(cc);
+    initialize_runtime_constants(cc, StopSlots::default()).expect("conflicting fork override");
 }
 
 /// Constants that define fork-specific blockchain state.
 ///
 /// Fork constants specify the blockchain state at which a protocol upgrade or fork occurred.
 /// These are used to handle protocol changes and ensure compatibility across network upgrades.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ForkConstants {
     /// Hash of the blockchain state at the fork point
     #[serde(with = "fp_state_hash_serde")]
@@ -122,7 +189,7 @@ mod fp_state_hash_serde {
 ///
 /// OCaml: <https://github.com/MinaProtocol/mina/tree/compatible/src/config>
 /// Protocol specification: <https://github.com/MinaProtocol/mina/blob/compatible/docs/specs/types_and_structures/serialized_key.md>
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConstraintConstants {
     /// Number of sub-windows that make up a complete window.
     ///
@@ -159,7 +226,8 @@ pub struct ConstraintConstants {
     /// attempt to create blocks during their assigned slots. The duration affects
     /// network synchronization requirements and transaction confirmation times.
     ///
-    /// **Value**: 180,000ms (3 minutes)
+    /// **Value**: 90,000ms (90 seconds) on Mesa mainnet, which halved it (MIP-6);
+    /// 180,000ms before Mesa
     /// **Usage**: Consensus timing, slot calculations, network synchronization
     pub block_window_duration_ms: u64,
 
@@ -193,7 +261,8 @@ pub struct ConstraintConstants {
     /// The amount is specified in nanomina, where 1 MINA = 10⁹ nanomina. Block producers
     /// may receive additional rewards through the supercharged coinbase mechanism.
     ///
-    /// **Value**: 720,000,000,000 nanomina (720 MINA)
+    /// **Value**: 360,000,000,000 nanomina (360 MINA) on Mesa mainnet, which
+    /// halved it with the slot time; 720 MINA before Mesa
     /// **Usage**: Block producer rewards, economic incentives, reward calculations
     pub coinbase_amount: u64,
 
@@ -314,8 +383,13 @@ pub fn checkpoint_window_size_in_slots() -> u32 {
 
 pub const DEFAULT_GENESIS_TIMESTAMP_MILLISECONDS: u64 = 1707157200000;
 
-pub const PROTOCOL_TRANSACTION_VERSION: u8 = 3;
-pub const PROTOCOL_NETWORK_VERSION: u8 = 3;
+/// Protocol versions hashed into the chain id. Berkeley nodes passed the
+/// transaction version for both (3 and 3); Mesa passes the real network
+/// version, so they are 4 and 0.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/chain_id/chain_id.ml#L63-L70>
+pub const PROTOCOL_TRANSACTION_VERSION: u8 = 4;
+pub const PROTOCOL_NETWORK_VERSION: u8 = 0;
 pub const TX_POOL_MAX_SIZE: u32 = 3000;
 
 pub use v2::PROTOCOL_CONSTANTS;

@@ -23,6 +23,7 @@ import { DashboardRpcStats } from '@shared/types/dashboard/dashboard-rpc-stats.t
 import { AppSelectors } from '@app/app.state';
 import { MinaNode } from '@shared/types/core/environment/mina-env.type';
 import { take } from 'rxjs';
+import { restoreLedgersNote } from '@shared/helpers/restore.helper';
 
 type LedgerConfigMap = {
   stakingEpoch: SecDurationConfig;
@@ -176,7 +177,11 @@ export class DashboardLedgerComponent
             rootSnarked: getConfig(this.ledgers.rootSnarked.state),
             rootStaged: getConfig(this.ledgers.rootStaged.state),
           };
-          this.setProgressTime();
+          if (nodes[0].restored) {
+            this.progress = restoreLedgersNote(nodes[0].restored);
+          } else {
+            this.setProgressTime();
+          }
 
           const stakingLedgerStartTime =
             this.ledgers.stakingEpoch.snarked.fetchHashesStart / ONE_MILLION;

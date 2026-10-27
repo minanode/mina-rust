@@ -15,12 +15,11 @@ use mina_p2p_messages::{
         ConsensusProofOfStakeDataEpochDataStakingValueVersionedValueStableV1,
         CurrencyAmountStableV1, CurrencyBalanceStableV1, CurrencyFeeStableV1,
         DataHashLibStateHashStableV1, EpochSeed, LedgerProofProdStableV2,
-        MinaBaseAccountIdDigestStableV1, MinaBaseAccountIdStableV2,
-        MinaBaseAccountUpdateBodyEventsStableV1, MinaBaseAccountUpdateBodyFeePayerStableV1,
-        MinaBaseAccountUpdateBodyStableV1, MinaBaseAccountUpdateFeePayerStableV1,
-        MinaBaseAccountUpdateMayUseTokenStableV1, MinaBaseAccountUpdatePreconditionsStableV1,
-        MinaBaseAccountUpdateTStableV1, MinaBaseAccountUpdateUpdateStableV1,
-        MinaBaseAccountUpdateUpdateStableV1AppStateA,
+        MinaBaseAccountIdDigestStableV1, MinaBaseAccountUpdateBodyEventsStableV1,
+        MinaBaseAccountUpdateBodyFeePayerStableV1, MinaBaseAccountUpdateBodyStableV1,
+        MinaBaseAccountUpdateFeePayerStableV1, MinaBaseAccountUpdateMayUseTokenStableV1,
+        MinaBaseAccountUpdatePreconditionsStableV1, MinaBaseAccountUpdateTStableV1,
+        MinaBaseAccountUpdateUpdateStableV1, MinaBaseAccountUpdateUpdateStableV1AppStateA,
         MinaBaseAccountUpdateUpdateTimingInfoStableV1, MinaBaseCallStackDigestStableV1,
         MinaBaseCoinbaseFeeTransferStableV1, MinaBaseCoinbaseStableV1, MinaBaseEpochSeedStableV1,
         MinaBaseFeeExcessStableV1, MinaBaseFeeTransferSingleStableV2, MinaBaseFeeTransferStableV2,
@@ -58,19 +57,7 @@ use mina_p2p_messages::{
         MinaStateBlockchainStateValueStableV2LedgerProofStatementSource,
         MinaStateBlockchainStateValueStableV2SignedAmount, MinaStateSnarkedLedgerStateStableV2,
         MinaStateSnarkedLedgerStateWithSokStableV2,
-        MinaTransactionLogicTransactionAppliedCoinbaseAppliedStableV2,
-        MinaTransactionLogicTransactionAppliedCoinbaseAppliedStableV2Coinbase,
-        MinaTransactionLogicTransactionAppliedCommandAppliedStableV2,
-        MinaTransactionLogicTransactionAppliedFeeTransferAppliedStableV2,
-        MinaTransactionLogicTransactionAppliedFeeTransferAppliedStableV2FeeTransfer,
-        MinaTransactionLogicTransactionAppliedSignedCommandAppliedBodyStableV2,
-        MinaTransactionLogicTransactionAppliedSignedCommandAppliedCommonStableV2,
-        MinaTransactionLogicTransactionAppliedSignedCommandAppliedCommonStableV2UserCommand,
-        MinaTransactionLogicTransactionAppliedSignedCommandAppliedStableV2,
-        MinaTransactionLogicTransactionAppliedStableV2,
         MinaTransactionLogicTransactionAppliedVaryingStableV2,
-        MinaTransactionLogicTransactionAppliedZkappCommandAppliedStableV1,
-        MinaTransactionLogicTransactionAppliedZkappCommandAppliedStableV1Command,
         MinaTransactionLogicZkappCommandLogicLocalStateValueStableV1,
         MinaTransactionTransactionStableV2, ParallelScanJobStatusStableV1,
         ParallelScanSequenceNumberStableV1, ParallelScanWeightStableV1, SgnStableV1, SignedAmount,
@@ -80,9 +67,7 @@ use mina_p2p_messages::{
         StagedLedgerDiffDiffPreDiffWithAtMostTwoCoinbaseStableV2,
         StagedLedgerDiffDiffPreDiffWithAtMostTwoCoinbaseStableV2B,
         StagedLedgerDiffDiffPreDiffWithAtMostTwoCoinbaseStableV2Coinbase,
-        StagedLedgerDiffDiffStableV2, StateHash, TokenFeeExcess,
-        TransactionSnarkScanStateLedgerProofWithSokMessageStableV2,
-        TransactionSnarkScanStateStableV2,
+        StagedLedgerDiffDiffStableV2, StateHash, TokenFeeExcess, TransactionSnarkScanStateStableV2,
         TransactionSnarkScanStateStableV2PreviousIncompleteZkappUpdates1::Border_block_continued_in_the_next_tree,
         TransactionSnarkScanStateStableV2ScanState,
         TransactionSnarkScanStateStableV2ScanStateTreesABaseT1,
@@ -90,9 +75,11 @@ use mina_p2p_messages::{
         TransactionSnarkScanStateStableV2ScanStateTreesAMergeT1,
         TransactionSnarkScanStateStableV2ScanStateTreesAMergeT1Full,
         TransactionSnarkScanStateStableV2TreesAMerge,
-        TransactionSnarkScanStateTransactionWithWitnessStableV2, TransactionSnarkStableV2,
-        TransactionSnarkWorkTStableV2, TransactionSnarkWorkTStableV2Proofs,
-        UnsignedExtendedUInt32StableV1, UnsignedExtendedUInt64Int64ForVersionTagsStableV1,
+        TransactionSnarkScanStateTransactionWithWitnessStableV2,
+        TransactionSnarkScanStateTransactionWithWitnessStableV2TransactionWithStatus,
+        TransactionSnarkStableV2, TransactionSnarkWorkTStableV2,
+        TransactionSnarkWorkTStableV2Proofs, UnsignedExtendedUInt32StableV1,
+        UnsignedExtendedUInt64Int64ForVersionTagsStableV1,
     },
 };
 use mina_signer::Signature;
@@ -122,8 +109,8 @@ use super::{
     pending_coinbase::{self, PendingCoinbase},
     scan_state::{
         transaction_snark::{
-            LedgerProof, LedgerProofWithSokMessage, Registers, SokDigest, SokMessage, Statement,
-            TransactionSnark, TransactionWithWitness,
+            LedgerProof, Registers, SokDigest, SokMessage, Statement, TransactionSnark,
+            TransactionWithWitness,
         },
         AvailableJob, AvailableJobMessage, ScanState,
     },
@@ -132,7 +119,7 @@ use super::{
         local_state::LocalState,
         protocol_state,
         signed_command::SignedCommand,
-        transaction_applied::{self, TransactionApplied},
+        transaction_applied::{self},
         zkapp_command::{
             verifiable, AccountUpdate, FeePayer, FeePayerBody, SetOrKeep, WithStackHash,
         },
@@ -1236,7 +1223,7 @@ impl TryFrom<&MinaBaseAccountUpdateTStableV1> for AccountUpdate {
                 },
             },
             authorization: match &value.authorization {
-                mina_p2p_messages::v2::MinaBaseControlStableV2::Proof(proof) => zkapp_command::Control::Proof((**proof).clone().into()),
+                mina_p2p_messages::v2::MinaBaseControlStableV2::Proof(proof) => zkapp_command::Control::Proof(proof.clone()),
                 mina_p2p_messages::v2::MinaBaseControlStableV2::Signature(signature) => zkapp_command::Control::Signature(Signature{
                     rx: signature.0.to_field()?,
                     s: signature.1.to_field()?
@@ -1585,7 +1572,7 @@ impl From<&AccountUpdate> for MinaBaseAccountUpdateTStableV1 {
                 },
             },
             authorization: match &value.authorization {
-                zkapp_command::Control::Proof(proof) => mina_p2p_messages::v2::MinaBaseControlStableV2::Proof(Box::new((**proof).clone())),
+                zkapp_command::Control::Proof(proof) => mina_p2p_messages::v2::MinaBaseControlStableV2::Proof(proof.clone()),
                 zkapp_command::Control::Signature(sig) => mina_p2p_messages::v2::MinaBaseControlStableV2::Signature({
                     let sig: MinaBaseSignatureStableV1 = sig.into();
                     sig.into()
@@ -1692,8 +1679,26 @@ impl From<&FeeTransfer> for MinaBaseFeeTransferStableV2 {
 }
 
 impl From<&MinaBaseSignedCommandMemoStableV1> for Memo {
+    /// Panics when the memo isn't 34 bytes: use [`Memo::try_from_wire`] on
+    /// anything that came from a peer.
     fn from(value: &MinaBaseSignedCommandMemoStableV1) -> Self {
         Self(value.0.as_ref().try_into().unwrap())
+    }
+}
+
+impl Memo {
+    /// The memo of a wire command, or an error when it isn't 34 bytes long.
+    ///
+    /// The wire type is a plain string, so a peer can send any length, and
+    /// `From` would panic. The error is `InvalidBigInt` because that is the
+    /// error type of every wire-to-ledger command conversion.
+    pub fn try_from_wire(value: &MinaBaseSignedCommandMemoStableV1) -> Result<Self, InvalidBigInt> {
+        value
+            .0
+            .as_ref()
+            .try_into()
+            .map(Self)
+            .map_err(|_| InvalidBigInt)
     }
 }
 
@@ -1722,7 +1727,7 @@ impl TryFrom<&MinaBaseSignedCommandStableV2> for SignedCommand {
                     fee_payer_pk: (&cmd.payload.common.fee_payer_pk).try_into()?,
                     nonce: (&cmd.payload.common.nonce).into(),
                     valid_until: (&cmd.payload.common.valid_until).into(),
-                    memo: (&cmd.payload.common.memo).into(),
+                    memo: Memo::try_from_wire(&cmd.payload.common.memo)?,
                 },
                 body: match &cmd.payload.body {
                     MinaBaseSignedCommandPayloadBodyStableV2::Payment(payload) => {
@@ -1796,7 +1801,7 @@ impl TryFrom<&MinaBaseZkappCommandTStableV1WireStableV1> for zkapp_command::ZkAp
         Ok(Self {
             fee_payer: (&cmd.fee_payer).try_into()?,
             account_updates: (&cmd.account_updates).try_into()?,
-            memo: (&cmd.memo).into(),
+            memo: Memo::try_from_wire(&cmd.memo)?,
         })
     }
 }
@@ -1814,7 +1819,7 @@ impl TryFrom<v2::MinaBaseZkappCommandVerifiableStableV1> for verifiable::ZkAppCo
         Ok(verifiable::ZkAppCommand {
             fee_payer: fee_payer.try_into()?,
             account_updates: account_updates.try_into()?,
-            memo: memo.into(),
+            memo: Memo::try_from_wire(memo)?,
         })
     }
 }
@@ -1976,33 +1981,21 @@ impl TryFrom<&TransactionSnarkScanStateTransactionWithWitnessStableV2> for Trans
     fn try_from(
         value: &TransactionSnarkScanStateTransactionWithWitnessStableV2,
     ) -> Result<Self, Self::Error> {
-        // use mina_p2p_messages::v2::TransactionSnarkPendingCoinbaseStackStateInitStackStableV1::{Base, Merge};
-        use mina_p2p_messages::v2::MinaStateSnarkedLedgerStatePendingCoinbaseStackStateInitStackStableV1::{Base, Merge};
-        use crate::scan_state::scan_state::transaction_snark::InitStack;
-
         Ok(Self {
-            transaction_with_info: TransactionApplied {
-                previous_hash: value.transaction_with_info.previous_hash.to_field()?,
-                varying: (&value.transaction_with_info.varying).try_into()?,
+            transaction_with_status: WithStatus {
+                data: (&value.transaction_with_status.data).try_into()?,
+                status: (&value.transaction_with_status.status).into(),
             },
             state_hash: {
                 let (state, body) = &value.state_hash;
                 (state.to_field()?, body.to_field()?)
             },
             statement: (&*value.statement).try_into()?,
-            init_stack: match &value.init_stack {
-                Base(base) => InitStack::Base(pending_coinbase::Stack {
-                    data: pending_coinbase::CoinbaseStack(base.data.to_field()?),
-                    state: pending_coinbase::StateStack {
-                        init: base.state.init.to_field()?,
-                        curr: base.state.curr.to_field()?,
-                    },
-                }),
-                Merge => InitStack::Merge,
-            },
+            init_stack: (&value.init_stack).try_into()?,
             first_pass_ledger_witness: (&value.first_pass_ledger_witness).try_into()?,
             second_pass_ledger_witness: (&value.second_pass_ledger_witness).try_into()?,
             block_global_slot: Slot::from_u32(value.block_global_slot.as_u32()),
+            hash_cache: Default::default(),
         })
     }
 }
@@ -2145,102 +2138,23 @@ impl From<&AvailableJob> for AvailableJobMessage {
 
 impl From<&TransactionWithWitness> for TransactionSnarkScanStateTransactionWithWitnessStableV2 {
     fn from(value: &TransactionWithWitness) -> Self {
-        use super::scan_state::transaction_snark::InitStack;
-        use mina_p2p_messages::v2::MinaStateSnarkedLedgerStatePendingCoinbaseStackStateInitStackStableV1::{Base, Merge};
-
         Self {
-            transaction_with_info: MinaTransactionLogicTransactionAppliedStableV2 {
-                previous_hash: {
-                    let hash = MinaBaseLedgerHash0StableV1(
-                        value.transaction_with_info.previous_hash.into(),
-                    );
-                    hash.into()
+            transaction_with_status:
+                TransactionSnarkScanStateTransactionWithWitnessStableV2TransactionWithStatus {
+                    data: (&value.transaction_with_status.data).into(),
+                    status: (&value.transaction_with_status.status).into(),
                 },
-                varying: match &value.transaction_with_info.varying {
-                    transaction_applied::Varying::Command(
-                        transaction_applied::CommandApplied::SignedCommand(cmd),
-                    ) => {
-                        MinaTransactionLogicTransactionAppliedVaryingStableV2::Command(
-                            MinaTransactionLogicTransactionAppliedCommandAppliedStableV2::SignedCommand(
-                                MinaTransactionLogicTransactionAppliedSignedCommandAppliedStableV2 {
-                                    common: MinaTransactionLogicTransactionAppliedSignedCommandAppliedCommonStableV2 {
-                                        user_command: MinaTransactionLogicTransactionAppliedSignedCommandAppliedCommonStableV2UserCommand {
-                                            data: (&cmd.common.user_command.data).into(),
-                                            status: (&cmd.common.user_command.status).into(),
-                                        },
-                                    },
-                                    body: match &cmd.body {
-                                        transaction_applied::signed_command_applied::Body::Payments { new_accounts } =>
-                                            MinaTransactionLogicTransactionAppliedSignedCommandAppliedBodyStableV2::Payment {
-                                            new_accounts: new_accounts.iter().cloned().map(Into::into).collect(),
-                                        },
-                                        transaction_applied::signed_command_applied::Body::StakeDelegation { previous_delegate } =>
-                                            MinaTransactionLogicTransactionAppliedSignedCommandAppliedBodyStableV2::StakeDelegation {
-                                            previous_delegate: previous_delegate.as_ref().map(Into::into)
-                                        },
-                                        transaction_applied::signed_command_applied::Body::Failed =>
-                                            MinaTransactionLogicTransactionAppliedSignedCommandAppliedBodyStableV2::Failed,
-                                    },
-                                }))
-                    }
-                    transaction_applied::Varying::Command(
-                        transaction_applied::CommandApplied::ZkappCommand(cmd),
-                    ) =>
-                        MinaTransactionLogicTransactionAppliedVaryingStableV2::Command(
-                            MinaTransactionLogicTransactionAppliedCommandAppliedStableV2::ZkappCommand(
-                                MinaTransactionLogicTransactionAppliedZkappCommandAppliedStableV1 {
-                                accounts: cmd.accounts.iter().map(|(id, account_opt)| {
-                                    let id: MinaBaseAccountIdStableV2 = id.clone().into();
-                                    let account_opt = account_opt.as_ref().map(|acc| (&**acc).into());
-                                    (id, account_opt)
-                                }).collect(),
-                                command: MinaTransactionLogicTransactionAppliedZkappCommandAppliedStableV1Command {
-                                    data: (&cmd.command.data).into(),
-                                    status: (&cmd.command.status).into(),
-                                },
-                                new_accounts: cmd.new_accounts.iter().cloned().map(Into::into).collect(),
-                            })
-                        ),
-                    transaction_applied::Varying::FeeTransfer(ft) =>
-                        MinaTransactionLogicTransactionAppliedVaryingStableV2::FeeTransfer(
-                            MinaTransactionLogicTransactionAppliedFeeTransferAppliedStableV2 {
-                                fee_transfer: MinaTransactionLogicTransactionAppliedFeeTransferAppliedStableV2FeeTransfer {
-                                    data: (&ft.fee_transfer.data).into(),
-                                    status: (&ft.fee_transfer.status).into(),
-                                },
-                                new_accounts: ft.new_accounts.iter().cloned().map(Into::into).collect(),
-                                burned_tokens: ft.burned_tokens.into(),
-                            }),
-                    transaction_applied::Varying::Coinbase(cb) =>
-                        MinaTransactionLogicTransactionAppliedVaryingStableV2::Coinbase(
-                            MinaTransactionLogicTransactionAppliedCoinbaseAppliedStableV2 {
-                                coinbase: MinaTransactionLogicTransactionAppliedCoinbaseAppliedStableV2Coinbase {
-                                    data: (&cb.coinbase.data).into(),
-                                    status: (&cb.coinbase.status).into(),
-                                },
-                                new_accounts: cb.new_accounts.iter().cloned().map(Into::into).collect(),
-                                burned_tokens: cb.burned_tokens.into(),
-                            }
-                        ),
-                },
-            },
             state_hash: {
                 let (state, body) = &value.state_hash;
                 let state = DataHashLibStateHashStableV1(state.into());
 
-                (state.into(), MinaBaseStateBodyHashStableV1(body.into()).into())
+                (
+                    state.into(),
+                    MinaBaseStateBodyHashStableV1(body.into()).into(),
+                )
             },
             statement: (&value.statement).into(),
-            init_stack: match &value.init_stack {
-                InitStack::Base(base) => Base(MinaBasePendingCoinbaseStackVersionedStableV1 {
-                    data: MinaBasePendingCoinbaseCoinbaseStackStableV1(base.data.0.into()).into(),
-                    state: MinaBasePendingCoinbaseStateStackStableV1 {
-                        init: MinaBasePendingCoinbaseStackHashStableV1(base.state.init.into()).into(),
-                        curr: MinaBasePendingCoinbaseStackHashStableV1(base.state.curr.into()).into(),
-                    },
-                }),
-                InitStack::Merge => Merge,
-            },
+            init_stack: (&value.init_stack).into(),
             first_pass_ledger_witness: (&value.first_pass_ledger_witness).into(),
             second_pass_ledger_witness: (&value.second_pass_ledger_witness).into(),
             block_global_slot: (&value.block_global_slot).into(),
@@ -2261,7 +2175,7 @@ impl TryFrom<&TransactionSnarkStableV2> for TransactionSnark<SokDigest> {
     fn try_from(value: &TransactionSnarkStableV2) -> Result<Self, Self::Error> {
         Ok(Self {
             statement: (&value.statement).try_into()?,
-            proof: Arc::new(value.proof.clone()),
+            proof: value.proof.clone(),
         })
     }
 }
@@ -2270,7 +2184,7 @@ impl From<&TransactionSnark<SokDigest>> for TransactionSnarkStableV2 {
     fn from(value: &TransactionSnark<SokDigest>) -> Self {
         Self {
             statement: (&value.statement).into(),
-            proof: (*value.proof).clone(),
+            proof: value.proof.clone(),
         }
     }
 }
@@ -2279,7 +2193,7 @@ impl TryFrom<&LedgerProofProdStableV2> for LedgerProof {
     type Error = InvalidBigInt;
 
     fn try_from(value: &LedgerProofProdStableV2) -> Result<Self, Self::Error> {
-        Ok(Self((&value.0).try_into()?))
+        Ok(Self((&value.0).try_into()?, Default::default()))
     }
 }
 
@@ -2289,12 +2203,12 @@ impl From<&LedgerProof> for LedgerProofProdStableV2 {
     }
 }
 
-// impl binprot::BinProtWrite for LedgerProof {
-//     fn binprot_write<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
-//         let p2p: LedgerProofProdStableV2 = self.into();
-//         p2p.binprot_write(w)
-//     }
-// }
+impl binprot::BinProtWrite for LedgerProof {
+    fn binprot_write<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
+        let p2p: LedgerProofProdStableV2 = self.into();
+        p2p.binprot_write(w)
+    }
+}
 
 impl TryFrom<&MinaBaseSokMessageStableV1> for SokMessage {
     type Error = InvalidBigInt;
@@ -2313,38 +2227,6 @@ impl From<&SokMessage> for MinaBaseSokMessageStableV1 {
             fee: (&value.fee).into(),
             prover: (&value.prover).into(),
         }
-    }
-}
-
-impl From<&LedgerProofWithSokMessage>
-    for TransactionSnarkScanStateLedgerProofWithSokMessageStableV2
-{
-    fn from(value: &LedgerProofWithSokMessage) -> Self {
-        Self((&value.proof).into(), (&value.sok_message).into())
-    }
-}
-
-impl TryFrom<&TransactionSnarkScanStateLedgerProofWithSokMessageStableV2>
-    for LedgerProofWithSokMessage
-{
-    type Error = InvalidBigInt;
-
-    fn try_from(
-        value: &TransactionSnarkScanStateLedgerProofWithSokMessageStableV2,
-    ) -> Result<Self, Self::Error> {
-        let TransactionSnarkScanStateLedgerProofWithSokMessageStableV2(proof, msg) = value;
-
-        Ok(Self {
-            proof: proof.try_into()?,
-            sok_message: msg.try_into()?,
-        })
-    }
-}
-
-impl binprot::BinProtWrite for LedgerProofWithSokMessage {
-    fn binprot_write<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
-        let p2p: TransactionSnarkScanStateLedgerProofWithSokMessageStableV2 = self.into();
-        p2p.binprot_write(w)
     }
 }
 
@@ -2422,7 +2304,7 @@ impl From<&ParallelScanJobStatusStableV1> for JobStatus {
 }
 
 impl TryFrom<&TransactionSnarkScanStateStableV2ScanStateTreesAMergeT1>
-    for super::parallel_scan::merge::Job<Arc<LedgerProofWithSokMessage>>
+    for super::parallel_scan::merge::Job<Arc<LedgerProof>>
 {
     type Error = InvalidBigInt;
 
@@ -2499,7 +2381,7 @@ impl TryFrom<&TransactionSnarkScanStateStableV2> for ScanState {
                     delay,
                 } = scan_state;
 
-                ParallelScan::<Arc<TransactionWithWitness>, Arc<LedgerProofWithSokMessage>> {
+                ParallelScan::<Arc<TransactionWithWitness>, Arc<LedgerProof>> {
                     trees: {
                         use mina_p2p_messages::v2::TransactionSnarkScanStateStableV2ScanStateTreesA::{Leaf, Node};
                         use super::parallel_scan::Weight;
@@ -2509,9 +2391,7 @@ impl TryFrom<&TransactionSnarkScanStateStableV2> for ScanState {
                         std::iter::once(first)
                             .chain(rest)
                             .map(|tree| {
-                                let mut rust_tree = super::parallel_scan::Tree {
-                                    values: Vec::with_capacity(255),
-                                };
+                                let mut values = Vec::with_capacity(255);
 
                                 let mut current = tree;
 
@@ -2525,15 +2405,13 @@ impl TryFrom<&TransactionSnarkScanStateStableV2> for ScanState {
                                     for (weights, job) in value.iter() {
                                         let weight: (Weight, Weight) = from_two_weights(weights);
                                         let job: super::parallel_scan::merge::Job<
-                                            Arc<LedgerProofWithSokMessage>,
+                                            Arc<LedgerProof>,
                                         > = job.try_into()?;
 
                                         let merge =
                                             super::parallel_scan::merge::Merge { weight, job };
 
-                                        rust_tree
-                                            .values
-                                            .push(super::parallel_scan::Value::Node(merge));
+                                        values.push(super::parallel_scan::Value::Node(merge));
                                     }
 
                                     current = sub_tree;
@@ -2552,12 +2430,12 @@ impl TryFrom<&TransactionSnarkScanStateStableV2> for ScanState {
 
                                     let base = super::parallel_scan::base::Base { weight, job };
 
-                                    rust_tree
-                                        .values
-                                        .push(super::parallel_scan::Value::Leaf(base))
+                                    values.push(super::parallel_scan::Value::Leaf(base))
                                 }
 
-                                Ok(rust_tree)
+                                Ok(super::parallel_scan::Tree {
+                                    values: values.into(),
+                                })
                             })
                             .collect::<Result<_, _>>()?
                     },
@@ -2650,15 +2528,15 @@ impl From<&super::parallel_scan::base::Job<Arc<TransactionWithWitness>>>
     }
 }
 
-impl From<&parallel_scan::merge::Job<Arc<LedgerProofWithSokMessage>>>
+impl From<&parallel_scan::merge::Job<Arc<LedgerProof>>>
     for TransactionSnarkScanStateStableV2ScanStateTreesAMergeT1
 {
-    fn from(value: &parallel_scan::merge::Job<Arc<LedgerProofWithSokMessage>>) -> Self {
+    fn from(value: &parallel_scan::merge::Job<Arc<LedgerProof>>) -> Self {
         match value {
             parallel_scan::merge::Job::Empty => Self::Empty,
             parallel_scan::merge::Job::Part(part) => Self::Part(Box::new(part.as_ref().into())),
             parallel_scan::merge::Job::Full(record) => {
-                let parallel_scan::merge::Record::<Arc<LedgerProofWithSokMessage>> {
+                let parallel_scan::merge::Record::<Arc<LedgerProof>> {
                     left,
                     right,
                     seq_no,
@@ -2691,11 +2569,11 @@ impl From<&&parallel_scan::base::Base<Arc<TransactionWithWitness>>>
     }
 }
 
-impl From<&&parallel_scan::merge::Merge<Arc<LedgerProofWithSokMessage>>>
+impl From<&&parallel_scan::merge::Merge<Arc<LedgerProof>>>
     for TransactionSnarkScanStateStableV2TreesAMerge
 {
-    fn from(value: &&parallel_scan::merge::Merge<Arc<LedgerProofWithSokMessage>>) -> Self {
-        let parallel_scan::merge::Merge::<Arc<LedgerProofWithSokMessage>> { weight, job } = value;
+    fn from(value: &&parallel_scan::merge::Merge<Arc<LedgerProof>>) -> Self {
+        let parallel_scan::merge::Merge::<Arc<LedgerProof>> { weight, job } = value;
 
         let (w1, w2) = weight;
         ((w1.into(), w2.into()), job.into())

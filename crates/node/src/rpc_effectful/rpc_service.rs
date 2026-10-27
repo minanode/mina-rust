@@ -4,11 +4,12 @@ use crate::{
         RpcActionStatsGetResponse, RpcBestChainResponse, RpcBlockProducerStatsGetResponse,
         RpcConsensusTimeGetResponse, RpcDiscoveryBoostrapStatsResponse,
         RpcDiscoveryRoutingTableResponse, RpcGenesisBlockResponse, RpcGetBlockResponse,
-        RpcHealthCheckResponse, RpcHeartbeatGetResponse, RpcId,
-        RpcLedgerAccountDelegatorsGetResponse, RpcLedgerAccountsResponse,
-        RpcLedgerSlimAccountsResponse, RpcLedgerStatusGetResponse, RpcMessageProgressResponse,
-        RpcP2pConnectionOutgoingResponse, RpcPeersGetResponse, RpcPooledUserCommandsResponse,
-        RpcPooledZkappCommandsResponse, RpcReadinessCheckResponse, RpcScanStateSummaryGetResponse,
+        RpcHardForkExportResponse, RpcHealthCheckResponse, RpcHeartbeatGetResponse, RpcId,
+        RpcLedgerAccountDelegatorsGetResponse, RpcLedgerAccountsResponse, RpcLedgerExportResponse,
+        RpcLedgerSlimAccountsResponse, RpcLedgerStatusGetResponse, RpcLightAccountResponse,
+        RpcLightBestTipResponse, RpcMessageProgressResponse, RpcP2pConnectionOutgoingResponse,
+        RpcPeersGetResponse, RpcPooledUserCommandsResponse, RpcPooledZkappCommandsResponse,
+        RpcReadinessCheckResponse, RpcScanStateSummaryGetResponse,
         RpcSnarkPoolCompletedJobsResponse, RpcSnarkPoolGetResponse, RpcSnarkPoolJobGetResponse,
         RpcSnarkPoolPendingJobsGetResponse, RpcSnarkerConfigGetResponse,
         RpcSnarkerJobCommitResponse, RpcSnarkerJobSpecResponse, RpcSnarkerWorkersResponse,
@@ -47,6 +48,16 @@ macro_rules! from_error {
 from_error!(serde_json::Error);
 
 pub trait RpcService {
+    fn respond_snark_work_coverage_get(
+        &mut self,
+        rpc_id: RpcId,
+        response: crate::snark_pool::WorkCoverageStatus,
+    ) -> Result<(), RespondError>;
+    fn respond_proof_memory_get(
+        &mut self,
+        rpc_id: RpcId,
+        response: crate::rpc::RpcProofMemoryGetResponse,
+    ) -> Result<(), RespondError>;
     fn respond_state_get(
         &mut self,
         rpc_id: RpcId,
@@ -56,6 +67,20 @@ pub trait RpcService {
         &mut self,
         rpc_id: RpcId,
         response: RpcStatusGetResponse,
+    ) -> Result<(), RespondError>;
+    fn respond_memory_debug(
+        &mut self,
+        rpc_id: RpcId,
+        state: State,
+        stats: Option<crate::stats::Stats>,
+    ) -> Result<(), RespondError> {
+        let _ = (rpc_id, state, stats);
+        Err(RespondError::Custom("memory diagnostic unavailable".into()))
+    }
+    fn respond_metrics_get(
+        &mut self,
+        rpc_id: RpcId,
+        response: crate::rpc::RpcMetricsGetResponse,
     ) -> Result<(), RespondError>;
     fn respond_heartbeat_get(
         &mut self,
@@ -72,6 +97,12 @@ pub trait RpcService {
         rpc_id: RpcId,
         response: RpcSyncStatsGetResponse,
     ) -> Result<(), RespondError>;
+    fn respond_verification_stats_get(
+        &mut self,
+        rpc_id: RpcId,
+        response: crate::rpc::RpcVerificationStatsGetResponse,
+    ) -> Result<(), RespondError>;
+
     fn respond_block_producer_stats_get(
         &mut self,
         rpc_id: RpcId,
@@ -147,6 +178,21 @@ pub trait RpcService {
         rpc_id: RpcId,
         response: RpcSnarkerWorkersResponse,
     ) -> Result<(), RespondError>;
+    fn respond_snark_worker_control_get(
+        &mut self,
+        rpc_id: RpcId,
+        response: crate::rpc::RpcSnarkWorkerControlGetResponse,
+    ) -> Result<(), RespondError>;
+    fn respond_snark_worker_control_set(
+        &mut self,
+        rpc_id: RpcId,
+        response: crate::rpc::RpcSnarkWorkerControlSetResponse,
+    ) -> Result<(), RespondError>;
+    fn respond_snark_work_included_get(
+        &mut self,
+        rpc_id: RpcId,
+        response: crate::rpc::RpcSnarkWorkIncludedGetResponse,
+    ) -> Result<(), RespondError>;
     fn respond_health_check(
         &mut self,
         rpc_id: RpcId,
@@ -207,6 +253,11 @@ pub trait RpcService {
         rpc_id: RpcId,
         response: RpcTransactionStatusGetResponse,
     ) -> Result<(), RespondError>;
+    fn respond_transaction_nonce(
+        &mut self,
+        rpc_id: RpcId,
+        response: crate::rpc::RpcTransactionNonceGetResponse,
+    ) -> Result<(), RespondError>;
     fn respond_block_get(
         &mut self,
         rpc_id: RpcId,
@@ -241,5 +292,25 @@ pub trait RpcService {
         &mut self,
         rpc_id: RpcId,
         response: RpcLedgerAccountDelegatorsGetResponse,
+    ) -> Result<(), RespondError>;
+    fn respond_ledger_export(
+        &mut self,
+        rpc_id: RpcId,
+        response: RpcLedgerExportResponse,
+    ) -> Result<(), RespondError>;
+    fn respond_hard_fork_config(
+        &mut self,
+        rpc_id: RpcId,
+        response: RpcHardForkExportResponse,
+    ) -> Result<(), RespondError>;
+    fn respond_light_best_tip(
+        &mut self,
+        rpc_id: RpcId,
+        response: RpcLightBestTipResponse,
+    ) -> Result<(), RespondError>;
+    fn respond_light_account(
+        &mut self,
+        rpc_id: RpcId,
+        response: RpcLightAccountResponse,
     ) -> Result<(), RespondError>;
 }

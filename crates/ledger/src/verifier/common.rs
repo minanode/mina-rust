@@ -91,7 +91,12 @@ pub fn check(cmd: WithStatus<verifiable::UserCommand>) -> CheckResult {
                 use zkapp_command::{AuthorizationKind as AK, Control as C};
                 match (&p.authorization, &p.body.authorization_kind) {
                     (C::Signature(s), AK::Signature) => {
-                        let pk = decompress_pk(&p.body.public_key).unwrap();
+                        // OCaml: `Invalid_keys` (verifier/common.ml,
+                        // `check_signatures_of_zkapp_command`). A peer can send
+                        // any key, so this must not panic.
+                        let Some(pk) = decompress_pk(&p.body.public_key) else {
+                            return CheckResult::InvalidKeys(vec![p.body.public_key.clone()]);
+                        };
                         if !verify_signature(s, &pk, &commitment) {
                             return CheckResult::InvalidSignature(vec![pk.into_compressed()]);
                         }
@@ -116,7 +121,11 @@ pub fn check(cmd: WithStatus<verifiable::UserCommand>) -> CheckResult {
                                 p.account_id().public_key,
                             ]);
                         }
-                        valid_assuming.push((vk.vk().clone(), stmt, pi.clone()));
+                        let pi = match pi.get() {
+                            Ok(pi) => pi,
+                            Err(error) => return CheckResult::InvalidProof(error.to_string()),
+                        };
+                        valid_assuming.push((vk.vk().clone(), stmt, pi));
                     }
                     _ => {
                         return CheckResult::MismatchedAuthorizationKind(vec![

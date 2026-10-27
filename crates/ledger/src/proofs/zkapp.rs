@@ -1,13 +1,13 @@
 use std::{cell::RefCell, rc::Rc};
 
-use ark_ff::{BigInteger256, Zero};
+use ark_ff::{BigInteger256, One, Zero};
 use kimchi::proof::PointEvaluations;
 use mina_curves::pasta::{Fp, Fq};
 use mina_p2p_messages::{bigint::InvalidBigInt, v2};
 use poly_commitment::ipa::OpeningProof;
 use poseidon::hash::{
     hash_with_kimchi,
-    params::{MINA_ACCOUNT_UPDATE_CONS, MINA_PROTO_STATE_BODY},
+    params::{MINA_ACCOUNT_UPDATE_STACK_FRAME_CONS, MINA_PROTO_STATE_BODY},
 };
 
 use crate::{
@@ -389,6 +389,14 @@ pub struct WithStackHash<T> {
     pub stack_hash: Fp,
 }
 
+/// The call stack's hashes, each frame's consed onto the rest's with
+/// `Call_stack_digest.cons`, whose prefix is `MinaActUpStckFrmCons`, not the
+/// call forest's `MinaAcctUpdateCons`: a segment that starts or ends with
+/// frames on the call stack has these in its statement, and the circuit
+/// computes them with the stack frame prefix.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark/transaction_snark.ml#L3670-L3682>
+/// and <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/call_stack_digest.ml#L21-L23>
 fn accumulate_call_stack_hashes(
     hash_frame: impl Fn(&WithHash<StackFrame>) -> Fp,
     frames: &[WithHash<StackFrame>],
@@ -407,7 +415,10 @@ fn accumulate_call_stack_hashes(
                 0,
                 WithStackHash {
                     elt: f.clone(),
-                    stack_hash: hash_with_kimchi(&MINA_ACCOUNT_UPDATE_CONS, &[h_f, h_tl]),
+                    stack_hash: hash_with_kimchi(
+                        &MINA_ACCOUNT_UPDATE_STACK_FRAME_CONS,
+                        &[h_f, h_tl],
+                    ),
                 },
             );
 
@@ -1046,7 +1057,7 @@ fn zkapp_main(
     witness: &ZkappCommandSegmentWitness,
     spec: &[Spec],
     w: &mut Witness<Fp>,
-) -> Result<(Option<ZkappStatement>, Boolean), InvalidBigInt> {
+) -> anyhow::Result<(Option<ZkappStatement>, Boolean)> {
     w.exists(&statement);
 
     dummy_constraints(w);
@@ -1117,7 +1128,7 @@ fn zkapp_main(
     let zkapp_input = Rc::new(RefCell::new(None));
     let must_verify = Rc::new(RefCell::new(Boolean::True));
 
-    spec.iter().rev().for_each(|account_update_spec| {
+    spec.iter().rev().try_for_each(|account_update_spec| {
         enum StartOrSkip<T> {
             Start(T),
             Skip,
@@ -1222,8 +1233,10 @@ fn zkapp_main(
             }
         };
 
-        new_acc.unwrap() // TODO: Remove unwrap
-    });
+        // An assertion of the circuit that the witness fails, such as a
+        // signature that doesn't verify: no proof can be made.
+        new_acc.map_err(|e| anyhow::anyhow!("zkApp segment: {e}"))
+    })?;
 
     let on_true = local.stack_frame.hash(w);
     let _local_state_ledger = w.exists_no_check(match local.success.as_boolean() {
@@ -1259,7 +1272,7 @@ impl From<&LedgerProof> for v2::LedgerProofProdStableV2 {
         let LedgerProof { statement, proof } = value;
         Self(v2::TransactionSnarkStableV2 {
             statement: statement.into(),
-            proof: v2::TransactionSnarkProofStableV2(proof.into()),
+            proof: v2::TransactionSnarkProofStableV2(proof.into()).into(),
         })
     }
 }
@@ -1275,33 +1288,50 @@ fn first_account_update<'a>(witness: &'a ZkappCommandSegmentWitness) -> Option<&
     }
 }
 
-fn account_update_proof(p: &AccountUpdate) -> Option<&v2::PicklesProofProofsVerifiedMaxStableV2> {
+fn account_update_proof(
+    p: &AccountUpdate,
+) -> Option<&mina_p2p_messages::ProofRef<v2::PicklesProofProofsVerifiedMaxStableV2>> {
     match &p.authorization {
         Control::Proof(proof) => Some(proof),
         Control::Signature(_) | Control::NoneGiven => None,
     }
 }
 
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark/transaction_snark.ml#L4098-L4122>
 fn snapp_proof_data<'a>(
     witness: &'a ZkappCommandSegmentWitness,
-) -> Option<(
-    &'a v2::PicklesProofProofsVerifiedMaxStableV2,
+) -> anyhow::Result<(
+    std::sync::Arc<v2::PicklesProofProofsVerifiedMaxStableV2>,
     crate::VerificationKey,
 )> {
-    let p = first_account_update(witness)?;
-    let pi = account_update_proof(p)?;
-    let vk = {
-        let account_id = AccountId::create(p.body.public_key.clone(), p.body.token_id.clone());
-        let addr = witness.local_state_init.ledger.find_index_exn(account_id);
-        let account = witness.local_state_init.ledger.get_exn(&addr);
-        account
-            .zkapp
-            .and_then(|z| z.verification_key)
-            .expect("No verification key found in the account")
-    };
-    Some((pi, vk.vk().clone()))
+    let p = first_account_update(witness)
+        .ok_or_else(|| anyhow::anyhow!("proved zkApp segment has no account update"))?;
+    let pi = account_update_proof(p)
+        .ok_or_else(|| anyhow::anyhow!("proved zkApp segment has no proof authorization"))?;
+    let account_id = AccountId::create(p.body.public_key.clone(), p.body.token_id.clone());
+    // OCaml's dummy fallback covers an account without a key, not a missing
+    // sparse-ledger entry (where OCaml's find_index_exn/get_exn would fail).
+    let account = witness
+        .local_state_init
+        .ledger
+        .get_account_if_present(&account_id)
+        .ok_or_else(|| {
+            anyhow::anyhow!("proved zkApp segment account missing from sparse ledger")
+        })?;
+    let vk = account
+        .zkapp
+        .as_ref()
+        .and_then(|z| z.verification_key.as_ref())
+        .map(|vk| vk.vk().clone())
+        // Side_loaded_verification_key.dummy_with_wrap_vk: N2/N2 and generator
+        // commitments (side_loaded_verification_key.ml:269-347). Rust builds
+        // wrap_vk in make_zkapp_verifier_index: wrap_domains(2) = 2^15
+        // (pickles/common.ml:25-29), domain index 2 in both step and wrap.
+        .unwrap_or_else(|| crate::VerificationKey::dummy().as_ref().clone());
+    Ok((pi.get()?, vk))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn of_zkapp_command_segment_exn<StepConstants, WrapConstants>(
     statement: Statement<SokDigest>,
     zkapp_witness: &ZkappCommandSegmentWitness,
@@ -1310,6 +1340,7 @@ fn of_zkapp_command_segment_exn<StepConstants, WrapConstants>(
     tx_wrap_prover: &Prover<Fq>,
     fps_path: Option<String>,
     fqs_path: Option<String>,
+    only_verify_constraints: bool,
 ) -> anyhow::Result<LedgerProof>
 where
     StepConstants: ProofConstants,
@@ -1323,47 +1354,75 @@ where
     if let Some(path) = fps_path.as_ref() {
         w.ocaml_aux = read_witnesses(path);
     };
+    // For tests: `MINA_WITNESS_TRACE_AT=<aux index>,...` prints the code
+    // that pushes each of these step witness values.
+    #[cfg(test)]
+    if let Ok(at) = std::env::var("MINA_WITNESS_TRACE_AT") {
+        w.trace_at = at
+            .split(',')
+            .filter_map(|i| i.trim().parse().ok())
+            .collect();
+    }
 
+    let proof_data = match spec {
+        Proved => Some(snapp_proof_data(zkapp_witness)?),
+        OptSignedOptSigned | OptSigned => None,
+    };
     let (zkapp_input, must_verify) = zkapp_main(statement.clone(), zkapp_witness, &s, &mut w)?;
 
-    let StepProof {
-        statement: step_statement,
-        prev_evals,
-        proof_with_public: proof,
-    } = match spec {
-        OptSignedOptSigned | OptSigned => step::<StepConstants, 0>(
-            StepParams {
-                app_state: Rc::new(statement.clone()),
-                rule: InductiveRule::empty(),
-                for_step_datas: [],
-                indexes: [],
-                prev_challenge_polynomial_commitments: vec![],
-                hack_feature_flags: OptFlag::No,
-                step_prover,
-                wrap_prover: tx_wrap_prover,
-                only_verify_constraints: false,
-            },
-            &mut w,
-        )?,
+    let (
+        StepProof {
+            statement: step_statement,
+            prev_evals,
+            proof_with_public: proof,
+        },
+        wrap_domain_indices,
+    ) = match spec {
+        OptSignedOptSigned | OptSigned => (
+            step::<StepConstants, 0>(
+                StepParams {
+                    app_state: Rc::new(statement.clone()),
+                    rule: InductiveRule::empty(),
+                    for_step_datas: [],
+                    indexes: [],
+                    prev_challenge_polynomial_commitments: vec![],
+                    hack_feature_flags: OptFlag::No,
+                    step_prover,
+                    wrap_prover: tx_wrap_prover,
+                    only_verify_constraints,
+                },
+                &mut w,
+            )?,
+            None,
+        ),
         Proved => {
-            let (proof, vk) = snapp_proof_data(zkapp_witness).unwrap();
-            let proof = proof.into();
+            let (proof, vk) = proof_data
+                .ok_or_else(|| anyhow::anyhow!("proved zkApp segment has no proof data"))?;
+            // The zkApp proof's wrap domain, after the padding.
+            let wrap_domain_indices = Box::new([
+                Fq::one(),
+                Fq::from(vk.actual_wrap_domain_size.to_int() as u64),
+            ]);
+            let proof = (&*proof).into();
 
             let dlog_plonk_index_cvar = vk.wrap_index.to_cvar(CircuitVar::Var);
             let verifier_index = make_zkapp_verifier_index(&vk);
 
-            let zkapp_data = make_step_zkapp_data(&dlog_plonk_index_cvar);
+            let zkapp_data =
+                make_step_zkapp_data(&dlog_plonk_index_cvar, &vk.actual_wrap_domain_size);
             let for_step_datas = [&zkapp_data];
 
             let indexes = [(&verifier_index, &dlog_plonk_index_cvar)];
             let prev_challenge_polynomial_commitments = extract_recursion_challenges(&[&proof])?;
 
-            step::<StepConstants, 1>(
+            let step_proof = step::<StepConstants, 1>(
                 StepParams {
                     app_state: Rc::new(statement.clone()),
                     rule: InductiveRule {
                         previous_proof_statements: [PreviousProofStatement {
-                            public_input: Rc::new(zkapp_input.unwrap()),
+                            public_input: Rc::new(zkapp_input.ok_or_else(|| {
+                                anyhow::anyhow!("proved zkApp segment has no zkApp input")
+                            })?),
                             proof: &proof,
                             proof_must_verify: must_verify.var(),
                         }],
@@ -1376,10 +1435,11 @@ where
                     hack_feature_flags: OptFlag::Maybe,
                     step_prover,
                     wrap_prover: tx_wrap_prover,
-                    only_verify_constraints: false,
+                    only_verify_constraints,
                 },
                 &mut w,
-            )?
+            )?;
+            (step_proof, Some(wrap_domain_indices))
         }
     };
 
@@ -1400,6 +1460,7 @@ where
             dlog_plonk_index: &dlog_plonk_index,
             step_prover_index: &step_prover.index,
             wrap_prover: tx_wrap_prover,
+            wrap_domain_indices,
         },
         &mut w,
     )?;
@@ -1648,6 +1709,7 @@ impl From<&WrapProof> for v2::PicklesProofProofsVerified2ReprStableV2 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn of_zkapp_command_segment(
     statement: Statement<SokDigest>,
     zkapp_witness: &ZkappCommandSegmentWitness,
@@ -1658,6 +1720,7 @@ fn of_zkapp_command_segment(
     tx_wrap_prover: &Prover<Fq>,
     opt_signed_path: Option<&str>,
     proved_path: Option<&str>,
+    only_verify_constraints: bool,
 ) -> anyhow::Result<LedgerProof> {
     let (step_prover, step_path, wrap_path) = match spec {
         SegmentBasic::OptSignedOptSigned => (step_opt_signed_opt_signed_prover, None, None),
@@ -1693,7 +1756,63 @@ fn of_zkapp_command_segment(
         tx_wrap_prover,
         step_path,
         wrap_path,
+        only_verify_constraints,
     )
+}
+
+/// The zkApp command of a base job's transaction witness.
+fn zkapp_command_of_witness(
+    tx_witness: &v2::TransactionWitnessStableV2,
+) -> anyhow::Result<ZkAppCommand> {
+    match &tx_witness.transaction {
+        v2::MinaTransactionTransactionStableV2::Command(cmd) => match &**cmd {
+            v2::MinaBaseUserCommandStableV2::ZkappCommand(zkapp_command) => {
+                Ok(zkapp_command.try_into()?)
+            }
+            v2::MinaBaseUserCommandStableV2::SignedCommand(_) => {
+                anyhow::bail!("not a zkApp command: a signed command")
+            }
+        },
+        _ => anyhow::bail!("not a zkApp command: a fee transfer or coinbase"),
+    }
+}
+
+/// The segments of a zkApp command base job, each with its witness, kind and
+/// statement, in the order of the command's account updates, as
+/// `Transaction_snark.zkapp_command_witnesses_exn` makes them for a snark
+/// worker.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark/transaction_snark.ml#L3684-L4044>
+fn zkapp_command_segments<'a>(
+    statement: &v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement,
+    tx_witness: &'a v2::TransactionWitnessStableV2,
+    zkapp_command: &'a ZkAppCommand,
+) -> anyhow::Result<
+    Vec<(
+        ZkappCommandSegmentWitness<'a>,
+        group::SegmentBasic,
+        Statement<SokDigest>,
+    )>,
+> {
+    let mut segments = zkapp_command_witnesses_exn(ZkappCommandWitnessesParams {
+        global_slot: Slot::from_u32(tx_witness.block_global_slot.as_u32()),
+        state_body: &tx_witness.protocol_state_body,
+        fee_excess: Signed::zero(),
+        zkapp_commands_with_context: vec![ZkappCommandsWithContext {
+            pending_coinbase_init_stack: (&tx_witness.init_stack).try_into()?,
+            pending_coinbase_of_statement: pending_coinbase::StackState {
+                source: (&statement.source.pending_coinbase_stack).try_into()?,
+                target: (&statement.target.pending_coinbase_stack).try_into()?,
+            },
+            first_pass_ledger: (&tx_witness.first_pass_ledger).try_into()?,
+            second_pass_ledger: (&tx_witness.second_pass_ledger).try_into()?,
+            connecting_ledger_hash: statement.connecting_ledger_left.to_field()?,
+            zkapp_command,
+        }],
+    })?;
+    // `zkapp_command_witnesses_exn` returns them last first, as OCaml does.
+    segments.reverse();
+    Ok(segments)
 }
 
 pub fn generate_zkapp_proof(params: ZkappParams) -> anyhow::Result<LedgerProof> {
@@ -1710,33 +1829,8 @@ pub fn generate_zkapp_proof(params: ZkappParams) -> anyhow::Result<LedgerProof> 
         proved_path,
     } = params;
 
-    let zkapp = match &tx_witness.transaction {
-        v2::MinaTransactionTransactionStableV2::Command(cmd) => {
-            let v2::MinaBaseUserCommandStableV2::ZkappCommand(zkapp_command) = &**cmd else {
-                unreachable!();
-            };
-            zkapp_command
-        }
-        _ => unreachable!(),
-    };
-    let zkapp_command: ZkAppCommand = zkapp.try_into()?;
-
-    let witnesses_specs_stmts = zkapp_command_witnesses_exn(ZkappCommandWitnessesParams {
-        global_slot: Slot::from_u32(tx_witness.block_global_slot.as_u32()),
-        state_body: &tx_witness.protocol_state_body,
-        fee_excess: Signed::zero(),
-        zkapp_commands_with_context: vec![ZkappCommandsWithContext {
-            pending_coinbase_init_stack: (&tx_witness.init_stack).try_into()?,
-            pending_coinbase_of_statement: pending_coinbase::StackState {
-                source: (&statement.source.pending_coinbase_stack).try_into()?,
-                target: (&statement.target.pending_coinbase_stack).try_into()?,
-            },
-            first_pass_ledger: (&tx_witness.first_pass_ledger).try_into()?,
-            second_pass_ledger: (&tx_witness.second_pass_ledger).try_into()?,
-            connecting_ledger_hash: statement.connecting_ledger_left.to_field()?,
-            zkapp_command: &zkapp_command,
-        }],
-    })?;
+    let zkapp_command = zkapp_command_of_witness(tx_witness)?;
+    let witnesses_specs_stmts = zkapp_command_segments(statement, tx_witness, &zkapp_command)?;
 
     let of_zkapp_command_segment = |statement: Statement<SokDigest>,
                                     zkapp_witness: &ZkappCommandSegmentWitness<'_>,
@@ -1751,28 +1845,33 @@ pub fn generate_zkapp_proof(params: ZkappParams) -> anyhow::Result<LedgerProof> 
             tx_wrap_prover,
             opt_signed_path,
             proved_path,
+            false,
         )
     };
 
     let sok_digest = message.digest();
-    let mut witnesses_specs_stmts = witnesses_specs_stmts.into_iter().rev();
-    let (zkapp_witness, spec, statement) = witnesses_specs_stmts.next().unwrap(); // last one
+    let mut witnesses_specs_stmts = witnesses_specs_stmts.into_iter();
+    let (zkapp_witness, spec, statement) = witnesses_specs_stmts
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("a zkApp command without segments"))?;
 
     let first_proof = of_zkapp_command_segment(
         statement.with_digest(sok_digest.clone()),
         &zkapp_witness,
         &spec,
-    );
+    )
+    .map_err(|error| anyhow::anyhow!("zkApp segment 1 {spec:?}: {error:#}"));
 
-    witnesses_specs_stmts.fold(
+    witnesses_specs_stmts.enumerate().fold(
         first_proof,
-        |prev_proof, (zkapp_witness, spec, statement)| {
+        |prev_proof, (index, (zkapp_witness, spec, statement))| {
             let prev_proof = prev_proof?;
             let curr_proof = of_zkapp_command_segment(
                 statement.with_digest(sok_digest.clone()),
                 &zkapp_witness,
                 &spec,
-            )?;
+            )
+            .map_err(|error| anyhow::anyhow!("zkApp segment {} {spec:?}: {error:#}", index + 2))?;
 
             merge_zkapp_proofs(
                 prev_proof,
@@ -1781,6 +1880,7 @@ pub fn generate_zkapp_proof(params: ZkappParams) -> anyhow::Result<LedgerProof> 
                 merge_step_prover,
                 tx_wrap_prover,
             )
+            .map_err(|error| anyhow::anyhow!("zkApp merge after segment {}: {error:#}", index + 2))
         },
     )
 }
@@ -1826,3 +1926,6 @@ fn merge_zkapp_proofs(
         proof: wrap_proof,
     })
 }
+
+#[cfg(test)]
+mod mesa_tests;

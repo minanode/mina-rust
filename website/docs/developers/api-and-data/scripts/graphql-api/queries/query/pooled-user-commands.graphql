@@ -1,4 +1,4 @@
-query PooledUserCommands($publicKey: String) {
+query PooledUserCommands($publicKey: PublicKey) {
   pooledUserCommands(publicKey: $publicKey) {
     id
     amount

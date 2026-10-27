@@ -1,3 +1,4 @@
+use crate::ZKAPP_STATE_SIZE;
 use std::{cell::Cell, marker::PhantomData};
 
 use ark_ff::Zero;
@@ -448,7 +449,7 @@ impl StackInterface for WithHash<Vec<WithStackHash<WithHash<StackFrame>>>> {
             Some(x) => MyCow::Borrow(&x.elt),
         };
         let tl_r = data.get(1..).unwrap_or(&[]);
-        let elt = hd_r.exists_elt(w);
+        let elt = hd_r.exists_popped_elt(w);
         let stack = w.exists(match tl_r {
             [] => Fp::zero(),
             [x, ..] => x.stack_hash,
@@ -873,14 +874,15 @@ impl AccountInterface for SnarkAccount {
 
         match data.spec().auth_type {
             Proof => {
+                // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark/transaction_snark.ml#L1442-L1464>
+                // A failed proof-authorized update may have no account key.
                 let vk = self
                     .zkapp
                     .as_ref()
-                    .unwrap()
-                    .verification_key
-                    .as_ref()
-                    .unwrap();
-                let vk = w.exists(vk.vk());
+                    .and_then(|z| z.verification_key.as_ref())
+                    .map(|vk| vk.vk().clone())
+                    .unwrap_or_else(|| crate::VerificationKey::dummy().as_ref().clone());
+                let vk = w.exists(&vk);
                 vk.checked_hash_with_param(&MINA_SIDELOADED_VK, w);
             }
             Signature | NoneGiven => {}
@@ -974,7 +976,7 @@ impl AccountInterface for SnarkAccount {
         let zkapp = self.data.zkapp.as_mut().unwrap(); // `make_zkapp` was already call
         zkapp.proved_state = proved_state.as_boolean().as_bool();
     }
-    fn app_state(&self) -> [Fp; 8] {
+    fn app_state(&self) -> [Fp; ZKAPP_STATE_SIZE] {
         let zkapp = self.zkapp.as_ref().unwrap(); // `make_zkapp` was already call
         zkapp.app_state
     }
@@ -1285,6 +1287,24 @@ fn verification_key_perm_fallback_to_signature_with_older_version(
     )
 }
 
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/permissions.ml#L310-L318>
+fn access_perm_fallback_to_signature_with_older_version(
+    auth: &AuthRequired,
+    w: &mut Witness<Fp>,
+) -> AuthRequired {
+    let AuthRequiredEncoded {
+        constant,
+        signature_sufficient,
+        ..
+    } = encode_auth(auth);
+
+    let proof_or_either = signature_sufficient.neg().and(&constant.neg(), w);
+    let on_true = SnarkBranch::make(w, |_| AuthRequired::Signature);
+    let on_false = SnarkBranch::make(w, |_| *auth);
+
+    w.on_if(proof_or_either, BranchParam { on_true, on_false })
+}
+
 impl ControllerInterface for SnarkController {
     type W = Witness<Fp>;
     type Bool = SnarkBool;
@@ -1310,6 +1330,13 @@ impl ControllerInterface for SnarkController {
         w: &mut Self::W,
     ) -> AuthRequired {
         verification_key_perm_fallback_to_signature_with_older_version(auth, w)
+    }
+
+    fn access_perm_fallback_to_signature_with_older_version(
+        auth: &AuthRequired,
+        w: &mut Self::W,
+    ) -> AuthRequired {
+        access_perm_fallback_to_signature_with_older_version(auth, w)
     }
 }
 

@@ -1,4 +1,4 @@
-query GetBalance($publicKey: String!) {
+query GetBalance($publicKey: PublicKey!) {
   account(publicKey: $publicKey) {
     balance {
       total

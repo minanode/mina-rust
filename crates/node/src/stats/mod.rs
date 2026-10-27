@@ -49,7 +49,7 @@ mod stats_sync;
 pub mod sync {
     pub use super::stats_sync::*;
 }
-use sync::{SyncStats, SyncStatsSnapshot, SyncingLedger};
+use sync::{SyncRestored, SyncStats, SyncStatsSnapshot, SyncingLedger};
 
 mod stats_block_producer;
 pub mod block_producer {
@@ -58,6 +58,7 @@ pub mod block_producer {
 use block_producer::BlockProducerStats;
 
 use mina_core::block::{AppliedBlock, ArcBlockWithHash};
+use mina_p2p_messages::v2::LedgerHash;
 use redux::{ActionMeta, ActionWithMeta, Timestamp};
 
 use crate::{
@@ -70,6 +71,7 @@ use crate::{
 
 pub type ActionKindWithMeta = ActionWithMeta<ActionKind>;
 
+#[derive(Clone)]
 pub struct Stats {
     last_action: ActionKindWithMeta,
     action_stats: ActionStats,
@@ -77,7 +79,41 @@ pub struct Stats {
     block_producer_stats: BlockProducerStats,
 }
 
+/// Streaming JSON byte count: useful for trends without retaining a snapshot.
+/// It is an encoding proxy, not a heap measurement.
+pub(crate) fn serialized_size<T: serde::Serialize>(value: &T) -> Option<usize> {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len());
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, value).ok()?;
+    Some(counter.0)
+}
+
 impl Stats {
+    /// Diagnostic sizes are serialized byte counts, not heap allocation sizes.
+    pub fn memory_debug(&self) -> serde_json::Value {
+        serde_json::json!({
+            "sync_snapshots": self.sync_stats.snapshots.len(),
+            "action_blocks": self.action_stats.per_block.len(),
+            "producer_attempts": self.block_producer_stats.attempts.len(),
+            "sync_bytes": serialized_size(&self.sync_stats.snapshots),
+            "action_bytes": serialized_size(&self.action_stats.per_block),
+            "action_heap_bytes": self.action_stats.per_block_heap_bytes(),
+            "action_since_start_heap_bytes": self.action_stats.since_start.heap_bytes(),
+            "action_since_start_bytes": serialized_size(&self.action_stats.since_start),
+            "producer_epochs": self.block_producer_stats.vrf_evaluator.len(),
+            "producer_bytes": serialized_size(&self.block_producer_stats),
+        })
+    }
+
     pub fn new() -> Self {
         Self {
             last_action: ActionMeta::ZERO.with_action(ActionKind::None),
@@ -98,6 +134,31 @@ impl Stats {
         root_block: &ArcBlockWithHash,
     ) -> &mut Self {
         self.sync_stats.new_target(time, best_tip, root_block);
+        self
+    }
+
+    /// A restore from the frontier store starts its replay (F-dash3).
+    pub fn restore_start(
+        &mut self,
+        root_block: &ArcBlockWithHash,
+        best_tip: &ArcBlockWithHash,
+        stored_ledgers: &[LedgerHash],
+        restored: SyncRestored,
+    ) -> &mut Self {
+        self.sync_stats
+            .restore_start(root_block, best_tip, stored_ledgers, restored);
+        self
+    }
+
+    /// The restore's replay committed (F-dash3).
+    pub fn restore_done(&mut self, time: Timestamp) -> &mut Self {
+        self.sync_stats.restore_done(time);
+        self
+    }
+
+    /// The restore's replay failed (F-dash3).
+    pub fn restore_failed(&mut self, time: Timestamp, reason: &str) -> &mut Self {
+        self.sync_stats.restore_failed(time, reason);
         self
     }
 

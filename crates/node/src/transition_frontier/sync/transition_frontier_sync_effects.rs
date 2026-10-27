@@ -11,14 +11,15 @@ use crate::{
     p2p::channels::rpc::P2pRpcRequest,
     p2p_ready,
     service::TransitionFrontierSyncLedgerSnarkedService,
+    transition_frontier::persist::TransitionFrontierPersistAction,
     Service, Store, TransitionFrontierAction,
 };
 
 use super::{
     ledger::{
         snarked::TransitionFrontierSyncLedgerSnarkedAction,
-        staged::TransitionFrontierSyncLedgerStagedAction, SyncLedgerTarget,
-        TransitionFrontierSyncLedgerAction,
+        staged::TransitionFrontierSyncLedgerStagedAction, try_complete_snarked_ledger_locally,
+        SyncLedgerTarget, TransitionFrontierSyncLedgerAction,
     },
     SyncError, TransitionFrontierSyncAction, TransitionFrontierSyncState,
 };
@@ -63,12 +64,17 @@ impl TransitionFrontierSyncAction {
             } => {
                 // TODO(tizoc): this is currently required because how how complicated the BestTipUpdate reducer is,
                 // once that is simplified this should be handled in separate actions.
-                maybe_copy_ledgers_for_sync(
+                let prepared_copy = maybe_copy_ledgers_for_sync(
                     store,
                     previous_root_snarked_ledger_hash.clone(),
                     best_tip,
                 )
                 .unwrap();
+
+                // BestTipUpdate can enter NumAccountsPending directly. When
+                // the exact ledger is committed locally, finish without
+                // waiting for an eligible peer.
+                try_complete_snarked_ledger_locally(store, prepared_copy);
 
                 // if root snarked ledger changed.
                 store.dispatch(TransitionFrontierSyncLedgerAction::Init);
@@ -95,10 +101,12 @@ impl TransitionFrontierSyncAction {
             // it is the one most likely to be affected by the first `BestTipUpdate`
             // action processed by the state machine.
             TransitionFrontierSyncAction::LedgerStakingPending => {
-                prepare_staking_epoch_ledger_for_sync(store, &sync_best_tip(store.state()))
-                    .unwrap();
-
-                store.dispatch(TransitionFrontierSyncLedgerAction::Init);
+                let prepared_copy =
+                    prepare_staking_epoch_ledger_for_sync(store, &sync_best_tip(store.state()))
+                        .unwrap();
+                if !try_complete_snarked_ledger_locally(store, prepared_copy) {
+                    store.dispatch(TransitionFrontierSyncLedgerAction::Init);
+                }
             }
             TransitionFrontierSyncAction::LedgerStakingSuccess => {
                 if store.dispatch(TransitionFrontierSyncAction::LedgerNextEpochPending) {
@@ -106,22 +114,26 @@ impl TransitionFrontierSyncAction {
                 }
             }
             TransitionFrontierSyncAction::LedgerNextEpochPending => {
-                prepare_next_epoch_ledger_for_sync(store, &sync_best_tip(store.state())).unwrap();
-
-                store.dispatch(TransitionFrontierSyncLedgerAction::Init);
+                let prepared_copy =
+                    prepare_next_epoch_ledger_for_sync(store, &sync_best_tip(store.state()))
+                        .unwrap();
+                if !try_complete_snarked_ledger_locally(store, prepared_copy) {
+                    store.dispatch(TransitionFrontierSyncLedgerAction::Init);
+                }
             }
             TransitionFrontierSyncAction::LedgerNextEpochSuccess => {
                 store.dispatch(TransitionFrontierSyncAction::LedgerRootPending);
             }
             TransitionFrontierSyncAction::LedgerRootPending => {
-                prepare_transition_frontier_root_ledger_for_sync(
+                let prepared_copy = prepare_transition_frontier_root_ledger_for_sync(
                     store,
                     None,
                     &sync_best_tip(store.state()),
                 )
                 .unwrap();
-
-                store.dispatch(TransitionFrontierSyncLedgerAction::Init);
+                if !try_complete_snarked_ledger_locally(store, prepared_copy) {
+                    store.dispatch(TransitionFrontierSyncLedgerAction::Init);
+                }
             }
             TransitionFrontierSyncAction::LedgerRootSuccess => {
                 store.dispatch(TransitionFrontierSyncAction::BlocksPending);
@@ -133,23 +145,44 @@ impl TransitionFrontierSyncAction {
             }
             TransitionFrontierSyncAction::BlocksPeersQuery => {
                 let p2p = p2p_ready!(store.state().p2p, meta.time());
-                // TODO(binier): make sure they have the ledger we want to query.
+                // Cached tips can still be genesis after a peer has synced.
+                // Query by hash, validate the answer, and back off on failure;
+                // an old hint must not exclude a healthy serving sibling.
                 let mut peer_ids = p2p
                     .ready_peers_iter()
-                    .filter(|(_, p)| p.channels.rpc.can_send_request())
-                    .map(|(id, p)| (*id, p.connected_since))
+                    .filter(|(id, p)| {
+                        p.channels.rpc.can_send_request()
+                            && store
+                                .state()
+                                .transition_frontier
+                                .block_peer_query_ready(id, meta.time())
+                    })
+                    .map(|(id, p)| {
+                        (
+                            *id,
+                            p.connected_since,
+                            store
+                                .state()
+                                .transition_frontier
+                                .block_peer_query_errors
+                                .get(id)
+                                .copied(),
+                        )
+                    })
                     .collect::<Vec<_>>();
-                peer_ids.sort_by(|(_, t1), (_, t2)| t2.cmp(t1));
+                // Unfailed peers first, then the least recently failed. Keep
+                // the existing connection preference only as a tie breaker.
+                peer_ids.sort_by(|(_, t1, e1), (_, t2, e2)| e1.cmp(e2).then_with(|| t2.cmp(t1)));
 
                 let mut retry_hashes = store
                     .state()
                     .transition_frontier
                     .sync
-                    .blocks_fetch_retry_iter()
+                    .blocks_fetch_retry_iter(meta.time())
                     .collect::<Vec<_>>();
                 retry_hashes.reverse();
 
-                for (peer_id, _) in peer_ids {
+                for (peer_id, _, _) in peer_ids {
                     if let Some(hash) = retry_hashes.last() {
                         if store.dispatch(TransitionFrontierSyncAction::BlocksPeerQueryRetry {
                             peer_id,
@@ -270,22 +303,26 @@ impl TransitionFrontierSyncAction {
                 // During catchup, we skip the verificationf of completed work and zkApp txn proofs
                 // until get closer to the best tip, at which point full verification is enabled.
                 // We also skip verification of completed works if we produced this block.
+                // A restore's replay (I5d1) verifies as catch-up does: the
+                // staged ledger hash of every block, and the proofs of the
+                // last few.
                 let skip_verification = is_our_block
                     || super::CATCHUP_BLOCK_VERIFY_TAIL_LENGTH
                         < store.state().transition_frontier.sync.pending_count();
+                let restored = store.state().transition_frontier.persist.is_replaying();
 
                 store.dispatch(LedgerWriteAction::Init {
                     request: LedgerWriteRequest::BlockApply {
                         block,
                         pred_block,
                         skip_verification,
+                        restored,
                     },
                     on_init: redux::callback!(
                         on_block_next_apply_init(request: LedgerWriteRequest) -> crate::Action {
                             let LedgerWriteRequest::BlockApply {
                                 block,
-                                pred_block: _,
-                                skip_verification: _,
+                                ..
                             } = request
                             else {
                                 unreachable!()
@@ -295,6 +332,11 @@ impl TransitionFrontierSyncAction {
                         }
                     ),
                 });
+                // Our block injected: kept for a restart (F-producer), on
+                // the service's own thread.
+                if is_our_block {
+                    store.service.save_block_production();
+                }
             }
             TransitionFrontierSyncAction::BlocksNextApplyPending { .. } => {}
             TransitionFrontierSyncAction::BlocksNextApplyError { hash, error } => {
@@ -311,7 +353,24 @@ impl TransitionFrontierSyncAction {
                 }) else {
                     return;
                 };
-                let error = SyncError::BlockApplyFailed(failed_block.clone(), error.clone());
+                let failed_block = failed_block.clone();
+                if store.state().transition_frontier.persist.is_replaying() {
+                    // A block of our own store: not blacklisted, nor
+                    // rejected as gossip. The store is dropped and the node
+                    // bootstraps (R20 D5).
+                    let reason = format!(
+                        "block {} at {}: {error}",
+                        failed_block.hash(),
+                        failed_block.height()
+                    );
+                    store.dispatch(TransitionFrontierAction::SyncFailed {
+                        best_tip,
+                        error: SyncError::RestoredBlockApplyFailed(failed_block, error.clone()),
+                    });
+                    store.dispatch(TransitionFrontierPersistAction::ReplayFailed { error: reason });
+                    return;
+                }
+                let error = SyncError::BlockApplyFailed(failed_block, error.clone());
                 store.dispatch(TransitionFrontierAction::SyncFailed { best_tip, error });
                 // TODO this should be handled by a callback
                 store.dispatch(P2pNetworkPubsubAction::RejectMessage {
@@ -333,6 +392,9 @@ impl TransitionFrontierSyncAction {
                 if !store.dispatch(TransitionFrontierSyncAction::BlocksNextApplyInit) {
                     store.dispatch(TransitionFrontierSyncAction::BlocksSuccess);
                 }
+                // Only our block's apply changes the history: a no-op
+                // otherwise (F-producer).
+                store.service.save_block_production();
             }
             TransitionFrontierSyncAction::BlocksSendToArchive { data, .. } => {
                 store.service().send_to_archive(data.clone());
@@ -378,20 +440,25 @@ impl TransitionFrontierSyncAction {
                         .extend_with_needed(new_root.block_with_hash(), old_chain);
                 }
 
-                let needed_protocol_states = if root_snarked_ledger_updates.is_empty() {
-                    // We don't need protocol states unless we need to
-                    // recreate some snarked ledgers during `commit`.
-                    Default::default()
-                } else {
-                    needed_protocol_states
-                        .iter()
-                        .chain(&transition_frontier.needed_protocol_states)
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect()
-                };
+                let mut root_history = transition_frontier.root_history.clone();
+                root_history.advance(&transition_frontier.best_chain, &new_root.block);
+                // Historical scan states also need states preceding the current root.
+                let needed_protocol_states = needed_protocol_states
+                    .iter()
+                    .chain(&transition_frontier.needed_protocol_states)
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .chain(
+                        transition_frontier
+                            .best_chain
+                            .iter()
+                            .chain(chain.iter())
+                            .map(|b| (b.hash().clone(), b.header().protocol_state.clone())),
+                    )
+                    .collect();
 
                 store.dispatch(LedgerWriteAction::Init {
                     request: LedgerWriteRequest::Commit {
+                        root_history,
                         ledgers_to_keep,
                         root_snarked_ledger_updates,
                         needed_protocol_states,
@@ -410,6 +477,12 @@ impl TransitionFrontierSyncAction {
                 unreachable!("handled in parent effects to avoid cloning")
             }
             TransitionFrontierSyncAction::Ledger(_) => {}
+            TransitionFrontierSyncAction::RestoreInit { .. } => {
+                if !store.dispatch(TransitionFrontierSyncAction::BlocksNextApplyInit) {
+                    // The root alone: commit it.
+                    store.dispatch(TransitionFrontierSyncAction::BlocksSuccess);
+                }
+            }
         }
     }
 }
@@ -500,21 +573,17 @@ fn prepare_transition_frontier_root_ledger_for_sync<S>(
 where
     S: TransitionFrontierSyncLedgerSnarkedService,
 {
-    let sync = &store.state().transition_frontier.sync;
-    let root_block = sync
+    let transition_frontier = &store.state().transition_frontier;
+    let root_block = transition_frontier
+        .sync
         .root_block()
         .expect("Sync root block cannot be missing");
 
-    // Attempt in order: previous root, next epoch ledger, staking ledger
-    let mut candidate_origins: Vec<LedgerHash> =
-        previous_root_snarked_ledger_hash.into_iter().collect();
-    if let Some(next_epoch) = SyncLedgerTarget::next_epoch(best_tip, root_block) {
-        candidate_origins.push(next_epoch.snarked_ledger_hash.clone());
-    }
-    candidate_origins.push(
-        SyncLedgerTarget::staking_epoch(best_tip)
-            .snarked_ledger_hash
-            .clone(),
+    let candidate_origins = root_ledger_copy_candidates(
+        previous_root_snarked_ledger_hash,
+        transition_frontier.root(),
+        best_tip,
+        root_block,
     );
 
     let target = root_block.snarked_ledger_hash().clone();
@@ -522,4 +591,45 @@ where
     store
         .service()
         .copy_snarked_ledger_contents_for_sync(candidate_origins, target, false)
+}
+
+/// The ledgers to start a root ledger sync from, closest to the target first.
+/// The ledger service copies the first one it has, committed or among the sync
+/// ledgers.
+///
+/// - The previous root's snarked ledger: while a sync is in progress, the
+///   previous sync target's, synced or being synced
+///   ([`crate::transition_frontier::TransitionFrontierState::previous_root_snarked_ledger_hash`]).
+/// - The frontier root's, which a synced node has committed. A node that falls
+///   behind its sync target's root while catching up has it, where it may not
+///   have the previous sync target's. During a bootstrap the frontier root is
+///   the genesis block, whose ledger is far from the target, or absent with a
+///   genesis config without ledgers: it is left out.
+/// - The next epoch ledger, then the staking ledger.
+pub(super) fn root_ledger_copy_candidates(
+    previous_root_snarked_ledger_hash: Option<LedgerHash>,
+    frontier_root: Option<&ArcBlockWithHash>,
+    best_tip: &ArcBlockWithHash,
+    root_block: &ArcBlockWithHash,
+) -> Vec<LedgerHash> {
+    let frontier_root_snarked_ledger_hash = frontier_root
+        .map(|block| block.snarked_ledger_hash())
+        .filter(|hash| *hash != best_tip.genesis_ledger_hash())
+        .cloned();
+    let next_epoch_ledger_hash =
+        SyncLedgerTarget::next_epoch(best_tip, root_block).map(|target| target.snarked_ledger_hash);
+    let staking_epoch_ledger_hash = SyncLedgerTarget::staking_epoch(best_tip).snarked_ledger_hash;
+
+    let mut candidates: Vec<LedgerHash> = Vec::with_capacity(4);
+    for hash in previous_root_snarked_ledger_hash
+        .into_iter()
+        .chain(frontier_root_snarked_ledger_hash)
+        .chain(next_epoch_ledger_hash)
+        .chain([staking_epoch_ledger_hash])
+    {
+        if !candidates.contains(&hash) {
+            candidates.push(hash);
+        }
+    }
+    candidates
 }

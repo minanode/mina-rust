@@ -246,7 +246,13 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "public DNS: set MINA_TEST_PUBLIC_NETWORK=1 and run --ignored --exact webrtc::host::tests::test_resolve_invalid_domain"]
     fn test_resolve_invalid_domain() {
+        assert_eq!(
+            std::env::var("MINA_TEST_PUBLIC_NETWORK").as_deref(),
+            Ok("1"),
+            "public DNS requires MINA_TEST_PUBLIC_NETWORK=1"
+        );
         let host = Host::Domain("invalid.domain.that.should.not.exist.xyz123".to_string());
         let resolved = host.resolve();
 

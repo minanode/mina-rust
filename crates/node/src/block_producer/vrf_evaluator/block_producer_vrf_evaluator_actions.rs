@@ -20,7 +20,7 @@ pub type BlockProducerVrfEvaluatorActionWithMetaRef<'a> =
     redux::ActionWithMeta<&'a BlockProducerVrfEvaluatorAction>;
 
 #[derive(Serialize, Deserialize, Debug, Clone, ActionEvent)]
-#[action_event(level = info)]
+#[action_event(level = debug)]
 pub enum BlockProducerVrfEvaluatorAction {
     /// Vrf Evaluation requested.
     #[action_event(level = trace, fields(debug(vrp_input)))]
@@ -38,7 +38,7 @@ pub enum BlockProducerVrfEvaluatorAction {
         previous_epoch_and_height: Option<(u32, u32)>,
     },
     /// Checking possible Vrf evaluations.
-    #[action_event(level = info, fields(current_epoch, best_tip_epoch, best_tip_slot, best_tip_global_slot))]
+    #[action_event(level = debug, fields(current_epoch, best_tip_epoch, best_tip_slot, best_tip_global_slot))]
     CheckEpochEvaluability {
         current_epoch: Option<u32>,
         is_next_epoch_seed_finalized: bool,
@@ -52,7 +52,7 @@ pub enum BlockProducerVrfEvaluatorAction {
         next_epoch_data: Box<ConsensusProofOfStakeDataEpochDataNextValueVersionedValueStableV1>,
     },
     /// Initalize epoch vrf evaluation.
-    #[action_event(level = info, fields(best_tip_epoch, best_tip_slot, best_tip_global_slot))]
+    #[action_event(level = debug, fields(best_tip_epoch, best_tip_slot, best_tip_global_slot))]
     InitializeEpochEvaluation {
         best_tip_epoch: u32,
         best_tip_slot: u32,
@@ -62,15 +62,15 @@ pub enum BlockProducerVrfEvaluatorAction {
         producer: AccountPublicKey,
     },
     /// Constructing delegator table.
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     BeginDelegatorTableConstruction,
     /// Delegator table constructed.
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     FinalizeDelegatorTableConstruction {
         delegator_table: Arc<DelegatorTable>,
     },
     /// Selecting starting slot.
-    #[action_event(level = info, fields(current_global_slot, best_tip_height))]
+    #[action_event(level = debug, fields(current_global_slot, best_tip_height))]
     SelectInitialSlot {
         current_global_slot: u32,
         current_slot: u32,
@@ -105,7 +105,7 @@ pub enum BlockProducerVrfEvaluatorAction {
         latest_evaluated_global_slot: u32,
     },
     /// Waiting for epoch to evaluate.
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     WaitForNextEvaluation,
     /// Checking epoch bounds.
     #[action_event(level = trace)]

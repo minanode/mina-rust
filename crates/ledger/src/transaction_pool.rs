@@ -452,7 +452,12 @@ impl VkRefcountTable {
                             let count: &mut usize = e2.get_mut();
                             if *count == 1 {
                                 e2.remove();
-                                e.remove();
+                                // Other accounts can still reference this key,
+                                // or this account can reference other keys.
+                                // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L386-L403>
+                                if map.is_empty() {
+                                    e.remove();
+                                }
                             } else {
                                 *count = count.checked_sub(1).ok_or("invalid count state")?
                             }
@@ -1439,67 +1444,11 @@ impl IndexedPool {
         txns
     }
 
-    // TODO(adonagy): Is it neede to remove txs from the pool directly here? If the produced block is injected
-    // a BestTip update action will be dispatched and the pool can reorganize there
-    /// Returns a sequence of commands in the pool in descending fee order
+    /// Enumerate candidates without changing the pool, as OCaml's persistent
+    /// sequence does. Removing only queue heads corrupts the other indexes.
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/indexed_pool.ml#L489-L545>
     fn transactions(&mut self, limit: usize) -> Vec<ValidCommandWithHash> {
-        let mut txns = Vec::with_capacity(self.applicable_by_fee.len());
-        loop {
-            if self.applicable_by_fee.is_empty() {
-                assert!(self.all_by_sender.is_empty());
-                return txns;
-            }
-
-            if txns.len() >= limit {
-                return txns;
-            }
-
-            let (fee, mut set) = self
-                .applicable_by_fee
-                .iter()
-                .max_by_key(|(rate, _)| *rate)
-                .map(|(rate, set)| (rate.clone(), set.clone()))
-                .unwrap();
-
-            // TODO: Check if OCaml compare using `hash` (order)
-            let txn = set.iter().min_by_key(|b| &b.hash).cloned().unwrap();
-
-            {
-                set.remove(&txn);
-                if set.is_empty() {
-                    self.applicable_by_fee.remove(&fee);
-                } else {
-                    self.applicable_by_fee.insert(fee, set);
-                }
-            }
-
-            let sender = txn.data.forget_check().fee_payer();
-
-            let (sender_queue, _amount) = self.all_by_sender.get_mut(&sender).unwrap();
-            let head_txn = sender_queue.pop_front().unwrap();
-
-            if txn.hash == head_txn.hash {
-                match sender_queue.front().cloned() {
-                    None => {
-                        self.all_by_sender.remove(&sender);
-                    }
-                    Some(next_txn) => {
-                        let fee = next_txn.data.forget_check().fee_per_wu();
-                        self.applicable_by_fee
-                            .entry(fee)
-                            .or_default()
-                            .insert(next_txn);
-                    }
-                }
-            } else {
-                mina_core::warn!(
-                    mina_core::log::system_time();
-                    kind = "transaction pool", message = "Sender queue is malformed");
-                self.all_by_sender.remove(&sender);
-            }
-
-            txns.push(txn);
-        }
+        self.list_includable_transactions(limit)
     }
 
     /// Returns all the transactions in the pool
@@ -1588,8 +1537,11 @@ pub struct TransactionPool {
 
 impl TransactionPool {
     pub fn new(config: Config, consensus_constants: &ConsensusConstants) -> Self {
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L825-L846>
+        let mut pool = IndexedPool::new(consensus_constants);
+        pool.config.slot_tx_end = config.slot_tx_end;
         Self {
-            pool: IndexedPool::new(consensus_constants),
+            pool,
             locally_generated_uncommitted: Default::default(),
             locally_generated_committed: Default::default(),
             current_batch: 0,
@@ -1611,6 +1563,16 @@ impl TransactionPool {
 
     pub fn get_pending_amount_and_nonce(&self) -> HashMap<AccountId, (Option<Nonce>, Amount)> {
         self.pool.get_pending_amount_and_nonce()
+    }
+
+    /// The nonce the pool expects next from `account_id`: the expected target
+    /// nonce of its last pooled command, or `None` when the pool holds none.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_lib/mina_lib.ml#L782-L805>
+    pub fn inferred_nonce(&self, account_id: &AccountId) -> Option<Nonce> {
+        let (commands, _) = self.pool.all_by_sender.get(account_id)?;
+        let last = commands.back()?;
+        Some(last.data.forget_check().expected_target_nonce())
     }
 
     pub fn transactions(&mut self, limit: usize) -> Vec<ValidCommandWithHash> {
@@ -1642,6 +1604,9 @@ impl TransactionPool {
                 )
             },
         )?;
+
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L895-L904>
+        self.verification_key_table.decrement_hashed(&dropped);
 
         let dropped_locally_generated = dropped
             .iter()
@@ -1768,7 +1733,9 @@ impl TransactionPool {
             .decrement_list(&removed_commands);
 
         let mut dropped_backtrack = Vec::with_capacity(256);
-        for cmd in removed_commands {
+        // Backtrack newest first so each earlier nonce can prepend its queue.
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L591-L626>
+        for cmd in removed_commands.into_iter().rev() {
             if let Some(time_added) = self.locally_generated_committed.remove(&cmd) {
                 self.locally_generated_uncommitted
                     .insert(cmd.clone(), time_added);
@@ -1780,7 +1747,9 @@ impl TransactionPool {
                 cmd,
             ) {
                 Ok(_) => self.drop_until_below_max_size(pool_max_size)?,
-                Err(e) => return Err(format!("{:?}", e)),
+                // An expired/otherwise inadmissible backtracked command does
+                // not prevent processing the rest of the frontier diff.
+                Err(_) => continue,
             };
             dropped_backtrack.extend(dropped_seq);
         }
@@ -1788,9 +1757,12 @@ impl TransactionPool {
         self.verification_key_table
             .decrement_hashed(&dropped_backtrack);
 
+        // Retry in reverse eviction order so predecessors precede their nonces.
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L630-L633>
         let locally_generated_dropped = dropped_backtrack
             .iter()
             .filter(|t| self.locally_generated_uncommitted.contains_key(t))
+            .rev()
             .collect::<Vec<_>>();
 
         let dropped_commands = {
@@ -1841,9 +1813,11 @@ impl TransactionPool {
             };
         }
 
-        let _commit_conflicts_locally_generated = dropped_commit_conflicts
-            .iter()
-            .filter(|cmd| self.locally_generated_uncommitted.remove(cmd).is_some());
+        // OCaml's List.filter is eager; a discarded Rust iterator does nothing.
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L700-L705>
+        for cmd in dropped_commit_conflicts {
+            self.locally_generated_uncommitted.remove(cmd);
+        }
 
         for cmd in locally_generated_dropped {
             // If the dropped transaction was included in the winning chain, it'll
@@ -1937,16 +1911,18 @@ impl TransactionPool {
             }
         };
 
+        // A missing fee payer rejects that command only, with
+        // `Fee_payer_account_not_found` (`check_command`), not the whole diff.
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L1301-L1320>
         let add_results = diff
             .list
             .iter()
             .map(|cmd| {
-                let account = fee_payer_accounts
-                    .get(&fee_payer(cmd))
-                    .ok_or_else(|| "Fee payer not found".to_string())?;
-
                 let result: Result<_, diff::Error> = (|| {
                     check_command(&self.pool, cmd)?;
+                    let account = fee_payer_accounts
+                        .get(&fee_payer(cmd))
+                        .ok_or(diff::Error::FeePayerAccountNotFound)?;
 
                     match self.pool.add_from_gossip_exn(
                         global_slot_since_genesis,
@@ -2007,9 +1983,10 @@ impl TransactionPool {
             .map(|hash| (*hash).clone())
             .collect();
 
-        // let locally_generated_dropped = all_dropped_cmds
-        //     .iter()
-        //     .filter(|cmd| self.locally_generated_uncommitted.remove(cmd).is_some());
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L1422-L1427>
+        for cmd in all_dropped_cmds {
+            self.locally_generated_uncommitted.remove(cmd);
+        }
 
         if is_sender_local {
             for result in add_results.iter() {
@@ -2216,7 +2193,7 @@ impl TransactionPool {
     {
         let log = |has_timed_out: bool, s: &str, cmd: &ValidCommandWithHash| -> bool {
             if has_timed_out {
-                eprintln!("{}: {:?}", s, cmd);
+                mina_core::debug!("{}: {:?}", s, cmd);
                 false
             } else {
                 true
@@ -2276,8 +2253,100 @@ impl TransactionPool {
 }
 
 #[cfg(test)]
+mod ocaml_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/indexed_pool.ml#L901-L917>
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/indexed_pool.ml#L1161-L1178>
+    #[test]
+    fn stop_slot_applies_to_gossip_and_backtrack() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../web-verifier/tests/fixtures/mainnet-560000.json"
+        ))
+        .unwrap();
+        let diff: v2::StagedLedgerDiffDiffStableV2 =
+            serde_json::from_value(fixture["data"]["staged_ledger_diff"].clone()).unwrap();
+        let wire = &diff.diff.0.commands.iter().next().unwrap().data;
+        let command: valid::UserCommand = wire.try_into().unwrap();
+        let nonce = command.nonce().unwrap();
+        let command = transaction_hash::hash_command(command);
+        let constants = ConsensusConstants::create(
+            mina_core::constants::constraint_constants(),
+            &mina_core::constants::PROTOCOL_CONSTANTS,
+        );
+        for stop in [None, Some(10)] {
+            for slot in [9, 10, 11] {
+                let mut pool = TransactionPool::new(
+                    Config {
+                        trust_system: (),
+                        pool_max_size: 3000,
+                        slot_tx_end: stop.map(Slot::from_u32),
+                    },
+                    &constants,
+                );
+                // A large since-genesis slot must not trip a since-hard-fork stop.
+                let genesis_slot = Slot::from_u32(958440 + slot);
+                let result = pool.pool.add_from_gossip_exn(
+                    genesis_slot,
+                    Slot::from_u32(slot),
+                    &command,
+                    nonce,
+                    Balance::from_u64(1_000_000_000_000_000),
+                );
+                assert_eq!(
+                    matches!(result, Err(CommandError::AfterSlotTxEnd)),
+                    stop.is_some() && slot >= 10
+                );
+                if stop.is_none() || slot < 10 {
+                    assert!(result.is_ok(), "{result:?}");
+                }
+                let mut pool = TransactionPool::new(
+                    Config {
+                        trust_system: (),
+                        pool_max_size: 3000,
+                        slot_tx_end: stop.map(Slot::from_u32),
+                    },
+                    &constants,
+                );
+                let result = pool.pool.add_from_backtrack(
+                    genesis_slot,
+                    Slot::from_u32(slot),
+                    command.clone(),
+                );
+                assert_eq!(
+                    matches!(result, Err(CommandError::AfterSlotTxEnd)),
+                    stop.is_some() && slot >= 10
+                );
+                if stop.is_none() || slot < 10 {
+                    assert!(result.is_ok(), "{result:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vk_refcounts_preserve_other_accounts_for_shared_key() {
+        // OCaml transaction_pool.ml Vk_refcount_table.dec removes an outer
+        // entry only when its inner map is empty.
+        let mut table = VkRefcountTable::default();
+        let first = Account::empty().id();
+        let mut second = first.clone();
+        second.token_id = crate::TokenId::from(2);
+        let vk = VerificationKeyWire::dummy();
+        let hash = vk.hash();
+        table.inc(first.clone(), vk.clone());
+        table.inc(second.clone(), vk);
+        table.dec(first, hash);
+        assert_eq!(table.vk_to_account_ids[&hash].get(&second), Some(&1));
+        assert_eq!(table.verification_keys[&hash].0, 1);
+        table.dec(second, hash);
+        assert!(table.verification_keys.is_empty());
+        assert!(table.account_id_to_vks.is_empty());
+        assert!(table.vk_to_account_ids.is_empty());
+    }
 
     /// Make sure that the merge in `TransactionPool::verify` is correct
     #[test]

@@ -117,3 +117,53 @@ async fn message_progress(
 ) -> AppResult<Json<RpcMessageProgressResponse>> {
     jsonify_rpc!(state, RpcRequest::MessageProgressGet)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::to_bytes, http::StatusCode, response::IntoResponse};
+    use mina_node::{core::channels::oneshot, rpc::RpcStateGetError};
+    use mina_node_common::rpc::RpcService;
+
+    #[tokio::test]
+    async fn state_filter_errors_are_http_400_for_get_and_post() {
+        let mut rpc = RpcService::new();
+        let state = AppState::new(rpc.req_sender());
+        for post in [false, true] {
+            let filter = "$.transition_frontier.best_chain[0,-1].block";
+            let request = async {
+                let params = StateQueryParams {
+                    filter: Some(filter.to_owned()),
+                };
+                if post {
+                    state_post(State(state.clone()), Json(params)).await
+                } else {
+                    state_get(State(state.clone()), Query(params)).await
+                }
+            };
+            // The common crate tests the actual evaluator. Here exercise the
+            // channel and HTTP mapping without running a networked node.
+            let respond = async {
+                let request = rpc.req_receiver().recv().await.unwrap();
+                assert!(matches!(request.req, RpcRequest::StateGet(Some(f)) if f == filter));
+                request
+                    .responder
+                    .downcast::<oneshot::Sender<RpcStateGetResponse>>()
+                    .unwrap()
+                    .send(Err(RpcStateGetError::FilterError(
+                        "unsupported filter operation".to_owned(),
+                    )))
+                    .unwrap();
+            };
+            let (response, ()) = tokio::join!(request, respond);
+            let response = response.into_response();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = to_bytes(response.into_body(), 1024).await.unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(
+                body["error"],
+                "failed to parse filter expression: unsupported filter operation"
+            );
+        }
+    }
+}

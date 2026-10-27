@@ -10,6 +10,14 @@ const routes: Routes = [
     component: SnarksComponent,
     children: [
       {
+        path: 'worker',
+        loadComponent: () =>
+          import('@snarks/worker/snarks-worker.component').then(
+            m => m.SnarksWorkerComponent,
+          ),
+        title: SNARKS_TITLE,
+      },
+      {
         path: 'scan-state',
         loadChildren: () =>
           import('@snarks/scan-state/scan-state.module').then(

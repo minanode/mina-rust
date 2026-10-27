@@ -2,8 +2,12 @@
 
 :host {
   height: 40px;
-  @media (max-width: 767px) {
+
+  // The mobile layout follows the app's isMobile, as the content area's
+  // height does (app.component.scss), not a separate media query.
+  &.mobile {
     height: 96px;
+
     &.uptime {
       height: 130px;
     }
@@ -34,23 +38,50 @@
     animation-timing-function: linear;
   }
 
-  .server-pill {
-    @media (max-width: 767px) {
-      flex-direction: row-reverse;
-      gap: 8px;
-      mina-server-status,
-      mina-block-production-pill {
-        max-width: calc(50% - 4px);
-        flex-grow: 1;
-      }
+  // Pills above the title. Two classes, so this wins over the flex-row
+  // utility, which comes later in the global stylesheet.
+  &.mobile {
+    flex-direction: column-reverse;
+  }
 
-      &.bootstrapping {
-        gap: 0;
+  &.mobile .server-pill {
+    flex-direction: row-reverse;
+    gap: 8px;
+    mina-server-status,
+    mina-block-production-pill {
+      max-width: calc(50% - 4px);
+      flex-grow: 1;
+    }
 
-        mina-server-status {
-          max-width: 100%;
-        }
+    &.bootstrapping {
+      gap: 0;
+
+      mina-server-status {
+        max-width: 100%;
       }
+    }
+  }
+
+  .page-docs {
+    padding: 0 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: mina-rust.$base-tertiary;
+    border: 1px solid mina-rust.$base-divider;
+    text-decoration: none;
+    transition: 80ms;
+
+    .mina-icon {
+      font-size: 16px;
+
+      &.external {
+        font-size: 14px;
+      }
+    }
+
+    &:hover {
+      color: mina-rust.$base-primary;
+      background-color: mina-rust.$base-container;
     }
   }
 
@@ -79,12 +110,10 @@
   }
 }
 
-@media (max-width: 767px) {
-  :host {
-    border: none !important;
+:host(.mobile) {
+  border: none !important;
 
-    .title {
-      font-size: 24px !important;
-    }
+  .title {
+    font-size: 24px !important;
   }
 }

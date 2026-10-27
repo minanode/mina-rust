@@ -1,0 +1,25 @@
+{
+  "name": "minanode-ui",
+  "private": true,
+  "description": "minanode.org site, the node dashboard, and the design system they share",
+  "workspaces": [
+    "design-system",
+    "node-client",
+    "minanode-site",
+    "dashboard"
+  ],
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "scripts": {
+    "dev": "npm run dev -w minanode-site",
+    "dev:dashboard": "npm run dev -w minanode-dashboard",
+    "build": "npm run build -w minanode-site",
+    "build:dashboard": "npm run build -w minanode-dashboard",
+    "serve": "npm run serve -w minanode-site",
+    "typecheck": "npm run typecheck --workspaces",
+    "check:contrast": "npm run check:contrast -w @minanode/design-system",
+    "check:claims": "npm run check:claims -w minanode-site",
+    "test": "npm run test --workspaces --if-present"
+  }
+}

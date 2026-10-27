@@ -67,7 +67,7 @@ export class WebNodeComponent extends StoreDispatcher implements OnInit {
 
   private checkIfDeviceIsSupported(): void {
     if (this.platform.IOS) {
-      this.supported = iOSversion()[0] >= 18;
+      this.supported = (iOSversion()?.[0] ?? 0) >= 18;
       this.isPhone = true;
       return;
     }

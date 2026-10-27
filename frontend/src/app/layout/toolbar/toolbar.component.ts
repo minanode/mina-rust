@@ -30,6 +30,7 @@ import { SubmenuTabsComponent } from '@app/layout/submenu-tabs/submenu-tabs.comp
 import { ServerStatusComponent } from '@app/layout/server-status/server-status.component';
 import { BlockProductionPillComponent } from '@app/layout/block-production-pill/block-production-pill.component';
 import { NgClass } from '@angular/common';
+import { docsUrlForPath } from '@shared/constants/docs';
 
 @Component({
   selector: 'mina-toolbar',
@@ -48,6 +49,9 @@ import { NgClass } from '@angular/common';
 })
 export class ToolbarComponent extends StoreDispatcher implements OnInit {
   title: string = 'Loading';
+  /** The docs page matching this page, when there is one. */
+  pageDocsUrl?: string;
+  @HostBinding('class.mobile')
   isMobile: boolean;
   errors: MinaError[] = [];
   haveNextBP: boolean;
@@ -124,9 +128,9 @@ export class ToolbarComponent extends StoreDispatcher implements OnInit {
     this.select(
       getMergedRoute,
       (url: string) => {
-        this.title = removeParamsFromURL(url)
-          ?.split('/')[1]
-          ?.replace(/-/g, ' ');
+        const path = removeParamsFromURL(url);
+        this.title = path?.split('/')[1]?.replace(/-/g, ' ');
+        this.pageDocsUrl = path ? docsUrlForPath(path) : undefined;
         this.detect();
       },
       filter(Boolean),

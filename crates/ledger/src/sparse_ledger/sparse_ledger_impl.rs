@@ -47,11 +47,10 @@ impl SparseLedgerImpl<AccountId, Account> {
         );
 
         for key in keys {
-            match BaseLedger::location_of_account(&ledger, key) {
+            let (addr, account) = match BaseLedger::location_of_account(&ledger, key) {
                 Some(addr) => {
                     let account = BaseLedger::get(&ledger, addr.clone()).unwrap();
-                    let merkle_path = ledger.merkle_path(addr);
-                    sparse.add_path(&merkle_path, key.clone(), *account);
+                    (addr, *account)
                 }
                 None => {
                     let addr = match ledger
@@ -61,11 +60,17 @@ impl SparseLedgerImpl<AccountId, Account> {
                         Added(addr) => addr,
                         Existed(_) => panic!("create_empty for a key already present"),
                     };
-
-                    let merkle_path = ledger.merkle_path(addr);
-                    sparse.add_path(&merkle_path, key.clone(), Account::empty());
+                    (addr, Account::empty())
                 }
-            }
+            };
+            let merkle_path = ledger.merkle_path(addr.clone());
+            let ancestor_hashes = ancestor_hashes(&mut ledger, &addr);
+            sparse.add_path_with_ancestor_hashes(
+                &merkle_path,
+                &ancestor_hashes,
+                key.clone(),
+                account,
+            );
         }
 
         assert_eq!(BaseLedger::merkle_root(&mut ledger), sparse.merkle_root());
@@ -181,6 +186,59 @@ impl SparseLedgerImpl<AccountId, Account> {
         self.values.insert(index, account);
     }
 
+    /// Like [`Self::add_path`], but the hashes of the account's ancestors,
+    /// from its parent up to the root, are given rather than computed: when
+    /// the path comes from a ledger, that ledger already has them. Computing
+    /// them was most of the cost of building transaction witnesses.
+    fn add_path_with_ancestor_hashes(
+        &mut self,
+        merkle_path: &[MerklePath],
+        ancestor_hashes: &[Fp],
+        account_id: AccountId,
+        account: Account,
+    ) {
+        assert_eq!(self.depth, merkle_path.len());
+        assert_eq!(self.depth, ancestor_hashes.len());
+
+        let mut set_hash = |addr: &Address, hash: &Fp| {
+            if let Some(prev_hash) = self.hashes_matrix.get(addr) {
+                assert_eq!(prev_hash, hash);
+                return;
+            };
+
+            self.hashes_matrix.set(addr, *hash);
+        };
+
+        let mut addr = Address::root();
+        for path in merkle_path.iter().rev() {
+            addr = match path {
+                MerklePath::Left(right) => {
+                    set_hash(&addr.child_right(), right);
+                    addr.child_left()
+                }
+                MerklePath::Right(left) => {
+                    set_hash(&addr.child_left(), left);
+                    addr.child_right()
+                }
+            }
+        }
+        let account_addr = addr.clone();
+
+        set_hash(&addr, &account.hash());
+        for hash in ancestor_hashes {
+            addr = addr.parent().unwrap();
+            set_hash(&addr, hash);
+        }
+        assert!(addr.is_root());
+
+        let index = account_addr.to_index();
+        self.indexes
+            .entry(account_id.clone())
+            .or_insert(account_addr);
+        self.indexes_list.push_front(account_id);
+        self.values.insert(index, account);
+    }
+
     pub(super) fn get_index(&self, account_id: &AccountId) -> Option<&Address> {
         self.indexes.get(account_id)
     }
@@ -190,6 +248,11 @@ impl SparseLedgerImpl<AccountId, Account> {
 
         let index = addr.to_index();
         self.values.get(&index)
+    }
+
+    pub(super) fn get_account_if_present(&self, key: &AccountId) -> Option<Box<Account>> {
+        let addr = self.get_index(key)?;
+        self.get(addr).cloned().map(Box::new)
     }
 
     pub fn get_exn(&self, addr: &Address) -> &Account {
@@ -434,4 +497,16 @@ impl LedgerIntf for SparseLedgerImpl<AccountId, Account> {
 
         addrs
     }
+}
+
+/// The hashes of the ancestors of `addr` in `ledger`, from its parent up to
+/// the root.
+fn ancestor_hashes(ledger: &mut Mask, addr: &Address) -> Vec<Fp> {
+    let mut hashes = Vec::with_capacity(addr.length());
+    let mut addr = addr.clone();
+    while let Some(parent) = addr.parent() {
+        hashes.push(BaseLedger::get_inner_hash_at_addr(ledger, parent.clone()).unwrap());
+        addr = parent;
+    }
+    hashes
 }

@@ -32,6 +32,18 @@ pub enum P2pNetworkRpcAction {
         peer_id: PeerId,
         stream_id: StreamId,
     },
+    #[action_event(level = trace)]
+    Refusal {
+        peer_id: PeerId,
+        stream_id: StreamId,
+        serving: bool,
+        block: bool,
+    },
+    Timeout {
+        addr: ConnectionAddr,
+        peer_id: PeerId,
+        stream_id: StreamId,
+    },
     HeartbeatSend {
         addr: ConnectionAddr,
         peer_id: PeerId,
@@ -70,6 +82,8 @@ impl P2pNetworkRpcAction {
             Self::IncomingData { stream_id, .. } => RpcStreamId::Exact(*stream_id),
             Self::IncomingMessage { stream_id, .. } => RpcStreamId::Exact(*stream_id),
             Self::PrunePending { stream_id, .. } => RpcStreamId::Exact(*stream_id),
+            Self::Refusal { stream_id, .. } => RpcStreamId::Exact(*stream_id),
+            Self::Timeout { stream_id, .. } => RpcStreamId::Exact(*stream_id),
             Self::HeartbeatSend { stream_id, .. } => RpcStreamId::Exact(*stream_id),
             Self::OutgoingQuery { .. } => RpcStreamId::AnyOutgoing,
             Self::OutgoingResponse {
@@ -86,6 +100,8 @@ impl P2pNetworkRpcAction {
             Self::IncomingData { peer_id, .. } => peer_id,
             Self::IncomingMessage { peer_id, .. } => peer_id,
             Self::PrunePending { peer_id, .. } => peer_id,
+            Self::Refusal { peer_id, .. } => peer_id,
+            Self::Timeout { peer_id, .. } => peer_id,
             Self::HeartbeatSend { peer_id, .. } => peer_id,
             Self::OutgoingQuery { peer_id, .. } => peer_id,
             Self::OutgoingResponse { peer_id, .. } => peer_id,
@@ -105,6 +121,10 @@ impl redux::EnablingCondition<P2pState> for P2pNetworkRpcAction {
             return false;
         };
 
+        // Malformed RPC streams must eventually release their resources too.
+        if matches!(self, Self::Timeout { .. }) {
+            return rpc_state.is_timed_out(time);
+        }
         if rpc_state.error.is_some() {
             return false;
         }
@@ -130,6 +150,8 @@ impl redux::EnablingCondition<P2pState> for P2pNetworkRpcAction {
                 message,
             } => true,
             P2pNetworkRpcAction::PrunePending { peer_id, stream_id } => true,
+            P2pNetworkRpcAction::Refusal { .. } => true,
+            P2pNetworkRpcAction::Timeout { .. } => rpc_state.is_timed_out(time),
             P2pNetworkRpcAction::HeartbeatSend {
                 addr,
                 peer_id,

@@ -294,10 +294,54 @@ mod tests {
 
         let expected_peer_id = "12D3KooWDxyuJKSsVEwNR13UVwf4PEfs4yHkk3ecZipBPv3Y3Sac";
 
+        // Git checkouts give the committed fixture group-write permissions;
+        // the loader requires a key file to be private to its owner.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
         let decrypted = SecretKey::from_encrypted_file(key_path, password)
             .unwrap_or_else(|_| panic!("Failed to decrypt secret key file: {}", key_path));
 
         let peer_id = decrypted.public_key().peer_id().to_libp2p_string();
         assert_eq!(expected_peer_id, peer_id);
+    }
+
+    /// A key file that other users could read is refused, as OCaml's
+    /// `Secret_file.read` refuses it; the same file made private to its
+    /// owner is still accepted. The committed fixture (the throwaway
+    /// `tests/files/accounts/libp2p-key`) stands in for a real one,
+    /// because our writer for this format is not implemented yet.
+    #[cfg(unix)]
+    #[test]
+    fn a_key_file_readable_by_others_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "mina-p2p-key-perms-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("libp2p-key");
+        std::fs::copy("../../tests/files/accounts/libp2p-key", &file).unwrap();
+        let path = file.to_str().unwrap().to_owned();
+
+        let password = "total-secure-pass";
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(SecretKey::from_encrypted_file(&path, password).is_ok());
+
+        for mode in [0o644, 0o640, 0o666] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            let error = SecretKey::from_encrypted_file(&path, password).unwrap_err();
+            assert!(
+                error.to_string().contains("permissions"),
+                "{mode:o}: {error}"
+            );
+        }
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

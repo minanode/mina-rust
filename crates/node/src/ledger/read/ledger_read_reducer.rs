@@ -15,8 +15,8 @@ use crate::{
 };
 
 use super::{
-    LedgerAddress, LedgerReadAction, LedgerReadActionWithMetaRef, LedgerReadIdType,
-    LedgerReadInitCallback, LedgerReadRequest, LedgerReadResponse,
+    served_child_hashes_depth, LedgerAddress, LedgerReadAction, LedgerReadActionWithMetaRef,
+    LedgerReadIdType, LedgerReadInitCallback, LedgerReadRequest, LedgerReadResponse,
     LedgerReadStagedLedgerAuxAndPendingCoinbases, LedgerReadState,
 };
 
@@ -47,6 +47,11 @@ impl LedgerReadState {
             }
             LedgerReadAction::Pending { request, .. } => {
                 state.add(meta.time(), request.clone());
+                if matches!(request, LedgerReadRequest::WorkCoverage(_)) {
+                    state_context
+                        .into_dispatcher()
+                        .push(crate::SnarkPoolAction::WorkCoveragePending);
+                }
             }
             LedgerReadAction::Success { id, response } => {
                 state.add_response(*id, meta.time(), response.clone());
@@ -73,6 +78,19 @@ impl LedgerReadState {
         };
 
         match (request.request(), response) {
+            (
+                LedgerReadRequest::SnarkPoolProver(request),
+                LedgerReadResponse::SnarkPoolProver(result),
+            ) => {
+                dispatcher.push(crate::SnarkPoolAction::ProverAccountResult {
+                    request: request.clone(),
+                    result,
+                });
+            }
+            (_, LedgerReadResponse::SnarkPoolProver(_)) => unreachable!(),
+            (_, LedgerReadResponse::WorkCoverage(result)) => {
+                dispatcher.push(crate::SnarkPoolAction::WorkCoverageResult { result });
+            }
             (
                 LedgerReadRequest::DelegatorTable(ledger_hash, pub_key),
                 LedgerReadResponse::DelegatorTable(table),
@@ -126,32 +144,39 @@ impl LedgerReadState {
                     dispatcher.push(P2pChannelsRpcAction::ResponseSend {
                         peer_id,
                         id,
-                        response: resp.as_ref().map(|(left, right)| {
+                        response: resp.as_ref().map(|hashes| {
                             Box::new(P2pRpcResponse::LedgerQuery(
                                 v2::MinaLedgerSyncLedgerAnswerStableV2::ChildHashesAre(
-                                    left.clone(),
-                                    right.clone(),
+                                    hashes.iter().cloned().collect(),
                                 ),
                             ))
                         }),
                     });
                 }
             }
-            (req, LedgerReadResponse::GetChildAccountsAtAddr(resp)) => {
+            (
+                req @ LedgerReadRequest::GetChildAccountsAtAddr(hash, _),
+                LedgerReadResponse::GetChildAccountsAtAddr(resp),
+            ) => {
                 for (peer_id, id, _) in find_peers_with_ledger_rpc(state, req) {
+                    let response = match &resp {
+                        Ok(accounts) => P2pRpcResponse::LedgerQuery(
+                            v2::MinaLedgerSyncLedgerAnswerStableV2::ContentsAre(
+                                accounts.iter().cloned().collect(),
+                            ),
+                        ),
+                        Err(error) => {
+                            P2pRpcResponse::LedgerQueryError(hash.clone(), error.as_str().into())
+                        }
+                    };
                     dispatcher.push(P2pChannelsRpcAction::ResponseSend {
                         peer_id,
                         id,
-                        response: resp.as_ref().map(|accounts| {
-                            Box::new(P2pRpcResponse::LedgerQuery(
-                                v2::MinaLedgerSyncLedgerAnswerStableV2::ContentsAre(
-                                    accounts.iter().cloned().collect(),
-                                ),
-                            ))
-                        }),
+                        response: Some(Box::new(response)),
                     });
                 }
             }
+            (_, LedgerReadResponse::GetChildAccountsAtAddr(_)) => unreachable!(),
             (req, LedgerReadResponse::GetStagedLedgerAuxAndPendingCoinbases(resp)) => {
                 for (peer_id, id, is_streaming) in find_peers_with_ledger_rpc(state, req) {
                     if is_streaming {
@@ -211,6 +236,15 @@ impl LedgerReadState {
                     response: resp.clone(),
                 });
             }
+            (_, LedgerReadResponse::LedgerExport(rpc_id, response)) => {
+                dispatcher.push(RpcAction::LedgerExportSuccess { rpc_id, response });
+            }
+            (_, LedgerReadResponse::HardForkExport(rpc_id, response)) => {
+                dispatcher.push(RpcAction::HardForkConfigSuccess { rpc_id, response });
+            }
+            (_, LedgerReadResponse::LightAccount(rpc_id, response)) => {
+                dispatcher.push(RpcAction::LightAccountSuccess { rpc_id, response });
+            }
         }
     }
 
@@ -235,6 +269,70 @@ impl LedgerReadState {
             .collect::<Vec<_>>();
         peers.sort_by_key(|(_, last_responded)| *last_responded);
         for (peer_id, _) in peers {
+            // Loaded masks and the genesis frontier must not be served while
+            // startup restore is still loading or replaying. Decline before
+            // scheduling a read, including WebRTC's streamed staged ledger.
+            // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_networking/rpcs.ml#L293-L308>
+            // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_networking/rpcs.ml#L408-L440>
+            if state.transition_frontier.persist_holds_sync() {
+                let Some(peer) = state.p2p.get_ready_peer(&peer_id) else {
+                    continue;
+                };
+                for req in peer.channels.rpc.remote_todo_requests_iter() {
+                    let response = match &req.request {
+                        P2pRpcRequest::LedgerQuery(hash, _) => Some(Box::new(
+                            P2pRpcResponse::LedgerQueryError(hash.clone(), "No Frontier".into()),
+                        )),
+                        P2pRpcRequest::StagedLedgerAuxAndPendingCoinbasesAtBlock(_) => None,
+                        _ => continue,
+                    };
+                    dispatcher.push(P2pChannelsRpcAction::ResponseSend {
+                        peer_id,
+                        id: req.id,
+                        response,
+                    });
+                }
+                if let Some((id, _)) = peer.channels.streaming_rpc.remote_todo_request() {
+                    dispatcher.push(P2pChannelsStreamingRpcAction::ResponsePending { peer_id, id });
+                    dispatcher.push(P2pChannelsStreamingRpcAction::ResponseSendInit {
+                        peer_id,
+                        id,
+                        response: None,
+                    });
+                }
+                continue;
+            }
+            // Unknown/evicted blocks must terminate, including when they leave
+            // the serving window while waiting for a ledger-read quota.
+            // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/sync_handler/sync_handler.ml#L117-L167>
+            if let Some(peer) = state.p2p.ready().and_then(|p| p.get_ready_peer(&peer_id)) {
+                for req in peer.channels.rpc.remote_todo_requests_iter() {
+                    if let P2pRpcRequest::StagedLedgerAuxAndPendingCoinbasesAtBlock(hash) =
+                        &req.request
+                    {
+                        if serving_block(state, hash).is_none() {
+                            dispatcher.push(P2pChannelsRpcAction::ResponseSend {
+                                peer_id,
+                                id: req.id,
+                                response: None,
+                            });
+                        }
+                    }
+                }
+                if let Some((id, P2pStreamingRpcRequest::StagedLedgerParts(hash))) =
+                    peer.channels.streaming_rpc.remote_todo_request()
+                {
+                    if serving_block(state, hash).is_none() {
+                        dispatcher
+                            .push(P2pChannelsStreamingRpcAction::ResponsePending { peer_id, id });
+                        dispatcher.push(P2pChannelsStreamingRpcAction::ResponseSendInit {
+                            peer_id,
+                            id,
+                            response: None,
+                        });
+                    }
+                }
+            }
             let Some((id, request, is_streaming)) = None.or_else(|| {
                 let peer = state.p2p.ready()?.get_ready_peer(&peer_id)?;
                 let mut reqs = peer.channels.rpc.remote_todo_requests_iter();
@@ -244,8 +342,10 @@ impl LedgerReadState {
                             v2::MinaLedgerSyncLedgerQueryStableV1::NumAccounts => {
                                 LedgerReadRequest::GetNumAccounts(hash.clone())
                             }
-                            v2::MinaLedgerSyncLedgerQueryStableV1::WhatChildHashes(addr) => {
-                                LedgerReadRequest::GetChildHashesAtAddr(hash.clone(), addr.into())
+                            v2::MinaLedgerSyncLedgerQueryStableV1::WhatChildHashes(addr, depth) => {
+                                let addr = LedgerAddress::from(addr);
+                                let depth = served_child_hashes_depth(&addr, depth.as_u64())?;
+                                LedgerReadRequest::GetChildHashesAtAddr(hash.clone(), addr, depth)
                             }
                             v2::MinaLedgerSyncLedgerQueryStableV1::WhatContents(addr) => {
                                 LedgerReadRequest::GetChildAccountsAtAddr(hash.clone(), addr.into())
@@ -312,6 +412,53 @@ impl LedgerReadState {
             }
         }
 
+        // These reads normally start immediately, but a cached genesis can
+        // hold their admission until restore/full loading finishes as well.
+        let ledger_rpcs = state
+            .rpc
+            .requests
+            .iter()
+            .filter_map(|(rpc_id, request)| {
+                if !request.status.is_init() {
+                    return None;
+                }
+                match &request.req {
+                    crate::rpc::RpcRequest::LedgerExport(kind) => {
+                        Some(RpcAction::LedgerExportInit {
+                            rpc_id: *rpc_id,
+                            kind: *kind,
+                        })
+                    }
+                    crate::rpc::RpcRequest::LedgerStatusGet(ledger_hash) => {
+                        Some(RpcAction::LedgerStatusGetInit {
+                            rpc_id: *rpc_id,
+                            ledger_hash: ledger_hash.clone(),
+                        })
+                    }
+                    crate::rpc::RpcRequest::LedgerAccountDelegatorsGet(query, account_id) => {
+                        Some(RpcAction::LedgerAccountDelegatorsGetInit {
+                            rpc_id: *rpc_id,
+                            query: query.clone(),
+                            account_id: account_id.clone(),
+                        })
+                    }
+                    crate::rpc::RpcRequest::LightAccount(query) => {
+                        Some(RpcAction::LightAccountInit {
+                            rpc_id: *rpc_id,
+                            query: query.clone(),
+                        })
+                    }
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
+        for action in ledger_rpcs {
+            dispatcher.push(action);
+            if !state.ledger.read.is_total_cost_under_limit() {
+                return;
+            }
+        }
+
         let ledger_account_rpc = state
             .rpc
             .accounts_request_rpc_ids()
@@ -354,12 +501,16 @@ fn find_peers_with_ledger_rpc(
                         ),
                     ) => h1 == h2,
                     (
-                        LedgerReadRequest::GetChildHashesAtAddr(h1, addr1),
+                        LedgerReadRequest::GetChildHashesAtAddr(h1, addr1, depth1),
                         P2pRpcRequest::LedgerQuery(
                             h2,
-                            v2::MinaLedgerSyncLedgerQueryStableV1::WhatChildHashes(addr2),
+                            v2::MinaLedgerSyncLedgerQueryStableV1::WhatChildHashes(addr2, depth2),
                         ),
-                    ) => h1 == h2 && addr1 == &LedgerAddress::from(addr2),
+                    ) => {
+                        h1 == h2
+                            && addr1 == &LedgerAddress::from(addr2)
+                            && Some(*depth1) == served_child_hashes_depth(addr1, depth2.as_u64())
+                    }
                     (
                         LedgerReadRequest::GetChildAccountsAtAddr(h1, addr1),
                         P2pRpcRequest::LedgerQuery(
@@ -370,10 +521,7 @@ fn find_peers_with_ledger_rpc(
                     (
                         LedgerReadRequest::GetStagedLedgerAuxAndPendingCoinbases(data),
                         P2pRpcRequest::StagedLedgerAuxAndPendingCoinbasesAtBlock(block_hash),
-                    ) => state
-                        .transition_frontier
-                        .get_state_body(block_hash)
-                        .is_some_and(|b| b.blockchain_state.staged_ledger_hash == data.ledger_hash),
+                    ) => &data.block_hash == block_hash,
                     _ => false,
                 })
                 .map(|(peer_id, rpc_id, _)| (*peer_id, rpc_id, false));
@@ -386,10 +534,7 @@ fn find_peers_with_ledger_rpc(
                     (
                         LedgerReadRequest::GetStagedLedgerAuxAndPendingCoinbases(data),
                         P2pStreamingRpcRequest::StagedLedgerParts(block_hash),
-                    ) => state
-                        .transition_frontier
-                        .get_state_body(block_hash)
-                        .is_some_and(|b| b.blockchain_state.staged_ledger_hash == data.ledger_hash),
+                    ) => &data.block_hash == block_hash,
                     _ => false,
                 })
                 .map(|(rpc_id, _)| (*peer_id, rpc_id, true));
@@ -403,11 +548,9 @@ fn build_staged_ledger_parts_request(
     block_hash: &v2::StateHash,
 ) -> Option<LedgerReadRequest> {
     let tf = &state.transition_frontier;
-    let ledger_hash = tf
-        .best_chain
-        .iter()
-        .find(|b| b.hash() == block_hash)
-        .map(|b| b.staged_ledger_hashes().clone())?;
+    let ledger_hash = serving_block(state, block_hash)?
+        .staged_ledger_hashes()
+        .clone();
     let protocol_states = tf
         .needed_protocol_states
         .iter()
@@ -422,8 +565,203 @@ fn build_staged_ledger_parts_request(
 
     Some(LedgerReadRequest::GetStagedLedgerAuxAndPendingCoinbases(
         LedgerReadStagedLedgerAuxAndPendingCoinbases {
+            block_hash: block_hash.clone(),
             ledger_hash,
             protocol_states,
         },
     ))
+}
+
+fn serving_block<'a>(
+    state: &'a State,
+    hash: &v2::StateHash,
+) -> Option<&'a mina_core::block::ArcBlockWithHash> {
+    state
+        .transition_frontier
+        .best_chain
+        .iter()
+        .find(|b| b.hash() == hash)
+        .map(|b| &b.block)
+        .or_else(|| state.transition_frontier.root_history.get(hash))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ledger::LedgerAction,
+        p2p::{
+            channels::{rpc::*, P2pChannelsAction},
+            P2pPeerState, P2pPeerStatus, P2pPeerStatusReady,
+        },
+    };
+    use mina_core::{consensus::ConsensusConstants, constants};
+    use mina_snark::{BlockVerifier, TransactionVerifier};
+    use redux::{EnablingCondition, Timestamp};
+    fn state() -> State {
+        let constants = ConsensusConstants::create(
+            constants::constraint_constants(),
+            &constants::PROTOCOL_CONSTANTS,
+        );
+        let config = crate::Config {
+            ledger: crate::config::LedgerConfig {},
+            snark: crate::config::SnarkConfig {
+                block_verifier_index: BlockVerifier::make(),
+                block_verifier_srs: mina_snark::get_srs(),
+                work_verifier_index: TransactionVerifier::make(),
+                work_verifier_srs: mina_snark::get_srs(),
+            },
+            p2p: crate::config::P2pConfig {
+                libp2p_port: None,
+                listen_port: None,
+                identity_pub_key: crate::p2p::identity::SecretKey::deterministic(0).public_key(),
+                initial_peers: vec![],
+                external_addrs: vec![],
+                enabled_channels: Default::default(),
+                timeouts: Default::default(),
+                limits: Default::default(),
+                peer_discovery: false,
+                meshsub: Default::default(),
+                catchup_rpc: Default::default(),
+            },
+            transition_frontier: crate::config::TransitionFrontierConfig::new(
+                crate::config::DEVNET_CONFIG.clone(),
+            ),
+            archive: None,
+            block_producer: None,
+            global: crate::config::GlobalConfig {
+                build: Box::new(crate::config::BuildEnv::get()),
+                snarker: None,
+                consensus_constants: constants.clone(),
+                client_port: None,
+                testing_run: true,
+                chain_id_override: None,
+                skip_proof_verification: false,
+                worker_control: false,
+                snarker_strategy: Default::default(),
+                block_first_lead: None,
+            },
+            tx_pool: ledger::transaction_pool::Config {
+                trust_system: (),
+                pool_max_size: 10,
+                slot_tx_end: None,
+            },
+        };
+        let mut state = State::new(config, &constants, Timestamp::ZERO);
+        let chain_id = serde_json::from_str(
+            r#""0718f61ab88f9d0fa643ff4dc3a3d5998dd6d51a6008b2b0339b0dbb26133886""#,
+        )
+        .unwrap();
+        state.p2p.initialize(&chain_id).unwrap();
+        state.transition_frontier.sync =
+            crate::transition_frontier::sync::TransitionFrontierSyncState::Synced {
+                time: Timestamp::ZERO,
+            };
+        state
+    }
+    fn peer(state: &mut State, hash: v2::StateHash, is_pending: bool) -> PeerId {
+        let peer_id = PeerId::from_bytes([5; 32]);
+        let mut ready = P2pPeerStatusReady::new(false, Timestamp::ZERO, &Default::default());
+        ready.channels.rpc = P2pChannelsRpcState::Ready {
+            time: Timestamp::ZERO,
+            local: P2pRpcLocalState::WaitingForRequest {
+                time: Timestamp::ZERO,
+            },
+            remote: P2pRpcRemoteState {
+                pending_requests: [P2pRpcRemotePendingRequestState {
+                    time: Timestamp::ZERO,
+                    id: 7,
+                    request: P2pRpcRequest::StagedLedgerAuxAndPendingCoinbasesAtBlock(hash),
+                    is_pending,
+                }]
+                .into_iter()
+                .collect(),
+                last_responded: Timestamp::ZERO,
+            },
+        };
+        state.p2p.ready_mut().unwrap().peers.insert(
+            peer_id,
+            P2pPeerState {
+                is_libp2p: false,
+                dial_opts: None,
+                identify: None,
+                status: P2pPeerStatus::Ready(Box::new(ready)),
+            },
+        );
+        peer_id
+    }
+
+    fn root() -> mina_core::block::ArcBlockWithHash {
+        use mina_p2p_messages::rpc_kernel::PayloadBinprotReader;
+        let bytes = include_bytes!("../../../../p2p-messages/tests/files/mesa/get_best_tip_v3.bin");
+        let block = mina_p2p_messages::rpc::GetBestTipV2::response_payload(&mut bytes.as_slice())
+            .unwrap()
+            .unwrap()
+            .data;
+        mina_core::block::BlockWithHash::try_new(std::sync::Arc::new(block)).unwrap()
+    }
+
+    #[test]
+    fn unavailable_aux_schedules_terminal_response_and_retained_aux_schedules_read() {
+        let mut state = state();
+        let root = root();
+        let peer_id = peer(&mut state, root.hash().clone(), false);
+        let mut dispatcher = Dispatcher::new();
+        LedgerReadState::next_read_requests_init(&mut dispatcher, &state);
+        let mut responses = 0;
+        while let Some(action) = dispatcher.pop() {
+            if let Action::P2p(P2pAction::Channels(P2pChannelsAction::Rpc(
+                P2pChannelsRpcAction::ResponseSend {
+                    peer_id: p,
+                    id: 7,
+                    response: None,
+                },
+            ))) = &action
+            {
+                assert_eq!(*p, peer_id);
+                assert!(action.is_enabled(&state, Timestamp::ZERO));
+                responses += 1;
+            }
+            assert!(!matches!(
+                action,
+                Action::Ledger(LedgerAction::Read(LedgerReadAction::Init { .. }))
+            ));
+        }
+        assert_eq!(responses, 1);
+        state.transition_frontier.root_history.0.push(root);
+        LedgerReadState::next_read_requests_init(&mut dispatcher, &state);
+        let mut reads = 0;
+        while let Some(action) = dispatcher.pop() {
+            if matches!(
+                action,
+                Action::Ledger(LedgerAction::Read(LedgerReadAction::Init {
+                    request: LedgerReadRequest::GetStagedLedgerAuxAndPendingCoinbases(_),
+                    ..
+                }))
+            ) {
+                reads += 1;
+            }
+            assert!(!matches!(
+                action,
+                Action::P2p(P2pAction::Channels(P2pChannelsAction::Rpc(
+                    P2pChannelsRpcAction::ResponseSend { .. }
+                )))
+            ));
+        }
+        assert_eq!(reads, 1);
+    }
+
+    #[test]
+    fn auxiliary_read_correlation_survives_history_eviction() {
+        let mut state = state();
+        let root = root();
+        state.transition_frontier.root_history.0.push(root.clone());
+        let request = build_staged_ledger_parts_request(&state, root.hash()).unwrap();
+        let peer_id = peer(&mut state, root.hash().clone(), true);
+        state.transition_frontier.root_history.0.clear();
+        assert_eq!(
+            find_peers_with_ledger_rpc(&state, &request),
+            vec![(peer_id, 7, false)]
+        );
+    }
 }

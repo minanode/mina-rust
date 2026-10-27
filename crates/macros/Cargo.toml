@@ -3,7 +3,7 @@ name = "mina-macros"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-authors = ["Alexander Koptelov <alexandre.koptelov@gmail.com>"]
+authors = ["Alexander Koptelov"]
 
 [lib]
 proc-macro = true

@@ -1,7 +1,8 @@
+use crate::input_limits::{self as limits, bounded};
 use std::str::FromStr;
 
 use juniper::{GraphQLInputObject, GraphQLObject};
-use ledger::{FpExt, VerificationKey};
+use ledger::{scan_state::transaction_logic::TransactionFailure, FpExt, VerificationKey};
 use mina_p2p_messages::{
     bigint::BigInt,
     list::List,
@@ -22,7 +23,8 @@ use mina_p2p_messages::{
         MinaBaseAccountUpdateUpdateStableV1VotingFor, MinaBaseAccountUpdateUpdateStableV1ZkappUri,
         MinaBaseAccountUpdateUpdateTimingInfoStableV1, MinaBaseControlStableV2,
         MinaBasePermissionsStableV2, MinaBaseReceiptChainHashStableV1,
-        MinaBaseSignedCommandMemoStableV1, MinaBaseUserCommandStableV2,
+        MinaBaseSignedCommandMemoStableV1, MinaBaseTransactionStatusFailureCollectionStableV1,
+        MinaBaseTransactionStatusStableV2, MinaBaseUserCommandStableV2,
         MinaBaseVerificationKeyWireStableV1, MinaBaseZkappCommandTStableV1WireStableV1,
         MinaBaseZkappCommandTStableV1WireStableV1AccountUpdatesA,
         MinaBaseZkappCommandTStableV1WireStableV1AccountUpdatesAA,
@@ -54,6 +56,24 @@ use mina_p2p_messages::{
 use mina_node::account::AccountPublicKey;
 use serde::Deserialize;
 
+fn decode_memo(input: &str) -> Result<MinaBaseSignedCommandMemoStableV1, ConversionError> {
+    let bytes = mina_p2p_messages::b58::decode(
+        bounded(input, limits::MEMO)?,
+        mina_p2p_messages::b58version::USER_COMMAND_MEMO,
+    )?;
+    if bytes.len() != 35 {
+        return Err(ConversionError::InvalidLength);
+    }
+    Ok(MinaBaseSignedCommandMemoStableV1(bytes[1..].into()))
+}
+
+fn decimal_field(input: &str) -> Result<BigInt, ConversionError> {
+    Ok(BigInt::from_decimal(bounded(
+        input,
+        limits::FIELD_DECIMAL,
+    )?)?)
+}
+
 use super::{
     account::{GraphQLTiming, InputGraphQLTiming},
     ConversionError,
@@ -76,12 +96,18 @@ pub struct GraphQLSendZkappResponse {
     pub zkapp: GraphQLZkapp,
 }
 
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L2019-L2055>
 #[derive(GraphQLObject, Debug)]
+#[graphql(name = "ZkappCommandResult")]
 pub struct GraphQLZkapp {
+    /// A cryptographic hash of the zkApp command
     pub hash: String,
+    /// The reason for the zkApp transaction failure; null means success or
+    /// the status is unknown
     pub failure_reason: Option<Vec<GraphQLFailureReason>>,
-    /// Zkapp represented as base64 string
+    /// A Base64 string representing the zkApp command
     pub id: String,
+    /// zkApp command representing the transaction
     pub zkapp_command: GraphQLZkappCommand,
 }
 
@@ -108,27 +134,74 @@ pub struct InputGraphQLZkappCommand {
     pub fee_payer: InputGraphQLFeePayer,
 }
 
+impl GraphQLZkapp {
+    /// A zkApp command, with its status when a block includes it, or `None`
+    /// for a command in the transaction pool.
+    pub(crate) fn new(
+        zkapp: &MinaBaseZkappCommandTStableV1WireStableV1,
+        status: Option<&MinaBaseTransactionStatusStableV2>,
+    ) -> Result<Self, ConversionError> {
+        let failure_reason = match status {
+            Some(MinaBaseTransactionStatusStableV2::Failed(failures)) => {
+                Some(GraphQLFailureReason::from_collection(failures))
+            }
+            Some(MinaBaseTransactionStatusStableV2::Applied) | None => None,
+        };
+
+        Ok(GraphQLZkapp {
+            hash: zkapp.hash()?.to_string(),
+            failure_reason,
+            id: zkapp.to_base64()?,
+            zkapp_command: GraphQLZkappCommand {
+                memo: zkapp.memo.to_base58check(),
+                account_updates: flatten_account_updates(&zkapp.account_updates)?,
+                fee_payer: GraphQLFeePayer::from(zkapp.fee_payer.clone()),
+            },
+        })
+    }
+}
+
+/// The account updates of a call forest as one list, each parent before its
+/// calls, with the depth of each in `callDepth`: the form OCaml's GraphQL
+/// and JSON give a zkApp command.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/zkapp_command.ml#L881-L895>
+pub(crate) fn flatten_account_updates(
+    forest: &List<MinaBaseZkappCommandTStableV1WireStableV1AccountUpdatesA>,
+) -> Result<Vec<GraphQLAccountUpdate>, ConversionError> {
+    fn calls(
+        forest: &List<MinaBaseZkappCommandTStableV1WireStableV1AccountUpdatesAACallsA>,
+        depth: i32,
+        out: &mut Vec<GraphQLAccountUpdate>,
+    ) -> Result<(), ConversionError> {
+        for tree in forest.iter() {
+            tree_into(&tree.elt, depth, out)?;
+        }
+        Ok(())
+    }
+    fn tree_into(
+        tree: &MinaBaseZkappCommandTStableV1WireStableV1AccountUpdatesAA,
+        depth: i32,
+        out: &mut Vec<GraphQLAccountUpdate>,
+    ) -> Result<(), ConversionError> {
+        let mut update = GraphQLAccountUpdate::try_from(tree.account_update.clone())?;
+        update.body.call_depth = depth;
+        out.push(update);
+        calls(&tree.calls, depth + 1, out)
+    }
+
+    let mut out = Vec::new();
+    for tree in forest.iter() {
+        tree_into(&tree.elt, 0, &mut out)?;
+    }
+    Ok(out)
+}
+
 impl TryFrom<MinaBaseZkappCommandTStableV1WireStableV1> for GraphQLZkapp {
     type Error = ConversionError;
 
     fn try_from(zkapp: MinaBaseZkappCommandTStableV1WireStableV1) -> Result<Self, Self::Error> {
-        let account_updates = zkapp
-            .account_updates
-            .clone()
-            .into_iter()
-            .map(|v| v.elt.account_update.try_into())
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(GraphQLZkapp {
-            hash: zkapp.hash()?.to_string(),
-            failure_reason: None,
-            id: zkapp.to_base64()?,
-            zkapp_command: GraphQLZkappCommand {
-                memo: zkapp.memo.to_base58check(),
-                account_updates,
-                fee_payer: GraphQLFeePayer::from(zkapp.fee_payer),
-            },
-        })
+        Self::new(&zkapp, None)
     }
 }
 
@@ -155,7 +228,7 @@ impl TryFrom<InputGraphQLZkappCommand> for MinaBaseUserCommandStableV2 {
                     value.account_updates,
                 ))?,
                 memo: if let Some(memo) = value.memo {
-                    MinaBaseSignedCommandMemoStableV1::from_base58check(&memo)
+                    decode_memo(&memo)?
                 } else {
                     let empty_memo = ledger::scan_state::transaction_logic::Memo::empty();
                     MinaBaseSignedCommandMemoStableV1::from(&empty_memo)
@@ -315,14 +388,17 @@ impl TryFrom<InputGraphQLAuthorization> for MinaBaseControlStableV2 {
         match (value.signature, value.proof) {
             (Some(signature), None) => {
                 // Handle signature case
-                Ok(MinaBaseControlStableV2::Signature(signature.parse()?))
+                Ok(MinaBaseControlStableV2::Signature(
+                    bounded(&signature, limits::SIGNATURE)?.parse()?,
+                ))
             }
             (None, Some(proof)) => {
+                bounded(&proof, limits::OPAQUE_BASE64)?;
                 // Handle proof case
                 let proof = PicklesProofProofsVerifiedMaxStableV2::deserialize(
                     serde_json::Value::String(proof),
                 )?;
-                Ok(MinaBaseControlStableV2::Proof(Box::new(proof)))
+                Ok(MinaBaseControlStableV2::Proof(proof.into()))
             }
             (None, None) => Ok(MinaBaseControlStableV2::NoneGiven),
             _ => Err(ConversionError::Custom(
@@ -416,7 +492,7 @@ impl TryFrom<InputGraphQLAuthorizationKind> for MinaBaseAccountUpdateAuthorizati
         if value.is_proved {
             match &value.verification_key_hash {
                 Some(vk_hash) => {
-                    let big_int = BigInt::from_decimal(vk_hash)?;
+                    let big_int = decimal_field(vk_hash)?;
                     return Ok(MinaBaseAccountUpdateAuthorizationKindStableV1::Proof(
                         big_int,
                     ));
@@ -624,8 +700,7 @@ impl TryFrom<InputGraphQLPreconditionsAccount>
             .iter()
             .map(|v| {
                 if let Some(state) = v {
-                    BigInt::from_decimal(state)
-                        .map(MinaBaseZkappPreconditionAccountStableV2StateA::Check)
+                    decimal_field(state).map(MinaBaseZkappPreconditionAccountStableV2StateA::Check)
                 } else {
                     Ok(MinaBaseZkappPreconditionAccountStableV2StateA::Ignore)
                 }
@@ -638,10 +713,14 @@ impl TryFrom<InputGraphQLPreconditionsAccount>
                 MinaBaseZkappPreconditionAccountStableV2Balance::Check(
                     MinaBaseZkappPreconditionAccountStableV2BalanceA {
                         lower: CurrencyBalanceStableV1(CurrencyAmountStableV1(
-                            balance.lower.parse::<u64>()?.into(),
+                            bounded(&balance.lower, limits::U64_DECIMAL)?
+                                .parse::<u64>()?
+                                .into(),
                         )),
                         upper: CurrencyBalanceStableV1(CurrencyAmountStableV1(
-                            balance.upper.parse::<u64>()?.into(),
+                            bounded(&balance.upper, limits::U64_DECIMAL)?
+                                .parse::<u64>()?
+                                .into(),
                         )),
                     },
                 )
@@ -651,8 +730,8 @@ impl TryFrom<InputGraphQLPreconditionsAccount>
             nonce: if let Some(nonce) = value.nonce {
                 MinaBaseZkappPreconditionProtocolStateStableV1Length::Check(
                     MinaBaseZkappPreconditionProtocolStateStableV1LengthA {
-                        lower: (nonce.lower.parse::<u32>()?).into(),
-                        upper: (nonce.upper.parse::<u32>()?).into(),
+                        lower: (bounded(&nonce.lower, limits::U32_DECIMAL)?.parse::<u32>()?).into(),
+                        upper: (bounded(&nonce.upper, limits::U32_DECIMAL)?.parse::<u32>()?).into(),
                     },
                 )
             } else {
@@ -660,14 +739,14 @@ impl TryFrom<InputGraphQLPreconditionsAccount>
             },
             receipt_chain_hash: if let Some(receipt_chain_hash) = value.receipt_chain_hash {
                 MinaBaseZkappPreconditionAccountStableV2ReceiptChainHash::Check(
-                    MinaBaseReceiptChainHashStableV1(BigInt::from_decimal(&receipt_chain_hash)?),
+                    MinaBaseReceiptChainHashStableV1(decimal_field(&receipt_chain_hash)?),
                 )
             } else {
                 MinaBaseZkappPreconditionAccountStableV2ReceiptChainHash::Ignore
             },
             delegate: if let Some(delegate) = value.delegate {
                 MinaBaseZkappPreconditionAccountStableV2Delegate::Check(
-                    AccountPublicKey::from_str(&delegate)?.into(),
+                    AccountPublicKey::from_str(bounded(&delegate, limits::PUBLIC_KEY)?)?.into(),
                 )
             } else {
                 MinaBaseZkappPreconditionAccountStableV2Delegate::Ignore
@@ -678,9 +757,7 @@ impl TryFrom<InputGraphQLPreconditionsAccount>
                     .map_err(|_| ConversionError::InvalidLength)?,
             ),
             action_state: if let Some(action_state) = value.action_state {
-                MinaBaseZkappPreconditionAccountStableV2StateA::Check(BigInt::from_decimal(
-                    &action_state,
-                )?)
+                MinaBaseZkappPreconditionAccountStableV2StateA::Check(decimal_field(&action_state)?)
             } else {
                 MinaBaseZkappPreconditionAccountStableV2StateA::Ignore
             },
@@ -802,21 +879,21 @@ impl TryFrom<InputGraphQLPreconditionsNetworkEpochData>
             ledger: value.ledger.try_into()?,
             seed: if let Some(seed) = value.seed {
                 MinaBaseZkappPreconditionProtocolStateEpochDataStableV1EpochSeed::Check(
-                    seed.parse()?,
+                    bounded(&seed, limits::EPOCH_SEED)?.parse()?,
                 )
             } else {
                 MinaBaseZkappPreconditionProtocolStateEpochDataStableV1EpochSeed::Ignore
             },
             start_checkpoint: if let Some(start_checkpoint) = value.start_checkpoint {
                 MinaBaseZkappPreconditionProtocolStateEpochDataStableV1StartCheckpoint::Check(
-                    start_checkpoint.parse()?,
+                    bounded(&start_checkpoint, limits::STATE_HASH)?.parse()?,
                 )
             } else {
                 MinaBaseZkappPreconditionProtocolStateEpochDataStableV1StartCheckpoint::Ignore
             },
             lock_checkpoint: if let Some(lock_checkpoint) = value.lock_checkpoint {
                 MinaBaseZkappPreconditionProtocolStateEpochDataStableV1StartCheckpoint::Check(
-                    lock_checkpoint.parse()?,
+                    bounded(&lock_checkpoint, limits::STATE_HASH)?.parse()?,
                 )
             } else {
                 MinaBaseZkappPreconditionProtocolStateEpochDataStableV1StartCheckpoint::Ignore
@@ -824,8 +901,12 @@ impl TryFrom<InputGraphQLPreconditionsNetworkEpochData>
             epoch_length: if let Some(epoch_length) = value.epoch_length {
                 MinaBaseZkappPreconditionProtocolStateStableV1Length::Check(
                     MinaBaseZkappPreconditionProtocolStateStableV1LengthA {
-                        lower: (epoch_length.lower.parse::<u32>()?).into(),
-                        upper: (epoch_length.upper.parse::<u32>()?).into(),
+                        lower: (bounded(&epoch_length.lower, limits::U32_DECIMAL)?
+                            .parse::<u32>()?)
+                        .into(),
+                        upper: (bounded(&epoch_length.upper, limits::U32_DECIMAL)?
+                            .parse::<u32>()?)
+                        .into(),
                     },
                 )
             } else {
@@ -868,7 +949,7 @@ impl TryFrom<InputGraphQLPreconditionsNetworkLedger>
         Ok(Self {
             hash: if let Some(hash) = value.hash {
                 MinaBaseZkappPreconditionProtocolStateStableV1SnarkedLedgerHash::Check(
-                    hash.parse()?,
+                    bounded(&hash, limits::LEDGER_HASH)?.parse()?,
                 )
             } else {
                 MinaBaseZkappPreconditionProtocolStateStableV1SnarkedLedgerHash::Ignore
@@ -877,10 +958,14 @@ impl TryFrom<InputGraphQLPreconditionsNetworkLedger>
                 MinaBaseZkappPreconditionProtocolStateStableV1Amount::Check(
                     MinaBaseZkappPreconditionProtocolStateStableV1AmountA {
                         lower: CurrencyAmountStableV1(
-                            (total_currency.lower.parse::<u64>()?).into(),
+                            (bounded(&total_currency.lower, limits::U64_DECIMAL)?
+                                .parse::<u64>()?)
+                            .into(),
                         ),
                         upper: CurrencyAmountStableV1(
-                            (total_currency.upper.parse::<u64>()?).into(),
+                            (bounded(&total_currency.upper, limits::U64_DECIMAL)?
+                                .parse::<u64>()?)
+                            .into(),
                         ),
                     },
                 )
@@ -959,7 +1044,7 @@ impl TryFrom<InputGraphQLPreconditionsNetwork> for MinaBaseZkappPreconditionProt
         Ok(Self {
             snarked_ledger_hash: if let Some(snarked_ledger_hash) = value.snarked_ledger_hash {
                 MinaBaseZkappPreconditionProtocolStateStableV1SnarkedLedgerHash::Check(
-                    snarked_ledger_hash.parse()?,
+                    bounded(&snarked_ledger_hash, limits::LEDGER_HASH)?.parse()?,
                 )
             } else {
                 MinaBaseZkappPreconditionProtocolStateStableV1SnarkedLedgerHash::Ignore
@@ -967,8 +1052,12 @@ impl TryFrom<InputGraphQLPreconditionsNetwork> for MinaBaseZkappPreconditionProt
             blockchain_length: if let Some(blockchain_length) = value.blockchain_length {
                 MinaBaseZkappPreconditionProtocolStateStableV1Length::Check(
                     MinaBaseZkappPreconditionProtocolStateStableV1LengthA {
-                        lower: (blockchain_length.lower.parse::<u32>()?).into(),
-                        upper: (blockchain_length.upper.parse::<u32>()?).into(),
+                        lower: (bounded(&blockchain_length.lower, limits::U32_DECIMAL)?
+                            .parse::<u32>()?)
+                        .into(),
+                        upper: (bounded(&blockchain_length.upper, limits::U32_DECIMAL)?
+                            .parse::<u32>()?)
+                        .into(),
                     },
                 )
             } else {
@@ -977,8 +1066,12 @@ impl TryFrom<InputGraphQLPreconditionsNetwork> for MinaBaseZkappPreconditionProt
             min_window_density: if let Some(min_window_density) = value.min_window_density {
                 MinaBaseZkappPreconditionProtocolStateStableV1Length::Check(
                     MinaBaseZkappPreconditionProtocolStateStableV1LengthA {
-                        lower: (min_window_density.lower.parse::<u32>()?).into(),
-                        upper: (min_window_density.upper.parse::<u32>()?).into(),
+                        lower: (bounded(&min_window_density.lower, limits::U32_DECIMAL)?
+                            .parse::<u32>()?)
+                        .into(),
+                        upper: (bounded(&min_window_density.upper, limits::U32_DECIMAL)?
+                            .parse::<u32>()?)
+                        .into(),
                     },
                 )
             } else {
@@ -988,10 +1081,14 @@ impl TryFrom<InputGraphQLPreconditionsNetwork> for MinaBaseZkappPreconditionProt
                 MinaBaseZkappPreconditionProtocolStateStableV1Amount::Check(
                     MinaBaseZkappPreconditionProtocolStateStableV1AmountA {
                         lower: CurrencyAmountStableV1(
-                            (total_currency.lower.parse::<u64>()?).into(),
+                            (bounded(&total_currency.lower, limits::U64_DECIMAL)?
+                                .parse::<u64>()?)
+                            .into(),
                         ),
                         upper: CurrencyAmountStableV1(
-                            (total_currency.upper.parse::<u64>()?).into(),
+                            (bounded(&total_currency.upper, limits::U64_DECIMAL)?
+                                .parse::<u64>()?)
+                            .into(),
                         ),
                     },
                 )
@@ -1004,10 +1101,14 @@ impl TryFrom<InputGraphQLPreconditionsNetwork> for MinaBaseZkappPreconditionProt
                 MinaBaseZkappPreconditionProtocolStateStableV1GlobalSlot::Check(
                     MinaBaseZkappPreconditionProtocolStateStableV1GlobalSlotA {
                         lower: MinaNumbersGlobalSlotSinceGenesisMStableV1::SinceGenesis(
-                            (global_slot_since_genesis.lower.parse::<u32>()?).into(),
+                            (bounded(&global_slot_since_genesis.lower, limits::U32_DECIMAL)?
+                                .parse::<u32>()?)
+                            .into(),
                         ),
                         upper: MinaNumbersGlobalSlotSinceGenesisMStableV1::SinceGenesis(
-                            (global_slot_since_genesis.upper.parse::<u32>()?).into(),
+                            (bounded(&global_slot_since_genesis.upper, limits::U32_DECIMAL)?
+                                .parse::<u32>()?)
+                            .into(),
                         ),
                     },
                 )
@@ -1129,26 +1230,24 @@ impl TryFrom<InputGraphQLAccountUpdateUpdatePermissions> for MinaBasePermissions
     type Error = ConversionError;
     fn try_from(value: InputGraphQLAccountUpdateUpdatePermissions) -> Result<Self, Self::Error> {
         Ok(Self {
-            edit_state: value.edit_state.parse()?,
-            access: value.access.parse()?,
-            send: value.send.parse()?,
-            receive: value.receive.parse()?,
-            set_delegate: value.set_delegate.parse()?,
-            set_permissions: value.set_permissions.parse()?,
+            edit_state: bounded(&value.edit_state, limits::PERMISSION)?.parse()?,
+            access: bounded(&value.access, limits::PERMISSION)?.parse()?,
+            send: bounded(&value.send, limits::PERMISSION)?.parse()?,
+            receive: bounded(&value.receive, limits::PERMISSION)?.parse()?,
+            set_delegate: bounded(&value.set_delegate, limits::PERMISSION)?.parse()?,
+            set_permissions: bounded(&value.set_permissions, limits::PERMISSION)?.parse()?,
             set_verification_key: (
-                value.set_verification_key.auth.parse()?,
-                value
-                    .set_verification_key
-                    .txn_version
+                bounded(&value.set_verification_key.auth, limits::PERMISSION)?.parse()?,
+                bounded(&value.set_verification_key.txn_version, limits::U32_DECIMAL)?
                     .parse::<u32>()?
                     .into(),
             ),
-            set_zkapp_uri: value.set_zkapp_uri.parse()?,
-            edit_action_state: value.edit_action_state.parse()?,
-            set_token_symbol: value.set_token_symbol.parse()?,
-            set_timing: value.set_timing.parse()?,
-            set_voting_for: value.set_voting_for.parse()?,
-            increment_nonce: value.increment_nonce.parse()?,
+            set_zkapp_uri: bounded(&value.set_zkapp_uri, limits::PERMISSION)?.parse()?,
+            edit_action_state: bounded(&value.edit_action_state, limits::PERMISSION)?.parse()?,
+            set_token_symbol: bounded(&value.set_token_symbol, limits::PERMISSION)?.parse()?,
+            set_timing: bounded(&value.set_timing, limits::PERMISSION)?.parse()?,
+            set_voting_for: bounded(&value.set_voting_for, limits::PERMISSION)?.parse()?,
+            increment_nonce: bounded(&value.increment_nonce, limits::PERMISSION)?.parse()?,
         })
     }
 }
@@ -1165,10 +1264,40 @@ pub struct InputGraphQLBalanceChange {
     pub sgn: String,
 }
 
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L1738-L1753>
 #[derive(GraphQLObject, Debug)]
+#[graphql(name = "ZkappCommandFailureReason")]
 pub struct GraphQLFailureReason {
+    /// List index of the account update that failed
     pub index: String,
+    /// Failure reason for the account update or any nested zkapp command
     pub failures: Vec<String>,
+}
+
+impl GraphQLFailureReason {
+    /// The failures of a zkApp command as OCaml displays them: one entry
+    /// for each account update that failed, the fee payer being index 0,
+    /// from the last to the first.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/transaction_status.ml#L82-L88>
+    pub(crate) fn from_collection(
+        failures: &MinaBaseTransactionStatusFailureCollectionStableV1,
+    ) -> Vec<Self> {
+        failures
+            .0
+            .iter()
+            .enumerate()
+            .filter(|(_, bucket)| !bucket.is_empty())
+            .map(|(index, bucket)| Self {
+                index: index.to_string(),
+                failures: bucket
+                    .iter()
+                    .map(|failure| TransactionFailure::from(failure).to_string())
+                    .collect(),
+            })
+            .rev()
+            .collect()
+    }
 }
 
 impl From<MinaStateBlockchainStateValueStableV2SignedAmount> for GraphQLBalanceChange {
@@ -1184,9 +1313,12 @@ impl TryFrom<InputGraphQLBalanceChange> for MinaStateBlockchainStateValueStableV
     type Error = ConversionError;
     fn try_from(value: InputGraphQLBalanceChange) -> Result<Self, Self::Error> {
         Ok(Self {
-            magnitude: CurrencyAmountStableV1(value.magnitude.parse::<u64>()?.into()),
-            sgn: value
-                .sgn
+            magnitude: CurrencyAmountStableV1(
+                bounded(&value.magnitude, limits::U64_DECIMAL)?
+                    .parse::<u64>()?
+                    .into(),
+            ),
+            sgn: bounded(&value.sgn, limits::SIGN)?
                 .parse()
                 .map_err(|_| ConversionError::WrongVariant)?,
         })
@@ -1222,10 +1354,10 @@ impl TryFrom<InputGraphQLPreconditions> for MinaBaseAccountUpdatePreconditionsSt
                 MinaBaseZkappPreconditionProtocolStateStableV1GlobalSlot::Check(
                     MinaBaseZkappPreconditionProtocolStateStableV1GlobalSlotA {
                         upper: MinaNumbersGlobalSlotSinceGenesisMStableV1::SinceGenesis(
-                            (v.upper.parse::<u32>()?).into(),
+                            (bounded(&v.upper, limits::U32_DECIMAL)?.parse::<u32>()?).into(),
                         ),
                         lower: MinaNumbersGlobalSlotSinceGenesisMStableV1::SinceGenesis(
-                            (v.lower.parse::<u32>()?).into(),
+                            (bounded(&v.lower, limits::U32_DECIMAL)?.parse::<u32>()?).into(),
                         ),
                     },
                 )
@@ -1254,7 +1386,10 @@ impl TryFrom<InputGraphQLVerificationKey> for MinaBaseVerificationKeyWireStableV
     type Error = ConversionError;
 
     fn try_from(value: InputGraphQLVerificationKey) -> Result<Self, Self::Error> {
-        Ok(Self::from_base64(&value.data)?)
+        Ok(Self::from_base64(bounded(
+            &value.data,
+            limits::VERIFICATION_KEY,
+        )?)?)
     }
 }
 
@@ -1332,7 +1467,7 @@ impl TryFrom<InputGraphQLAccountUpdateUpdate> for MinaBaseAccountUpdateUpdateSta
             .map(|v| {
                 if let Some(v) = v {
                     Ok(MinaBaseAccountUpdateUpdateStableV1AppStateA::Set(
-                        BigInt::from_decimal(v)?,
+                        decimal_field(v)?,
                     ))
                 } else {
                     Ok(MinaBaseAccountUpdateUpdateStableV1AppStateA::Keep)
@@ -1347,7 +1482,7 @@ impl TryFrom<InputGraphQLAccountUpdateUpdate> for MinaBaseAccountUpdateUpdateSta
             ),
             delegate: if let Some(delegate) = value.delegate {
                 MinaBaseAccountUpdateUpdateStableV1Delegate::Set(
-                    AccountPublicKey::from_str(&delegate)?.into(),
+                    AccountPublicKey::from_str(bounded(&delegate, limits::PUBLIC_KEY)?)?.into(),
                 )
             } else {
                 MinaBaseAccountUpdateUpdateStableV1Delegate::Keep
@@ -1367,14 +1502,18 @@ impl TryFrom<InputGraphQLAccountUpdateUpdate> for MinaBaseAccountUpdateUpdateSta
                 MinaBaseAccountUpdateUpdateStableV1Permissions::Keep
             },
             zkapp_uri: if let Some(zkapp_uri) = value.zkapp_uri {
-                MinaBaseAccountUpdateUpdateStableV1ZkappUri::Set(ZkAppUri::from(zkapp_uri.as_str()))
+                MinaBaseAccountUpdateUpdateStableV1ZkappUri::Set(ZkAppUri::from(bounded(
+                    &zkapp_uri,
+                    mina_p2p_messages::string::ZKAPP_URI_MAX_LENGTH,
+                )?))
             } else {
                 MinaBaseAccountUpdateUpdateStableV1ZkappUri::Keep
             },
             token_symbol: if let Some(token_symbol) = value.token_symbol {
-                MinaBaseAccountUpdateUpdateStableV1TokenSymbol::Set(TokenSymbol::from(
-                    token_symbol.as_str(),
-                ))
+                MinaBaseAccountUpdateUpdateStableV1TokenSymbol::Set(TokenSymbol::from(bounded(
+                    &token_symbol,
+                    mina_p2p_messages::string::TOKEN_SYMBOL_MAX_LENGTH,
+                )?))
             } else {
                 MinaBaseAccountUpdateUpdateStableV1TokenSymbol::Keep
             },
@@ -1386,7 +1525,10 @@ impl TryFrom<InputGraphQLAccountUpdateUpdate> for MinaBaseAccountUpdateUpdateSta
                 MinaBaseAccountUpdateUpdateStableV1Timing::Keep
             },
             voting_for: if let Some(voting_for) = value.voting_for {
-                MinaBaseAccountUpdateUpdateStableV1VotingFor::Set(StateHash::from_str(&voting_for)?)
+                MinaBaseAccountUpdateUpdateStableV1VotingFor::Set(StateHash::from_str(bounded(
+                    &voting_for,
+                    limits::STATE_HASH,
+                )?)?)
             } else {
                 MinaBaseAccountUpdateUpdateStableV1VotingFor::Keep
             },
@@ -1413,20 +1555,26 @@ impl TryFrom<InputGraphQLFeePayer> for MinaBaseAccountUpdateFeePayerStableV1 {
 
     fn try_from(value: InputGraphQLFeePayer) -> Result<Self, Self::Error> {
         Ok(Self {
-            authorization: value.authorization.parse()?,
+            authorization: bounded(&value.authorization, limits::SIGNATURE)?.parse()?,
             body: MinaBaseAccountUpdateBodyFeePayerStableV1 {
-                public_key: value.body.public_key.parse()?,
-                fee: CurrencyFeeStableV1(value.body.fee.parse::<u64>()?.into()),
+                public_key: bounded(&value.body.public_key, limits::PUBLIC_KEY)?.parse()?,
+                fee: CurrencyFeeStableV1(
+                    bounded(&value.body.fee, limits::U64_DECIMAL)?
+                        .parse::<u64>()?
+                        .into(),
+                ),
                 valid_until: value
                     .body
                     .valid_until
                     .map(|v| -> Result<_, ConversionError> {
                         Ok(MinaNumbersGlobalSlotSinceGenesisMStableV1::SinceGenesis(
-                            v.parse::<u32>()?.into(),
+                            bounded(&v, limits::U32_DECIMAL)?.parse::<u32>()?.into(),
                         ))
                     })
                     .transpose()?,
-                nonce: value.body.nonce.parse::<u32>()?.into(),
+                nonce: bounded(&value.body.nonce, limits::U32_DECIMAL)?
+                    .parse::<u32>()?
+                    .into(),
             },
         })
     }
@@ -1459,7 +1607,7 @@ impl TryFrom<MinaBaseAccountUpdateTStableV1> for GraphQLAccountUpdate {
                     .map(|v| v.into_iter().map(|i| i.to_decimal()).collect())
                     .collect(),
                 call_data: value.body.call_data.to_decimal(),
-                // TODO(adonagy): figure out call depth
+                // Set by `flatten_account_updates`, which knows the depth.
                 call_depth: 0,
                 preconditions: GraphQLPreconditions::from(value.body.preconditions),
                 may_use_token: GraphQLMayUseToken::from(value.body.may_use_token),
@@ -1477,8 +1625,8 @@ impl TryFrom<InputGraphQLAccountUpdate> for MinaBaseAccountUpdateTStableV1 {
     fn try_from(value: InputGraphQLAccountUpdate) -> Result<Self, Self::Error> {
         Ok(Self {
             body: MinaBaseAccountUpdateBodyStableV1 {
-                public_key: value.body.public_key.parse()?,
-                token_id: value.body.token_id.parse()?,
+                public_key: bounded(&value.body.public_key, limits::PUBLIC_KEY)?.parse()?,
+                token_id: bounded(&value.body.token_id, limits::TOKEN_ID)?.parse()?,
                 update: value.body.update.try_into()?,
                 balance_change: value.body.balance_change.try_into()?,
                 increment_nonce: value.body.increment_nonce,
@@ -1489,7 +1637,7 @@ impl TryFrom<InputGraphQLAccountUpdate> for MinaBaseAccountUpdateTStableV1 {
                         .into_iter()
                         .map(|v| {
                             v.into_iter()
-                                .map(|i| BigInt::from_decimal(&i).map_err(ConversionError::from))
+                                .map(|i| decimal_field(&i).map_err(ConversionError::from))
                                 .collect::<Result<_, _>>()
                         })
                         .collect::<Result<_, _>>()?,
@@ -1501,12 +1649,12 @@ impl TryFrom<InputGraphQLAccountUpdate> for MinaBaseAccountUpdateTStableV1 {
                         .into_iter()
                         .map(|v| {
                             v.into_iter()
-                                .map(|i| BigInt::from_decimal(&i).map_err(ConversionError::from))
+                                .map(|i| decimal_field(&i).map_err(ConversionError::from))
                                 .collect::<Result<_, _>>()
                         })
                         .collect::<Result<_, _>>()?,
                 ),
-                call_data: BigInt::from_decimal(&value.body.call_data)?,
+                call_data: decimal_field(&value.body.call_data)?,
                 preconditions: value.body.preconditions.try_into()?,
                 use_full_commitment: value.body.use_full_commitment,
                 implicit_account_creation_fee: value.body.implicit_account_creation_fee,
@@ -1526,15 +1674,23 @@ impl TryFrom<InputGraphQLTiming> for MinaBaseAccountUpdateUpdateTimingInfoStable
         let vesting_period: u32 = value.vesting_period.try_into()?;
         Ok(Self {
             initial_minimum_balance: CurrencyBalanceStableV1(CurrencyAmountStableV1(
-                value.initial_minimum_balance.parse::<u64>()?.into(),
+                bounded(&value.initial_minimum_balance, limits::U64_DECIMAL)?
+                    .parse::<u64>()?
+                    .into(),
             )),
             cliff_time: MinaNumbersGlobalSlotSinceGenesisMStableV1::SinceGenesis(cliff_time.into()),
-            cliff_amount: CurrencyAmountStableV1(value.cliff_amount.parse::<u64>()?.into()),
+            cliff_amount: CurrencyAmountStableV1(
+                bounded(&value.cliff_amount, limits::U64_DECIMAL)?
+                    .parse::<u64>()?
+                    .into(),
+            ),
             vesting_period: MinaNumbersGlobalSlotSpanStableV1::GlobalSlotSpan(
                 vesting_period.into(),
             ),
             vesting_increment: CurrencyAmountStableV1(
-                value.vesting_increment.parse::<u64>()?.into(),
+                bounded(&value.vesting_increment, limits::U64_DECIMAL)?
+                    .parse::<u64>()?
+                    .into(),
             ),
         })
     }
@@ -1555,6 +1711,48 @@ mod test {
     use super::*;
 
     #[test]
+    fn verification_key_and_authorization_input_caps() {
+        // Existing OCaml deployment fixture: fixed 1796-byte wire key.
+        let command = create_input_graphql_zkapp().zkapp_command;
+        let key = command
+            .account_updates
+            .into_iter()
+            .find_map(|a| a.body.update.verification_key)
+            .unwrap();
+        assert_eq!(key.data.len(), limits::VERIFICATION_KEY);
+        MinaBaseVerificationKeyWireStableV1::try_from(key).unwrap();
+        for len in [limits::VERIFICATION_KEY + 1, 65_000] {
+            let key = InputGraphQLVerificationKey {
+                data: "z".repeat(len),
+                hash: "0".into(),
+            };
+            assert!(matches!(
+                MinaBaseVerificationKeyWireStableV1::try_from(key),
+                Err(ConversionError::InputTooLong(_))
+            ));
+        }
+        for len in [limits::FIELD_DECIMAL + 1, 65_000] {
+            let auth = InputGraphQLAuthorizationKind {
+                is_signed: false,
+                is_proved: true,
+                verification_key_hash: Some("9".repeat(len)),
+            };
+            assert!(matches!(
+                MinaBaseAccountUpdateAuthorizationKindStableV1::try_from(auth),
+                Err(ConversionError::InputTooLong(_))
+            ));
+        }
+        let auth = InputGraphQLAuthorization {
+            signature: None,
+            proof: Some("z".repeat(limits::OPAQUE_BASE64 + 1)),
+        };
+        assert!(matches!(
+            MinaBaseControlStableV2::try_from(auth),
+            Err(ConversionError::InputTooLong(_))
+        ));
+    }
+
+    #[test]
     fn test_empty_memo() {
         use ledger::scan_state::transaction_logic::Memo;
 
@@ -1570,30 +1768,62 @@ mod test {
     #[test]
     fn test_parse_zkapp_bug_1464_no_proof_nor_signature() {
         let input = create_input_graphql_zkapp_bug_1464();
-        let _converted: MinaBaseUserCommandStableV2 = input
+        let converted: MinaBaseUserCommandStableV2 = input
             .zkapp_command
             .try_into()
             .expect("Failed to parse input");
+        let MinaBaseUserCommandStableV2::ZkappCommand(zkapp) = converted else {
+            panic!("expected a zkApp command");
+        };
+        assert_eq!(zkapp.account_updates.len(), 1);
+        let update = &zkapp
+            .account_updates
+            .iter()
+            .next()
+            .unwrap()
+            .elt
+            .account_update;
+        assert_eq!(update.authorization, MinaBaseControlStableV2::NoneGiven);
+        assert_eq!(
+            update.body.authorization_kind,
+            MinaBaseAccountUpdateAuthorizationKindStableV1::NoneGiven
+        );
     }
 
     #[test]
     fn test_zkapp_from_input() {
-        let bytes = include_bytes!("../../../../../tests/files/zkapps/valid_zkapp.bin");
-        let zkapp =
-            MinaBaseZkappCommandTStableV1WireStableV1::binprot_read(&mut bytes.as_slice()).unwrap();
+        use juniper::FromInputValue;
 
-        let serialized_valid = serde_json::to_string_pretty(&zkapp).unwrap();
+        // Keep the deployment fixture's verification-key and permissions coverage.
+        // Only its four vectors were widened; this is a parsing fixture, not a
+        // claim that the historical signatures/proof key are valid on Mesa.
+        // See private implementation notes for the independent migration.
+        let deployment = include_bytes!("../../../../../tests/files/zkapps/valid_zkapp.bin");
+        // Unmodified OCaml 4.0.2 GraphQL input and transaction-id bytes from
+        // mainnet block 564394. This also covers signed/unsigned nested calls.
+        let mesa = include_bytes!("../../../../../tests/files/zkapps/with_sig_auth.bin");
+        let mesa_input: juniper::InputValue = serde_json::from_str(include_str!(
+            "../../../../../tests/files/zkapps/with_sig_auth_graphql.json"
+        ))
+        .unwrap();
+        let mesa_input = InputGraphQLZkappCommand::from_input_value(&mesa_input).unwrap();
 
-        std::fs::write("zkapp_valid.json", &serialized_valid).unwrap();
-
-        let from_input = create_input_graphql_zkapp();
-        let converted: MinaBaseUserCommandStableV2 = from_input.zkapp_command.try_into().unwrap();
-        if let MinaBaseUserCommandStableV2::ZkappCommand(zkapp_cmd) = converted {
-            let serialized_converted = serde_json::to_string_pretty(&zkapp_cmd).unwrap();
-            std::fs::write("zkapp_converted.json", &serialized_converted).unwrap();
-            assert_eq!(serialized_valid, serialized_converted);
-        } else {
-            unreachable!()
+        for (bytes, input) in [
+            (
+                deployment.as_slice(),
+                create_input_graphql_zkapp().zkapp_command,
+            ),
+            (mesa.as_slice(), mesa_input),
+        ] {
+            let mut remaining = bytes;
+            let expected =
+                MinaBaseZkappCommandTStableV1WireStableV1::binprot_read(&mut remaining).unwrap();
+            assert!(remaining.is_empty(), "fixture must decode completely");
+            let converted: MinaBaseUserCommandStableV2 = input.try_into().unwrap();
+            let MinaBaseUserCommandStableV2::ZkappCommand(converted) = converted else {
+                panic!("expected a zkApp command");
+            };
+            assert_eq!(expected, converted);
         }
     }
 
@@ -1634,6 +1864,8 @@ mod test {
         assert_eq!(converted, MinaBaseControlStableV2::NoneGiven);
     }
 
+    // Mesa uses 32 app-state and account-state precondition fields.
+    // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/zkapp_state.ml#L1-L7>
     fn create_input_graphql_zkapp() -> InputGraphQLZkapp {
         InputGraphQLZkapp {
             zkapp_command: InputGraphQLZkappCommand {
@@ -1654,16 +1886,7 @@ mod test {
                             public_key: "B62qpD75xH5R19wxZG2uz8whNsHPTioVoYcPV3zfjjSbzTmaHQHKKEV".to_string(),
                             token_id: "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf".to_string(),
                             update: InputGraphQLAccountUpdateUpdate {
-                                app_state: vec![
-                                    None,
-                                    None,
-                                    None,
-                                    None,
-                                    None,
-                                    None,
-                                    None,
-                                    None,
-                                ],
+                                app_state: vec![None; 32],
                                 delegate: None,
                                 verification_key: None,
                                 permissions: None,
@@ -1713,9 +1936,7 @@ mod test {
                                     nonce: None,
                                     receipt_chain_hash: None,
                                     delegate: None,
-                                    state: vec![
-                                        None, None, None, None, None, None, None, None
-                                    ],
+                                    state: vec![None; 32],
                                     action_state: None,
                                     proved_state: None,
                                     is_new: None,
@@ -1754,7 +1975,7 @@ mod test {
                                     Some("0".to_string()),
                                     Some("0".to_string()),
                                     Some("0".to_string()),
-                                ],
+                                ].into_iter().chain(vec![None; 24]).collect(),
                                 delegate: None,
                                 verification_key: Some(InputGraphQLVerificationKey {
                                     data: "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".to_string(),
@@ -1827,9 +2048,7 @@ mod test {
                                     }),
                                     receipt_chain_hash: None,
                                     delegate: None,
-                                    state: vec![
-                                        None, None, None, None, None, None, None, None
-                                    ],
+                                    state: vec![None; 32],
                                     action_state: None,
                                     proved_state: Some(false),
                                     is_new: None,
@@ -1878,16 +2097,7 @@ mod test {
                             public_key: "B62qmGcEhZsZ2EMh2EzRXDJEmaD9PUJcW5xdNq2im2xNVuX2bsEPjoj".to_string(),
                             token_id: "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf".to_string(),
                             update: InputGraphQLAccountUpdateUpdate {
-                                app_state: vec![
-                                    None,
-                                    None,
-                                    None,
-                                    None,
-                                    None,
-                                    None,
-                                    None,
-                                    None,
-                                ],
+                                app_state: vec![None; 32],
                                 delegate: None,
                                 verification_key: None,
                                 permissions: None,
@@ -1943,9 +2153,7 @@ mod test {
                                     nonce: None,
                                     receipt_chain_hash: None,
                                     delegate: None,
-                                    state: vec![
-                                        None, None, None, None, None, None, None, None
-                                    ],
+                                    state: vec![None; 32],
                                     action_state: None,
                                     proved_state: None,
                                     is_new: None,
@@ -1976,7 +2184,7 @@ mod test {
 
     #[test]
     pub fn test_bigint_to_decimal() {
-        let bigint = BigInt::from_decimal("1").unwrap();
+        let bigint = decimal_field("1").unwrap();
         let decimal = serde_json::to_string(&bigint).unwrap();
         assert_eq!(
             decimal,

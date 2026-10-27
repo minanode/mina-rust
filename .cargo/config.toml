@@ -1,6 +1,15 @@
 [build]
 rustflags = []
 
+# MEM-ARM: jemalloc fixes its page size when it is built and aborts on a kernel
+# with larger pages. 2^16 = 64 KiB pages run on 4, 16 and 64 KiB ARM64 kernels
+# including systems with larger pages. jemalloc-sys reads the target-prefixed name, so
+# other targets keep the build host's page size. An existing environment
+# variable of the same name takes precedence over these values.
+[env]
+AARCH64_UNKNOWN_LINUX_GNU_JEMALLOC_SYS_WITH_LG_PAGE = "16"
+AARCH64_UNKNOWN_LINUX_MUSL_JEMALLOC_SYS_WITH_LG_PAGE = "16"
+
 [target.aarch64-apple-darwin]
 rustflags = ["-C", "link-args=-Wl,-undefined,dynamic_lookup"]
 

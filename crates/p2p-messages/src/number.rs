@@ -176,14 +176,23 @@ where
     }
 }
 
+/// Each number type reads with the bin_prot reader of the OCaml type it
+/// stands for, so that we accept exactly what OCaml accepts:
+///
+/// - `Int32` and `UInt32` are OCaml `int32` (`Unsigned_extended.UInt32` is
+///   binable as `Int32`): `bin_read_int32`, which has no 8-byte form;
+/// - `Int64` and `UInt64` are OCaml `int` (63 bits): `bin_read_int`. The two
+///   wire types that are OCaml `Int64` (`Unsigned_extended.UInt64` and
+///   Pickles' `Limb_vector.Constant.Hex64`) read with [`read_ocaml_int64`]
+///   instead (`v2::manual`).
 macro_rules! binprot_number {
-    ($base_type:ident, $binprot_type:ident) => {
+    ($base_type:ident, $binprot_type:ident, $read:path) => {
         impl binprot::BinProtRead for Number<$base_type> {
             fn binprot_read<R: std::io::Read + ?Sized>(r: &mut R) -> Result<Self, binprot::Error>
             where
                 Self: Sized,
             {
-                $binprot_type::binprot_read(r).map(|v| Self(v as $base_type))
+                Ok(Self($read(r)? as $base_type))
             }
         }
 
@@ -195,11 +204,31 @@ macro_rules! binprot_number {
     };
 }
 
-binprot_number!(i32, i32);
-binprot_number!(i64, i64);
-binprot_number!(u32, i32);
-binprot_number!(u64, i64);
-binprot_number!(f64, f64);
+binprot_number!(i32, i32, binprot::read_int32);
+binprot_number!(i64, i64, binprot::read_int);
+binprot_number!(u32, i32, binprot::read_int32);
+binprot_number!(u64, i64, binprot::read_int);
+
+impl binprot::BinProtRead for Number<f64> {
+    fn binprot_read<R: std::io::Read + ?Sized>(r: &mut R) -> Result<Self, binprot::Error>
+    where
+        Self: Sized,
+    {
+        f64::binprot_read(r).map(Self)
+    }
+}
+
+impl binprot::BinProtWrite for Number<f64> {
+    fn binprot_write<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
+        self.0.binprot_write(w)
+    }
+}
+
+/// A `UInt64` that is an OCaml `Int64` on the wire: `bin_read_int64`, which
+/// takes every 64-bit value after `0xfc`, where OCaml's `int` stops at 2^62.
+pub fn read_ocaml_int64<R: std::io::Read + ?Sized>(r: &mut R) -> Result<UInt64, binprot::Error> {
+    Ok(Number(binprot::read_int64(r)? as u64))
+}
 
 #[cfg(feature = "openapi")]
 const _: () = {
@@ -245,7 +274,9 @@ mod tests {
                     i8::MAX as $ty,
                     i16::MAX as $ty,
                     i32::MAX as $ty,
-                    i64::MAX as $ty,
+                    // OCaml's `max_int`, the largest value an OCaml `int`
+                    // holds on a 64-bit platform.
+                    ((1i64 << 62) - 1) as $ty,
                 ] {
                     let n: super::Number<$ty> = n.into();
                     let mut buf = Vec::new();
@@ -283,4 +314,46 @@ mod tests {
 
     max_number_test!(u32_max, u32);
     max_number_test!(u64_max, u64);
+
+    fn read<T: BinProtRead>(bytes: &[u8]) -> Option<T> {
+        let mut r = bytes;
+        let v = T::binprot_read(&mut r).ok()?;
+        assert!(r.is_empty());
+        Some(v)
+    }
+
+    /// `UInt32` is an OCaml `int32` (`Unsigned_extended.UInt32` is binable as
+    /// `Int32`): bin_prot's `bin_read_int32` has no 8-byte form.
+    #[test]
+    fn uint32_reads_as_ocaml_int32() {
+        assert_eq!(read::<super::UInt32>(&[0xfe, 5, 0]).map(|n| n.0), Some(5));
+        assert_eq!(
+            read::<super::UInt32>(&[0xfd, 5, 0, 0, 0]).map(|n| n.0),
+            Some(5)
+        );
+        assert_eq!(read::<super::UInt32>(&[0xfc, 5, 0, 0, 0, 0, 0, 0, 0]), None);
+        assert_eq!(read::<super::UInt32>(&[0x85]), None);
+    }
+
+    /// `UInt64` and `Int64` are OCaml `int`s (63 bits): `0xfc` with a value
+    /// past 2^62 is `Int_overflow`.
+    #[test]
+    fn uint64_reads_as_ocaml_int() {
+        let max = (1i64 << 62) - 1;
+        let mut ok = vec![0xfc];
+        ok.extend_from_slice(&max.to_le_bytes());
+        assert_eq!(read::<super::UInt64>(&ok).map(|n| n.0), Some(max as u64));
+        let mut over = vec![0xfc];
+        over.extend_from_slice(&(max + 1).to_le_bytes());
+        assert_eq!(read::<super::UInt64>(&over), None);
+        assert_eq!(read::<super::Int64>(&over), None);
+        // But `read_ocaml_int64`, for the wire types that are OCaml `Int64`,
+        // takes it, and every other 64-bit value.
+        let mut r = &over[..];
+        assert_eq!(super::read_ocaml_int64(&mut r).unwrap().0, (max + 1) as u64);
+        let mut all = vec![0xfc];
+        all.extend_from_slice(&u64::MAX.to_le_bytes());
+        let mut r = &all[..];
+        assert_eq!(super::read_ocaml_int64(&mut r).unwrap().0, u64::MAX);
+    }
 }

@@ -15,8 +15,8 @@ use crate::http_server::{AppResult, AppState};
 /// Discovery routes
 pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
-        .routes(routes!(routing_table))
         .routes(routes!(bootstrap_stats))
+        .routes(routes!(routing_table))
 }
 
 /// Kademlia routing table

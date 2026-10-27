@@ -1,8 +1,9 @@
 use malloc_size_of_derive::MallocSizeOf;
+use redux::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    P2pNetworkKademliaRpcFromMessageError, P2pNetworkKademliaRpcReply,
+    ConnectionAddr, P2pNetworkKademliaRpcFromMessageError, P2pNetworkKademliaRpcReply,
     P2pNetworkKademliaRpcRequest, P2pNetworkStreamProtobufError,
 };
 
@@ -30,7 +31,14 @@ pub enum P2pNetworkKadIncomingStreamState {
     /// Waiting for the incoming request.
     WaitingForRequest { expect_close: bool },
     /// A portion of data from the stream is received.
-    PartialRequestReceived { len: usize, data: Vec<u8> },
+    PartialRequestReceived {
+        len: usize,
+        data: Vec<u8>,
+        #[ignore_malloc_size_of = "doesn't allocate"]
+        since: Timestamp,
+        #[ignore_malloc_size_of = "doesn't allocate"]
+        addr: ConnectionAddr,
+    },
     /// Request from the stream is received.
     RequestIsReady { data: P2pNetworkKademliaRpcRequest },
     /// Waiting for an outgoing data, or for finalization of the stream (iff `expect_fin` is `true`)
@@ -57,7 +65,14 @@ pub enum P2pNetworkKadOutgoingStreamState {
     /// Waiting for the incoming reply.
     WaitingForReply,
     /// A portion of data from the stream is received.
-    PartialReplyReceived { len: usize, data: Vec<u8> },
+    PartialReplyReceived {
+        len: usize,
+        data: Vec<u8>,
+        #[ignore_malloc_size_of = "doesn't allocate"]
+        since: Timestamp,
+        #[ignore_malloc_size_of = "doesn't allocate"]
+        addr: ConnectionAddr,
+    },
     /// Response from the stream is received.
     ResponseIsReady { data: P2pNetworkKademliaRpcReply },
     /// Closing the stream.

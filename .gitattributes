@@ -1,0 +1,2 @@
+# Preserve exact upstream licence bytes, including CRLF where supplied.
+THIRD_PARTY_LICENSES binary

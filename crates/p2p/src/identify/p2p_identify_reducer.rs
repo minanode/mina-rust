@@ -2,7 +2,7 @@ use mina_core::{bug_condition, Substate};
 use redux::ActionWithMeta;
 
 use crate::{
-    connection::outgoing::P2pConnectionOutgoingInitOpts,
+    connection::outgoing::{P2pConnectionOutgoingInitLibp2pOpts, P2pConnectionOutgoingInitOpts},
     disconnection::{P2pDisconnectionAction, P2pDisconnectionReason},
     token::{BroadcastAlgorithm, DiscoveryAlgorithm, IdentifyAlgorithm, RpcAlgorithm, StreamKind},
     P2pNetworkConnectionMuxState, P2pNetworkKadRequestAction, P2pNetworkKadState,
@@ -61,8 +61,20 @@ impl P2pState {
                 let info = *info;
                 if let Some(peer) = p2p_state.peers.get_mut(&peer_id) {
                     peer.identify = Some(info.clone());
-                    if let Some(P2pConnectionOutgoingInitOpts::LibP2P(opts)) = &mut peer.dial_opts {
-                        opts.update_host_if_needed(info.listen_addrs.iter());
+                    let observed = Some(addr.sock_addr.ip());
+                    for listen_addr in &info.listen_addrs {
+                        if let Some(candidate) =
+                            P2pConnectionOutgoingInitLibp2pOpts::from_listen_addr(
+                                peer_id,
+                                listen_addr,
+                            )
+                        {
+                            p2p_state.add_dial_address(
+                                peer_id,
+                                P2pConnectionOutgoingInitOpts::LibP2P(candidate),
+                                observed,
+                            );
+                        }
                     }
                 } else {
                     bug_condition!(

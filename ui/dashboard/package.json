@@ -1,0 +1,35 @@
+{
+  "name": "minanode-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The node dashboard that mina node serves on its HTTP port",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 4282 --strictPort",
+    "build": "vite build",
+    "preview": "vite preview --port 4283 --strictPort",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@minanode/design-system": "0.1.0",
+    "@minanode/node-client": "0.1.0",
+    "lucide-react": "1.61.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@testing-library/dom": "10.4.2",
+    "@testing-library/react": "16.3.3",
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "jsdom": "29.1.1",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "vite": "8.3.5",
+    "vitest": "5.0.5"
+  }
+}

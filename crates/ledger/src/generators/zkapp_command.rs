@@ -1,3 +1,4 @@
+use crate::ZKAPP_STATE_SIZE;
 use std::{
     collections::{
         hash_map::Entry::{Occupied, Vacant},
@@ -890,7 +891,7 @@ fn gen_account_update_body_components<A, B, C, D>(
             Some(zkapp) => zkapp,
         };
 
-        let app_state: [Fp; 8] = {
+        let app_state: [Fp; ZKAPP_STATE_SIZE] = {
             let account_app_state = &zk.app_state;
 
             update

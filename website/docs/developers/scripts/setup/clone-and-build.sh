@@ -1,10 +1,9 @@
-git clone https://github.com/o1-labs/mina-rust.git
+#!/usr/bin/env bash
+set -euo pipefail
+git clone https://github.com/minanode/mina-rust.git
 cd mina-rust
 
-# Download required circuits
-echo "Downloading required circuits..."
-make download-circuits
-
-# Build in debug mode (faster compilation, slower runtime)
-echo "Building the Mina Rust Node in debug mode..."
-make build
+# A non-producing Mesa node uses embedded verification data.
+# Prover circuits are a separate, currently unpublished prerequisite.
+CARGO_BUILD_JOBS=8 tools/regression/lock.sh build -- \
+    cargo build --locked --release -p mina-cli --bin mina

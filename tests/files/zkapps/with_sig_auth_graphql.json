@@ -1,0 +1,2350 @@
+{
+  "feePayer": {
+    "body": {
+      "publicKey": "B62qrQiw9JhUumq457sMxicgQ94Z1WD9JChzJu19kBE8Szb5T8tcUAC",
+      "fee": "10000000",
+      "validUntil": null,
+      "nonce": "322612"
+    },
+    "authorization": "7mX7j3dqtxJo66yJCukxQbeGzdACPChXwDHuCDXvVk3F3uzG4SnGDEheVaMPTvm1RCNBJ2sTXgVTh1r3LbQ33gvqAMig3mrd"
+  },
+  "accountUpdates": [
+    {
+      "body": {
+        "publicKey": "B62qrQiw9JhUumq457sMxicgQ94Z1WD9JChzJu19kBE8Szb5T8tcUAC",
+        "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "update": {
+          "appState": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "delegate": null,
+          "verificationKey": null,
+          "permissions": null,
+          "zkappUri": null,
+          "tokenSymbol": null,
+          "timing": null,
+          "votingFor": null
+        },
+        "balanceChange": {
+          "magnitude": "763669896",
+          "sgn": "Negative"
+        },
+        "incrementNonce": false,
+        "events": [],
+        "actions": [],
+        "callData": "0",
+        "callDepth": 0,
+        "preconditions": {
+          "network": {
+            "snarkedLedgerHash": null,
+            "blockchainLength": null,
+            "minWindowDensity": null,
+            "totalCurrency": null,
+            "globalSlotSinceGenesis": null,
+            "stakingEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            },
+            "nextEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            }
+          },
+          "account": {
+            "balance": null,
+            "nonce": null,
+            "receiptChainHash": null,
+            "delegate": null,
+            "state": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "actionState": null,
+            "provedState": null,
+            "isNew": null
+          },
+          "validWhile": null
+        },
+        "useFullCommitment": true,
+        "implicitAccountCreationFee": false,
+        "mayUseToken": {
+          "parentsOwnToken": false,
+          "inheritFromParent": false
+        },
+        "authorizationKind": {
+          "isSigned": true,
+          "isProved": false,
+          "verificationKeyHash": "3392518251768960475377392625298437850623664973002200885669375116181514017494"
+        }
+      },
+      "authorization": {
+        "proof": null,
+        "signature": "7mX7j3dqtxJo66yJCukxQbeGzdACPChXwDHuCDXvVk3F3uzG4SnGDEheVaMPTvm1RCNBJ2sTXgVTh1r3LbQ33gvqAMig3mrd"
+      }
+    },
+    {
+      "body": {
+        "publicKey": "B62qmVxx3DznRngFgNUwshVYCvFYsHgwMjXc3rWSKf7CYGckdJNKX7d",
+        "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "update": {
+          "appState": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "delegate": null,
+          "verificationKey": null,
+          "permissions": null,
+          "zkappUri": null,
+          "tokenSymbol": null,
+          "timing": null,
+          "votingFor": null
+        },
+        "balanceChange": {
+          "magnitude": "51679782",
+          "sgn": "Positive"
+        },
+        "incrementNonce": false,
+        "events": [],
+        "actions": [],
+        "callData": "0",
+        "callDepth": 1,
+        "preconditions": {
+          "network": {
+            "snarkedLedgerHash": null,
+            "blockchainLength": null,
+            "minWindowDensity": null,
+            "totalCurrency": null,
+            "globalSlotSinceGenesis": null,
+            "stakingEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            },
+            "nextEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            }
+          },
+          "account": {
+            "balance": null,
+            "nonce": null,
+            "receiptChainHash": null,
+            "delegate": null,
+            "state": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "actionState": null,
+            "provedState": null,
+            "isNew": null
+          },
+          "validWhile": null
+        },
+        "useFullCommitment": false,
+        "implicitAccountCreationFee": false,
+        "mayUseToken": {
+          "parentsOwnToken": false,
+          "inheritFromParent": false
+        },
+        "authorizationKind": {
+          "isSigned": false,
+          "isProved": false,
+          "verificationKeyHash": "3392518251768960475377392625298437850623664973002200885669375116181514017494"
+        }
+      },
+      "authorization": {
+        "proof": null,
+        "signature": null
+      }
+    },
+    {
+      "body": {
+        "publicKey": "B62qrGHyPw12qLSfU3JojwSZZreVZtVDGtzXHudqsaaQUZACj9cbjGV",
+        "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "update": {
+          "appState": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "delegate": null,
+          "verificationKey": null,
+          "permissions": null,
+          "zkappUri": null,
+          "tokenSymbol": null,
+          "timing": null,
+          "votingFor": null
+        },
+        "balanceChange": {
+          "magnitude": "51642822",
+          "sgn": "Positive"
+        },
+        "incrementNonce": false,
+        "events": [],
+        "actions": [],
+        "callData": "0",
+        "callDepth": 1,
+        "preconditions": {
+          "network": {
+            "snarkedLedgerHash": null,
+            "blockchainLength": null,
+            "minWindowDensity": null,
+            "totalCurrency": null,
+            "globalSlotSinceGenesis": null,
+            "stakingEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            },
+            "nextEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            }
+          },
+          "account": {
+            "balance": null,
+            "nonce": null,
+            "receiptChainHash": null,
+            "delegate": null,
+            "state": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "actionState": null,
+            "provedState": null,
+            "isNew": null
+          },
+          "validWhile": null
+        },
+        "useFullCommitment": false,
+        "implicitAccountCreationFee": false,
+        "mayUseToken": {
+          "parentsOwnToken": false,
+          "inheritFromParent": false
+        },
+        "authorizationKind": {
+          "isSigned": false,
+          "isProved": false,
+          "verificationKeyHash": "3392518251768960475377392625298437850623664973002200885669375116181514017494"
+        }
+      },
+      "authorization": {
+        "proof": null,
+        "signature": null
+      }
+    },
+    {
+      "body": {
+        "publicKey": "B62qmhJVEFNCDu8qRVFDEVm2VCDLKctED5qdwFKKDG9DhbHcVM1p8qQ",
+        "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "update": {
+          "appState": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "delegate": null,
+          "verificationKey": null,
+          "permissions": null,
+          "zkappUri": null,
+          "tokenSymbol": null,
+          "timing": null,
+          "votingFor": null
+        },
+        "balanceChange": {
+          "magnitude": "51573522",
+          "sgn": "Positive"
+        },
+        "incrementNonce": false,
+        "events": [],
+        "actions": [],
+        "callData": "0",
+        "callDepth": 1,
+        "preconditions": {
+          "network": {
+            "snarkedLedgerHash": null,
+            "blockchainLength": null,
+            "minWindowDensity": null,
+            "totalCurrency": null,
+            "globalSlotSinceGenesis": null,
+            "stakingEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            },
+            "nextEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            }
+          },
+          "account": {
+            "balance": null,
+            "nonce": null,
+            "receiptChainHash": null,
+            "delegate": null,
+            "state": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "actionState": null,
+            "provedState": null,
+            "isNew": null
+          },
+          "validWhile": null
+        },
+        "useFullCommitment": false,
+        "implicitAccountCreationFee": false,
+        "mayUseToken": {
+          "parentsOwnToken": false,
+          "inheritFromParent": false
+        },
+        "authorizationKind": {
+          "isSigned": false,
+          "isProved": false,
+          "verificationKeyHash": "3392518251768960475377392625298437850623664973002200885669375116181514017494"
+        }
+      },
+      "authorization": {
+        "proof": null,
+        "signature": null
+      }
+    },
+    {
+      "body": {
+        "publicKey": "B62qnS9QiNNztvEQUW91FP6BfoGKT5N8fao22Qwm2EYqGdVuFN7vG3R",
+        "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "update": {
+          "appState": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "delegate": null,
+          "verificationKey": null,
+          "permissions": null,
+          "zkappUri": null,
+          "tokenSymbol": null,
+          "timing": null,
+          "votingFor": null
+        },
+        "balanceChange": {
+          "magnitude": "51528114",
+          "sgn": "Positive"
+        },
+        "incrementNonce": false,
+        "events": [],
+        "actions": [],
+        "callData": "0",
+        "callDepth": 1,
+        "preconditions": {
+          "network": {
+            "snarkedLedgerHash": null,
+            "blockchainLength": null,
+            "minWindowDensity": null,
+            "totalCurrency": null,
+            "globalSlotSinceGenesis": null,
+            "stakingEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            },
+            "nextEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            }
+          },
+          "account": {
+            "balance": null,
+            "nonce": null,
+            "receiptChainHash": null,
+            "delegate": null,
+            "state": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "actionState": null,
+            "provedState": null,
+            "isNew": null
+          },
+          "validWhile": null
+        },
+        "useFullCommitment": false,
+        "implicitAccountCreationFee": false,
+        "mayUseToken": {
+          "parentsOwnToken": false,
+          "inheritFromParent": false
+        },
+        "authorizationKind": {
+          "isSigned": false,
+          "isProved": false,
+          "verificationKeyHash": "3392518251768960475377392625298437850623664973002200885669375116181514017494"
+        }
+      },
+      "authorization": {
+        "proof": null,
+        "signature": null
+      }
+    },
+    {
+      "body": {
+        "publicKey": "B62qkbgVAJQQn2oES1ieNrhcoSwCx6YcuHnaXhZJsQVcryJR3Q5bAyK",
+        "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "update": {
+          "appState": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "delegate": null,
+          "verificationKey": null,
+          "permissions": null,
+          "zkappUri": null,
+          "tokenSymbol": null,
+          "timing": null,
+          "votingFor": null
+        },
+        "balanceChange": {
+          "magnitude": "51329586",
+          "sgn": "Positive"
+        },
+        "incrementNonce": false,
+        "events": [],
+        "actions": [],
+        "callData": "0",
+        "callDepth": 1,
+        "preconditions": {
+          "network": {
+            "snarkedLedgerHash": null,
+            "blockchainLength": null,
+            "minWindowDensity": null,
+            "totalCurrency": null,
+            "globalSlotSinceGenesis": null,
+            "stakingEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            },
+            "nextEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            }
+          },
+          "account": {
+            "balance": null,
+            "nonce": null,
+            "receiptChainHash": null,
+            "delegate": null,
+            "state": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "actionState": null,
+            "provedState": null,
+            "isNew": null
+          },
+          "validWhile": null
+        },
+        "useFullCommitment": false,
+        "implicitAccountCreationFee": false,
+        "mayUseToken": {
+          "parentsOwnToken": false,
+          "inheritFromParent": false
+        },
+        "authorizationKind": {
+          "isSigned": false,
+          "isProved": false,
+          "verificationKeyHash": "3392518251768960475377392625298437850623664973002200885669375116181514017494"
+        }
+      },
+      "authorization": {
+        "proof": null,
+        "signature": null
+      }
+    },
+    {
+      "body": {
+        "publicKey": "B62qqyxjH9B5o4GQFufWPVwegXhndkhxduHLmKzwMYVUoU8Zj3zAk4K",
+        "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "update": {
+          "appState": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "delegate": null,
+          "verificationKey": null,
+          "permissions": null,
+          "zkappUri": null,
+          "tokenSymbol": null,
+          "timing": null,
+          "votingFor": null
+        },
+        "balanceChange": {
+          "magnitude": "51320610",
+          "sgn": "Positive"
+        },
+        "incrementNonce": false,
+        "events": [],
+        "actions": [],
+        "callData": "0",
+        "callDepth": 1,
+        "preconditions": {
+          "network": {
+            "snarkedLedgerHash": null,
+            "blockchainLength": null,
+            "minWindowDensity": null,
+            "totalCurrency": null,
+            "globalSlotSinceGenesis": null,
+            "stakingEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            },
+            "nextEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            }
+          },
+          "account": {
+            "balance": null,
+            "nonce": null,
+            "receiptChainHash": null,
+            "delegate": null,
+            "state": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "actionState": null,
+            "provedState": null,
+            "isNew": null
+          },
+          "validWhile": null
+        },
+        "useFullCommitment": false,
+        "implicitAccountCreationFee": false,
+        "mayUseToken": {
+          "parentsOwnToken": false,
+          "inheritFromParent": false
+        },
+        "authorizationKind": {
+          "isSigned": false,
+          "isProved": false,
+          "verificationKeyHash": "3392518251768960475377392625298437850623664973002200885669375116181514017494"
+        }
+      },
+      "authorization": {
+        "proof": null,
+        "signature": null
+      }
+    },
+    {
+      "body": {
+        "publicKey": "B62qiaeaKx2Uu2NzX8npERmfPRFyGc5vj4qCEEwJCzJp5yMdc2AjzAn",
+        "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "update": {
+          "appState": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "delegate": null,
+          "verificationKey": null,
+          "permissions": null,
+          "zkappUri": null,
+          "tokenSymbol": null,
+          "timing": null,
+          "votingFor": null
+        },
+        "balanceChange": {
+          "magnitude": "51065784",
+          "sgn": "Positive"
+        },
+        "incrementNonce": false,
+        "events": [],
+        "actions": [],
+        "callData": "0",
+        "callDepth": 1,
+        "preconditions": {
+          "network": {
+            "snarkedLedgerHash": null,
+            "blockchainLength": null,
+            "minWindowDensity": null,
+            "totalCurrency": null,
+            "globalSlotSinceGenesis": null,
+            "stakingEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            },
+            "nextEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            }
+          },
+          "account": {
+            "balance": null,
+            "nonce": null,
+            "receiptChainHash": null,
+            "delegate": null,
+            "state": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "actionState": null,
+            "provedState": null,
+            "isNew": null
+          },
+          "validWhile": null
+        },
+        "useFullCommitment": false,
+        "implicitAccountCreationFee": false,
+        "mayUseToken": {
+          "parentsOwnToken": false,
+          "inheritFromParent": false
+        },
+        "authorizationKind": {
+          "isSigned": false,
+          "isProved": false,
+          "verificationKeyHash": "3392518251768960475377392625298437850623664973002200885669375116181514017494"
+        }
+      },
+      "authorization": {
+        "proof": null,
+        "signature": null
+      }
+    },
+    {
+      "body": {
+        "publicKey": "B62qjSbUKsiLSqXNjWVkYjuLZk3tsJkR71JKQ4SCAj2V26cvfPkAAA8",
+        "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "update": {
+          "appState": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "delegate": null,
+          "verificationKey": null,
+          "permissions": null,
+          "zkappUri": null,
+          "tokenSymbol": null,
+          "timing": null,
+          "votingFor": null
+        },
+        "balanceChange": {
+          "magnitude": "50878278",
+          "sgn": "Positive"
+        },
+        "incrementNonce": false,
+        "events": [],
+        "actions": [],
+        "callData": "0",
+        "callDepth": 1,
+        "preconditions": {
+          "network": {
+            "snarkedLedgerHash": null,
+            "blockchainLength": null,
+            "minWindowDensity": null,
+            "totalCurrency": null,
+            "globalSlotSinceGenesis": null,
+            "stakingEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            },
+            "nextEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            }
+          },
+          "account": {
+            "balance": null,
+            "nonce": null,
+            "receiptChainHash": null,
+            "delegate": null,
+            "state": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "actionState": null,
+            "provedState": null,
+            "isNew": null
+          },
+          "validWhile": null
+        },
+        "useFullCommitment": false,
+        "implicitAccountCreationFee": false,
+        "mayUseToken": {
+          "parentsOwnToken": false,
+          "inheritFromParent": false
+        },
+        "authorizationKind": {
+          "isSigned": false,
+          "isProved": false,
+          "verificationKeyHash": "3392518251768960475377392625298437850623664973002200885669375116181514017494"
+        }
+      },
+      "authorization": {
+        "proof": null,
+        "signature": null
+      }
+    },
+    {
+      "body": {
+        "publicKey": "B62qmuDkCEVEdpAV18NLVyxNsMBh7oS4GhdXYwEEEGPoZkvNg8cQwsH",
+        "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "update": {
+          "appState": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "delegate": null,
+          "verificationKey": null,
+          "permissions": null,
+          "zkappUri": null,
+          "tokenSymbol": null,
+          "timing": null,
+          "votingFor": null
+        },
+        "balanceChange": {
+          "magnitude": "50665626",
+          "sgn": "Positive"
+        },
+        "incrementNonce": false,
+        "events": [],
+        "actions": [],
+        "callData": "0",
+        "callDepth": 1,
+        "preconditions": {
+          "network": {
+            "snarkedLedgerHash": null,
+            "blockchainLength": null,
+            "minWindowDensity": null,
+            "totalCurrency": null,
+            "globalSlotSinceGenesis": null,
+            "stakingEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            },
+            "nextEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            }
+          },
+          "account": {
+            "balance": null,
+            "nonce": null,
+            "receiptChainHash": null,
+            "delegate": null,
+            "state": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "actionState": null,
+            "provedState": null,
+            "isNew": null
+          },
+          "validWhile": null
+        },
+        "useFullCommitment": false,
+        "implicitAccountCreationFee": false,
+        "mayUseToken": {
+          "parentsOwnToken": false,
+          "inheritFromParent": false
+        },
+        "authorizationKind": {
+          "isSigned": false,
+          "isProved": false,
+          "verificationKeyHash": "3392518251768960475377392625298437850623664973002200885669375116181514017494"
+        }
+      },
+      "authorization": {
+        "proof": null,
+        "signature": null
+      }
+    },
+    {
+      "body": {
+        "publicKey": "B62qip9GoEQFx9pZqX3uLsVn7aZnCYgyfiQKBSFHGMqTuc1iCv7wngv",
+        "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "update": {
+          "appState": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "delegate": null,
+          "verificationKey": null,
+          "permissions": null,
+          "zkappUri": null,
+          "tokenSymbol": null,
+          "timing": null,
+          "votingFor": null
+        },
+        "balanceChange": {
+          "magnitude": "50439378",
+          "sgn": "Positive"
+        },
+        "incrementNonce": false,
+        "events": [],
+        "actions": [],
+        "callData": "0",
+        "callDepth": 1,
+        "preconditions": {
+          "network": {
+            "snarkedLedgerHash": null,
+            "blockchainLength": null,
+            "minWindowDensity": null,
+            "totalCurrency": null,
+            "globalSlotSinceGenesis": null,
+            "stakingEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            },
+            "nextEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            }
+          },
+          "account": {
+            "balance": null,
+            "nonce": null,
+            "receiptChainHash": null,
+            "delegate": null,
+            "state": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "actionState": null,
+            "provedState": null,
+            "isNew": null
+          },
+          "validWhile": null
+        },
+        "useFullCommitment": false,
+        "implicitAccountCreationFee": false,
+        "mayUseToken": {
+          "parentsOwnToken": false,
+          "inheritFromParent": false
+        },
+        "authorizationKind": {
+          "isSigned": false,
+          "isProved": false,
+          "verificationKeyHash": "3392518251768960475377392625298437850623664973002200885669375116181514017494"
+        }
+      },
+      "authorization": {
+        "proof": null,
+        "signature": null
+      }
+    },
+    {
+      "body": {
+        "publicKey": "B62qjCH5fRmr8jX7kDetWoSBszPixgyGj31hG5iYaxFzRwy56uW3Hpj",
+        "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "update": {
+          "appState": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "delegate": null,
+          "verificationKey": null,
+          "permissions": null,
+          "zkappUri": null,
+          "tokenSymbol": null,
+          "timing": null,
+          "votingFor": null
+        },
+        "balanceChange": {
+          "magnitude": "50409612",
+          "sgn": "Positive"
+        },
+        "incrementNonce": false,
+        "events": [],
+        "actions": [],
+        "callData": "0",
+        "callDepth": 1,
+        "preconditions": {
+          "network": {
+            "snarkedLedgerHash": null,
+            "blockchainLength": null,
+            "minWindowDensity": null,
+            "totalCurrency": null,
+            "globalSlotSinceGenesis": null,
+            "stakingEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            },
+            "nextEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            }
+          },
+          "account": {
+            "balance": null,
+            "nonce": null,
+            "receiptChainHash": null,
+            "delegate": null,
+            "state": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "actionState": null,
+            "provedState": null,
+            "isNew": null
+          },
+          "validWhile": null
+        },
+        "useFullCommitment": false,
+        "implicitAccountCreationFee": false,
+        "mayUseToken": {
+          "parentsOwnToken": false,
+          "inheritFromParent": false
+        },
+        "authorizationKind": {
+          "isSigned": false,
+          "isProved": false,
+          "verificationKeyHash": "3392518251768960475377392625298437850623664973002200885669375116181514017494"
+        }
+      },
+      "authorization": {
+        "proof": null,
+        "signature": null
+      }
+    },
+    {
+      "body": {
+        "publicKey": "B62qpusQPDNSKPuznvapz4dmd22gka26PxggqBXmU2eNhRuzvK4zab8",
+        "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "update": {
+          "appState": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "delegate": null,
+          "verificationKey": null,
+          "permissions": null,
+          "zkappUri": null,
+          "tokenSymbol": null,
+          "timing": null,
+          "votingFor": null
+        },
+        "balanceChange": {
+          "magnitude": "50395092",
+          "sgn": "Positive"
+        },
+        "incrementNonce": false,
+        "events": [],
+        "actions": [],
+        "callData": "0",
+        "callDepth": 1,
+        "preconditions": {
+          "network": {
+            "snarkedLedgerHash": null,
+            "blockchainLength": null,
+            "minWindowDensity": null,
+            "totalCurrency": null,
+            "globalSlotSinceGenesis": null,
+            "stakingEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            },
+            "nextEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            }
+          },
+          "account": {
+            "balance": null,
+            "nonce": null,
+            "receiptChainHash": null,
+            "delegate": null,
+            "state": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "actionState": null,
+            "provedState": null,
+            "isNew": null
+          },
+          "validWhile": null
+        },
+        "useFullCommitment": false,
+        "implicitAccountCreationFee": false,
+        "mayUseToken": {
+          "parentsOwnToken": false,
+          "inheritFromParent": false
+        },
+        "authorizationKind": {
+          "isSigned": false,
+          "isProved": false,
+          "verificationKeyHash": "3392518251768960475377392625298437850623664973002200885669375116181514017494"
+        }
+      },
+      "authorization": {
+        "proof": null,
+        "signature": null
+      }
+    },
+    {
+      "body": {
+        "publicKey": "B62qqdsN3jKPX36fMXabN2MBu13AsWkTQiMgp4kUqbKK7wiJsiWypnS",
+        "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "update": {
+          "appState": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "delegate": null,
+          "verificationKey": null,
+          "permissions": null,
+          "zkappUri": null,
+          "tokenSymbol": null,
+          "timing": null,
+          "votingFor": null
+        },
+        "balanceChange": {
+          "magnitude": "50326452",
+          "sgn": "Positive"
+        },
+        "incrementNonce": false,
+        "events": [],
+        "actions": [],
+        "callData": "0",
+        "callDepth": 1,
+        "preconditions": {
+          "network": {
+            "snarkedLedgerHash": null,
+            "blockchainLength": null,
+            "minWindowDensity": null,
+            "totalCurrency": null,
+            "globalSlotSinceGenesis": null,
+            "stakingEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            },
+            "nextEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            }
+          },
+          "account": {
+            "balance": null,
+            "nonce": null,
+            "receiptChainHash": null,
+            "delegate": null,
+            "state": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "actionState": null,
+            "provedState": null,
+            "isNew": null
+          },
+          "validWhile": null
+        },
+        "useFullCommitment": false,
+        "implicitAccountCreationFee": false,
+        "mayUseToken": {
+          "parentsOwnToken": false,
+          "inheritFromParent": false
+        },
+        "authorizationKind": {
+          "isSigned": false,
+          "isProved": false,
+          "verificationKeyHash": "3392518251768960475377392625298437850623664973002200885669375116181514017494"
+        }
+      },
+      "authorization": {
+        "proof": null,
+        "signature": null
+      }
+    },
+    {
+      "body": {
+        "publicKey": "B62qodsowyCCmmFjMUnPphPkS728A4JTS3Q93AbhvsacVDVeRWQ7k9X",
+        "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "update": {
+          "appState": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "delegate": null,
+          "verificationKey": null,
+          "permissions": null,
+          "zkappUri": null,
+          "tokenSymbol": null,
+          "timing": null,
+          "votingFor": null
+        },
+        "balanceChange": {
+          "magnitude": "50297874",
+          "sgn": "Positive"
+        },
+        "incrementNonce": false,
+        "events": [],
+        "actions": [],
+        "callData": "0",
+        "callDepth": 1,
+        "preconditions": {
+          "network": {
+            "snarkedLedgerHash": null,
+            "blockchainLength": null,
+            "minWindowDensity": null,
+            "totalCurrency": null,
+            "globalSlotSinceGenesis": null,
+            "stakingEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            },
+            "nextEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            }
+          },
+          "account": {
+            "balance": null,
+            "nonce": null,
+            "receiptChainHash": null,
+            "delegate": null,
+            "state": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "actionState": null,
+            "provedState": null,
+            "isNew": null
+          },
+          "validWhile": null
+        },
+        "useFullCommitment": false,
+        "implicitAccountCreationFee": false,
+        "mayUseToken": {
+          "parentsOwnToken": false,
+          "inheritFromParent": false
+        },
+        "authorizationKind": {
+          "isSigned": false,
+          "isProved": false,
+          "verificationKeyHash": "3392518251768960475377392625298437850623664973002200885669375116181514017494"
+        }
+      },
+      "authorization": {
+        "proof": null,
+        "signature": null
+      }
+    },
+    {
+      "body": {
+        "publicKey": "B62qq5fT32aie4bg6Ajea1gcitxFhrQWLdxXEpTrdoEX7C5kSSiEteC",
+        "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "update": {
+          "appState": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "delegate": null,
+          "verificationKey": null,
+          "permissions": null,
+          "zkappUri": null,
+          "tokenSymbol": null,
+          "timing": null,
+          "votingFor": null
+        },
+        "balanceChange": {
+          "magnitude": "50117364",
+          "sgn": "Positive"
+        },
+        "incrementNonce": false,
+        "events": [],
+        "actions": [],
+        "callData": "0",
+        "callDepth": 1,
+        "preconditions": {
+          "network": {
+            "snarkedLedgerHash": null,
+            "blockchainLength": null,
+            "minWindowDensity": null,
+            "totalCurrency": null,
+            "globalSlotSinceGenesis": null,
+            "stakingEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            },
+            "nextEpochData": {
+              "ledger": {
+                "hash": null,
+                "totalCurrency": null
+              },
+              "seed": null,
+              "startCheckpoint": null,
+              "lockCheckpoint": null,
+              "epochLength": null
+            }
+          },
+          "account": {
+            "balance": null,
+            "nonce": null,
+            "receiptChainHash": null,
+            "delegate": null,
+            "state": [
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ],
+            "actionState": null,
+            "provedState": null,
+            "isNew": null
+          },
+          "validWhile": null
+        },
+        "useFullCommitment": false,
+        "implicitAccountCreationFee": false,
+        "mayUseToken": {
+          "parentsOwnToken": false,
+          "inheritFromParent": false
+        },
+        "authorizationKind": {
+          "isSigned": false,
+          "isProved": false,
+          "verificationKeyHash": "3392518251768960475377392625298437850623664973002200885669375116181514017494"
+        }
+      },
+      "authorization": {
+        "proof": null,
+        "signature": null
+      }
+    }
+  ],
+  "memo": "E4ZMxfkj1CvEyUJ81RP8CHXmkN6q3dQd2bBgikycBaE9ozjhsiL6w"
+}

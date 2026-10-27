@@ -23,7 +23,7 @@ pub type TransitionFrontierSyncLedgerStagedActionWithMetaRef<'a> =
     redux::ActionWithMeta<&'a TransitionFrontierSyncLedgerStagedAction>;
 
 #[derive(Serialize, Deserialize, Debug, Clone, ActionEvent)]
-#[action_event(level = info)]
+#[action_event(level = debug)]
 pub enum TransitionFrontierSyncLedgerStagedAction {
     PartsFetchPending,
     PartsPeerFetchInit,
@@ -65,7 +65,7 @@ pub enum TransitionFrontierSyncLedgerStagedAction {
 }
 
 impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncLedgerStagedAction {
-    fn is_enabled(&self, state: &crate::State, _time: redux::Timestamp) -> bool {
+    fn is_enabled(&self, state: &crate::State, time: redux::Timestamp) -> bool {
         match self {
             TransitionFrontierSyncLedgerStagedAction::PartsFetchPending => state
                 .transition_frontier
@@ -88,7 +88,7 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncLedgerStag
                         return false;
                     };
                     staged.fetch_attempts().is_some_and(|attempts| {
-                        attempts.is_empty() || attempts.iter().all(|(_, s)| s.is_error())
+                        attempts.values().all(|s| s.is_failed_or_stale(time))
                     }) && p2p.ready_rpc_peers_iter().next().is_some()
                 }),
             TransitionFrontierSyncLedgerStagedAction::PartsPeerFetchPending { .. } => state

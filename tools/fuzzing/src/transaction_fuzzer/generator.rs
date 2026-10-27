@@ -1887,7 +1887,7 @@ pub fn sign_account_updates(
                     true => full_txn_commitment,
                     false => txn_commitment,
                 };
-                Some(signer.sign(&kp, input, false))
+                Some(signer.sign(&kp, input, mina_signer::NonceMode::Legacy))
             }
             _ => None,
         };
@@ -1923,7 +1923,11 @@ impl Generator<ZkAppCommand> for FuzzerCtx {
             Some(keypair) => keypair.clone(),
             None => self.gen(),
         };
-        zkapp_command.fee_payer.authorization = signer.sign(&keypair, &full_txn_commitment, false);
+        zkapp_command.fee_payer.authorization = signer.sign(
+            &keypair,
+            &full_txn_commitment,
+            mina_signer::NonceMode::Legacy,
+        );
 
         sign_account_updates(
             self,
@@ -1974,7 +1978,7 @@ impl Generator<StakeDelegationPayload> for FuzzerCtx {
 fn sign_payload(keypair: &Keypair, payload: &SignedCommandPayload) -> Signature {
     let tx = TransactionUnionPayload::of_user_command_payload(payload);
     let mut signer = mina_signer::create_legacy(NetworkId::TESTNET);
-    signer.sign(keypair, &tx, false)
+    signer.sign(keypair, &tx, mina_signer::NonceMode::Legacy)
 }
 
 impl Generator<SignedCommandPayload> for FuzzerCtx {

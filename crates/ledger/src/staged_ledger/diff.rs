@@ -148,19 +148,25 @@ impl Diff {
         F: Fn(Vec<WithStatus<UserCommand>>) -> Result<Vec<valid::UserCommand>, VerifierError>,
     {
         let validate = |cmds: Vec<WithStatus<UserCommand>>| -> Result<Vec<WithStatus<valid::UserCommand>>, VerifierError> {
-            let valids = check(cmds.clone())?;
-            Ok(valids.into_iter().zip(cmds).map(|(data, c)| {
-                WithStatus { data, status: c.status  }
+            // The verifier consumes the commands. Keep only their statuses;
+            // cloning zkApp commands here holds a second full diff during apply.
+            let statuses: Vec<_> = cmds.iter().map(|c| c.status.clone()).collect();
+            let valids = check(cmds)?;
+            Ok(valids.into_iter().zip(statuses).map(|(data, status)| {
+                WithStatus { data, status }
             }).collect())
         };
 
-        let commands = self.commands();
-
-        let (d1, d2) = self.diff;
+        let (mut d1, mut d2) = self.diff;
+        let first_len = d1.commands.len();
+        let mut commands = std::mem::take(&mut d1.commands);
+        if let Some(second) = d2.as_mut() {
+            commands.append(&mut second.commands);
+        }
 
         let commands_all = validate(commands)?;
 
-        let (commands1, commands2) = split_at_vec(commands_all, d1.commands.len());
+        let (commands1, commands2) = split_at_vec(commands_all, first_len);
 
         let p1 = with_valid_signatures::PreDiffWithAtMostTwoCoinbase {
             completed_works: d1.completed_works,

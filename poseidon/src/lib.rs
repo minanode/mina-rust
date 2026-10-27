@@ -5,8 +5,12 @@ use std::marker::PhantomData;
 use ark_ff::{BigInt, BigInteger256, Field};
 use mina_curves::pasta::{Fp, Fq};
 
+#[cfg(any(target_arch = "wasm32", test))]
+mod fp9;
 pub mod hash;
 mod params;
+#[cfg(any(target_arch = "wasm32", test))]
+mod perm9;
 
 pub use params::*;
 
@@ -83,6 +87,13 @@ pub fn poseidon_block_cipher<F: Field, SC: SpongeConstants>(
     params: &SpongeParams<F>,
     state: &mut [F; 3],
 ) {
+    // In WASM, Pasta Fp with this crate's parameters runs on 9x29-bit limbs,
+    // 2.5 times faster in Chrome (`perm9`). Natively arkworks is faster.
+    #[cfg(target_arch = "wasm32")]
+    if perm9::try_permute::<F, SC>(params, state) {
+        return;
+    }
+
     if SC::PERM_INITIAL_ARK {
         for (i, x) in params.round_constants[0].iter().enumerate() {
             state[i].add_assign(x);

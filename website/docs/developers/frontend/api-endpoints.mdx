@@ -84,7 +84,7 @@ The dashboard extracts the following fields from the `/status` response:
     },
     sync: {
       time: number,   // Last block time for display
-      phase: "Bootstrap" | "Catchup" | "Synced"  // Sync status indicator
+      phase: "Connecting" | "Listening" | "Bootstrap" | "Catchup" | "Synced"  // Sync status indicator
     }
   },
 
@@ -314,7 +314,20 @@ The dashboard extracts the following fields from the `/stats/sync` response:
     // Sync metadata
     best_tip_received: number, // Timestamp of best tip receipt (nanoseconds)
     synced: boolean | null, // Whether node is fully synced
-    kind: "Synced" | "Catchup" | "Bootstrap", // Sync state
+    kind: "Bootstrap" | "Catchup" | "Restored", // Sync state
+    // A restart from saved state (the frontier store): on the `Restored`
+    // record and the catch-ups after it, else null. Times in nanoseconds.
+    restored:
+      {
+        root_height: number,
+        tip_height: number, // The tip the node restarted from
+        blocks: number, // Blocks replayed after the root
+        load_start: number, // The store load asked for
+        load_ms: number, // The store thread's time on the load
+        replay_start: number,
+        replay_end: number | null, // The replay committed
+        failed: { time: number, reason: string } | null, // The replay failed
+      } | null,
 
     // Block sync progress
     blocks: [
@@ -333,7 +346,8 @@ The dashboard extracts the following fields from the `/stats/sync` response:
       },
     ],
 
-    // Ledger sync progress with timing
+    // Ledger sync progress with timing. Each ledger also has `from_store`:
+    // true when a restart loaded it from saved state instead of fetching it.
     ledgers: {
       root: {
         snarked: {

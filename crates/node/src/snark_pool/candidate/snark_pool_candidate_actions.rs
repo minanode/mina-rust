@@ -102,7 +102,14 @@ impl redux::EnablingCondition<crate::State> for SnarkPoolCandidateAction {
                 .is_some_and(|s| matches!(s, SnarkPoolCandidateState::WorkFetchPending { .. })),
             SnarkPoolCandidateAction::WorkFetchSuccess { peer_id, work } => {
                 let job_id = work.job_id();
-                state.snark_pool.contains(&job_id)
+                state
+                    .snark_pool
+                    .get(&job_id)
+                    .is_some_and(|job| job.matches_work(work))
+                    && state
+                        .transition_frontier
+                        .best_tip()
+                        .is_some_and(|tip| state.snark_pool.work_is_checked(work, tip.hash()))
                     && state
                         .snark_pool
                         .candidates

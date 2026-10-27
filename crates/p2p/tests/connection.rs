@@ -9,6 +9,7 @@ use p2p_testing::{
     libp2p_node::Libp2pNodeConfig,
     rust_node::{RustNodeConfig, RustNodeId},
     stream::ClusterStreamExt,
+    test_node::TestNode,
     utils::{
         peer_ids, rust_nodes_from_default_config, try_run_cluster,
         try_wait_for_all_nodes_to_connect, try_wait_for_nodes_to_connect,
@@ -128,6 +129,27 @@ async fn libp2p_to_rust() -> anyhow::Result<()> {
     assert!(connected);
 
     assert_peer_is_ready(&cluster, rust_node, peer_id);
+
+    // Connection readiness can precede the Identify exchange.
+    try_run_cluster(&mut cluster, Duration::from_secs(2)).await?;
+
+    let state = cluster.rust_node(rust_node).state();
+    let peer = &state.peers[&peer_id];
+    let source_port = state
+        .network
+        .scheduler
+        .connections
+        .iter()
+        .find(|(_, connection)| connection.incoming && connection.peer_id() == Some(&peer_id))
+        .expect("the inbound connection should exist")
+        .0
+        .sock_addr
+        .port();
+    assert_ne!(source_port, cluster.libp2p_node(libp2p_node).libp2p_port());
+    assert!(
+        peer.dial_opts.is_none(),
+        "the loopback listener or incoming source port became a dial target"
+    );
 
     Ok(())
 }

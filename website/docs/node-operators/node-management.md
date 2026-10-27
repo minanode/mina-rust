@@ -79,6 +79,146 @@ mina build-info | grep "Version\|branch"
 
 ## Monitoring Your Node
 
+### Read-only daemon status
+
+Inspect a running Rust node with one command:
+
+```bash
+mina node status --node http://127.0.0.1:3000
+mina node status --node http://127.0.0.1:3000 --json
+```
+
+This uses only GET requests to `/status`, `/build_env`, and
+`/stats/actions?id=latest`. The reported network and build belong to the remote
+node; the CLI's global `--network` does not select the server. The command does
+not start a node, submit transactions, or change configuration.
+
+For a server where only `/status` reads are permitted, add `--status-only`. This
+sends exactly one GET and leaves remote build/verification statistics
+unavailable. The periodic watcher accepts the same flag. No `/state` or GraphQL
+request is made in either mode.
+
+The report includes network and chain ID, sync status/phase, applied best-tip
+height and age, root height, connected peers by transport, remote build commit,
+uptime, P2P allocation estimate, and recent block/work verification action
+successes and failures. Libp2p peers are usually OCaml peers, but transport does
+not prove the peer's implementation. Memory is **P2P allocation only**, not
+process RSS. Verification counts cover actions **since the latest best-tip
+change**, not lifetime totals or a fixed time window; work counts are batches,
+not individual proofs. Missing metrics are `unavailable` in text and `null` in
+JSON, never invented zeroes.
+
+Older nodes may lack timestamp, root or uptime fields. For those responses, the
+command can use a consistent timestamp advertised by connected peers for the
+exact local tip hash, and derive root height from the contiguous applied chain's
+size. Both sources are labelled in the output. Uptime remains unavailable.
+Unknown chain IDs have no inferred network name. The tip's block timestamp is
+used for age, never the last sync event's time.
+
+### Health checks and periodic alerts
+
+```bash
+mina node status --node http://127.0.0.1:3000 --check \
+  --max-tip-age 1800 --min-peers 1
+```
+
+`--check` prints one `OK:` or `UNHEALTHY:` line. Exit codes:
+
+- `0`: the check passed (or a normal status read succeeded without `--check`).
+- `1`: a required request/response failed, or a `--check` rule failed.
+- `2`: invalid command-line arguments.
+
+A health check requires `Synced`, an available tip timestamp at or before the
+client's clock, tip age no greater than `--max-tip-age` **seconds**, and at
+least `--min-peers` **connected** peers. Defaults are 1800 seconds and one peer.
+Bootstrapping is unhealthy until those conditions hold. Future timestamps fail
+with a clock warning. Optional build/statistics failures appear as warnings and
+do not fail an otherwise healthy check. `--json --check` preserves structured
+output, including `healthy`, `reasons`, `warnings`, and `schema_version`.
+`--timeout` bounds each of the three requests (default 5 seconds).
+
+For continuous tip-age and log-silence alerts, run this script from the
+checkout:
+
+```bash
+python3 tools/regression/watch-status.py \
+  --mina ./target/release/mina --url http://127.0.0.1:3000 \
+  --interval 60 --max-tip-age 1800 --min-peers 1 \
+  --log-file /path/to/node.log --max-log-silence 15 \
+  >> /path/to/status-alerts.log 2>&1
+```
+
+The script logs UTC `ALERT` lines on each failing poll and `RECOVERED` when all
+checks pass again. `--interval` is seconds between completed checks;
+`--max-log-silence` is **minutes**. It checks log metadata independently of HTTP
+success and never reads log contents, signals the node, or restarts it. Use a
+separate alert log: writing alerts into the monitored node log would mask
+silence. At the default level the node logs a status line at least every 10
+minutes, so a silence of 15 minutes means it is stuck. HTTP requests are logged
+only at `debug`; combine this check with tip age.
+
+The first sample uses a nonempty file's modification time as a proxy for prior
+activity. Subsequent samples require size growth; touching the file does not
+reset the timer. Empty/missing files, future mtimes, and stale rotated files
+alert. A new nonempty rotated file uses its mtime. Timing after the initial
+sample uses a monotonic clock. `--once` supports a one-shot check with exit
+`0`/`1`; repeated cron invocations of `--once` only have the mtime proxy, so use
+the continuous mode for observed growth.
+
+Tip age detects a stalled node, but does not compare heights with a public
+reference or establish canonical-chain agreement. Long network-wide block gaps
+can alert too. Choose thresholds for the network's block cadence and operator
+response time; no watcher is installed automatically.
+
+### Logs and log levels
+
+The node logs to the console and to `mina.log` in its working directory.
+
+At the default level, `info`, it logs what an operator follows, about a line per
+event:
+
+- `NodeStart`: the network, version, ports, working directory, and whether the
+  frontier store, block producer, SNARK worker and log file are on;
+- the sync phases (`TransitionFrontierSyncLedgerStakingSuccess` and so on), and
+  `NodeStatus` lines with the progress and the peer count, at most once a minute
+  and at least every 10 minutes;
+- `NodeSynced` when the node first syncs and when it syncs again, and a
+  `NodeLostSync` warning when it has not been synced for a minute;
+- `TransitionFrontierSynced` with each new best tip's height, hash and peers;
+- the blocks it produces (`BlockProducerWonSlot`, `BlockProducerBlockProduced`,
+  `BlockProducerBlockInjected`, `BlockProducerBlockIntegrated`), and
+  `SnarkWorkSold` when a block includes its SNARK work;
+- warnings and errors.
+
+A synced devnet node writes about 20 to 40 KB an hour, under 1 MB a day at this
+level, and logs at least a line every 10 minutes. `--verbosity debug` (or
+`--log-level debug`, or `MINA_VERBOSITY=debug`) brings back the detail the
+`info` level showed in earlier builds (the SNARK pool, catch-up requests,
+gossip, dials, block applications, HTTP requests and so on), about 6 MB an hour
+on devnet. `--verbosity trace` logs every action of the node's state machine, as
+`debug` did in earlier builds: about 220 MB an hour, and 1.5 GB an hour while it
+bootstraps, too much to keep for long.
+
+`ProducerBlockQueuedForGossip` and frontier restore details are at DEBUG. Run
+with `--verbosity debug` to see those events when investigating a produced block
+or a restore.
+
+If the log directory cannot be used, the node warns
+`file logging disabled: <reason>` and continues with console logging. A rotation
+failure warns once and retries at most once a minute while preserving the
+current file when possible.
+
+`mina.log` is rotated by size: at `--log-file-size-mb` (default 20) it becomes
+`mina.log.1`, the older files shift up one, and only `--log-file-count` files
+(default 10) are kept, so the log files take at most 200 MB. `--log-path DIR`
+puts them in another directory, and `--disable-filesystem-logging` turns the
+file off: the console is then the only log. Earlier builds wrote a file a day,
+`mina.log.YYYY-MM-DD`, and never deleted them; the node leaves those files
+alone, so delete them once you no longer need them.
+
+To report a problem, attach `mina.log` and `mina.log.1`; run the node with
+`--verbosity debug` if you can reproduce it.
+
 ### View Logs
 
 For Docker Compose setups:

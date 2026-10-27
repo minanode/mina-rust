@@ -1,0 +1,338 @@
+{
+  "chain_id": "0718f61ab88f9d0fa643ff4dc3a3d5998dd6d51a6008b2b0339b0dbb26133886",
+  "transition_frontier": {
+    "best_tip": {
+      "hash": "3NLdTaFbvvNmeF4fRYGL8XjBFxEhJiP7AXPCjLpiRGAegABjiKvK",
+      "height": 564635,
+      "global_slot": 45534
+    },
+    "sync": {
+      "time": 1792556467223097445,
+      "status": "Synced",
+      "phase": "Synced",
+      "target": null
+    }
+  },
+  "peers": [
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connected",
+      "is_libp2p": true,
+      "best_tip": "3NLdTaFbvvNmeF4fRYGL8XjBFxEhJiP7AXPCjLpiRGAegABjiKvK",
+      "best_tip_timestamp": 1792556460000000000
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connected",
+      "is_libp2p": true,
+      "best_tip": "3NKCMgdeUdSzXbHNnQmM9n4J7LkSue2HkH7Tp6fpu5JT57DuNxfA",
+      "best_tip_timestamp": 1792555830000000000
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Disconnected",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Disconnected",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connected",
+      "is_libp2p": true,
+      "best_tip": "3NLdTaFbvvNmeF4fRYGL8XjBFxEhJiP7AXPCjLpiRGAegABjiKvK",
+      "best_tip_timestamp": 1792556460000000000
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connected",
+      "is_libp2p": true,
+      "best_tip": "3NLdTaFbvvNmeF4fRYGL8XjBFxEhJiP7AXPCjLpiRGAegABjiKvK",
+      "best_tip_timestamp": 1792556460000000000
+    },
+    {
+      "connection_status": "Connected",
+      "is_libp2p": true,
+      "best_tip": "3NLdTaFbvvNmeF4fRYGL8XjBFxEhJiP7AXPCjLpiRGAegABjiKvK",
+      "best_tip_timestamp": 1792556460000000000
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Disconnected",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connected",
+      "is_libp2p": true,
+      "best_tip": "3NKc3J7jL4PAYS6QiBeu1NDoRkNDhSnmn1wT8cN3rR4fqq9q2UV8",
+      "best_tip_timestamp": 1792553760000000000
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    },
+    {
+      "connection_status": "Connecting",
+      "is_libp2p": true,
+      "best_tip": null,
+      "best_tip_timestamp": null
+    }
+  ],
+  "resources_status": {
+    "p2p_malloc_size": 1743469,
+    "transition_frontier": {
+      "best_chain_size": 291,
+      "blacklist_size": 0,
+      "diff_tx_size": 0,
+      "needed_protocol_states_size": 344
+    },
+    "snark_pool": {
+      "candidates_inconsistency": [],
+      "candidates_size": 0,
+      "pool_size": 368
+    }
+  }
+}

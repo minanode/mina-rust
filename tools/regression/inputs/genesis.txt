@@ -1,0 +1,6 @@
+# The genesis config of Mesa mainnet, for replays from genesis (mesa-mainnet.bin)
+# and for native bootstraps and web node builds (mesa-mainnet-without-ledgers.json).
+#
+# sha256, size in bytes, path relative to the inputs directory
+5bdcb21bf982d904f140a788b5c857faa6490faf9f6fd7cec0630a754555cded  255584893  genesis-mainnet/mesa-mainnet.bin
+02fdf2a3a3b07d3b0afada6f01d747b560f35989518d2a5516f3a805736c7bb3  6222  genesis-mainnet/mesa-mainnet-without-ledgers.json

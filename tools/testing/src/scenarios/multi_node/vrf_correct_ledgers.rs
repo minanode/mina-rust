@@ -43,11 +43,7 @@ impl MultiNodeVrfGetCorrectLedgers {
             initial_peers: Vec::new(),
             peer_id: Default::default(),
             block_producer: Some(RustNodeBlockProducerTestingConfig {
-                config: BlockProducerConfig {
-                    pub_key: sec_key.public_key().into(),
-                    custom_coinbase_receiver: None,
-                    proposed_protocol_version: None,
-                },
+                config: BlockProducerConfig::new(sec_key.public_key().into()),
                 sec_key,
             }),
             snark_worker: None,
@@ -55,6 +51,7 @@ impl MultiNodeVrfGetCorrectLedgers {
             libp2p_port: None,
             recorder: Default::default(),
             peer_discovery: true,
+            libp2p_target_peers: None,
         });
 
         tokio::time::sleep(Duration::from_secs(2)).await;

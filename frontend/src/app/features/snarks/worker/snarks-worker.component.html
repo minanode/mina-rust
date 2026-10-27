@@ -1,0 +1,321 @@
+<div class="page-heading">
+  <div>
+    <h1>SNARK worker</h1>
+    <p class="secondary">
+      This node proves SNARK work for its pool and gossips it; block producers
+      pay the fee to the worker's public key when they buy it. The worker needs
+      no private key.
+    </p>
+  </div>
+</div>
+
+@if (node()?.isWebNode) {
+  <div class="notice" role="status">
+    The worker panel is for a native node. Choose one in the node menu (top
+    right).
+  </div>
+} @else {
+  @if (controlError(); as error) {
+    <div class="notice error" role="alert">
+      {{ error }} Retrying every 5 seconds.
+    </div>
+  }
+  @if (control(); as control) {
+    <section class="panel worker" aria-label="Worker">
+      <div class="worker-head">
+        <div>
+          <h2>
+            Worker
+            <span class="badge" [class.on]="control.enabled">
+              {{ control.enabled ? 'On' : 'Off' }}
+            </span>
+          </h2>
+          <p class="secondary">{{ workerState(control) }}</p>
+        </div>
+        @if (control.allowed) {
+          <button
+            type="button"
+            class="switch"
+            role="switch"
+            [attr.aria-checked]="control.enabled"
+            [disabled]="busy() || (!control.enabled && !publicKey())"
+            (click)="toggle()"
+          >
+            <span class="knob"></span>
+            {{ control.enabled ? 'Turn off' : 'Turn on' }}
+          </button>
+        }
+      </div>
+
+      @if (control.allowed) {
+        <div class="form">
+          <label>
+            <span>Public key that receives the fees</span>
+            <input
+              type="text"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="B62q…"
+              [value]="publicKey()"
+              (input)="onKey($any($event.target).value)"
+            />
+          </label>
+          <label class="fee">
+            <span>Fee per bundle (MINA)</span>
+            <input
+              type="text"
+              inputmode="decimal"
+              autocomplete="off"
+              placeholder="0.1"
+              [value]="fee()"
+              (input)="onFee($any($event.target).value)"
+            />
+          </label>
+          @if (control.enabled) {
+            <button
+              type="button"
+              class="apply"
+              [disabled]="busy() || !changed"
+              (click)="start()"
+            >
+              Apply new key or fee
+            </button>
+          }
+        </div>
+      } @else {
+        <div class="notice" role="status">
+          Worker control is off on this node. Start the node with
+          <code>--allow-worker-control</code>
+          to turn the worker on from here, on a node whose HTTP port only you
+          can reach.
+        </div>
+      }
+
+      <p class="rule secondary">
+        If the key's account doesn't exist on chain yet, nodes only accept work
+        with a fee of at least
+        {{ formatMina(control.account_creation_fee) }} MINA. Fund the account
+        first to ask less.
+      </p>
+      @if (control.setting_warning; as warning) {
+        <div class="notice error" role="alert">{{ warning }}</div>
+      }
+      @if (control.fee_problem; as problem) {
+        <div class="notice error" role="alert">{{ problem }}</div>
+      }
+      @if (changeError(); as error) {
+        <div class="notice error" role="alert">{{ error }}</div>
+      }
+      @if (changeDone(); as done) {
+        <div class="notice ok" role="status">{{ done }}</div>
+      }
+
+      <div class="summary compact">
+        <div>
+          <span class="secondary">Key</span>
+          <strong>
+            @if (control.public_key; as key) {
+              <mina-chain-value [value]="key" kind="hash" />
+            } @else {
+              –
+            }
+          </strong>
+        </div>
+        <div>
+          <span class="secondary">Fee</span>
+          <strong>
+            {{ control.fee !== null ? formatMina(control.fee) + ' MINA' : '–' }}
+          </strong>
+        </div>
+        <div>
+          <span class="secondary">Account on chain</span>
+          <strong>
+            @switch (control.account_exists) {
+              @case (true) {
+                Exists
+              }
+              @case (false) {
+                Doesn't exist yet
+              }
+              @default {
+                –
+              }
+            }
+          </strong>
+        </div>
+        <div>
+          <span class="secondary">Proof time</span>
+          <strong>{{ proofTimes(control) }}</strong>
+        </div>
+      </div>
+
+      @if (control.job; as job) {
+        <p class="job">
+          Proving a {{ jobKind(job) }} bundle for {{ since(job.submitted) }}:
+          <mina-chain-value [value]="job.job_id" kind="hash" />
+        </p>
+      }
+      @if (workerError(control); as error) {
+        <div class="notice error" role="alert">
+          The worker stopped on an error: {{ error }}
+        </div>
+      }
+
+      @if (control.recent.length) {
+        <h3>Latest jobs</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Finished (UTC)</th>
+                <th>Bundle</th>
+                <th class="numeric">Time</th>
+                <th class="numeric">Fee (MINA)</th>
+                <th>Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (outcome of control.recent; track outcome.time) {
+                <tr [class.failed]="outcome.error">
+                  <td>{{ outcome.time / 1e6 | date: 'HH:mm:ss' : 'UTC' }}</td>
+                  <td>{{ jobKind(outcome) }}</td>
+                  <td class="numeric">{{ seconds(outcome.duration_ms) }}</td>
+                  <td class="numeric">{{ formatMina(outcome.fee) }}</td>
+                  <td [title]="outcome.error ?? ''">
+                    {{ outcomeLabel(outcome) }}
+                    @if (outcome.error; as error) {
+                      <small>{{ error }}</small>
+                    }
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+        @if (failures(control).length) {
+          <p class="footnote">
+            {{ failures(control).length }} of the latest
+            {{ control.recent.length }} jobs failed. A failed job is dropped:
+            nothing of it is offered.
+          </p>
+        }
+      }
+    </section>
+  } @else if (!controlError()) {
+    <p class="empty" role="status">Loading the worker…</p>
+  }
+
+  <section aria-label="Included work">
+    <h2>Work included in blocks</h2>
+    <p class="secondary">
+      Best-chain blocks that bought work from the worker's keys, newest first. A
+      block is pending until it is behind the root, then final; a reorg drops
+      it. Refreshes every 15 seconds.
+    </p>
+    @if (includedError(); as error) {
+      <div class="notice error" role="alert">{{ error }}</div>
+    }
+    @if (included(); as log) {
+      <div class="summary">
+        <div>
+          <span class="secondary">Bundles included</span>
+          <strong>
+            {{ log.final_totals.bundles + log.pending_totals.bundles | number }}
+          </strong>
+          <small>
+            {{
+              log.final_totals.zkapp_bundles + log.pending_totals.zkapp_bundles
+            }}
+            zkApp
+          </small>
+        </div>
+        <div>
+          <span class="secondary">Earned, final (MINA)</span>
+          <strong>{{ formatMina(log.final_totals.fees) }}</strong>
+          <small>{{ blocks(log.final_totals.blocks) }}</small>
+        </div>
+        <div>
+          <span class="secondary">Earned, pending (MINA)</span>
+          <strong>{{ formatMina(log.pending_totals.fees) }}</strong>
+          <small>{{ blocks(log.pending_totals.blocks) }}</small>
+        </div>
+        <div>
+          <span class="secondary">Since (UTC)</span>
+          <strong>
+            {{
+              log.started_ms !== null
+                ? (log.started_ms | date: 'MMM d, HH:mm' : 'UTC')
+                : '–'
+            }}
+          </strong>
+        </div>
+      </div>
+      @if (log.entries.length) {
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Height</th>
+                <th>Time (UTC)</th>
+                <th class="numeric">Bundles</th>
+                <th class="numeric">Fees (MINA)</th>
+                <th>Producer</th>
+                <th>State</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (entry of log.entries; track entry.state_hash) {
+                <tr [attr.data-state-hash]="entry.state_hash">
+                  <td>
+                    <a
+                      class="height"
+                      target="_blank"
+                      rel="noopener"
+                      [href]="explorerBlockUrl(log.network, entry.height)"
+                      [title]="entry.state_hash"
+                    >
+                      {{ entry.height | number }}
+                    </a>
+                  </td>
+                  <td>
+                    {{ entry.time_ms | date: 'HH:mm:ss' : 'UTC' }}
+                    <small>
+                      {{ entry.time_ms | date: 'MMM d, y' : 'UTC' }}
+                    </small>
+                  </td>
+                  <td class="numeric">
+                    {{ entry.bundles }}
+                    @if (entry.zkapp_bundles) {
+                      <small>{{ entry.zkapp_bundles }} zkApp</small>
+                    }
+                  </td>
+                  <td class="numeric">{{ formatMina(entry.fees) }}</td>
+                  <td>
+                    <mina-chain-value [value]="entry.producer" kind="hash" />
+                  </td>
+                  <td>
+                    <span class="state" [ngClass]="entry.status">
+                      {{ statusLabel(entry.status) }}
+                    </span>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+        <p class="footnote">
+          The log keeps the last {{ log.max_blocks }} blocks; the totals count
+          since it began. Unknown: the node lost sight of a pending block (it
+          restarted far behind), so its fees are not counted.
+        </p>
+      } @else {
+        <div class="empty-section">
+          No block has bought this worker's work yet. Work is bought only while
+          it is the cheapest in the pool for its job.
+        </div>
+      }
+    } @else if (!includedError()) {
+      <p class="empty" role="status">Loading the log…</p>
+    }
+  </section>
+}

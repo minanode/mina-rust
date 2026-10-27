@@ -143,7 +143,7 @@ pub struct Oracles<F: FieldWitness> {
 
 impl<F: FieldWitness> Oracles<F> {
     pub fn alpha(&self) -> F {
-        self.o.alpha_chal.0
+        self.o.alpha_chal.inner()
     }
 
     pub fn beta(&self) -> F {
@@ -155,7 +155,7 @@ impl<F: FieldWitness> Oracles<F> {
     }
 
     pub fn zeta(&self) -> F {
-        self.o.zeta_chal.0
+        self.o.zeta_chal.inner()
     }
 
     pub fn joint_combiner(&self) -> Option<F> {
@@ -250,7 +250,7 @@ pub fn create_oracle_with_public_input<F: FieldWitness>(
         .proof
         .prechallenges(&mut sponge)
         .into_iter()
-        .map(|f| f.0)
+        .map(|f| f.inner())
         .collect();
 
     Oracles {
@@ -402,7 +402,7 @@ fn deferred_values(params: DeferredValuesParams) -> DeferredValuesAndHints {
             .map(|v| scalar_to_field(to_bytes(v)))
             .collect::<Vec<_>>();
 
-        let r = scalar_to_field(to_bytes(r.0));
+        let r = scalar_to_field(to_bytes(r.inner()));
         let zeta = scalar_to_field(plonk0.zeta_bytes);
         let challenge_poly = challenge_polynomial(&chals);
         let b = challenge_poly(zeta) + (r * challenge_poly(zetaw));
@@ -420,9 +420,9 @@ fn deferred_values(params: DeferredValuesParams) -> DeferredValuesAndHints {
             evals,
             combined_evals: &combined_evals,
             minimal: &tick_plonk_minimal,
-            r: scalar_to_field(to_bytes(r.0)),
+            r: scalar_to_field(to_bytes(r.inner())),
             old_bulletproof_challenges: &prev_challenges,
-            xi: scalar_to_field(to_bytes(xi.0)),
+            xi: scalar_to_field(to_bytes(xi.inner())),
             zetaw,
             public: &x_hat,
             ft_eval1: proof_with_public.proof.ft_eval1,
@@ -445,7 +445,7 @@ fn deferred_values(params: DeferredValuesParams) -> DeferredValuesAndHints {
             },
             combined_inner_product: shift(combined_inner_product),
             b: shift(b),
-            xi: to_bytes(xi.0),
+            xi: to_bytes(xi.inner()),
             bulletproof_challenges: {
                 assert_eq!(new_bulletproof_challenges.len(), BACKEND_TICK_ROUNDS_N);
                 new_bulletproof_challenges
@@ -581,6 +581,15 @@ pub struct WrapParams<'a> {
     pub dlog_plonk_index: &'a PlonkVerificationKeyEvals<Fp>,
     pub step_prover_index: &'a ProverIndex<Fp>,
     pub wrap_prover: &'a Prover<Fq>,
+    /// The wrap domain of each proof the step proof verified, as an index
+    /// into 2^13, 2^14 and 2^15, front-padded with ones to two, as OCaml's
+    /// wrap prover answers `Wrap_domain_indices`. `None` takes the circuit's
+    /// `ForWrapData` value, which holds when the proofs verified are
+    /// transaction or blockchain proofs (2^14), or none; a zkApp proof's
+    /// domain is its verification key's.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/pickles/wrap.ml#L404-L416>
+    pub wrap_domain_indices: Option<Box<[Fq; 2]>>,
 }
 
 pub fn wrap<C: ProofConstants + ForWrapData>(
@@ -597,6 +606,7 @@ pub fn wrap<C: ProofConstants + ForWrapData>(
         dlog_plonk_index,
         step_prover_index,
         wrap_prover,
+        wrap_domain_indices: actual_wrap_domain_indices,
     } = params;
 
     let WrapData {
@@ -606,6 +616,7 @@ pub fn wrap<C: ProofConstants + ForWrapData>(
         step_domains,
         wrap_domain_indices,
     } = C::wrap_data();
+    let wrap_domain_indices = actual_wrap_domain_indices.unwrap_or(wrap_domain_indices);
 
     let messages_for_next_step_proof_hash = crate::proofs::transaction::MessagesForNextStepProof {
         app_state,
@@ -1298,8 +1309,13 @@ pub fn make_scalars_env_checked<F: FieldWitness>(
     let zeta_to_n_minus_1_lazy =
         LazyValue::make(move |w: &mut Witness<F>| domain_clone.vanishing_polynomial(zeta, w));
 
+    // The verified proof's own feature flags: a side-loaded zkApp proof's
+    // circuit may use custom gates and lookups (ZK1).
+    // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/pickles/plonk_checks/plonk_checks.ml#L157-L163>
     let feature_flags = match hack_feature_flags {
-        OptFlag::Maybe => Some(expand_feature_flags::<F>(&FeatureFlags::empty())),
+        OptFlag::Maybe => Some(expand_feature_flags::<F>(
+            &minimal.feature_flags.to_boolean(),
+        )),
         _ => None,
     };
 

@@ -135,7 +135,7 @@
       ],
       "last_vrf_output": "1vt0TXFAq1ZZcD5sZE_X4wG1md3hPj2JNSGK5vh_vgI=",
       "total_currency": "3019700000000001000",
-      "curr_global_slot": {
+      "curr_global_slot_since_hard_fork": {
         "slot_number": "99",
         "slots_per_epoch": "30"
       },

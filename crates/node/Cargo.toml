@@ -11,7 +11,9 @@ workspace = true
 anyhow = { workspace = true }
 ark-ff = { workspace = true }
 base64 = { workspace = true }
+binprot = { workspace = true }
 blake2 = { workspace = true }
+crc32fast = { workspace = true }
 derive_more = { workspace = true }
 graphannis-malloc_size_of = { workspace = true }
 graphannis-malloc_size_of_derive = { workspace = true }
@@ -32,6 +34,7 @@ num_enum = { workspace = true }
 poseidon = { workspace = true }
 postcard = { workspace = true }
 rand = { workspace = true }
+rayon = { workspace = true }
 redux = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = [
@@ -42,6 +45,7 @@ serde_with = { workspace = true, features = ["time_0_3"] }
 static_assertions = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true, features = ["parsing"] }
 tokio = { workspace = true }
@@ -50,6 +54,7 @@ utoipa = { workspace = true, optional = true }
 [build-dependencies]
 regex = { workspace = true }
 rust-format = { workspace = true }
+tempfile = { workspace = true }
 vergen = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
@@ -74,6 +79,11 @@ openapi = [
 serializable_callbacks = []
 replay = []
 p2p-webrtc = ["mina-p2p/p2p-webrtc"]
+p2p-webrtc-rustrtc = ["mina-p2p/p2p-webrtc-rustrtc"]
+p2p-webrtc-rs = ["mina-p2p/p2p-webrtc-rs"]
+p2p-webrtc-rustrtc-lib = ["mina-p2p/p2p-webrtc-rustrtc-lib"]
+p2p-webrtc-ready-events = ["mina-p2p/p2p-webrtc-ready-events"]
 p2p-libp2p = ["mina-p2p/p2p-libp2p"]
 fuzzing = ["mina-p2p/fuzzing"]
+memory-debug = []
 exit-on-invalid-peers = []

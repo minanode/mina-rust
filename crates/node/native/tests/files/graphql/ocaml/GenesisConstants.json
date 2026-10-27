@@ -1,0 +1,9 @@
+{
+ "data": {
+  "genesisConstants": {
+   "accountCreationFee": "1000000000",
+   "coinbase": "360000000000",
+   "genesisTimestamp": "2026-09-03T10:00:00.000000-08:00"
+  }
+ }
+}

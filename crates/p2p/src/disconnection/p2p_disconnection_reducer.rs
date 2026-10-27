@@ -120,19 +120,30 @@ impl P2pDisconnectedState {
                 }
 
                 peer.status = P2pPeerStatus::Disconnected { time: meta.time() };
+                if peer.is_libp2p() {
+                    p2p_state.record_libp2p_dial_end(peer_id, true, meta.time());
+                }
 
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
                 let p2p_state: &P2pState = state.substate()?;
 
-                // remove oldest disconnected peer
-                if let Some((peer_id, _)) = p2p_state
-                    .peers
-                    .iter()
-                    .filter_map(|(id, p)| {
-                        Some((*id, p.status.disconnected_or_disconnecting_time()?))
-                    })
-                    .min_by_key(|(_, t)| *t)
-                {
+                // Keep the table small: forget a failing libp2p peer, or else
+                // the oldest disconnected peer. Not a libp2p peer we never
+                // dialled: discovered peers wait there with the time zero, so
+                // they used to go first (I18b).
+                if let Some(peer_id) = p2p_state.peer_to_evict(meta.time()).or_else(|| {
+                    p2p_state
+                        .peers
+                        .iter()
+                        .filter(|(id, p)| {
+                            !p.is_libp2p() || p2p_state.dial_backoff.peer(id).is_some()
+                        })
+                        .filter_map(|(id, p)| {
+                            Some((*id, p.status.disconnected_or_disconnecting_time()?))
+                        })
+                        .min_by_key(|(_, t)| *t)
+                        .map(|(id, _)| id)
+                }) {
                     dispatcher.push(P2pPeerAction::Remove { peer_id });
                 }
 

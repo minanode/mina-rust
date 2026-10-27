@@ -1,0 +1,2584 @@
+{
+  "commands": [
+    {
+      "path": [],
+      "id": "mina",
+      "about": "Mina node in Rust, with its wallet, ledger and operator tools.",
+      "details": [],
+      "usage": "mina [OPTIONS] <COMMAND>",
+      "subcommands": [
+        {
+          "name": "node",
+          "id": "node",
+          "about": "Run a Mina node, or inspect a running one with `mina node status`."
+        },
+        {
+          "name": "keys",
+          "id": "keys",
+          "about": "Generate or print account and libp2p key pairs."
+        },
+        {
+          "name": "build-info",
+          "id": "build-info",
+          "about": "Print this binary's version, commit and build details."
+        },
+        {
+          "name": "wallet",
+          "id": "wallet",
+          "about": "Create keys, check balances and send transactions through a node."
+        },
+        {
+          "name": "ledger",
+          "id": "ledger",
+          "about": "Export a node's ledgers, and hash or total an exported ledger, as OCaml's `mina ledger`"
+        },
+        {
+          "name": "fork",
+          "id": "fork",
+          "about": "Write the next hard fork's config from a running node, as OCaml's `mina advanced generate-hardfork-config`"
+        },
+        {
+          "name": "report",
+          "id": "report",
+          "about": "Collect a bug report and file it as a GitHub issue."
+        },
+        {
+          "name": "triage",
+          "id": "triage",
+          "about": "Let an AI agent draft the bug report issue from the redacted report."
+        }
+      ],
+      "groups": [
+        {
+          "title": "Global options",
+          "args": [
+            {
+              "id": "mina--network",
+              "syntax": "--network <NETWORK>",
+              "aliases": [],
+              "help": [
+                "The network whose chain and keys the command uses."
+              ],
+              "default": "devnet",
+              "env": "MINA_NETWORK",
+              "possible_values": [
+                {
+                  "name": "devnet",
+                  "help": null
+                },
+                {
+                  "name": "mainnet",
+                  "help": null
+                }
+              ],
+              "required": false,
+              "repeatable": false,
+              "global": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "node"
+      ],
+      "id": "node",
+      "about": "Run a Mina node, or inspect a running one with `mina node status`.",
+      "details": [
+        "Without options, the node joins the network given by `--network` as a full node: it finds peers, syncs, then follows the tip of the chain. The HTTP server serves the dashboard, the API and GraphQL on 127.0.0.1:3000. Options add block production, SNARK work and browser peers."
+      ],
+      "usage": "mina node [OPTIONS] [COMMAND]",
+      "subcommands": [
+        {
+          "name": "status",
+          "id": "node-status",
+          "about": "Inspect a running node using read-only HTTP requests."
+        },
+        {
+          "name": "frontier-store-check",
+          "id": "node-frontier-store-check",
+          "about": "Check a frontier store directory offline, with the node stopped."
+        }
+      ],
+      "groups": [
+        {
+          "title": "Network",
+          "args": [
+            {
+              "id": "node--peers",
+              "syntax": "-P, --peers <MULTIADDR>",
+              "aliases": [
+                "--peer"
+              ],
+              "help": [
+                "A peer to connect to at startup, as a multiaddr. Repeat it for more peers.",
+                "The format is `/ip4/<address>/tcp/<port>/p2p/<peer id>`, with `/ip6/` or `/dns4/` in place of `/ip4/` for other addresses. Peers given here, or by `--peer-list-file` or `--peer-list-url`, replace the network's default peers."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": true,
+              "global": false
+            },
+            {
+              "id": "node--peer-list-file",
+              "syntax": "--peer-list-file <FILE>",
+              "aliases": [],
+              "help": [
+                "A file of peers to connect to at startup, one multiaddr per line.",
+                "Empty lines are skipped. Lines that don't parse are logged and skipped."
+              ],
+              "default": null,
+              "env": "MINA_PEER_LIST_FILE",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--peer-list-url",
+              "syntax": "--peer-list-url <URL>",
+              "aliases": [],
+              "help": [
+                "A URL that returns peers to connect to at startup, in the `--peer-list-file` format."
+              ],
+              "default": null,
+              "env": "MINA_PEER_LIST_URL",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--seed",
+              "syntax": "--seed",
+              "aliases": [],
+              "help": [
+                "Run as a seed node: without peers given, the node waits for peers to connect instead of dialling the network's default peers."
+              ],
+              "default": null,
+              "env": "MINA_SEED",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--max-peers",
+              "syntax": "--max-peers <N>",
+              "aliases": [],
+              "help": [
+                "The most peer connections the node keeps."
+              ],
+              "default": "100",
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--libp2p-port",
+              "syntax": "--libp2p-port <PORT>",
+              "aliases": [
+                "--external-port"
+              ],
+              "help": [
+                "The TCP port for libp2p peer connections."
+              ],
+              "default": "8302",
+              "env": "MINA_LIBP2P_PORT",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--libp2p-external-ip",
+              "syntax": "--libp2p-external-ip <IP>",
+              "aliases": [],
+              "help": [
+                "A public IP address at which peers may reach this node. Repeat it for more addresses."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": true,
+              "global": false
+            },
+            {
+              "id": "node--libp2p-keypair",
+              "syntax": "--libp2p-keypair <FILE>",
+              "aliases": [],
+              "help": [
+                "An encrypted libp2p key file, as OCaml's `mina libp2p generate-keypair` writes it, for the node's peer identity.",
+                "The password is read from the `MINA_LIBP2P_PASS` environment variable. The file takes precedence over `--p2p-secret-key`."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--p2p-secret-key",
+              "syntax": "-s, --p2p-secret-key <KEY>",
+              "aliases": [],
+              "help": [
+                "The node's libp2p secret key, for its peer identity.",
+                "By default the node reads `p2p-secret-key` in the work directory, and creates it on the first start."
+              ],
+              "default": null,
+              "env": "MINA_P2P_SEC_KEY",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        },
+        {
+          "title": "HTTP and GraphQL",
+          "args": [
+            {
+              "id": "node--port",
+              "syntax": "-p, --port <PORT>",
+              "aliases": [],
+              "help": [
+                "The TCP port of the HTTP server: the dashboard, the API and GraphQL."
+              ],
+              "default": "3000",
+              "env": "MINA_PORT",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--http-addr",
+              "syntax": "--http-addr <ADDR>",
+              "aliases": [],
+              "help": [
+                "The address the HTTP server listens on. `0.0.0.0` listens on all IPv4 interfaces."
+              ],
+              "default": "127.0.0.1",
+              "env": "MINA_HTTP_ADDR",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--http-cors-origin",
+              "syntax": "--http-cors-origin <ORIGIN>",
+              "aliases": [],
+              "help": [
+                "A page origin, like `https://dash.example.org`, whose pages may read this node's HTTP API besides pages of this machine.",
+                "Pages of this machine are `localhost`, `127.0.0.1` and `[::1]` on any port. Repeat the option, or give a comma-separated list in the environment; `*` lets every page read the API. Opening the node's pages at a host name rather than an IP address or `localhost` also needs that name listed, as `http://name:port`."
+              ],
+              "default": null,
+              "env": "MINA_HTTP_CORS_ORIGINS",
+              "possible_values": [],
+              "required": false,
+              "repeatable": true,
+              "global": false
+            },
+            {
+              "id": "node--enable-tx-submission",
+              "syntax": "--enable-tx-submission",
+              "aliases": [],
+              "help": [
+                "Accept transactions over HTTP: `POST /send-payment` and the GraphQL mutations `sendPayment`, `sendDelegation` and `sendZkapp`.",
+                "Off by default, so that a public node does not take submissions from anyone who can reach its port. When off, they get HTTP 403 or a GraphQL error. Turn it on only for a node whose HTTP port only you can reach."
+              ],
+              "default": null,
+              "env": "MINA_ENABLE_TX_SUBMISSION",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--public-graphql",
+              "syntax": "--public-graphql",
+              "aliases": [],
+              "help": [
+                "Answer only a read-only GraphQL subset, for a node whose HTTP port anyone can reach.",
+                "The subset takes one query per request (no mutations, batches or introspection), with the fields block explorers, o1js and wallets read, `bestChain` with `maxLength` up to 20, and a cost ceiling. It leaves out the peers, SNARK pool, operator and telemetry fields. Refused requests get HTTP 400 before any work is done. The dashboard and GraphiQL are not served."
+              ],
+              "default": null,
+              "env": "MINA_PUBLIC_GRAPHQL",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--enable-ledger-export",
+              "syntax": "--enable-ledger-export",
+              "aliases": [],
+              "help": [
+                "Serve whole-ledger exports over HTTP, for `mina ledger export` and `mina fork export`. Off by default: an export is expensive, so restrict access to the HTTP port first."
+              ],
+              "default": null,
+              "env": "MINA_ENABLE_LEDGER_EXPORT",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--no-dashboard",
+              "syntax": "--no-dashboard",
+              "aliases": [],
+              "help": [
+                "Don't serve the dashboard at `/`. The API routes keep their paths."
+              ],
+              "default": null,
+              "env": "MINA_NO_DASHBOARD",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--metrics-port",
+              "syntax": "--metrics-port <PORT>",
+              "aliases": [],
+              "help": [
+                "Serve Prometheus metrics on this separate TCP port. Off by default."
+              ],
+              "default": null,
+              "env": "MINA_METRICS_PORT",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--metrics-addr",
+              "syntax": "--metrics-addr <ADDR>",
+              "aliases": [],
+              "help": [
+                "The address the metrics listener listens on."
+              ],
+              "default": "127.0.0.1",
+              "env": "MINA_METRICS_ADDR",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        },
+        {
+          "title": "Storage",
+          "args": [
+            {
+              "id": "node--work-dir",
+              "syntax": "-d, --work-dir <DIR>",
+              "aliases": [],
+              "help": [
+                "The work directory: the node's chain state, caches, logs and settings."
+              ],
+              "default": "~/.mina",
+              "env": "MINA_HOME",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--no-frontier-store",
+              "syntax": "--no-frontier-store",
+              "aliases": [],
+              "help": [
+                "Don't keep a frontier store. The node keeps one by default, from which a restart resumes instead of syncing from the start.",
+                "The store holds the best chain's blocks as they come, and a checkpoint of the root's ledgers and staged ledger every `--checkpoint-interval` seconds. A restart restores from it when it passes its checks and isn't too old; otherwise the node bootstraps and logs why."
+              ],
+              "default": null,
+              "env": "MINA_NO_FRONTIER_STORE",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--frontier-store-no-restore",
+              "syntax": "--frontier-store-no-restore",
+              "aliases": [],
+              "help": [
+                "Write the frontier store, but don't restore from it at startup."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--frontier-store-dir",
+              "syntax": "--frontier-store-dir <DIR>",
+              "aliases": [],
+              "help": [
+                "The directory for frontier stores, one per chain, at `<DIR>/<chain id>/frontier`. Defaults to the work directory."
+              ],
+              "default": null,
+              "env": "MINA_FRONTIER_STORE_DIR",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--frontier-store-reset",
+              "syntax": "--frontier-store-reset",
+              "aliases": [],
+              "help": [
+                "Delete the frontier store when the node opens it, so that the node bootstraps."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--frontier-store-load-timeout",
+              "syntax": "--frontier-store-load-timeout <SECONDS>",
+              "aliases": [],
+              "help": [
+                "Seconds a frontier store restore may go without progress before the node gives it up and bootstraps (1 to 300)."
+              ],
+              "default": "60",
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--checkpoint-interval",
+              "syntax": "--checkpoint-interval <SECONDS>",
+              "aliases": [],
+              "help": [
+                "Seconds between checkpoints of the frontier store's root."
+              ],
+              "default": "1800",
+              "env": "MINA_CHECKPOINT_INTERVAL",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--no-proof-cache",
+              "syntax": "--no-proof-cache",
+              "aliases": [],
+              "help": [
+                "Keep retained proofs in memory rather than in files under `<work dir>/proof-cache`. Takes precedence over `--proof-cache`.",
+                "Proofs go to the files by default, except on a block producer (`--producer-key`), which keeps the proofs it may read to build and prove a block in memory unless `--proof-cache` is given."
+              ],
+              "default": null,
+              "env": "MINA_NO_PROOF_CACHE",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--proof-cache",
+              "syntax": "--proof-cache",
+              "aliases": [],
+              "help": [
+                "Keep retained proofs in files under `<work dir>/proof-cache` on a block producer too. A failed read can then cost it a block."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--no-ledger-disk",
+              "syntax": "--no-ledger-disk",
+              "aliases": [],
+              "help": [
+                "Keep the staking, next epoch and root snarked ledgers' accounts in memory rather than in files under `<work dir>/ledger-accounts`"
+              ],
+              "default": null,
+              "env": "MINA_NO_LEDGER_DISK",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--no-root-ledger-disk",
+              "syntax": "--no-root-ledger-disk",
+              "aliases": [],
+              "help": [
+                "Keep the root snarked ledger's accounts in memory, while the epoch ledgers' go to files. No effect with `--no-ledger-disk`"
+              ],
+              "default": null,
+              "env": "MINA_NO_ROOT_LEDGER_DISK",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        },
+        {
+          "title": "Block production",
+          "args": [
+            {
+              "id": "node--producer-key",
+              "syntax": "--producer-key <FILE>",
+              "aliases": [
+                "--block-producer-key"
+              ],
+              "help": [
+                "Produce blocks with the account key in this encrypted key file.",
+                "The password is read from the `MINA_PRIVKEY_PASS` environment variable; unset means an empty password."
+              ],
+              "default": null,
+              "env": "MINA_PRODUCER_KEY",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--coinbase-receiver",
+              "syntax": "--coinbase-receiver <PUBLIC_KEY>",
+              "aliases": [],
+              "help": [
+                "The public key that receives the coinbase of the blocks this node produces. Defaults to the producer's own key.",
+                "If the key is a zkApp account's, its receive permission must be None."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--block-inject-delay-ms",
+              "syntax": "--block-inject-delay-ms <MILLISECONDS>",
+              "aliases": [],
+              "help": [
+                "The least milliseconds after the start of its slot before the node publishes a block it produced (at least 1000)."
+              ],
+              "default": "1000",
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        },
+        {
+          "title": "SNARK work",
+          "args": [
+            {
+              "id": "node--run-snarker",
+              "syntax": "--run-snarker <PUBLIC_KEY>",
+              "aliases": [
+                "--run-snark-worker"
+              ],
+              "help": [
+                "Run the SNARK worker, with fees paid to this public key (B62...).",
+                "As with OCaml's `--run-snark-worker`, the worker needs no private key: the public key only goes into the message its proofs commit to. If the key is a zkApp account's, its receive permission must be None, or OCaml nodes reject the work."
+              ],
+              "default": null,
+              "env": "MINA_RUN_SNARKER",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--snarker-fee",
+              "syntax": "--snarker-fee <MINA>",
+              "aliases": [
+                "--snark-worker-fee"
+              ],
+              "help": [
+                "The fee asked for each SNARK work bundle, in MINA (for example `0.1`), as OCaml's `--snark-worker-fee`.",
+                "If the worker's key has no account yet, OCaml nodes only accept work whose fee is at least the account creation fee (1 MINA)."
+              ],
+              "default": "0.1",
+              "env": "MINA_SNARKER_FEE",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--snarker-strategy",
+              "syntax": "--snarker-strategy <STRATEGY>",
+              "aliases": [],
+              "help": [
+                "How the SNARK worker picks its next job: `rand` picks any of the jobs it may take at random, as OCaml's default `--work-selection`, and `seq` the first in scan-state order.",
+                "It applies to a worker started with `--run-snarker`, from the dashboard, or from the setting the dashboard saved."
+              ],
+              "default": "rand",
+              "env": "MINA_SNARKER_STRATEGY",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--snarker-block-first-lead",
+              "syntax": "--snarker-block-first-lead <SECONDS>",
+              "aliases": [],
+              "help": [
+                "Seconds before a won slot in which a node that also produces blocks starts no new SNARK job (0 to 4200; 0 turns it off). No effect without `--producer-key`"
+              ],
+              "default": "420",
+              "env": "MINA_SNARKER_BLOCK_FIRST_LEAD",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--allow-worker-control",
+              "syntax": "--allow-worker-control",
+              "aliases": [],
+              "help": [
+                "Let the dashboard start, stop and re-price the SNARK worker (`POST /snarker/control`). Off by default.",
+                "The worker's settings decide where fees go, so allow this only on a node whose HTTP port only you can reach. It can't be combined with `--public-graphql`. A worker started from the dashboard is saved in `<work dir>/snark-worker.json` and comes back after a restart, with or without this option; `--run-snarker` takes precedence over it. Stopping the worker from the dashboard deletes the file, as does deleting it while the node is stopped."
+              ],
+              "default": null,
+              "env": "MINA_ALLOW_WORKER_CONTROL",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--worker-control-origin",
+              "syntax": "--worker-control-origin <ORIGIN>",
+              "aliases": [],
+              "help": [
+                "A page origin, like `https://dash.example.org`, that may change the SNARK worker besides pages of this machine.",
+                "Pages of this machine are `localhost`, `127.0.0.1` and `[::1]` on any port. Repeat the option, or give a comma-separated list in the environment. Requests from any other page are refused."
+              ],
+              "default": null,
+              "env": "MINA_WORKER_CONTROL_ORIGINS",
+              "possible_values": [],
+              "required": false,
+              "repeatable": true,
+              "global": false
+            }
+          ]
+        },
+        {
+          "title": "WebRTC",
+          "args": [
+            {
+              "id": "node--webrtc-signal-port",
+              "syntax": "--webrtc-signal-port <PORT>",
+              "aliases": [],
+              "help": [
+                "Serve WebRTC signaling for browser peers on this separate TCP port. Off by default."
+              ],
+              "default": null,
+              "env": "MINA_WEBRTC_SIGNAL_PORT",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--webrtc-signal-addr",
+              "syntax": "--webrtc-signal-addr <ADDR>",
+              "aliases": [],
+              "help": [
+                "The address the signaling listener listens on. Pages served over HTTPS need a TLS proxy in front of it."
+              ],
+              "default": "127.0.0.1",
+              "env": "MINA_WEBRTC_SIGNAL_ADDR",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--webrtc-ice-servers",
+              "syntax": "--webrtc-ice-servers <FILE>",
+              "aliases": [],
+              "help": [
+                "A JSON file of ICE servers for WebRTC connections, in the browser's `RTCIceServer` list format. Defaults to the built-in STUN servers.",
+                "For example `[{\"urls\": \"stun:stun.example.org:3478\"}]`, or `[]` for none. A node with a public address needs none. A file keeps TURN credentials off the command line."
+              ],
+              "default": null,
+              "env": "MINA_WEBRTC_ICE_SERVERS",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--webrtc-udp-ports",
+              "syntax": "--webrtc-udp-ports <MIN-MAX>",
+              "aliases": [],
+              "help": [
+                "The UDP ports for WebRTC candidates, as `MIN-MAX`, so that a firewall need open only those. Defaults to any port.",
+                "Each connection takes a port per local address: allow several per `--max-peers`."
+              ],
+              "default": null,
+              "env": "MINA_WEBRTC_UDP_PORTS",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--webrtc-nat-ip",
+              "syntax": "--webrtc-nat-ip <IP>",
+              "aliases": [],
+              "help": [
+                "The public address of a 1:1 NAT in front of this node, used in its WebRTC host candidates in place of its interface addresses.",
+                "For a cloud host whose interface has a private address. Repeat it, or separate addresses with commas, for IPv4 and IPv6."
+              ],
+              "default": null,
+              "env": "MINA_WEBRTC_NAT_IP",
+              "possible_values": [],
+              "required": false,
+              "repeatable": true,
+              "global": false
+            }
+          ]
+        },
+        {
+          "title": "Logging",
+          "args": [
+            {
+              "id": "node--verbosity",
+              "syntax": "-v, --verbosity <LEVEL>",
+              "aliases": [
+                "--log-level"
+              ],
+              "help": [
+                "The log level of the console and the log file: `error`, `warn`, `info`, `debug` or `trace`.",
+                "`info` logs what an operator follows: the settings at startup, sync progress, each new best tip, a status line with the peer count, the blocks produced, the SNARK work sold, warnings and errors. `debug` adds detail for diagnosis, and `trace` adds every action of the state machine."
+              ],
+              "default": "info",
+              "env": "MINA_VERBOSITY",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--disable-filesystem-logging",
+              "syntax": "--disable-filesystem-logging",
+              "aliases": [],
+              "help": [
+                "Log to the console only, without `mina.log`"
+              ],
+              "default": null,
+              "env": "MINA_DISABLE_FILESYSTEM_LOGGING",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--log-path",
+              "syntax": "--log-path <DIR>",
+              "aliases": [],
+              "help": [
+                "The directory for the log file, `mina.log`. Defaults to the work directory."
+              ],
+              "default": null,
+              "env": "MINA_LOG_PATH",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--log-file-size-mb",
+              "syntax": "--log-file-size-mb <MIB>",
+              "aliases": [],
+              "help": [
+                "The size in MiB at which `mina.log` is rotated to `mina.log.1`, older files shifting up one."
+              ],
+              "default": "20",
+              "env": "MINA_LOG_FILE_SIZE_MB",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--log-file-count",
+              "syntax": "--log-file-count <N>",
+              "aliases": [],
+              "help": [
+                "The number of log files kept, `mina.log` included; the oldest is deleted. The logs take at most `--log-file-size-mb` times this."
+              ],
+              "default": "10",
+              "env": "MINA_LOG_FILE_COUNT",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        },
+        {
+          "title": "Advanced",
+          "args": [
+            {
+              "id": "node--config",
+              "syntax": "-c, --config <FILE>",
+              "aliases": [],
+              "help": [
+                "A daemon config JSON file to start from instead of the network's embedded genesis, as OCaml's `--config-file`"
+              ],
+              "default": null,
+              "env": "MINA_CONFIG",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--genesis-config",
+              "syntax": "--genesis-config <FILE>",
+              "aliases": [],
+              "help": [
+                "A genesis config to start from instead of `--config`'s.",
+                "It is either a prebuilt config as `ledger-tool` writes it (bin_prot), or one written with `--without-ledgers` (JSON). The latter only suits a network that has moved past its genesis, as the ledgers are synced from peers."
+              ],
+              "default": null,
+              "env": "MINA_GENESIS_CONFIG",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--no-peers-discovery",
+              "syntax": "--no-peers-discovery",
+              "aliases": [],
+              "help": [
+                "Turn off peer discovery: no Kademlia, and no asking peers for more peers.",
+                "The node still dials its initial peers. Those are the network's default peers unless peers are given with `--peers`, `--peer-list-file` or `--peer-list-url`, or `--seed` is set."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "node",
+        "status"
+      ],
+      "id": "node-status",
+      "about": "Inspect a running node using read-only HTTP requests.",
+      "details": [],
+      "usage": "mina node status [OPTIONS]",
+      "subcommands": [],
+      "groups": [
+        {
+          "title": "Options",
+          "args": [
+            {
+              "id": "node-status--node",
+              "syntax": "--node <URL>",
+              "aliases": [],
+              "help": [
+                "The running node's HTTP base URL. The report names the network that node is on."
+              ],
+              "default": "http://127.0.0.1:3000",
+              "env": "MINA_NODE_URL",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node-status--status-only",
+              "syntax": "--status-only",
+              "aliases": [],
+              "help": [
+                "Use only GET /status; omit build and verification statistics."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node-status--json",
+              "syntax": "--json",
+              "aliases": [],
+              "help": [
+                "Print a JSON report, also when a request fails."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node-status--check",
+              "syntax": "--check",
+              "aliases": [],
+              "help": [
+                "Exit with status 1 if the node is not synced, its best tip is missing or older than `--max-tip-age`, or it has fewer peers than `--min-peers`"
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node-status--max-tip-age",
+              "syntax": "--max-tip-age <SECONDS>",
+              "aliases": [],
+              "help": [
+                "The oldest best tip `--check` accepts, in seconds."
+              ],
+              "default": "1800",
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node-status--min-peers",
+              "syntax": "--min-peers <N>",
+              "aliases": [],
+              "help": [
+                "The fewest connected peers `--check` accepts; peers still connecting don't count."
+              ],
+              "default": "1",
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node-status--timeout",
+              "syntax": "--timeout <SECONDS>",
+              "aliases": [],
+              "help": [
+                "Seconds to wait for each HTTP request (1 to 300)."
+              ],
+              "default": "5",
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "node",
+        "frontier-store-check"
+      ],
+      "id": "node-frontier-store-check",
+      "about": "Check a frontier store directory offline, with the node stopped.",
+      "details": [
+        "Loads the newest valid generation as a restart would, rehashing every ledger by default, and checks the checkpoint's root staged ledger against its block, the parts' protocol states and the chain's blocks. Writes nothing. Exits with an error if a check fails. A running node locks its store: stop it first, or pass `--no-lock`.",
+        "The store is `<chain id>/frontier` in the work directory, `/data` in Docker.",
+        "Example: `mina node frontier-store-check ~/.mina/<chain id>/frontier`"
+      ],
+      "usage": "mina node frontier-store-check [OPTIONS] <DIR>",
+      "subcommands": [],
+      "groups": [
+        {
+          "title": "Arguments",
+          "args": [
+            {
+              "id": "node-frontier-store-check--dir",
+              "syntax": "<DIR>",
+              "aliases": [],
+              "help": [
+                "The store: a chain's `frontier` directory."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": true,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        },
+        {
+          "title": "Options",
+          "args": [
+            {
+              "id": "node-frontier-store-check--verify",
+              "syntax": "--verify <VERIFY>",
+              "aliases": [],
+              "help": [
+                "How much of each ledger to rehash: `full` (every node), `sample` (64 leaf paths, as a restart does) or `root`"
+              ],
+              "default": "full",
+              "env": null,
+              "possible_values": [
+                {
+                  "name": "full",
+                  "help": null
+                },
+                {
+                  "name": "sample",
+                  "help": null
+                },
+                {
+                  "name": "root",
+                  "help": null
+                }
+              ],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node-frontier-store-check--rebuild-staged",
+              "syntax": "--rebuild-staged",
+              "aliases": [],
+              "help": [
+                "Also rebuild the root staged ledger the slow way, by applying the scan state's transactions again (tens of seconds on mainnet)."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node-frontier-store-check--no-lock",
+              "syntax": "--no-lock",
+              "aliases": [],
+              "help": [
+                "Check without taking the store's lock, while a node writes it."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "keys"
+      ],
+      "id": "keys",
+      "about": "Generate or print account and libp2p key pairs.",
+      "details": [],
+      "usage": "mina keys [OPTIONS] <COMMAND>",
+      "subcommands": [
+        {
+          "name": "mina-key-pair",
+          "id": "keys-mina-key-pair",
+          "about": "Generate an unencrypted Mina account key pair, and print it."
+        },
+        {
+          "name": "p2p-key-pair",
+          "id": "keys-p2p-key-pair",
+          "about": "Generate a libp2p key pair for a node's peer identity, and print it."
+        }
+      ],
+      "groups": []
+    },
+    {
+      "path": [
+        "keys",
+        "mina-key-pair"
+      ],
+      "id": "keys-mina-key-pair",
+      "about": "Generate an unencrypted Mina account key pair, and print it.",
+      "details": [
+        "Prints the secret key and the public key. For a key file a block producer can use, run `mina wallet generate` instead."
+      ],
+      "usage": "mina keys mina-key-pair [OPTIONS]",
+      "subcommands": [],
+      "groups": [
+        {
+          "title": "Options",
+          "args": [
+            {
+              "id": "keys-mina-key-pair--secret-key",
+              "syntax": "-s, --secret-key <KEY>",
+              "aliases": [],
+              "help": [
+                "Print the key pair of this secret key instead of a new one."
+              ],
+              "default": null,
+              "env": "MINA_SEC_KEY",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "keys",
+        "p2p-key-pair"
+      ],
+      "id": "keys-p2p-key-pair",
+      "about": "Generate a libp2p key pair for a node's peer identity, and print it.",
+      "details": [
+        "Prints the secret key, the public key and the peer id. The secret key goes to `mina node --p2p-secret-key`."
+      ],
+      "usage": "mina keys p2p-key-pair [OPTIONS]",
+      "subcommands": [],
+      "groups": [
+        {
+          "title": "Options",
+          "args": [
+            {
+              "id": "keys-p2p-key-pair--p2p-secret-key",
+              "syntax": "-s, --p2p-secret-key <KEY>",
+              "aliases": [],
+              "help": [
+                "Print the key pair of this secret key instead of a new one."
+              ],
+              "default": null,
+              "env": "MINA_P2P_SEC_KEY",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "build-info"
+      ],
+      "id": "build-info",
+      "about": "Print this binary's version, commit and build details.",
+      "details": [],
+      "usage": "mina build-info [OPTIONS]",
+      "subcommands": [],
+      "groups": []
+    },
+    {
+      "path": [
+        "wallet"
+      ],
+      "id": "wallet",
+      "about": "Create keys, check balances and send transactions through a node.",
+      "details": [],
+      "usage": "mina wallet [OPTIONS] <COMMAND>",
+      "subcommands": [
+        {
+          "name": "address",
+          "id": "wallet-address",
+          "about": "Print the public key of an encrypted key file."
+        },
+        {
+          "name": "balance",
+          "id": "wallet-balance",
+          "about": "Print an account's balance and nonce, from a node's GraphQL API."
+        },
+        {
+          "name": "delegate",
+          "id": "wallet-delegate",
+          "about": "Delegate an account's stake, as OCaml's `mina client delegate-stake`"
+        },
+        {
+          "name": "generate",
+          "id": "wallet-generate",
+          "about": "Generate an account key pair and save it as an encrypted key file."
+        },
+        {
+          "name": "send",
+          "id": "wallet-send",
+          "about": "Sign a payment and send it through a node."
+        },
+        {
+          "name": "status",
+          "id": "wallet-status",
+          "about": "Print a transaction's status, from a node's GraphQL API, with a pooled transaction's amount and fee in MINA."
+        }
+      ],
+      "groups": []
+    },
+    {
+      "path": [
+        "wallet",
+        "address"
+      ],
+      "id": "wallet-address",
+      "about": "Print the public key of an encrypted key file.",
+      "details": [],
+      "usage": "mina wallet address [OPTIONS] --from <FILE>",
+      "subcommands": [],
+      "groups": [
+        {
+          "title": "Options",
+          "args": [
+            {
+              "id": "wallet-address--from",
+              "syntax": "--from <FILE>",
+              "aliases": [],
+              "help": [
+                "The encrypted key file. Its password is read from the `MINA_PRIVKEY_PASS` environment variable."
+              ],
+              "default": null,
+              "env": "MINA_FROM",
+              "possible_values": [],
+              "required": true,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "wallet",
+        "balance"
+      ],
+      "id": "wallet-balance",
+      "about": "Print an account's balance and nonce, from a node's GraphQL API.",
+      "details": [],
+      "usage": "mina wallet balance [OPTIONS]",
+      "subcommands": [],
+      "groups": [
+        {
+          "title": "Options",
+          "args": [
+            {
+              "id": "wallet-balance--address",
+              "syntax": "--address <PUBLIC_KEY>",
+              "aliases": [],
+              "help": [
+                "The account's public key."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-balance--from",
+              "syntax": "--from <FILE>",
+              "aliases": [],
+              "help": [
+                "An encrypted key file whose account to query, in place of `--address`. Its password is read from the `MINA_PRIVKEY_PASS` environment variable."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-balance--node",
+              "syntax": "--node <URL>",
+              "aliases": [],
+              "help": [
+                "The node's HTTP base URL (its `--port`). Requests go to `<URL>/graphql`"
+              ],
+              "default": "http://localhost:3000",
+              "env": "MINA_NODE_URL",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-balance--format",
+              "syntax": "--format <FORMAT>",
+              "aliases": [],
+              "help": [
+                "The output format."
+              ],
+              "default": "text",
+              "env": null,
+              "possible_values": [
+                {
+                  "name": "text",
+                  "help": null
+                },
+                {
+                  "name": "json",
+                  "help": null
+                }
+              ],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "wallet",
+        "delegate"
+      ],
+      "id": "wallet-delegate",
+      "about": "Delegate an account's stake, as OCaml's `mina client delegate-stake`",
+      "details": [],
+      "usage": "mina wallet delegate [OPTIONS] --from <FILE> --to <PUBLIC_KEY> --fee <MINA>",
+      "subcommands": [],
+      "groups": [
+        {
+          "title": "Options",
+          "args": [
+            {
+              "id": "wallet-delegate--from",
+              "syntax": "--from <FILE>",
+              "aliases": [],
+              "help": [
+                "The encrypted key file of the account delegating its stake. Its password is read from `MINA_PRIVKEY_PASS`, or asked for on a terminal."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": true,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-delegate--to",
+              "syntax": "--to <PUBLIC_KEY>",
+              "aliases": [],
+              "help": [
+                "The public key to delegate the stake to, as OCaml's `--receiver`"
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": true,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-delegate--fee",
+              "syntax": "--fee <MINA>",
+              "aliases": [],
+              "help": [
+                "The transaction fee in MINA, like `0.1`, with at most 9 decimal places, as OCaml's `--fee`"
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": true,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-delegate--nonce",
+              "syntax": "--nonce <NONCE>",
+              "aliases": [],
+              "help": [
+                "The nonce. Defaults to the node's inferred nonce for the sender, which counts its pending transactions."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-delegate--memo",
+              "syntax": "--memo <TEXT>",
+              "aliases": [],
+              "help": [
+                "The memo, at most 32 bytes."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-delegate--valid-until",
+              "syntax": "--valid-until <SLOT>",
+              "aliases": [],
+              "help": [
+                "The last global slot since genesis in which the delegation may be included. By default it never expires."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-delegate--node",
+              "syntax": "--node <URL>",
+              "aliases": [],
+              "help": [
+                "The node's HTTP address (its `--port`). The node must run with `--enable-tx-submission`"
+              ],
+              "default": "http://localhost:3000",
+              "env": "MINA_NODE_URL",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-delegate--format",
+              "syntax": "--format <FORMAT>",
+              "aliases": [],
+              "help": [
+                "The output format."
+              ],
+              "default": "text",
+              "env": null,
+              "possible_values": [
+                {
+                  "name": "text",
+                  "help": null
+                },
+                {
+                  "name": "json",
+                  "help": null
+                }
+              ],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "wallet",
+        "generate"
+      ],
+      "id": "wallet-generate",
+      "about": "Generate an account key pair and save it as an encrypted key file.",
+      "details": [],
+      "usage": "mina wallet generate [OPTIONS] --output <FILE>",
+      "subcommands": [],
+      "groups": [
+        {
+          "title": "Options",
+          "args": [
+            {
+              "id": "wallet-generate--output",
+              "syntax": "--output <FILE>",
+              "aliases": [],
+              "help": [
+                "The encrypted key file to write. Neither it nor its `.pub` file may exist."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": true,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-generate--secret-key",
+              "syntax": "-s, --secret-key <KEY>",
+              "aliases": [],
+              "help": [
+                "Encrypt this secret key instead of a new one."
+              ],
+              "default": null,
+              "env": "MINA_SEC_KEY",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "wallet",
+        "send"
+      ],
+      "id": "wallet-send",
+      "about": "Sign a payment and send it through a node.",
+      "details": [],
+      "usage": "mina wallet send [OPTIONS] --from <FILE> --to <PUBLIC_KEY> --amount <MINA> --fee <MINA>",
+      "subcommands": [],
+      "groups": [
+        {
+          "title": "Options",
+          "args": [
+            {
+              "id": "wallet-send--from",
+              "syntax": "--from <FILE>",
+              "aliases": [],
+              "help": [
+                "The sender's encrypted key file. Its password is read from the `MINA_PRIVKEY_PASS` environment variable."
+              ],
+              "default": null,
+              "env": "MINA_FROM",
+              "possible_values": [],
+              "required": true,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-send--to",
+              "syntax": "--to <PUBLIC_KEY>",
+              "aliases": [],
+              "help": [
+                "The receiver's public key."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": true,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-send--amount",
+              "syntax": "--amount <MINA>",
+              "aliases": [],
+              "help": [
+                "The amount in MINA, like `2.5`, with at most 9 decimal places, as OCaml's `mina client send-payment --amount`"
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": true,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-send--fee",
+              "syntax": "--fee <MINA>",
+              "aliases": [],
+              "help": [
+                "The transaction fee in MINA, like `0.1`, with at most 9 decimal places."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": true,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-send--memo",
+              "syntax": "--memo <TEXT>",
+              "aliases": [],
+              "help": [
+                "The memo, at most 32 bytes."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-send--nonce",
+              "syntax": "--nonce <NONCE>",
+              "aliases": [],
+              "help": [
+                "The nonce. Defaults to the sender account's nonce in the node's ledger."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-send--valid-until",
+              "syntax": "--valid-until <SLOT>",
+              "aliases": [],
+              "help": [
+                "The last global slot since genesis in which the payment may be included. By default it never expires."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-send--node",
+              "syntax": "--node <URL>",
+              "aliases": [],
+              "help": [
+                "The node's HTTP base URL (its `--port`). The node must run with `--enable-tx-submission`"
+              ],
+              "default": "http://localhost:3000",
+              "env": "MINA_NODE_URL",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "wallet",
+        "status"
+      ],
+      "id": "wallet-status",
+      "about": "Print a transaction's status, from a node's GraphQL API, with a pooled transaction's amount and fee in MINA.",
+      "details": [],
+      "usage": "mina wallet status [OPTIONS] --hash <HASH>",
+      "subcommands": [],
+      "groups": [
+        {
+          "title": "Options",
+          "args": [
+            {
+              "id": "wallet-status--hash",
+              "syntax": "--hash <HASH>",
+              "aliases": [],
+              "help": [
+                "The transaction hash."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": true,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-status--node",
+              "syntax": "--node <URL>",
+              "aliases": [],
+              "help": [
+                "The node's HTTP base URL (its `--port`)."
+              ],
+              "default": "http://localhost:3000",
+              "env": "MINA_NODE_URL",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "wallet-status--check-mempool",
+              "syntax": "--check-mempool",
+              "aliases": [],
+              "help": [
+                "Leave out the hint to use this option when the status is UNKNOWN.",
+                "It doesn't change the lookup: the transaction pool is searched only when the node answers the status query with an error."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "ledger"
+      ],
+      "id": "ledger",
+      "about": "Export a node's ledgers, and hash or total an exported ledger, as OCaml's `mina ledger`",
+      "details": [],
+      "usage": "mina ledger [OPTIONS] <COMMAND>",
+      "subcommands": [
+        {
+          "name": "export",
+          "id": "ledger-export",
+          "about": "Write a ledger of a running node's best tip, in OCaml-compatible JSON (compact account lines, rather than OCaml's pretty-printed whitespace)."
+        },
+        {
+          "name": "hash",
+          "id": "ledger-hash",
+          "about": "Print the Merkle root of the ledger in an exported ledger file."
+        },
+        {
+          "name": "currency",
+          "id": "ledger-currency",
+          "about": "Print the total currency of each token in an exported ledger file."
+        }
+      ],
+      "groups": []
+    },
+    {
+      "path": [
+        "ledger",
+        "export"
+      ],
+      "id": "ledger-export",
+      "about": "Write a ledger of a running node's best tip, in OCaml-compatible JSON (compact account lines, rather than OCaml's pretty-printed whitespace).",
+      "details": [],
+      "usage": "mina ledger export [OPTIONS] <KIND>",
+      "subcommands": [],
+      "groups": [
+        {
+          "title": "Arguments",
+          "args": [
+            {
+              "id": "ledger-export--kind",
+              "syntax": "<KIND>",
+              "aliases": [],
+              "help": [
+                "Which ledger of the node's best tip."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [
+                {
+                  "name": "staged-ledger",
+                  "help": "The best tip's staged ledger."
+                },
+                {
+                  "name": "snarked-ledger",
+                  "help": "The best tip's snarked ledger."
+                },
+                {
+                  "name": "staking-epoch-ledger",
+                  "help": "The ledger the current epoch stakes from."
+                },
+                {
+                  "name": "next-epoch-ledger",
+                  "help": "The ledger the next epoch will stake from."
+                }
+              ],
+              "required": true,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        },
+        {
+          "title": "Options",
+          "args": [
+            {
+              "id": "ledger-export--node",
+              "syntax": "--node <URL>",
+              "aliases": [],
+              "help": [
+                "The node's HTTP address (its `--port`). The node must run with `--enable-ledger-export`"
+              ],
+              "default": "http://localhost:3000",
+              "env": "MINA_NODE_URL",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "ledger-export--output",
+              "syntax": "-o, --output <FILE>",
+              "aliases": [],
+              "help": [
+                "Write the accounts to this file instead of standard output; a summary goes to standard output."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "ledger-export--verify",
+              "syntax": "--verify",
+              "aliases": [],
+              "help": [
+                "Recompute the written file's Merkle root and exit with status 4 unless it is the node's (needs `--output`)."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "ledger",
+        "hash"
+      ],
+      "id": "ledger-hash",
+      "about": "Print the Merkle root of the ledger in an exported ledger file.",
+      "details": [],
+      "usage": "mina ledger hash [OPTIONS] --ledger-file <FILE>",
+      "subcommands": [],
+      "groups": [
+        {
+          "title": "Options",
+          "args": [
+            {
+              "id": "ledger-hash--ledger-file",
+              "syntax": "--ledger-file <FILE>",
+              "aliases": [],
+              "help": [
+                "A ledger file as `mina ledger export` writes it (JSON)."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": true,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "ledger-hash--expect",
+              "syntax": "--expect <HASH>",
+              "aliases": [],
+              "help": [
+                "Exit with status 4 unless the Merkle root is this ledger hash."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "ledger-hash--json",
+              "syntax": "--json",
+              "aliases": [],
+              "help": [
+                "Print a JSON object (`ledger_hash`, `num_accounts`) instead of the hash."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "ledger",
+        "currency"
+      ],
+      "id": "ledger-currency",
+      "about": "Print the total currency of each token in an exported ledger file.",
+      "details": [],
+      "usage": "mina ledger currency [OPTIONS] --ledger-file <FILE>",
+      "subcommands": [],
+      "groups": [
+        {
+          "title": "Options",
+          "args": [
+            {
+              "id": "ledger-currency--ledger-file",
+              "syntax": "--ledger-file <FILE>",
+              "aliases": [],
+              "help": [
+                "A ledger file as `mina ledger export` writes it (JSON)."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": true,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "fork"
+      ],
+      "id": "fork",
+      "about": "Write the next hard fork's config from a running node, as OCaml's `mina advanced generate-hardfork-config`",
+      "details": [],
+      "usage": "mina fork [OPTIONS] <COMMAND>",
+      "subcommands": [
+        {
+          "name": "export",
+          "id": "fork-export",
+          "about": "Write the next hard fork's runtime config and ledgers from a running node's state at the stop slots."
+        }
+      ],
+      "groups": []
+    },
+    {
+      "path": [
+        "fork",
+        "export"
+      ],
+      "id": "fork-export",
+      "about": "Write the next hard fork's runtime config and ledgers from a running node's state at the stop slots.",
+      "details": [],
+      "usage": "mina fork export [OPTIONS] --out <DIR>",
+      "subcommands": [],
+      "groups": [
+        {
+          "title": "Options",
+          "args": [
+            {
+              "id": "fork-export--node",
+              "syntax": "--node <URL>",
+              "aliases": [],
+              "help": [
+                "The node's HTTP address (its `--port`). The node must run with `--enable-ledger-export`"
+              ],
+              "default": "http://localhost:3000",
+              "env": "MINA_NODE_URL",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "fork-export--out",
+              "syntax": "--out <DIR>",
+              "aliases": [],
+              "help": [
+                "Directory to create. It must not exist; it gets `fork_config.json` (every account inline, OCaml's GraphQL `fork_config` layout), `daemon.json` and `daemon-migrated.json` (ledgers by stable and by OCaml 4.0.2's migrated root), `manifest.json` and, last, an empty `activated`"
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": true,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "fork-export--state-hash",
+              "syntax": "--state-hash <HASH>",
+              "aliases": [],
+              "help": [
+                "Continue from this best-chain block instead of the newest block before `slot_tx_end`"
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "fork-export--height",
+              "syntax": "--height <HEIGHT>",
+              "aliases": [],
+              "help": [
+                "Continue from the best-chain block at this height."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "fork-export--allow-before-stop",
+              "syntax": "--allow-before-stop",
+              "aliases": [],
+              "help": [
+                "Export even if the best tip has not reached slot_tx_end, so that the fork block may still change."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "fork-export--verify",
+              "syntax": "--verify",
+              "aliases": [],
+              "help": [
+                "Recompute the three ledgers' stable and migrated roots from fork_config.json and exit with status 4 unless they are the node's."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "report"
+      ],
+      "id": "report",
+      "about": "Collect a bug report and file it as a GitHub issue.",
+      "details": [
+        "Gathers, without AI: this binary's version and build; the OS, kernel,\nCPU (and whether it has BMI2 and ADX), memory and free disk; what the\nrunning node says (network, sync, best and highest peer tip, peers,\nproducer and worker); the newest crash file the node wrote; warnings,\nerrors and panics from the end of its log; a check of its frontier store;\nand the command line it was started with.",
+        "Keys, passwords, key files and their paths, and secret environment\nvariables are never included; IP addresses and peer ids only with\n`--include-network-ids`.",
+        "The report is printed first. Once you confirm (or with `--yes`), a\npre-filled issue opens in your browser, where you review and submit it;\nwith `--gh`, `gh issue create` files it. `--output FILE` only saves it.",
+        "Examples:",
+        "mina report\n  mina report -d ~/.mina-devnet -m \"stops syncing after an hour\"\n  journalctl --user -u mina | mina report --log -\n  mina report --output report.md."
+      ],
+      "usage": "mina report [OPTIONS]",
+      "subcommands": [],
+      "groups": [
+        {
+          "title": "Options",
+          "args": [
+            {
+              "id": "report--work-dir",
+              "syntax": "-d, --work-dir <DIR>",
+              "aliases": [],
+              "help": [
+                "The node's work directory: `last-start.json`, crash files, logs and the frontier store are read from it."
+              ],
+              "default": "~/.mina",
+              "env": "MINA_HOME",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "report--node",
+              "syntax": "--node <URL>",
+              "aliases": [],
+              "help": [
+                "The running node's HTTP base URL. Default: the port the node last started with (from `last-start.json`), else http://127.0.0.1:3000."
+              ],
+              "default": null,
+              "env": "MINA_NODE_URL",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "report--log",
+              "syntax": "--log <FILE>",
+              "aliases": [],
+              "help": [
+                "A log file to scan (repeatable); `-` reads standard input, as in `journalctl --user -u mina | mina report --log -`. By default, scan `mina.log` and its numbered rotations, newest first, within 8 MiB."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": true,
+              "global": false
+            },
+            {
+              "id": "report--log-lines",
+              "syntax": "--log-lines <N>",
+              "aliases": [],
+              "help": [
+                "How many warning, error and panic lines to include (1 to 1000)."
+              ],
+              "default": "100",
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "report--store-check",
+              "syntax": "--store-check <STORE_CHECK>",
+              "aliases": [],
+              "help": [
+                "How to check the frontier store: `root` (fast), `sample`, `full` (rehashes every ledger) or `off`"
+              ],
+              "default": "root",
+              "env": null,
+              "possible_values": [
+                {
+                  "name": "root",
+                  "help": null
+                },
+                {
+                  "name": "sample",
+                  "help": null
+                },
+                {
+                  "name": "full",
+                  "help": null
+                },
+                {
+                  "name": "off",
+                  "help": null
+                }
+              ],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "report--include-network-ids",
+              "syntax": "--include-network-ids",
+              "aliases": [],
+              "help": [
+                "Keep IP addresses and peer ids in the report (left out by default)."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "report--message",
+              "syntax": "-m, --message <TEXT>",
+              "aliases": [],
+              "help": [
+                "What happened, in a sentence or two. Asked for when not given and the terminal is interactive."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "report--output",
+              "syntax": "-o, --output <FILE>",
+              "aliases": [],
+              "help": [
+                "Only save the report to FILE: nothing is sent."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "report--yes",
+              "syntax": "-y, --yes",
+              "aliases": [],
+              "help": [
+                "File without asking first."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "report--repo",
+              "syntax": "--repo <OWNER/NAME>",
+              "aliases": [],
+              "help": [
+                "The GitHub repository to file the issue in."
+              ],
+              "default": "minanode/mina-rust",
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "report--gh",
+              "syntax": "--gh",
+              "aliases": [],
+              "help": [
+                "Create the issue with the GitHub CLI (`gh`), if installed, instead of opening a pre-filled issue page."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "report--no-browser",
+              "syntax": "--no-browser",
+              "aliases": [],
+              "help": [
+                "Print the pre-filled issue link instead of opening a browser."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "report--timeout",
+              "syntax": "--timeout <SECONDS>",
+              "aliases": [],
+              "help": [
+                "Seconds to wait for each answer from the node (1 to 120)."
+              ],
+              "default": "5",
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": [
+        "triage"
+      ],
+      "id": "triage",
+      "about": "Let an AI agent draft the bug report issue from the redacted report.",
+      "details": [
+        "Collects the report `mina report` would, then runs the `claude` CLI, if\ninstalled, non-interactively in a new temporary directory that holds only\nthe redacted report and the redacted last 2000 lines of each log. Claude\nruns in its --restricted mode with only Read, Grep and Glob: it can't run\ncommands, use the web, or read anything outside that directory, and gets\nonly the environment variables it needs to sign in. Its draft is shown,\nand filed as `mina report` files, only once you confirm.",
+        "What it is given goes to Anthropic: you are asked before it runs. codex\ncan't be confined that way (it could read any file you can read), so it\nruns only with --agent codex --allow-unconfined-agent. Without an agent,\n`mina triage` says so and files the plain report.",
+        "Examples:",
+        "mina triage\n  mina triage --model claude-opus-5-5."
+      ],
+      "usage": "mina triage [OPTIONS]",
+      "subcommands": [],
+      "groups": [
+        {
+          "title": "Options",
+          "args": [
+            {
+              "id": "triage--work-dir",
+              "syntax": "-d, --work-dir <DIR>",
+              "aliases": [],
+              "help": [
+                "The node's work directory: `last-start.json`, crash files, logs and the frontier store are read from it."
+              ],
+              "default": "~/.mina",
+              "env": "MINA_HOME",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "triage--node",
+              "syntax": "--node <URL>",
+              "aliases": [],
+              "help": [
+                "The running node's HTTP base URL. Default: the port the node last started with (from `last-start.json`), else http://127.0.0.1:3000."
+              ],
+              "default": null,
+              "env": "MINA_NODE_URL",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "triage--log",
+              "syntax": "--log <FILE>",
+              "aliases": [],
+              "help": [
+                "A log file to scan (repeatable); `-` reads standard input, as in `journalctl --user -u mina | mina report --log -`. By default, scan `mina.log` and its numbered rotations, newest first, within 8 MiB."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": true,
+              "global": false
+            },
+            {
+              "id": "triage--log-lines",
+              "syntax": "--log-lines <N>",
+              "aliases": [],
+              "help": [
+                "How many warning, error and panic lines to include (1 to 1000)."
+              ],
+              "default": "100",
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "triage--store-check",
+              "syntax": "--store-check <STORE_CHECK>",
+              "aliases": [],
+              "help": [
+                "How to check the frontier store: `root` (fast), `sample`, `full` (rehashes every ledger) or `off`"
+              ],
+              "default": "root",
+              "env": null,
+              "possible_values": [
+                {
+                  "name": "root",
+                  "help": null
+                },
+                {
+                  "name": "sample",
+                  "help": null
+                },
+                {
+                  "name": "full",
+                  "help": null
+                },
+                {
+                  "name": "off",
+                  "help": null
+                }
+              ],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "triage--include-network-ids",
+              "syntax": "--include-network-ids",
+              "aliases": [],
+              "help": [
+                "Keep IP addresses and peer ids in the report (left out by default)."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "triage--message",
+              "syntax": "-m, --message <TEXT>",
+              "aliases": [],
+              "help": [
+                "What happened, in a sentence or two. Asked for when not given and the terminal is interactive."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "triage--output",
+              "syntax": "-o, --output <FILE>",
+              "aliases": [],
+              "help": [
+                "Only save the report to FILE: nothing is sent."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "triage--yes",
+              "syntax": "-y, --yes",
+              "aliases": [],
+              "help": [
+                "File without asking first."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "triage--repo",
+              "syntax": "--repo <OWNER/NAME>",
+              "aliases": [],
+              "help": [
+                "The GitHub repository to file the issue in."
+              ],
+              "default": "minanode/mina-rust",
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "triage--gh",
+              "syntax": "--gh",
+              "aliases": [],
+              "help": [
+                "Create the issue with the GitHub CLI (`gh`), if installed, instead of opening a pre-filled issue page."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "triage--no-browser",
+              "syntax": "--no-browser",
+              "aliases": [],
+              "help": [
+                "Print the pre-filled issue link instead of opening a browser."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "triage--timeout",
+              "syntax": "--timeout <SECONDS>",
+              "aliases": [],
+              "help": [
+                "Seconds to wait for each answer from the node (1 to 120)."
+              ],
+              "default": "5",
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "triage--agent",
+              "syntax": "--agent <AGENT>",
+              "aliases": [],
+              "help": [
+                "The agent to run; asked for when both are installed."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [
+                {
+                  "name": "claude",
+                  "help": null
+                },
+                {
+                  "name": "codex",
+                  "help": null
+                }
+              ],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "triage--model",
+              "syntax": "--model <MODEL>",
+              "aliases": [],
+              "help": [
+                "The model, passed to the agent's `--model`"
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "triage--agent-timeout",
+              "syntax": "--agent-timeout <MINUTES>",
+              "aliases": [],
+              "help": [
+                "Minutes the agent may take (1 to 120)."
+              ],
+              "default": "15",
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "triage--allow-unconfined-agent",
+              "syntax": "--allow-unconfined-agent",
+              "aliases": [],
+              "help": [
+                "Run an agent that can't be kept to the redacted report: codex, whose read-only sandbox limits writes, not reads. It can read any file you can read, key files included, and send it to OpenAI."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

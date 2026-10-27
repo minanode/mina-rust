@@ -86,23 +86,8 @@ impl TransitionFrontierSyncState {
                                 != best_tip.next_epoch_ledger_hash()
                         }) {
                             Some((substate, next_epoch_target))
-                        } else if substate
-                            .ledger
-                            .staged()
-                            .is_some_and(|s| s.is_parts_fetched())
-                            && root_block.pred_hash() == old_root_block.hash()
-                        {
-                            // Optimization. Prevent changing staging ledger target,
-                            // if the new root block is the extension of the old one.
-                            // Since in such case, we can reuse the old reconstructed
-                            // staged ledger to reconstruct the new one.
-                            substate.root_block_updates.push(old_root_block);
-                            None
                         } else {
-                            substate.root_block_updates = Default::default();
-                            substate
-                                .ledger
-                                .update_target(meta.time(), SyncLedgerTarget::root(root_block));
+                            substate.update_root_ledger_target(meta.time(), old_root_block);
                             None
                         }
                     } else {
@@ -138,7 +123,8 @@ impl TransitionFrontierSyncState {
                     let old_chain = VecDeque::from(std::mem::take(chain));
                     let old_root = old_chain.front().and_then(|b| b.block()).unwrap().clone();
                     let old_best_tip = old_chain.back().and_then(|b| b.block()).unwrap().clone();
-                    let new_root = root_block;
+                    let (new_root, blocks_inbetween) =
+                        reuse_applied_root(best_chain, root_block, blocks_inbetween);
                     let new_best_tip = best_tip;
 
                     let old_chain_has_new_root_applied = old_chain
@@ -146,7 +132,9 @@ impl TransitionFrontierSyncState {
                         .find(|b| b.block_hash() == &new_root.hash)
                         .is_some_and(|b| b.is_apply_success());
 
-                    if applied_blocks.contains_key(&new_root.hash) || old_chain_has_new_root_applied
+                    if (applied_blocks.contains_key(&new_root.hash)
+                        || old_chain_has_new_root_applied)
+                        && !staking_ledger_change_requires_sync(&old_best_tip, new_best_tip)
                     {
                         if old_chain_has_new_root_applied {
                             root_snarked_ledger_updates.extend_with_needed(
@@ -223,10 +211,16 @@ impl TransitionFrontierSyncState {
                     let old_best_tip = best_chain.last().unwrap();
                     let old_root = best_chain.first().unwrap();
                     let new_best_tip = best_tip;
-                    let new_root = root_block;
+                    let (new_root, blocks_inbetween) =
+                        reuse_applied_root(best_chain, root_block, blocks_inbetween);
 
-                    if applied_blocks.contains_key(&new_root.hash) {
-                        let chain = std::iter::once(root_block.hash())
+                    if applied_blocks.contains_key(&new_root.hash)
+                        && !staking_ledger_change_requires_sync(
+                            old_best_tip.block_with_hash(),
+                            new_best_tip,
+                        )
+                    {
+                        let chain = std::iter::once(new_root.hash())
                             .chain(blocks_inbetween)
                             .chain(std::iter::once(new_best_tip.hash()))
                             .map(|hash| match applied_blocks.get(hash) {
@@ -549,10 +543,12 @@ impl TransitionFrontierSyncState {
                 let Self::BlocksPending { chain, .. } = state else {
                     return;
                 };
+                // A consumed reply may have freed this peer's RPC slot while
+                // an older block attempt is still pending. Match the id too.
                 let Some(peer_state) = chain.iter_mut().find_map(|b| {
                     b.fetch_pending_from_peer_mut(peer_id)
                         .filter(|peer_rpc_state| {
-                            matches!(peer_rpc_state, PeerRpcState::Pending { .. })
+                            peer_rpc_state.fetch_pending_rpc_id() == Some(*rpc_id)
                         })
                 }) else {
                     return;
@@ -715,8 +711,102 @@ impl TransitionFrontierSyncState {
                     );
                 }
             }
+            TransitionFrontierSyncAction::RestoreInit {
+                root,
+                blocks,
+                needed_protocol_states,
+            } => {
+                *state = restore_chain(meta.time(), root, blocks, needed_protocol_states);
+            }
         }
     }
+}
+
+/// A forward epoch transition reuses the old tip's next epoch ledger. A
+/// switch back, or a different epoch target, must enter ledger sync even when
+/// the new root is already applied: a bootstrap during the boundary window
+/// may never have downloaded that staking ledger.
+pub(super) fn staking_ledger_change_requires_sync(
+    old_tip: &ArcBlockWithHash,
+    new_tip: &ArcBlockWithHash,
+) -> bool {
+    new_tip.staking_epoch_ledger_hash() != old_tip.staking_epoch_ledger_hash()
+        && new_tip.staking_epoch_ledger_hash() != old_tip.next_epoch_ledger_hash()
+}
+
+/// The sync state that replays a frontier store's chain (R20 D5 step 4): the
+/// root applied (its staged ledger is the store's), every later block
+/// fetched. As after a bootstrap, the root's `just_emitted_a_proof` is
+/// false.
+///
+/// `CommitInit` derives the snarked ledger updates of a root that moves only
+/// when the new root is in the best chain, which is the genesis block's until
+/// the restore commits. So if the chain is longer than `k + 1`, they are
+/// derived here, from the chain itself: the commit then builds the new root's
+/// snarked ledger from the stored root's.
+pub(crate) fn restore_chain(
+    time: redux::Timestamp,
+    root: &ArcBlockWithHash,
+    blocks: &[ArcBlockWithHash],
+    needed_protocol_states: &BTreeMap<
+        StateHash,
+        mina_p2p_messages::v2::MinaStateProtocolStateValueStableV2,
+    >,
+) -> TransitionFrontierSyncState {
+    let tip = blocks.last().unwrap_or(root);
+    let k = tip.constants().k.as_u32() as usize;
+    let len = blocks.len().saturating_add(1);
+    let mut root_snarked_ledger_updates = TransitionFrontierRootSnarkedLedgerUpdates::default();
+    if let Some(new_root) = len
+        .checked_sub(k.saturating_add(2))
+        .and_then(|index| blocks.get(index))
+    {
+        root_snarked_ledger_updates
+            .extend_with_needed(new_root, std::iter::once(root).chain(blocks.iter()));
+    }
+    let mut chain = Vec::with_capacity(len);
+    chain.push(TransitionFrontierSyncBlockState::ApplySuccess {
+        time,
+        block: AppliedBlock {
+            block: root.clone(),
+            just_emitted_a_proof: false,
+        },
+    });
+    chain.extend(
+        blocks
+            .iter()
+            .map(|block| TransitionFrontierSyncBlockState::FetchSuccess {
+                time,
+                block: block.clone(),
+            }),
+    );
+    TransitionFrontierSyncState::BlocksPending {
+        time,
+        chain,
+        root_snarked_ledger_updates,
+        needed_protocol_states: needed_protocol_states.clone(),
+    }
+}
+
+/// A producer can finish proving after a sibling has advanced the frontier
+/// root. Its captured chain (or a peer's older chain proof) still includes
+/// our applied root: start there instead of downloading the retired root's
+/// staged ledger. Only trim a prefix when the supplied ancestry contains
+/// that exact applied root; disconnected forks retain the ledger sync path.
+/// OCaml attaches to a retained parent and catches up to a known ancestor.
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transition_handler/processor.ml#L242-L297>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/ledger_catchup/super_catchup.ml#L355-L398>
+fn reuse_applied_root<'a>(
+    best_chain: &'a [AppliedBlock],
+    requested_root: &'a ArcBlockWithHash,
+    blocks_inbetween: &'a [StateHash],
+) -> (&'a ArcBlockWithHash, &'a [StateHash]) {
+    if let Some(root) = best_chain.first() {
+        if let Some(i) = blocks_inbetween.iter().position(|hash| hash == root.hash()) {
+            return (root.block_with_hash(), &blocks_inbetween[i + 1..]);
+        }
+    }
+    (requested_root, blocks_inbetween)
 }
 
 #[allow(clippy::too_many_arguments)]

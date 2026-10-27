@@ -26,6 +26,7 @@ impl P2pChannelsStreamingRpcState {
         let peer_id = *action.peer_id();
         let p2p_state = state_context.get_substate_mut()?;
 
+        // This channel is WebRTC-only; OCaml serving budgets apply to libp2p.
         let channels_state = &mut p2p_state
             .get_ready_peer_mut(&peer_id)
             .ok_or_else(|| format!("Invalid state for: {action:?}"))?

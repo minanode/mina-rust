@@ -60,11 +60,17 @@ sed -i'' -e "s/config_${old_hash}/config_${new_hash}/g" "${config_files[@]}"
 
 # Check if version-hash pattern exists in the files
 version_files=(
-    "${base_dir}/.github/workflows/tests.yaml"
-    "${base_dir}/.github/workflows/test-graphql-compatibility.yml"
     "${base_dir}/docker-compose.archive.devnet.compare.yml"
     "${base_dir}/tools/testing/src/node/ocaml/config.rs"
 )
+# These workflows exist in the private repository but may be omitted from a
+# public export. Keep their versions in step whenever they are present.
+for workflow in tests.yaml test-graphql-compatibility.yml; do
+    file="${base_dir}/.github/workflows/${workflow}"
+    if [ -f "$file" ]; then
+        version_files+=("$file")
+    fi
+done
 
 version_pattern_found=false
 for file in "${version_files[@]}"; do

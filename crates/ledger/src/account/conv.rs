@@ -55,11 +55,43 @@ impl From<TokenId> for TokenIdKeyHash {
     }
 }
 
-impl From<TokenIdKeyHash> for TokenId {
-    fn from(value: TokenIdKeyHash) -> Self {
-        value.inner().try_into().unwrap()
+/// A `TokenIdKeyHash` can hold a 256-bit value that is not a field element
+/// (the base58 decoder refuses one, other constructions may not), so the
+/// conversion can fail.
+impl TryFrom<&TokenIdKeyHash> for TokenId {
+    type Error = InvalidBigInt;
+
+    fn try_from(value: &TokenIdKeyHash) -> Result<Self, Self::Error> {
+        value.inner().try_into()
     }
 }
+
+impl TryFrom<TokenIdKeyHash> for TokenId {
+    type Error = InvalidBigInt;
+
+    fn try_from(value: TokenIdKeyHash) -> Result<Self, Self::Error> {
+        (&value).try_into()
+    }
+}
+
+/// `make_group`, but an error instead of ark-ec's panic when the point is not on
+/// the curve. Wire points (verification keys in zkApp commands) can be
+/// anything; OCaml fails to verify such a command, it doesn't crash.
+fn make_group_checked<F: FieldWitness>(x: F, y: F) -> Result<WireAffine<F>, InvalidBigInt> {
+    if x == F::ZERO && y == F::ZERO {
+        return Ok(make_group::<F>(x, y));
+    }
+    let point = WireAffine::<F>::new_unchecked(x, y);
+    // Pallas and Vesta have cofactor 1, so every point on the curve is in the
+    // subgroup; check both anyway, as `Affine::new` does.
+    if point.is_on_curve() && point.is_in_correct_subgroup_assuming_on_curve() {
+        Ok(point)
+    } else {
+        Err(InvalidBigInt)
+    }
+}
+
+type WireAffine<F> = crate::proofs::field::GroupAffine<F>;
 
 impl<F: FieldWitness> TryFrom<(BigInt, BigInt)> for InnerCurve<F>
 where
@@ -68,10 +100,10 @@ where
     type Error = InvalidBigInt;
 
     fn try_from((x, y): (BigInt, BigInt)) -> Result<Self, Self::Error> {
-        Ok(Self::of_affine(make_group::<F>(
+        Ok(Self::of_affine(make_group_checked::<F>(
             x.to_field()?,
             y.to_field()?,
-        )))
+        )?))
     }
 }
 
@@ -92,10 +124,10 @@ where
     type Error = InvalidBigInt;
 
     fn try_from((x, y): &(BigInt, BigInt)) -> Result<Self, Self::Error> {
-        Ok(Self::of_affine(make_group::<F>(
+        Ok(Self::of_affine(make_group_checked::<F>(
             x.to_field()?,
             y.to_field()?,
-        )))
+        )?))
     }
 }
 

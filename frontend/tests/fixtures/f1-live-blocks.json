@@ -1,0 +1,591 @@
+{
+  "source": "http://127.0.0.1:3200/graphql, Mesa mainnet, 2026-10-21; field projection of bestChain(maxLength: 290)",
+  "blocks": [
+    {
+      "stateHash": "3NLFiuyf22KmWGnX4NPLNtkVjirFdrLBqfTeEpVbCvSHPjATUkBK",
+      "protocolState": {
+        "consensusState": {
+          "blockHeight": "564394"
+        }
+      },
+      "transactions": {
+        "userCommands": [
+          {
+            "isDelegation": false,
+            "fee": "105000000",
+            "amount": "1016000000000"
+          },
+          {
+            "isDelegation": false,
+            "fee": "105000000",
+            "amount": "149999100000000"
+          }
+        ],
+        "zkappCommands": [
+          {
+            "zkappCommand": {
+              "feePayer": {
+                "body": {
+                  "fee": "10000000"
+                }
+              }
+            }
+          },
+          {
+            "zkappCommand": {
+              "feePayer": {
+                "body": {
+                  "fee": "10000000"
+                }
+              }
+            }
+          },
+          {
+            "zkappCommand": {
+              "feePayer": {
+                "body": {
+                  "fee": "10000000"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "snarkJobs": []
+    },
+    {
+      "stateHash": "3NKybCokLNNnB4sdmXCs4xhQdUZzn5aPMyEhYCjVfLFeFwCm2aiQ",
+      "protocolState": {
+        "consensusState": {
+          "blockHeight": "564535"
+        }
+      },
+      "transactions": {
+        "userCommands": [
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "10000000"
+          },
+          {
+            "isDelegation": true,
+            "fee": "12000000",
+            "amount": null
+          },
+          {
+            "isDelegation": false,
+            "fee": "100000000",
+            "amount": "2000000000"
+          },
+          {
+            "isDelegation": false,
+            "fee": "100000000",
+            "amount": "1000000000"
+          },
+          {
+            "isDelegation": false,
+            "fee": "194950000",
+            "amount": "25475950000000"
+          },
+          {
+            "isDelegation": false,
+            "fee": "200000000",
+            "amount": "941220000000"
+          },
+          {
+            "isDelegation": false,
+            "fee": "200000000",
+            "amount": "2268365025520"
+          }
+        ],
+        "zkappCommands": []
+      },
+      "snarkJobs": []
+    },
+    {
+      "stateHash": "3NKXmk2CFUbdH46TpdSnCAtzjDepb7dZGbg4D7cT9E4pFn5Tpu7u",
+      "protocolState": {
+        "consensusState": {
+          "blockHeight": "564592"
+        }
+      },
+      "transactions": {
+        "userCommands": [
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "21103243"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "45821194"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "57622862"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "198178115"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "262676918"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "314026943"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "512086892"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "543835310"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "783801867"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "1417094044"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "1821200523"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "2230091046"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "3301016029"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "3986598014"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "7737629364"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "38932550190"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "1554941941285"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "166903651528"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "244632305910"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "643363975207"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "5461961339057"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "10461007843232"
+          },
+          {
+            "isDelegation": false,
+            "fee": "10000000",
+            "amount": "19329860295710"
+          },
+          {
+            "isDelegation": false,
+            "fee": "100000000",
+            "amount": "19750900000000"
+          },
+          {
+            "isDelegation": false,
+            "fee": "200000000",
+            "amount": "1000000000"
+          }
+        ],
+        "zkappCommands": []
+      },
+      "snarkJobs": [
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        },
+        {
+          "fee": "0"
+        }
+      ]
+    }
+  ]
+}

@@ -8,6 +8,8 @@ use super::{
     candidate::TransitionFrontierCandidateAction,
     genesis::TransitionFrontierGenesisAction,
     genesis_effectful::TransitionFrontierGenesisEffectfulAction,
+    persist::TransitionFrontierPersistAction,
+    persist_effectful::TransitionFrontierPersistEffectfulAction,
     sync::{SyncError, TransitionFrontierSyncAction, TransitionFrontierSyncState},
 };
 
@@ -25,13 +27,19 @@ pub enum TransitionFrontierAction {
     ///
     /// If this node is block producer, we produce proof for the genesis
     /// block, otherwise we don't need it so we use dummy proof instead.
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     GenesisInject,
+    VerificationRecorded {
+        update: Box<crate::verification::VerificationUpdate>,
+    },
     #[action_event(level = info)]
     GenesisProvenInject,
 
     Candidate(TransitionFrontierCandidateAction),
     Sync(TransitionFrontierSyncAction),
+    /// The frontier store (R20).
+    Persist(TransitionFrontierPersistAction),
+    PersistEffect(TransitionFrontierPersistEffectfulAction),
     /// Transition frontier synced.
     Synced {
         /// Required protocol states for root block.
@@ -41,11 +49,22 @@ pub enum TransitionFrontierAction {
         best_tip: ArcBlockWithHash,
         error: SyncError,
     },
+    /// Load the genesis ledgers deferred at startup (I5d2), as the restore
+    /// from the frontier store didn't replace them and the node bootstraps.
+    #[action_event(level = info)]
+    GenesisLedgersLoadInit,
+    #[action_event(level = info)]
+    GenesisLedgersLoadSuccess,
+    #[action_event(level = warn, fields(error))]
+    GenesisLedgersLoadError {
+        error: String,
+    },
 }
 
 impl redux::EnablingCondition<crate::State> for TransitionFrontierAction {
     fn is_enabled(&self, state: &crate::State, time: redux::Timestamp) -> bool {
         match self {
+            TransitionFrontierAction::VerificationRecorded { .. } => true,
             TransitionFrontierAction::Genesis(a) => a.is_enabled(state, time),
             TransitionFrontierAction::GenesisEffect(a) => a.is_enabled(state, time),
             TransitionFrontierAction::GenesisInject => {
@@ -67,18 +86,26 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierAction {
             }
             TransitionFrontierAction::Candidate(a) => a.is_enabled(state, time),
             TransitionFrontierAction::Sync(a) => a.is_enabled(state, time),
+            TransitionFrontierAction::Persist(a) => a.is_enabled(state, time),
+            TransitionFrontierAction::PersistEffect(a) => a.is_enabled(state, time),
             TransitionFrontierAction::Synced { .. } => matches!(
                 state.transition_frontier.sync,
                 TransitionFrontierSyncState::CommitSuccess { .. }
             ),
+            TransitionFrontierAction::GenesisLedgersLoadInit => {
+                state.transition_frontier.genesis_ledgers_needed()
+            }
+            TransitionFrontierAction::GenesisLedgersLoadSuccess
+            | TransitionFrontierAction::GenesisLedgersLoadError { .. } => matches!(
+                state.transition_frontier.genesis_ledgers,
+                super::GenesisLedgersState::Pending { .. }
+            ),
             TransitionFrontierAction::SyncFailed { best_tip, error } => {
                 let sync = &state.transition_frontier.sync;
                 sync.best_tip().is_some_and(|b| b.hash() == best_tip.hash())
-                    && match error {
-                        SyncError::BlockApplyFailed(block, _) => sync
-                            .block_state(block.hash())
-                            .is_some_and(|s| s.is_apply_error()),
-                    }
+                    && sync
+                        .block_state(error.failed_block().hash())
+                        .is_some_and(|s| s.is_apply_error())
             }
         }
     }

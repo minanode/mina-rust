@@ -22,12 +22,13 @@ const changeActiveNode = createAction(
 const getNodeDetails = createAction(type('Get Node Details'));
 const getNodeDetailsSuccess = createAction(
   type('Get Node Details Success'),
-  props<{ details: AppNodeDetails }>(),
+  props<{ details: AppNodeDetails; node: string }>(),
 );
 const getNodeEnvBuild = createAction(type('Get Node Env Build'));
+/** `node`: the name of the node that answered, if known. */
 const getNodeEnvBuildSuccess = createAction(
   type('Get Node Env Build Success'),
-  props<{ envBuild: AppEnvBuild }>(),
+  props<{ envBuild: AppEnvBuild; node?: string }>(),
 );
 const deleteNode = createAction(
   type('Delete Node'),

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fmt::Debug,
     io::Write,
     ops::ControlFlow,
@@ -14,7 +14,9 @@ use sha2::{
 };
 use ControlFlow::{Break, Continue};
 
-use super::scan_state::transaction_snark::{LedgerProofWithSokMessage, TransactionWithWitness};
+use super::shared_values::SharedValues;
+
+use super::scan_state::transaction_snark::{LedgerProof, TransactionWithWitness};
 
 /// Sequence number for jobs in the scan state that corresponds to the order in
 /// which they were added
@@ -81,7 +83,7 @@ impl JobStatus {
 /// The number of new jobs- base and merge that can be added to this tree.
 /// Each node has a weight associated to it and the
 /// new jobs received are distributed across the tree based on this number.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Weight {
     pub(super) base: u64,
     pub(super) merge: u64,
@@ -412,7 +414,7 @@ pub enum Value<B, M> {
 /// A single tree with number of leaves = max_base_jobs = 2**transaction_capacity_log_2
 #[derive(Clone)]
 pub struct Tree<B, M> {
-    pub(super) values: Vec<Value<B, M>>,
+    pub(super) values: SharedValues<Value<B, M>>,
 }
 
 impl<B, M> Debug for Tree<base::Base<B>, merge::Merge<M>>
@@ -696,7 +698,7 @@ where
         M: Clone,
         B: Clone,
     {
-        let mut values = Vec::with_capacity(self.values.len());
+        let mut values = self.values.clone();
         let mut scan_result = None;
 
         // Because our tree is a perfect binary tree, two values pushed
@@ -710,11 +712,19 @@ where
             let depth = btree::depth_at(index);
 
             if depth > update_level {
-                values.push(value.clone());
                 continue;
             }
 
             let jobs_for_this = jobs_fifo.pop_front().unwrap();
+            // Both update callbacks are identities for an empty job slice.
+            // Keep scheduling its children, but leave this chunk shared.
+            if jobs_for_this.is_empty() {
+                if matches!(value, Value::Node(_)) {
+                    jobs_fifo.push_back(jobs_for_this);
+                    jobs_fifo.push_back(jobs_for_this);
+                }
+                continue;
+            }
 
             let value = match value {
                 Value::Leaf(base) => Value::Leaf(fun_base(jobs_for_this, base.clone())?),
@@ -733,7 +743,7 @@ where
                 }
             };
 
-            values.push(value);
+            values[index] = value;
         }
 
         assert_eq!(jobs_fifo.capacity(), self.values.len());
@@ -747,46 +757,56 @@ where
         fun_base: &FunBase,
     ) -> (Self, Data)
     where
-        FunMerge: Fn((Data, Data), &M) -> (M, Data),
-        FunBase: Fn(&B) -> (B, Data),
+        FunMerge: Fn((Data, Data), &M) -> (Option<M>, Data),
+        FunBase: Fn(&B) -> (Option<B>, Data),
         Data: Clone,
+        B: Clone,
+        M: Clone,
     {
         let mut datas = vec![None; self.values.len()];
-
-        let childs_of = |data: &mut [Option<Data>], index: usize| -> Option<(Data, Data)> {
-            let left = data
-                .get_mut(btree::child_left(index))
-                .and_then(Option::take)?;
-            let right = data
-                .get_mut(btree::child_right(index))
-                .and_then(Option::take)?;
-
-            Some((left, right))
-        };
-
-        let mut values: Vec<_> = self
-            .values
-            .iter()
-            .enumerate()
-            .rev()
-            .map(|(index, value)| match value {
+        let mut values = self.values.clone();
+        for (index, value) in self.values.iter().enumerate().rev() {
+            match value {
                 Value::Leaf(base) => {
                     let (new_base, count_list) = fun_base(base);
                     datas[index] = Some(count_list);
-                    Value::Leaf(new_base)
+                    if let Some(base) = new_base {
+                        values[index] = Value::Leaf(base);
+                    }
                 }
                 Value::Node(merge) => {
-                    let (left, right) = childs_of(datas.as_mut(), index).unwrap();
-                    let (value, count_list) = fun_merge((left, right), merge);
+                    let left = datas[btree::child_left(index)].take().unwrap();
+                    let right = datas[btree::child_right(index)].take().unwrap();
+                    let (new_merge, count_list) = fun_merge((left, right), merge);
                     datas[index] = Some(count_list);
-                    Value::Node(value)
+                    if let Some(merge) = new_merge {
+                        values[index] = Value::Node(merge);
+                    }
                 }
-            })
-            .collect();
-
-        values.reverse();
-
+            }
+        }
         (Self { values }, datas[0].take().unwrap())
+    }
+
+    /// Map known changes without allocating or cloning unchanged chunks.
+    fn map_changed<FM, FB>(&self, merge: FM, base: FB) -> Self
+    where
+        FM: Fn(&M) -> Option<M>,
+        FB: Fn(&B) -> Option<B>,
+        B: Clone,
+        M: Clone,
+    {
+        let mut values = self.values.clone();
+        for (index, value) in self.values.iter().enumerate() {
+            let changed = match value {
+                Value::Leaf(b) => base(b).map(Value::Leaf),
+                Value::Node(m) => merge(m).map(Value::Node),
+            };
+            if let Some(changed) = changed {
+                values[index] = changed;
+            }
+        }
+        Self { values }
     }
 
     fn iter(&self) -> impl Iterator<Item = (u64, &Value<B, M>)> {
@@ -797,7 +817,7 @@ where
     }
 }
 
-impl Tree<base::Base<Arc<TransactionWithWitness>>, merge::Merge<Arc<LedgerProofWithSokMessage>>> {
+impl Tree<base::Base<Arc<TransactionWithWitness>>, merge::Merge<Arc<LedgerProof>>> {
     pub fn view(&self) -> impl Iterator<Item = JobValueWithIndex<'_>> {
         self.values
             .iter()
@@ -814,7 +834,7 @@ impl Tree<base::Base<Arc<TransactionWithWitness>>, merge::Merge<Arc<LedgerProofW
 
 pub type JobValue<'a> = super::parallel_scan::Value<
     &'a base::Job<Arc<TransactionWithWitness>>,
-    &'a merge::Job<Arc<LedgerProofWithSokMessage>>,
+    &'a merge::Job<Arc<LedgerProof>>,
 >;
 
 pub struct JobValueWithIndex<'a> {
@@ -864,6 +884,33 @@ pub struct ParallelScan<BaseJob, MergeJob> {
     /// transaction_capacity_log_2
     pub(super) max_base_jobs: u64,
     pub(super) delay: u64,
+}
+
+impl<BaseJob, MergeJob> ParallelScan<BaseJob, MergeJob> {
+    /// Reachable tree storage, excluding job payloads and allocator rounding.
+    /// Aliases in other scan states are counted again; use `tree_heap_bytes`
+    /// with a shared address set for the retained union of several states.
+    pub fn owned_tree_bytes(&self) -> usize {
+        self.tree_heap_bytes(&mut BTreeSet::new())
+    }
+
+    /// Additional requested heap bytes not already reachable from `seen`.
+    /// Includes outer vectors and Arc allocation headers. No payload behind a
+    /// job Arc is charged to the tree structure.
+    pub fn tree_heap_bytes(&self, seen: &mut BTreeSet<usize>) -> usize {
+        use std::mem::size_of;
+        let trees = self
+            .trees
+            .capacity()
+            .saturating_mul(size_of::<Tree<base::Base<BaseJob>, merge::Merge<MergeJob>>>());
+        let values = self.trees.iter().fold(0usize, |sum, tree| {
+            sum.saturating_add(tree.values.heap_bytes(seen))
+        });
+        let acc = self.acc.as_ref().map_or(0, |(_, jobs)| {
+            jobs.capacity().saturating_mul(size_of::<BaseJob>())
+        });
+        trees.saturating_add(values).saturating_add(acc)
+    }
 }
 
 pub(super) enum ResetKind {
@@ -1177,12 +1224,12 @@ where
                 }
             };
 
-            let base = base::Base {
+            let changed = (new_weight != base.weight).then(|| base::Base {
                 weight: new_weight.clone(),
                 job: base.job.clone(),
-            };
+            });
 
-            (base, (new_weight, dummy_right_for_base_nodes))
+            (changed, (new_weight, dummy_right_for_base_nodes))
         };
 
         let fun_merge = |lst: ((Weight, Weight), (Weight, Weight)),
@@ -1225,12 +1272,12 @@ where
                 }
             };
 
-            let merge = merge::Merge {
+            let changed = (ww != merge.weight).then(|| merge::Merge {
                 weight: ww.clone(),
                 job: merge.job.clone(),
-            };
+            });
 
-            (merge, ww)
+            (changed, ww)
         };
 
         let (result, _) = self.update_accumulate(&fun_merge, &fun_base);
@@ -1463,7 +1510,9 @@ where
         //   matches!(v, Value::Leaf(_))
         // }).count());
 
-        Self { values }
+        Self {
+            values: values.into(),
+        }
     }
 
     fn create_tree(depth: u64) -> Self {
@@ -1484,15 +1533,15 @@ where
             .trees
             .iter()
             .map(|tree| {
-                tree.map(
+                tree.map_changed(
                     |merge_node| match &merge_node.job {
-                        merge::Job::Full(merge::Record { state: Done, .. }) => merge::Merge {
+                        merge::Job::Full(merge::Record { state: Done, .. }) => Some(merge::Merge {
                             weight: merge_node.weight.clone(),
                             job: merge::Job::Empty,
-                        },
-                        _ => merge_node.clone(),
+                        }),
+                        _ => None,
                     },
-                    |b| b.clone(),
+                    |_| None,
                 )
             })
             .collect();
@@ -1902,18 +1951,20 @@ where
             let index = self.trees.len() - *index as usize - 2;
 
             if result_opt.is_some() && index == 0 {
-                println!(
+                mina_core::debug!(
                     "- tree[{:>02}] level={} {:>3} completed jobs, a proof is emitted, tree is removed",
                     index,
                     level,
                     njobs
                 );
             } else {
-                println!(
+                mina_core::debug!(
                     "- tree[{:>02}] level={} {:>3} completed jobs (DONE)",
-                    index, level, njobs
+                    index,
+                    level,
+                    njobs
                 );
-                println!(
+                mina_core::debug!(
                     "           level={} {:>3} new merge jobs (TODO)",
                     level - 1,
                     njobs / 2,
@@ -2004,7 +2055,7 @@ where
             vec![tree]
         };
 
-        println!(
+        mina_core::debug!(
             "- tree[{:>02}] level=7 {:>3} new base jobs (TODO), total_nbase_jobs={:?}",
             self.trees.len() - 1,
             data_len,
@@ -2050,8 +2101,8 @@ where
             })
             .join("|");
 
-        println!("           level=7 has the following jobs (in this order):");
-        println!("           {s}");
+        mina_core::debug!("           level=7 has the following jobs (in this order):");
+        mina_core::debug!("           {s}");
 
         // println!(
         //     "updated_trees={} self_trees={:?}",
@@ -2216,14 +2267,14 @@ where
         // );
 
         // TODO: For logs, consider when works are splitted on 2 trees
-        println!("scan_state update:");
+        mina_core::debug!("scan_state update:");
 
         // update first set of jobs and data
         let result_opt = self.add_merge_jobs(jobs1)?;
         self.add_data(data1.to_vec(), &base_kind)?;
 
         if !jobs2.is_empty() || !data2.is_empty() {
-            println!("scan_state update: (2nd set of jobs, new transactions didn't fit in latest/current tree)");
+            mina_core::debug!("scan_state update: (2nd set of jobs, new transactions didn't fit in latest/current tree)");
         }
 
         // update second set of jobs and data.
@@ -2273,6 +2324,51 @@ where
 
     pub fn last_emitted_value(&self) -> Option<&(MergeJob, Vec<BaseJob>)> {
         self.acc.as_ref()
+    }
+
+    /// All base jobs still held by the trees, including completed jobs, plus
+    /// the last emitted tree's jobs. Used only by the replay memory probe.
+    #[cfg(feature = "peak-alloc")]
+    pub fn retained_base_jobs(&self) -> Vec<BaseJob> {
+        let mut jobs: Vec<_> = self.trees.iter().flat_map(Tree::base_jobs).collect();
+        if let Some((_, emitted)) = &self.acc {
+            jobs.extend(emitted.iter().cloned());
+        }
+        jobs
+    }
+
+    /// Visits every job value the trees hold, completed jobs included, and
+    /// the last emitted tree's: what the scan state keeps alive. For memory
+    /// accounting (PC1); values shared between scan states are visited in
+    /// each.
+    pub fn for_each_retained_job(
+        &self,
+        mut on_base: impl FnMut(&BaseJob),
+        mut on_merge: impl FnMut(&MergeJob),
+    ) {
+        for tree in &self.trees {
+            for value in &tree.values {
+                match value {
+                    Value::Leaf(base) => {
+                        if let base::Job::Full(record) = &base.job {
+                            on_base(&record.job);
+                        }
+                    }
+                    Value::Node(merge) => match &merge.job {
+                        merge::Job::Empty => {}
+                        merge::Job::Part(left) => on_merge(left),
+                        merge::Job::Full(record) => {
+                            on_merge(&record.left);
+                            on_merge(&record.right);
+                        }
+                    },
+                }
+            }
+        }
+        if let Some((merge, bases)) = &self.acc {
+            on_merge(merge);
+            bases.iter().for_each(on_base);
+        }
     }
 
     fn current_job_sequence_number(&self) -> SequenceNumber {
@@ -2606,6 +2702,135 @@ mod tests {
     use rand::Rng;
 
     use super::*;
+
+    fn review_snapshot(state: &ParallelScan<i64, i64>) -> String {
+        let mut result = format!("{state:?}");
+        // Debug deliberately omits payloads, and hashing ignores Done merges.
+        // Include every retained payload when checking historical isolation.
+        for tree in &state.trees {
+            for value in &tree.values {
+                match value {
+                    Value::Leaf(base) => {
+                        if let base::Job::Full(record) = &base.job {
+                            result.push_str(&format!("base:{};", record.job));
+                        }
+                    }
+                    Value::Node(merge) => match &merge.job {
+                        merge::Job::Full(record) => {
+                            result.push_str(&format!("merge:{},{};", record.left, record.right));
+                        }
+                        merge::Job::Part(left) => result.push_str(&format!("part:{left};")),
+                        merge::Job::Empty => (),
+                    },
+                }
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn review_changed_resets_renumber_and_lean_keep_snapshot() {
+        let mut state = ParallelScan::<i64, i64>::empty(64, 0);
+        state.trees[0] = Tree::create_tree_for_level(
+            -1,
+            6,
+            merge::Job::Full(merge::Record {
+                left: 2,
+                right: 3,
+                seq_no: SequenceNumber(12),
+                state: JobStatus::Done,
+            }),
+            base::Job::Full(base::Record {
+                job: 1,
+                seq_no: SequenceNumber(10),
+                state: JobStatus::Todo,
+            }),
+        );
+        // Deliberately stale weights force each reset mode to write.
+        for index in 0..state.trees[0].values.len() {
+            match &mut state.trees[0].values[index] {
+                Value::Leaf(base) => {
+                    base.weight = Weight {
+                        base: 99,
+                        merge: 99,
+                    }
+                }
+                Value::Node(merge) => {
+                    merge.weight = (
+                        Weight {
+                            base: 99,
+                            merge: 99,
+                        },
+                        Weight {
+                            base: 99,
+                            merge: 99,
+                        },
+                    )
+                }
+            }
+        }
+        let snapshot = state.clone();
+        let before = review_snapshot(&snapshot);
+        for kind in [ResetKind::Base, ResetKind::Merge, ResetKind::Both] {
+            let reset = state.trees[0].reset_weights(kind);
+            assert_ne!(format!("{reset:?}"), format!("{:?}", state.trees[0]));
+            assert_eq!(review_snapshot(&snapshot), before);
+        }
+        let lean = state.with_leaner_trees();
+        assert_ne!(review_snapshot(&lean), before);
+        assert_eq!(review_snapshot(&snapshot), before);
+        let _ = hash(&state);
+        assert_eq!(review_snapshot(&snapshot), before);
+        state.reset_seq_no();
+        assert_ne!(review_snapshot(&state), before);
+        assert_eq!(review_snapshot(&snapshot), before);
+    }
+
+    // Relational isolation checks: snapshots are compared to their own pre-write
+    // values, not used as protocol expected-value fixtures.
+    #[test]
+    fn review_clone_isolation_across_scan_operations() {
+        for capacity in [2, 16, 32, 64] {
+            let mut state = ParallelScan::<i64, i64>::empty(capacity, 0);
+            let mut history = Vec::new();
+            for step in 0..40 {
+                let before = review_snapshot(&state);
+                history.push((state.clone(), before.clone()));
+                let count = if step % 3 == 0 { 1 } else { capacity };
+                let jobs = flatten(state.work_for_next_update(count));
+                let done = jobs.iter().map(job_done).collect();
+                state.update(vec![1; count as usize], done, |_| 0).unwrap();
+                for (snapshot, expected) in &history {
+                    assert_eq!(&review_snapshot(snapshot), expected);
+                }
+                let before = review_snapshot(&state);
+                for tree in &state.trees {
+                    for kind in [ResetKind::Base, ResetKind::Merge, ResetKind::Both] {
+                        let snapshot = tree.clone();
+                        let expected = format!("{snapshot:?}");
+                        let reset = tree.reset_weights(kind);
+                        assert_eq!(format!("{snapshot:?}"), expected);
+                        drop(reset);
+                    }
+                    let (unchanged, result) = tree
+                        .update(
+                            &[],
+                            ceil_log2(capacity),
+                            SequenceNumber(99),
+                            WeightLens::Base,
+                        )
+                        .unwrap();
+                    assert!(result.is_none());
+                    assert_eq!(format!("{unchanged:?}"), format!("{tree:?}"));
+                }
+                let mut renumbered = state.clone();
+                renumbered.reset_seq_no();
+                let lean = state.with_leaner_trees();
+                assert_eq!(hash(&state), hash(&lean));
+                assert_eq!(review_snapshot(&state), before);
+            }
+        }
+    }
 
     #[test]
     fn test_ceil_log2() {

@@ -1,4 +1,10 @@
+mod admission;
+pub use admission::*;
+
 pub mod candidate;
+
+pub mod work_coverage;
+pub use work_coverage::{WorkCoverage, WorkCoverageRequest, WorkCoverageStatus};
 
 mod snark_pool_config;
 pub use snark_pool_config::*;
@@ -16,3 +22,6 @@ pub use snark_pool_effects::*;
 
 mod snark_pool_service;
 pub use snark_pool_service::*;
+
+#[cfg(test)]
+mod tests;

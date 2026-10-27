@@ -5,6 +5,7 @@ use mina_core::{
 use mina_snark::block_verify::{SnarkBlockVerifyAction, SnarkBlockVerifyError, SnarkBlockVerifyId};
 
 use crate::{
+    p2p::channels::rpc::{P2pChannelsRpcAction, P2pRpcRequest},
     transition_frontier::sync::{
         ledger::{
             snarked::TransitionFrontierSyncLedgerSnarkedAction,
@@ -16,8 +17,9 @@ use crate::{
 };
 
 use super::{
-    TransitionFrontierCandidateAction, TransitionFrontierCandidateActionWithMetaRef,
-    TransitionFrontierCandidateStatus, TransitionFrontierCandidatesState,
+    choose_chain_proof_peer, ChainProofPeer, TransitionFrontierCandidateAction,
+    TransitionFrontierCandidateActionWithMetaRef, TransitionFrontierCandidateStatus,
+    TransitionFrontierCandidatesState, CHAIN_PROOF_ADVERTISER_WAIT,
 };
 
 impl TransitionFrontierCandidatesState {
@@ -33,6 +35,7 @@ impl TransitionFrontierCandidatesState {
 
         match action {
             TransitionFrontierCandidateAction::P2pBestTipUpdate { best_tip } => {
+                state.first_peer_best_tip.get_or_insert(meta.time());
                 let dispatcher = state_context.into_dispatcher();
                 dispatcher.push(TransitionFrontierCandidateAction::BlockReceived {
                     block: best_tip.clone(),
@@ -51,7 +54,16 @@ impl TransitionFrontierCandidatesState {
 
                 let allow_block_too_late = allow_block_too_late(state, block);
 
-                match state.prevalidate_block(block, allow_block_too_late) {
+                let result = state.prevalidate_block(block, allow_block_too_late);
+                dispatcher.push(
+                    crate::verification::VerificationUpdate::headers(
+                        block,
+                        crate::verification::Arrival::BestTip,
+                        &result,
+                    )
+                    .action(),
+                );
+                match result {
                     Ok(()) => {
                         dispatcher.push(
                             TransitionFrontierCandidateAction::BlockPrevalidateSuccess {
@@ -139,6 +151,9 @@ impl TransitionFrontierCandidatesState {
 
                 dispatcher
                     .push(TransitionFrontierCandidateAction::TransitionFrontierSyncTargetUpdate);
+                // If it can't be the sync target for want of a chain proof,
+                // ask for one now rather than on the next `CheckTimeouts`.
+                dispatcher.push(TransitionFrontierCandidateAction::ChainProofPeersQuery);
             }
             TransitionFrontierCandidateAction::TransitionFrontierSyncTargetUpdate => {
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
@@ -161,8 +176,7 @@ impl TransitionFrontierCandidatesState {
 
                 let previous_root_snarked_ledger_hash = state
                     .transition_frontier
-                    .root()
-                    .map(|b| b.snarked_ledger_hash().clone());
+                    .previous_root_snarked_ledger_hash();
 
                 dispatcher.push(TransitionFrontierSyncAction::BestTipUpdate {
                     previous_root_snarked_ledger_hash,
@@ -170,6 +184,68 @@ impl TransitionFrontierCandidatesState {
                     root_block,
                     blocks_inbetween,
                     on_success: None,
+                });
+            }
+            TransitionFrontierCandidateAction::ChainProofPeersQuery => {
+                let (dispatcher, global_state) = state_context.into_dispatcher_and_state();
+                let Some(candidate) = global_state
+                    .transition_frontier
+                    .candidates
+                    .chain_proof_wanted(&global_state.transition_frontier)
+                else {
+                    return;
+                };
+                let Some(p2p) = global_state.p2p.ready() else {
+                    return;
+                };
+                let time = meta.time();
+                let peers = p2p
+                    .ready_peers_iter()
+                    .map(|(peer_id, peer)| ChainProofPeer {
+                        peer_id: *peer_id,
+                        advertised: peer
+                            .best_tip
+                            .as_ref()
+                            .is_some_and(|b| b.hash() == candidate.block.hash()),
+                        available: peer.channels.rpc.can_send_request()
+                            && p2p.is_best_tip_request_within_budget(peer_id, time),
+                        best_tip_request_pending: matches!(
+                            peer.channels.rpc.pending_local_rpc(),
+                            Some(P2pRpcRequest::BestTipWithProof)
+                        ),
+                    });
+                // Wait a little for a peer that advertised the candidate,
+                // counted from when the candidate was verified.
+                let wait_for_advertisers =
+                    candidate.status.snark_verified_at().is_none_or(|verified| {
+                        time.checked_sub(verified).unwrap_or_default() < CHAIN_PROOF_ADVERTISER_WAIT
+                    });
+                let chosen = choose_chain_proof_peer(
+                    &candidate.chain_proof_asked,
+                    peers,
+                    wait_for_advertisers,
+                    &mut global_state.pseudo_rng(),
+                );
+                if let Some(peer_id) = chosen {
+                    dispatcher.push(TransitionFrontierCandidateAction::ChainProofPeerQueryInit {
+                        hash: candidate.block.hash().clone(),
+                        peer_id,
+                    });
+                }
+            }
+            TransitionFrontierCandidateAction::ChainProofPeerQueryInit { hash, peer_id } => {
+                state.add_chain_proof_asked(hash, *peer_id);
+
+                let (dispatcher, global_state) = state_context.into_dispatcher_and_state();
+                let Some(peer) = global_state.p2p.get_ready_peer(peer_id) else {
+                    bug_condition!("ChainProofPeerQueryInit: peer {peer_id} not ready");
+                    return;
+                };
+                dispatcher.push(P2pChannelsRpcAction::RequestSend {
+                    peer_id: *peer_id,
+                    id: peer.channels.next_local_rpc_id(),
+                    request: Box::new(P2pRpcRequest::BestTipWithProof),
+                    on_init: None,
                 });
             }
             TransitionFrontierCandidateAction::Prune => {

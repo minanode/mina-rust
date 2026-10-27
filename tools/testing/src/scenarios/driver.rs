@@ -207,10 +207,19 @@ impl<'cluster> Driver<'cluster> {
     ///
     /// # Example
     ///
+    /// Requires a driver for an existing cluster, so this is compile-only.
+    ///
     /// ```no_run
+    /// use std::time::Duration;
+    /// use mina_node::event_source::Event;
+    /// use mina_node_testing::scenarios::Driver;
+    ///
+    /// # async fn example(driver: &mut Driver<'_>) -> anyhow::Result<()> {
     /// driver.wait_for(Duration::from_secs(5), |node_id, event, state| {
-    ///     matches!(event, Event::BlockReceived { .. })
+    ///     matches!(event, Event::P2p(_))
     /// }).await?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn wait_for(
         &mut self,

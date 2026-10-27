@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
+
 use mina_core::{block::ArcBlockWithHash, consensus::consensus_take, ActionEvent};
-use mina_p2p_messages::v2::{LedgerHash, StateHash};
+use mina_p2p_messages::v2::{LedgerHash, MinaStateProtocolStateValueStableV2, StateHash};
 use redux::Callback;
 use serde::{Deserialize, Serialize};
 
@@ -34,7 +36,7 @@ pub enum TransitionFrontierSyncAction {
         blocks_inbetween: Vec<StateHash>,
     },
     /// Set sync target to a new best tip
-    #[action_event(level = info, fields(
+    #[action_event(level = debug, fields(
         new_best_tip_hash = display(&best_tip.hash),
         new_best_tip_height = best_tip.height(),
         new_root_block_hash = display(&root_block.hash),
@@ -108,7 +110,7 @@ pub enum TransitionFrontierSyncAction {
         just_emitted_a_proof: bool,
     },
     /// Sending block to archive
-    #[action_event(level = info, fields(
+    #[action_event(level = debug, fields(
         block_hash = display(&hash),
     ))]
     BlocksSendToArchive {
@@ -127,13 +129,30 @@ pub enum TransitionFrontierSyncAction {
     },
     /// Synchronization to a target ledger
     Ledger(TransitionFrontierSyncLedgerAction),
+    /// Replay a frontier store's chain (R20 D5, I5d1): the root's staged
+    /// ledger and the snarked ledgers are with the ledger service; the blocks
+    /// after the root are applied as fetched ones, then committed. The best
+    /// chain stays the genesis block until then.
+    #[action_event(level = info, fields(
+        root_hash = display(&root.hash),
+        root_height = root.height(),
+        blocks = blocks.len(),
+    ))]
+    RestoreInit {
+        root: ArcBlockWithHash,
+        /// The stored chain after the root, oldest first.
+        blocks: Vec<ArcBlockWithHash>,
+        /// The protocol states the root's scan state needs.
+        needed_protocol_states: BTreeMap<StateHash, MinaStateProtocolStateValueStableV2>,
+    },
 }
 
 impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncAction {
     fn is_enabled(&self, state: &crate::State, time: redux::Timestamp) -> bool {
         match self {
             TransitionFrontierSyncAction::Init { best_tip, .. } => {
-                !state.transition_frontier.sync.is_pending()
+                !state.transition_frontier.persist_holds_sync()
+                    && !state.transition_frontier.sync.is_pending()
                     && !state.transition_frontier.sync.is_synced()
                     && state
                         .transition_frontier
@@ -152,7 +171,10 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncAction {
                 ..
             } => {
                 let blacklist = &state.transition_frontier.blacklist;
-                (state.transition_frontier.sync.is_pending() || state.transition_frontier.sync.is_synced())
+                // Not while a restore from the frontier store is to be
+                // decided or replaying (R20 D5).
+                !state.transition_frontier.persist_holds_sync()
+                && (state.transition_frontier.sync.is_pending() || state.transition_frontier.sync.is_synced())
                     && !matches!(&state.transition_frontier.sync, TransitionFrontierSyncState::CommitPending { .. } | TransitionFrontierSyncState::CommitSuccess { .. })
                 && state
                     .transition_frontier
@@ -266,14 +288,14 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncAction {
                 TransitionFrontierSyncState::RootLedgerSuccess { .. }
             ),
             TransitionFrontierSyncAction::BlocksPeersQuery => {
-                let peers_available = state
-                    .p2p
-                    .ready_peers_iter()
-                    .any(|(_, p)| p.channels.rpc.can_send_request());
+                let peers_available = state.p2p.ready_peers_iter().any(|(id, p)| {
+                    p.channels.rpc.can_send_request()
+                        && state.transition_frontier.block_peer_query_ready(id, time)
+                });
                 let sync = &state.transition_frontier.sync;
                 peers_available
                     && (sync.blocks_fetch_next().is_some()
-                        || sync.blocks_fetch_retry_iter().next().is_some())
+                        || sync.blocks_fetch_retry_iter(time).next().is_some())
             }
             TransitionFrontierSyncAction::BlocksPeerQueryInit { hash, peer_id } => {
                 let check_next_hash = state
@@ -285,34 +307,32 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncAction {
                 let check_peer_available = state
                     .p2p
                     .get_ready_peer(peer_id)
-                    .and_then(|p| {
-                        let sync_best_tip = state.transition_frontier.sync.best_tip()?;
-                        let peer_best_tip = p.best_tip.as_ref()?;
-                        Some(p).filter(|_| sync_best_tip.hash == peer_best_tip.hash)
-                    })
                     .is_some_and(|p| p.channels.rpc.can_send_request());
 
-                check_next_hash && check_peer_available
+                check_next_hash
+                    && check_peer_available
+                    && state
+                        .transition_frontier
+                        .block_peer_query_ready(peer_id, time)
             }
             TransitionFrontierSyncAction::BlocksPeerQueryRetry { hash, peer_id } => {
                 let check_next_hash = state
                     .transition_frontier
                     .sync
-                    .blocks_fetch_retry_iter()
+                    .blocks_fetch_retry_iter(time)
                     .next()
                     .is_some_and(|expected| &expected == hash);
 
                 let check_peer_available = state
                     .p2p
                     .get_ready_peer(peer_id)
-                    .and_then(|p| {
-                        let sync_best_tip = state.transition_frontier.sync.best_tip()?;
-                        let peer_best_tip = p.best_tip.as_ref()?;
-                        Some(p).filter(|_| sync_best_tip.hash == peer_best_tip.hash)
-                    })
                     .is_some_and(|p| p.channels.rpc.can_send_request());
 
-                check_next_hash && check_peer_available
+                check_next_hash
+                    && check_peer_available
+                    && state
+                        .transition_frontier
+                        .block_peer_query_ready(peer_id, time)
             }
             TransitionFrontierSyncAction::BlocksPeerQueryPending { hash, peer_id, .. } => state
                 .transition_frontier
@@ -369,7 +389,10 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncAction {
                 _ => false,
             },
             TransitionFrontierSyncAction::BlocksSendToArchive { .. } => {
+                // A restore's replayed blocks went to the archive when they
+                // were first applied.
                 state.transition_frontier.archive_enabled
+                    && !state.transition_frontier.persist.is_replaying()
             }
             TransitionFrontierSyncAction::CommitInit => matches!(
                 state.transition_frontier.sync,
@@ -384,6 +407,12 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncAction {
                 TransitionFrontierSyncState::CommitPending { .. },
             ),
             TransitionFrontierSyncAction::Ledger(action) => action.is_enabled(state, time),
+            TransitionFrontierSyncAction::RestoreInit { .. } => {
+                let tf = &state.transition_frontier;
+                tf.persist.is_replaying()
+                    && tf.sync.is_synced()
+                    && tf.root().is_some_and(|root| root.is_genesis())
+            }
         }
     }
 }

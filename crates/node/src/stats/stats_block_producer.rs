@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use ledger::AccountIndex;
 use mina_core::block::{AppliedBlock, ArcBlockWithHash};
@@ -11,12 +11,46 @@ use crate::{
 };
 
 const MAX_HISTORY: usize = 2048;
+/// Attempts kept in the work directory across restarts, the newest
+/// ([`BlockProductionHistory`]).
+pub const MAX_SAVED_ATTEMPTS: usize = 512;
+/// Epochs whose evaluation stats are kept across restarts, the newest.
+pub const MAX_SAVED_EPOCHS: usize = 16;
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct BlockProducerStats {
     pub(super) attempts: VecDeque<BlockProductionAttempt>,
     pub vrf_evaluator: BTreeMap<u32, VrfEvaluatorStats>,
     pub last_produced_block: Option<ArcBlockWithHash>,
+    pub blocks_produced: u64,
+    pub blocks_failed: u64,
+    /// Changes whenever an attempt's status does (not its confirmations), or
+    /// an epoch's evaluation starts: the history is saved then.
+    #[serde(default)]
+    revision: u64,
+    /// Only schedules from a previous run may expire without a producer action.
+    #[serde(skip)]
+    restored_schedules: BTreeSet<u32>,
+}
+
+/// What the node keeps of its block production across restarts, in its
+/// work directory: the newest [`MAX_SAVED_ATTEMPTS`] attempts and the newest
+/// [`MAX_SAVED_EPOCHS`] epochs' evaluation stats (F-producer).
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+pub struct BlockProductionHistory {
+    pub attempts: Vec<BlockProductionAttempt>,
+    pub vrf_evaluator: BTreeMap<u32, VrfEvaluatorStats>,
+    pub blocks_produced: u64,
+    pub blocks_failed: u64,
+}
+
+/// An epoch's stake for the producer's key: its delegators' balances in the
+/// staking ledger, its own included, and that ledger's total.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EpochStake {
+    pub delegated_stake: u64,
+    pub total_currency: u64,
+    pub delegators: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -60,6 +94,8 @@ pub struct BlockProductionTimes {
 #[serde(tag = "status")]
 pub enum BlockProductionStatus {
     Scheduled,
+    /// A restored schedule whose slot ended without another attempt.
+    Missed,
     StagedLedgerDiffCreatePending,
     StagedLedgerDiffCreateSuccess,
     Produced,
@@ -99,11 +135,24 @@ pub struct ProducedBlockTransactions {
     pub zkapps: u16,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct VrfEvaluatorStats {
     pub total_slots: u32,
     pub evaluated_slots: u32,
+    /// Slots of those evaluated that the key won.
+    #[serde(default)]
+    pub won_slots: u32,
+    /// The key's stake in the epoch's staking ledger, in nanomina, and that
+    /// ledger's total: the expected wins are `total_slots` times
+    /// 1 - (1 - f)^(delegated_stake / total_currency), with f = 3/4.
+    #[serde(default)]
+    pub delegated_stake: Option<u64>,
+    #[serde(default)]
+    pub total_currency: Option<u64>,
+    /// Accounts delegating to the key, itself included.
+    #[serde(default)]
+    pub delegators: Option<u32>,
 }
 
 impl Default for VrfEvaluatorStats {
@@ -111,6 +160,10 @@ impl Default for VrfEvaluatorStats {
         Self {
             total_slots: 7140,
             evaluated_slots: 0,
+            won_slots: 0,
+            delegated_stake: None,
+            total_currency: None,
+            delegators: None,
         }
     }
 }
@@ -127,12 +180,115 @@ impl BlockProducerStats {
         self.attempts.iter().cloned().collect()
     }
 
+    /// Changes whenever the history worth saving does.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn changed(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
+    /// What to keep across a restart, bounded.
+    pub fn history(&self) -> BlockProductionHistory {
+        let skip = self.attempts.len().saturating_sub(MAX_SAVED_ATTEMPTS);
+        let epochs = self.vrf_evaluator.len().saturating_sub(MAX_SAVED_EPOCHS);
+        BlockProductionHistory {
+            attempts: self.attempts.iter().skip(skip).cloned().collect(),
+            vrf_evaluator: self
+                .vrf_evaluator
+                .iter()
+                .skip(epochs)
+                .map(|(epoch, stats)| (*epoch, stats.clone()))
+                .collect(),
+            blocks_produced: self.blocks_produced,
+            blocks_failed: self.blocks_failed,
+        }
+    }
+
+    /// Takes up what the last run kept, before this run's first attempt.
+    /// Collapse old duplicate schedules, preferring an actual attempt over
+    /// a schedule for the same slot. This also repairs pre-fix history files.
+    pub fn restore(&mut self, history: BlockProductionHistory) {
+        let skip = history.attempts.len().saturating_sub(MAX_SAVED_ATTEMPTS);
+        let mut attempts = BTreeMap::<u32, BlockProductionAttempt>::new();
+        let mut duplicates = false;
+        for attempt in history
+            .attempts
+            .into_iter()
+            .skip(skip)
+            .chain(self.attempts.drain(..))
+        {
+            let slot = attempt.won_slot.global_slot;
+            if let Some(previous) = attempts.get(&slot) {
+                duplicates = true;
+                if !matches!(
+                    previous.status,
+                    BlockProductionStatus::Scheduled | BlockProductionStatus::Missed
+                ) && matches!(
+                    attempt.status,
+                    BlockProductionStatus::Scheduled | BlockProductionStatus::Missed
+                ) {
+                    continue;
+                }
+            }
+            attempts.insert(slot, attempt);
+        }
+        self.restored_schedules = attempts
+            .values()
+            .filter(|a| matches!(a.status, BlockProductionStatus::Scheduled))
+            .map(|a| a.won_slot.global_slot)
+            .collect();
+        self.attempts = attempts.into_values().collect();
+        for (epoch, stats) in history.vrf_evaluator {
+            self.vrf_evaluator.entry(epoch).or_insert(stats);
+        }
+        self.trim_epochs();
+        self.blocks_produced = self.blocks_produced.saturating_add(history.blocks_produced);
+        self.blocks_failed = self.blocks_failed.saturating_add(history.blocks_failed);
+        if duplicates {
+            self.changed();
+        }
+    }
+
+    /// Resolve schedules left by a previous run only after the whole slot
+    /// has elapsed. A future restored slot may still be scheduled again.
+    pub fn resolve_restored_schedules(&mut self, time: redux::Timestamp) -> bool {
+        if self.restored_schedules.is_empty() {
+            return false;
+        }
+        let mut missed = 0;
+        for attempt in &mut self.attempts {
+            if self
+                .restored_schedules
+                .contains(&attempt.won_slot.global_slot)
+                && attempt
+                    .won_slot
+                    .slot_time
+                    .checked_add(crate::block_producer::slot_duration_ns())
+                    .is_some_and(|end| end <= time)
+                && matches!(attempt.status, BlockProductionStatus::Scheduled)
+            {
+                attempt.status = BlockProductionStatus::Missed;
+                self.restored_schedules
+                    .remove(&attempt.won_slot.global_slot);
+                missed += 1;
+            }
+        }
+        if missed > 0 {
+            self.blocks_failed = self.blocks_failed.saturating_add(missed);
+            self.changed();
+        }
+        missed > 0
+    }
+
     pub fn new_best_chain(&mut self, time: redux::Timestamp, chain: &[AppliedBlock]) {
         let (best_tip, chain) = chain.split_last().unwrap();
         let root_block = chain.first().unwrap_or(best_tip);
 
         self.committed(time, best_tip.hash());
 
+        let mut status_changed = false;
         self.attempts
             .iter_mut()
             .rev()
@@ -155,6 +311,9 @@ impl BlockProducerStats {
 
                 match chain.get(i as usize) {
                     Some(b) if b.hash() == &block.hash => {
+                        if !matches!(attempt.status, BlockProductionStatus::Canonical { .. }) {
+                            status_changed = true;
+                        }
                         attempt.status = BlockProductionStatus::Canonical {
                             last_observed_confirmations: best_tip
                                 .height()
@@ -162,6 +321,9 @@ impl BlockProducerStats {
                         };
                     }
                     Some(b) => {
+                        if !matches!(attempt.status, BlockProductionStatus::Orphaned { .. }) {
+                            status_changed = true;
+                        }
                         attempt.status = BlockProductionStatus::Orphaned {
                             orphaned_by: b.hash().clone(),
                         };
@@ -169,9 +331,12 @@ impl BlockProducerStats {
                     None => {}
                 }
             });
+        if status_changed {
+            self.changed();
+        }
     }
 
-    fn update<F>(&mut self, kind: &'static str, with: F)
+    fn update<F>(&mut self, kind: &'static str, with: F) -> bool
     where
         F: FnOnce(&mut BlockProductionAttempt) -> bool,
     {
@@ -181,9 +346,13 @@ impl BlockProducerStats {
                     kind = "BlockProducerStatsAttemptsEmpty",
                     summary = "attempts are empty when they aren't expected to be",
                     update_kind = kind);
+                false
             }
             Some(mut attempt) => {
                 let was_correct_state = with(&mut attempt);
+                if was_correct_state {
+                    self.changed();
+                }
 
                 if !was_correct_state {
                     mina_core::log::error!(mina_core::log::system_time();
@@ -191,11 +360,21 @@ impl BlockProducerStats {
                         summary = format!("update kind `{kind}` is not applicable to state: {attempt:?}"));
                 }
                 self.attempts.push_back(attempt);
+                was_correct_state
             }
         }
     }
 
     pub fn scheduled(&mut self, time: redux::Timestamp, won_slot: &BlockProducerWonSlot) {
+        let slot = won_slot.global_slot();
+        self.restored_schedules.remove(&slot);
+        // The new attempt is the one subsequent stage updates must update.
+        if self.attempts.iter().any(|a| {
+            a.won_slot.global_slot == slot && matches!(a.status, BlockProductionStatus::Missed)
+        }) {
+            self.blocks_failed = self.blocks_failed.saturating_sub(1);
+        }
+        self.attempts.retain(|a| a.won_slot.global_slot != slot);
         if self.attempts.len() >= MAX_HISTORY {
             self.attempts.pop_front();
         }
@@ -216,6 +395,7 @@ impl BlockProducerStats {
             },
             status: BlockProductionStatus::Scheduled,
         });
+        self.changed();
     }
 
     pub fn staged_ledger_diff_create_start(&mut self, time: redux::Timestamp) {
@@ -320,24 +500,28 @@ impl BlockProducerStats {
             return;
         }
 
-        self.update("committed", move |attempt| match attempt.status {
+        if self.update("committed", move |attempt| match attempt.status {
             BlockProductionStatus::BlockApplySuccess => {
                 attempt.status = BlockProductionStatus::Committed;
                 attempt.times.committed = Some(time);
                 true
             }
             _ => false,
-        });
+        }) {
+            self.blocks_produced = self.blocks_produced.saturating_add(1);
+        }
     }
 
     pub fn discarded(&mut self, time: redux::Timestamp, reason: BlockProducerWonSlotDiscardReason) {
-        self.update("discarded", move |attempt| {
+        if self.update("discarded", move |attempt| {
             attempt.status = BlockProductionStatus::Discarded {
                 discard_reason: reason,
             };
             attempt.times.discarded = Some(time);
             true
-        });
+        }) {
+            self.blocks_failed = self.blocks_failed.saturating_add(1);
+        }
     }
 
     /// Returns `true` if this is a block we just produced
@@ -357,24 +541,35 @@ impl BlockProducerStats {
     }
 
     /// In case a new run, when the current epoch has less than `slots_per_epoch` slots to evaluate.
-    pub fn new_epoch_evaluation(&mut self, epoch: u32, remaining_slots: u32) {
+    pub fn new_epoch_evaluation(&mut self, epoch: u32, remaining_slots: u32, stake: EpochStake) {
         self.vrf_evaluator.insert(
             epoch,
             VrfEvaluatorStats {
                 total_slots: remaining_slots,
                 evaluated_slots: 0,
+                won_slots: 0,
+                delegated_stake: Some(stake.delegated_stake),
+                total_currency: Some(stake.total_currency),
+                delegators: Some(stake.delegators),
             },
         );
+        self.trim_epochs();
+        self.changed();
     }
 
-    pub fn increment_slot_evaluated(&mut self, epoch: u32) {
-        self.vrf_evaluator
-            .entry(epoch)
-            .and_modify(|v| v.evaluated_slots = v.evaluated_slots.checked_add(1).expect("overflow"))
-            .or_insert_with(|| VrfEvaluatorStats {
-                evaluated_slots: 1,
-                ..Default::default()
-            });
+    fn trim_epochs(&mut self) {
+        while self.vrf_evaluator.len() > MAX_SAVED_EPOCHS {
+            self.vrf_evaluator.pop_first();
+        }
+    }
+
+    pub fn increment_slot_evaluated(&mut self, epoch: u32, won: bool) {
+        let stats = self.vrf_evaluator.entry(epoch).or_default();
+        stats.evaluated_slots = stats.evaluated_slots.checked_add(1).expect("overflow");
+        if won {
+            stats.won_slots = stats.won_slots.saturating_add(1);
+        }
+        self.trim_epochs();
     }
 }
 
@@ -434,5 +629,250 @@ impl From<&BlockWithoutProof> for ProducedBlockTransactions {
                 }
                 res
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attempt(global_slot: u32) -> BlockProductionAttempt {
+        let key: v2::NonZeroCurvePoint = crate::account::AccountSecretKey::deterministic(1)
+            .public_key()
+            .into();
+        BlockProductionAttempt {
+            won_slot: BlockProductionAttemptWonSlot {
+                slot_time: redux::Timestamp::ZERO,
+                global_slot,
+                epoch: global_slot / 7140,
+                delegator: (key, AccountIndex(0)),
+                value_with_threshold: None,
+            },
+            block: None,
+            times: BlockProductionTimes {
+                scheduled: redux::Timestamp::ZERO,
+                staged_ledger_diff_create_start: None,
+                staged_ledger_diff_create_end: None,
+                produced: None,
+                proof_create_start: None,
+                proof_create_end: None,
+                block_apply_start: None,
+                block_apply_end: None,
+                committed: None,
+                discarded: None,
+            },
+            status: BlockProductionStatus::Scheduled,
+        }
+    }
+
+    fn stake() -> EpochStake {
+        EpochStake {
+            delegated_stake: 10,
+            total_currency: 1000,
+            delegators: 2,
+        }
+    }
+
+    fn won_slot(slot: u32) -> BlockProducerWonSlot {
+        BlockProducerWonSlot {
+            slot_time: redux::Timestamp::ZERO,
+            delegator: attempt(slot).won_slot.delegator,
+            global_slot: v2::ConsensusGlobalSlotStableV1 {
+                slot_number: v2::MinaNumbersGlobalSlotSinceHardForkMStableV1::SinceHardFork(
+                    slot.into(),
+                ),
+                slots_per_epoch: 7140.into(),
+            },
+            vrf_output: Box::new(mina_vrf::genesis_vrf(v2::EpochSeed::zero()).unwrap()),
+            value_with_threshold: None,
+            staking_ledger_hash: v2::LedgerHash::zero(),
+        }
+    }
+
+    #[test]
+    fn restore_then_reattempt_replaces_the_schedule_and_updates_the_new_attempt() {
+        let mut stats = BlockProducerStats::default();
+        stats.restore(BlockProductionHistory {
+            attempts: vec![attempt(62885)],
+            ..Default::default()
+        });
+        let retry_time = redux::Timestamp::new(10);
+        stats.scheduled(retry_time, &won_slot(62885));
+        stats.staged_ledger_diff_create_start(retry_time);
+        assert_eq!(stats.attempts.len(), 1);
+        let attempt = stats.attempts.back().unwrap();
+        assert_eq!(attempt.times.scheduled, retry_time);
+        assert!(matches!(
+            attempt.status,
+            BlockProductionStatus::StagedLedgerDiffCreatePending
+        ));
+        // Once reattempted, expiry of the old schedule must not touch it.
+        assert!(!stats.resolve_restored_schedules(redux::Timestamp::new(u64::MAX)));
+        assert_eq!(stats.blocks_failed, 0);
+    }
+
+    #[test]
+    fn restored_schedules_expire_at_slot_end_and_stay_terminal_across_restarts() {
+        let duration = crate::block_producer::slot_duration_ns();
+        let mut future = attempt(63363);
+        future.won_slot.slot_time = redux::Timestamp::new(duration * 2);
+        let mut stats = BlockProducerStats::default();
+        // Old JSON needs no extra metadata to be read.
+        let history = serde_json::from_value(serde_json::json!({
+            "attempts": [attempt(62885), future], "vrf_evaluator": {},
+            "blocks_produced": 0, "blocks_failed": 0
+        }))
+        .unwrap();
+        stats.restore(history);
+        let revision = stats.revision();
+        assert!(!stats.resolve_restored_schedules(redux::Timestamp::new(duration - 1)));
+        assert!(stats.resolve_restored_schedules(redux::Timestamp::new(duration)));
+        assert_ne!(stats.revision(), revision);
+        assert!(matches!(
+            stats.attempts[0].status,
+            BlockProductionStatus::Missed
+        ));
+        assert!(matches!(
+            stats.attempts[1].status,
+            BlockProductionStatus::Scheduled
+        ));
+        assert_eq!(stats.blocks_failed, 1);
+
+        let json = serde_json::to_string(&stats.history()).unwrap();
+        let mut restarted = BlockProducerStats::default();
+        restarted.restore(serde_json::from_str(&json).unwrap());
+        assert!(!restarted.resolve_restored_schedules(redux::Timestamp::new(duration)));
+        assert_eq!(restarted.blocks_failed, 1);
+        // A future restored slot also resolves if this run never retries it.
+        assert!(restarted.resolve_restored_schedules(redux::Timestamp::new(duration * 3)));
+        assert_eq!(restarted.blocks_failed, 2);
+    }
+
+    #[test]
+    fn restore_repairs_legacy_duplicate_schedules_in_either_order() {
+        let scheduled = attempt(62885);
+        let mut tried = scheduled.clone();
+        tried.status = BlockProductionStatus::Discarded {
+            discard_reason: BlockProducerWonSlotDiscardReason::BestTipSuperior,
+        };
+        for attempts in [
+            vec![scheduled.clone(), tried.clone()],
+            vec![tried, scheduled],
+        ] {
+            let mut stats = BlockProducerStats::default();
+            stats.restore(BlockProductionHistory {
+                attempts,
+                ..Default::default()
+            });
+            assert_eq!(stats.attempts.len(), 1);
+            assert!(matches!(
+                stats.attempts[0].status,
+                BlockProductionStatus::Discarded { .. }
+            ));
+            assert_ne!(stats.revision(), 0, "the repaired history must be saved");
+            assert!(!stats.resolve_restored_schedules(redux::Timestamp::new(u64::MAX)));
+        }
+    }
+
+    #[test]
+    fn live_epoch_history_is_bounded_on_all_insertion_paths() {
+        let mut stats = BlockProducerStats::default();
+        for epoch in 0..MAX_SAVED_EPOCHS as u32 + 3 {
+            stats.new_epoch_evaluation(epoch, 7140, stake());
+        }
+        assert_eq!(stats.vrf_evaluator.len(), MAX_SAVED_EPOCHS);
+        assert_eq!(stats.vrf_evaluator.first_key_value().unwrap().0, &3);
+        stats.increment_slot_evaluated(100, true);
+        assert_eq!(stats.vrf_evaluator.len(), MAX_SAVED_EPOCHS);
+        assert_eq!(stats.vrf_evaluator[&100].won_slots, 1);
+        let mut restored = BlockProducerStats::default();
+        let history = BlockProductionHistory {
+            vrf_evaluator: (0..100)
+                .map(|e| (e, VrfEvaluatorStats::default()))
+                .collect(),
+            ..Default::default()
+        };
+        restored.restore(history);
+        assert_eq!(restored.vrf_evaluator.len(), MAX_SAVED_EPOCHS);
+        assert_eq!(restored.vrf_evaluator.first_key_value().unwrap().0, &84);
+    }
+
+    #[test]
+    fn the_saved_history_is_bounded_to_the_newest() {
+        let mut stats = BlockProducerStats::default();
+        stats.attempts = (0..MAX_SAVED_ATTEMPTS as u32 + 10).map(attempt).collect();
+        for epoch in 0..MAX_SAVED_EPOCHS as u32 + 3 {
+            stats.new_epoch_evaluation(epoch, 7140, stake());
+        }
+        let history = stats.history();
+        assert_eq!(history.attempts.len(), MAX_SAVED_ATTEMPTS);
+        assert_eq!(history.attempts[0].won_slot.global_slot, 10);
+        assert_eq!(history.vrf_evaluator.len(), MAX_SAVED_EPOCHS);
+        assert_eq!(history.vrf_evaluator.keys().next(), Some(&3));
+    }
+
+    #[test]
+    fn a_restore_puts_the_last_runs_attempts_first_and_keeps_this_runs_epochs() {
+        let mut last = BlockProducerStats::default();
+        last.attempts = [100, 200].into_iter().map(attempt).collect();
+        last.blocks_produced = 2;
+        last.new_epoch_evaluation(8, 7140, stake());
+        last.increment_slot_evaluated(8, true);
+        last.new_epoch_evaluation(9, 7140, stake());
+
+        let mut this = BlockProducerStats::default();
+        this.attempts.push_back(attempt(300));
+        this.blocks_produced = 1;
+        // This run evaluates epoch 9 again, from where it started.
+        this.new_epoch_evaluation(9, 5000, stake());
+        this.restore(last.history());
+
+        let slots: Vec<_> = this
+            .attempts
+            .iter()
+            .map(|a| a.won_slot.global_slot)
+            .collect();
+        assert_eq!(slots, [100, 200, 300]);
+        assert_eq!(this.blocks_produced, 3);
+        assert_eq!(this.vrf_evaluator[&8].won_slots, 1);
+        assert_eq!(this.vrf_evaluator[&9].total_slots, 5000);
+    }
+
+    #[test]
+    fn the_revision_moves_on_status_changes_not_on_each_evaluated_slot() {
+        let mut stats = BlockProducerStats::default();
+        let start = stats.revision();
+        stats.new_epoch_evaluation(8, 7140, stake());
+        let evaluated = stats.revision();
+        assert_ne!(evaluated, start);
+        stats.increment_slot_evaluated(8, false);
+        stats.increment_slot_evaluated(8, true);
+        assert_eq!(stats.revision(), evaluated);
+        let epoch = &stats.vrf_evaluator[&8];
+        assert_eq!((epoch.evaluated_slots, epoch.won_slots), (2, 1));
+        assert_eq!(
+            (
+                epoch.delegated_stake,
+                epoch.total_currency,
+                epoch.delegators
+            ),
+            (Some(10), Some(1000), Some(2))
+        );
+
+        stats.attempts.push_back(attempt(100));
+        stats.discarded(
+            redux::Timestamp::ZERO,
+            BlockProducerWonSlotDiscardReason::BestTipSuperior,
+        );
+        assert_ne!(stats.revision(), evaluated);
+        assert_eq!(stats.blocks_failed, 1);
+    }
+
+    #[test]
+    fn a_history_without_the_new_fields_still_reads() {
+        let json = r#"{"total_slots":7140,"evaluated_slots":12}"#;
+        let stats: VrfEvaluatorStats = serde_json::from_str(json).unwrap();
+        assert_eq!(stats.won_slots, 0);
+        assert_eq!(stats.delegated_stake, None);
     }
 }

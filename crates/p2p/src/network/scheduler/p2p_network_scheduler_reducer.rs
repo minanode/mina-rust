@@ -1,7 +1,7 @@
-use std::{collections::BTreeMap, sync::OnceLock};
+use std::collections::{BTreeMap, BTreeSet};
 
 use identify::P2pNetworkIdentifyStreamAction;
-use mina_core::{bug_condition, error, warn, Substate};
+use mina_core::{bug_condition, error, Substate};
 use redux::Dispatcher;
 use request::{P2pNetworkKadRequestState, P2pNetworkKadRequestStatus};
 use token::{
@@ -16,7 +16,7 @@ use crate::{
     },
     disconnection::P2pDisconnectionAction,
     identify::P2pIdentifyAction,
-    P2pConfig, P2pPeerStatus, P2pState, PeerId,
+    P2pConfig, P2pPeerAction, P2pPeerStatus, P2pState, PeerId,
 };
 
 use super::{super::*, p2p_network_scheduler_state::P2pNetworkConnectionState, *};
@@ -93,6 +93,7 @@ impl P2pNetworkSchedulerState {
                             streams: BTreeMap::default(),
                             closed: None,
                             limit: P2pNetworkConnectionState::INITIAL_LIMIT,
+                            pubsub_reopens: None,
                         },
                     );
                 };
@@ -129,6 +130,7 @@ impl P2pNetworkSchedulerState {
                         streams: BTreeMap::default(),
                         closed: None,
                         limit: P2pNetworkConnectionState::INITIAL_LIMIT,
+                        pubsub_reopens: None,
                     },
                 );
 
@@ -213,23 +215,35 @@ impl P2pNetworkSchedulerState {
                 Self::forward_select_done(dispatcher, p2p_state, protocol, addr, incoming, kind);
                 Ok(())
             }
-            P2pNetworkSchedulerAction::SelectError { addr, kind, .. } => {
-                let dispatcher = state_context.into_dispatcher();
+            P2pNetworkSchedulerAction::SelectError { addr, kind, error } => {
+                let (dispatcher, state) = state_context.into_dispatcher_and_state();
+                let scheduler: &Self = state.substate()?;
+                let Some(connection) = scheduler.connection_state(&addr) else {
+                    bug_condition!(
+                        "`P2pNetworkSchedulerAction::SelectError`: no connection {addr}"
+                    );
+                    return Ok(());
+                };
 
                 match kind {
+                    // A stream that failed to negotiate is reset on its own, as
+                    // go-libp2p's responder does, unless the connection needs it.
                     SelectKind::Stream(peer_id, stream_id)
-                        if keep_connection_with_unknown_stream() =>
+                        if !connection.is_essential_stream(&addr, stream_id) =>
                     {
-                        warn!(meta.time(); summary="select error for stream", addr = display(addr), peer_id = display(peer_id));
-                        // just close the stream
                         dispatcher.push(P2pNetworkYamuxAction::OutgoingData {
                             addr,
                             stream_id,
                             data: Data::default(),
                             flags: YamuxFlags::RST,
                         });
-                        dispatcher
-                            .push(P2pNetworkSchedulerAction::PruneStream { peer_id, stream_id });
+                        dispatcher.push(P2pNetworkSchedulerAction::StreamReset {
+                            addr,
+                            peer_id,
+                            stream_id,
+                            protocol: None,
+                            reason: P2pNetworkStreamResetReason::SelectError(error),
+                        });
                     }
                     _ => {
                         dispatcher.push(P2pNetworkSchedulerAction::Error {
@@ -238,13 +252,6 @@ impl P2pNetworkSchedulerState {
                         });
                     }
                 }
-
-                dispatcher.push(P2pNetworkSchedulerEffectfulAction::Disconnect {
-                    addr,
-                    reason: P2pNetworkConnectionCloseReason::Error(
-                        P2pNetworkConnectionError::SelectError,
-                    ),
-                });
 
                 Ok(())
             }
@@ -320,6 +327,21 @@ impl P2pNetworkSchedulerState {
                 conn_state.closed = Some(error.clone().into());
 
                 let dispatcher = state_context.into_dispatcher();
+                // The address we dialled answered as another peer id: the
+                // record is stale (I18).
+                if let P2pNetworkConnectionError::Noise(NoiseError::RemotePeerIdMismatch {
+                    expected,
+                    got,
+                }) = &error
+                {
+                    if !addr.incoming {
+                        dispatcher.push(P2pPeerAction::Stale {
+                            peer_id: *expected,
+                            addr: addr.sock_addr,
+                            answered_by: *got,
+                        });
+                    }
+                }
                 dispatcher.push(P2pNetworkSchedulerEffectfulAction::Disconnect {
                     addr,
                     reason: P2pNetworkConnectionCloseReason::Error(error),
@@ -403,18 +425,110 @@ impl P2pNetworkSchedulerState {
                 }
                 Ok(())
             }
-            P2pNetworkSchedulerAction::PruneStream { peer_id, stream_id } => {
-                let Some((_, conn_state)) = scheduler_state
-                    .connections
-                    .iter_mut()
-                    .find(|(_, conn_state)| conn_state.peer_id() == Some(&peer_id))
-                else {
-                    bug_condition!("PruneStream: peer {peer_id} not found");
+            P2pNetworkSchedulerAction::StreamReset {
+                addr,
+                peer_id,
+                stream_id,
+                protocol,
+                ..
+            } => {
+                let Some(connection) = scheduler_state.connections.get_mut(&addr) else {
+                    bug_condition!(
+                        "`P2pNetworkSchedulerAction::StreamReset`: no connection {addr}"
+                    );
                     return Ok(());
                 };
+                connection.remove_stream(stream_id);
 
-                if conn_state.streams.remove(&stream_id).is_none() {
-                    bug_condition!("PruneStream: peer {peer_id} does not have stream {stream_id}");
+                let opened_by_peer =
+                    P2pNetworkConnectionState::stream_opened_by_peer(&addr, stream_id);
+                // The peer reset our pubsub stream, and the connection stays up:
+                // open it again, or the peer gets none of our gossip.
+                let reopen_pubsub = match protocol {
+                    Some(kind @ token::StreamKind::Broadcast(_)) if !opened_by_peer => {
+                        connection.may_reopen_pubsub(meta.time()).then_some(kind)
+                    }
+                    _ => None,
+                };
+                // Only a negotiated pubsub stream can have left a partial
+                // message in the peer's buffer.
+                let pubsub_incoming =
+                    opened_by_peer && matches!(protocol, Some(token::StreamKind::Broadcast(_)));
+                let was_incoming_rpc = scheduler_state
+                    .rpc_incoming_streams
+                    .get(&peer_id)
+                    .is_some_and(|streams| streams.contains_key(&stream_id));
+                scheduler_state.prune_stream_state(&peer_id, stream_id, pubsub_incoming);
+
+                // Our Kademlia request to this peer can't complete without its
+                // stream: fail it, so that the bootstrap doesn't wait for it.
+                let kad_request_waits = !opened_by_peer
+                    && stream_id == YamuxStreamKind::Kademlia.stream_id(addr.incoming)
+                    && scheduler_state
+                        .discovery_state()
+                        .and_then(|discovery| discovery.request(&peer_id))
+                        .is_some_and(|request| {
+                            matches!(
+                                request.status,
+                                P2pNetworkKadRequestStatus::WaitingForKadStream(_)
+                                    | P2pNetworkKadRequestStatus::Request(_)
+                                    | P2pNetworkKadRequestStatus::WaitingForReply
+                            )
+                        });
+
+                // A dead stream cannot receive the async ledger results still
+                // being computed for it. Release its channel budget too. Use
+                // the surviving correlations, including legacy wire IDs, so a
+                // close cannot cancel another stream's request with the same ID.
+                let live_rpc_ids: BTreeSet<_> = scheduler_state
+                    .rpc_incoming_streams
+                    .get(&peer_id)
+                    .into_iter()
+                    .flat_map(|streams| streams.values())
+                    .flat_map(|rpc| {
+                        rpc.pending_incoming
+                            .keys()
+                            .copied()
+                            .chain(rpc.pending.as_ref().map(|query| query.id))
+                    })
+                    .collect();
+                let mut state_context: Substate<Action, State, P2pState> =
+                    Substate::from_compatible_substate(state_context);
+                if was_incoming_rpc {
+                    if let Some(peer) = state_context
+                        .get_substate_mut()?
+                        .get_ready_peer_mut(&peer_id)
+                    {
+                        if let crate::channels::rpc::P2pChannelsRpcState::Ready { remote, .. } =
+                            &mut peer.channels.rpc
+                        {
+                            remote
+                                .pending_requests
+                                .retain(|request| live_rpc_ids.contains(&request.id));
+                        }
+                    }
+                }
+                let dispatcher = state_context.into_dispatcher();
+                if kad_request_waits {
+                    dispatcher.push(P2pNetworkKadRequestAction::Error {
+                        peer_id,
+                        error: format!("stream {stream_id} was reset"),
+                    });
+                }
+                // The same id is free again: the peer forgot the stream when it
+                // reset it (go-yamux `Stream.Reset`, `cleanup`).
+                if let Some(stream_kind) = reopen_pubsub {
+                    mina_core::debug!(meta.time();
+                        summary = "reopening our pubsub stream after the peer reset it",
+                        addr = display(addr),
+                        peer_id = display(peer_id),
+                        stream_id = stream_id
+                    );
+                    dispatcher.push(P2pNetworkYamuxAction::OpenStream {
+                        addr,
+                        stream_id,
+                        stream_kind,
+                    });
                 }
 
                 Ok(())
@@ -637,14 +751,4 @@ impl P2pNetworkSchedulerState {
             }
         }
     }
-}
-
-fn keep_connection_with_unknown_stream() -> bool {
-    static VAL: OnceLock<bool> = OnceLock::new();
-    *VAL.get_or_init(|| {
-        std::env::var("KEEP_CONNECTION_WITH_UNKNOWN_STREAM")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(false)
-    })
 }

@@ -22,14 +22,19 @@ mina wallet generate --output /path/to/key
 
 **Optional:**
 
-- `[PASSWORD]` - Password to encrypt the key. Can be provided as an argument or
-  via the `MINA_PRIVKEY_PASS` environment variable (recommended for security)
+- `-s, --secret-key <KEY>` - Encrypt this secret key instead of a new one (or
+  `MINA_SEC_KEY`)
+
+**Environment:**
+
+- `MINA_PRIVKEY_PASS` - Password to encrypt the key, required and non-empty. The
+  password is read only from this variable. A password given as an argument is
+  refused.
 
 ## Example
 
 ```bash
-# Generate new key with environment variable for password
-export MINA_PRIVKEY_PASS="my-secret-password"
+read -rs -p "Key password: " MINA_PRIVKEY_PASS && export MINA_PRIVKEY_PASS
 mina wallet generate --output ./keys/my-new-wallet
 ```
 

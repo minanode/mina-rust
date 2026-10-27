@@ -1,0 +1,17 @@
+{
+  "$comment": "The dashboard's own paths. The node serves index.html for these and only these (crates/node/native/src/http_server/dashboard.rs reads this file), so they must never be an API route. :id is one path segment.",
+  "routes": [
+    "/",
+    "/snark-worker",
+    "/block-producer",
+    "/blocks",
+    "/blocks/:id",
+    "/account",
+    "/account/:id",
+    "/mempool",
+    "/peers",
+    "/node-status",
+    "/graphql-endpoint",
+    "/report-a-problem"
+  ]
+}

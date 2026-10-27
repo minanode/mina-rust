@@ -2,37 +2,29 @@ import { Injectable } from '@angular/core';
 import { Actions, createEffect, ofType } from '@ngrx/effects';
 import { Store } from '@ngrx/store';
 import { Effect } from '@mina-rust/shared';
-import { EMPTY, map, switchMap, tap } from 'rxjs';
+import { catchError, EMPTY, map, switchMap } from 'rxjs';
+import { AppActions } from '@app/app.actions';
 import { MinaRustBaseEffect } from '@shared/base-classes/mina-rust-base.effect';
 import {
   DASHBOARD_SPLITS_CLOSE,
   DASHBOARD_SPLITS_GET_SPLITS,
   DASHBOARD_SPLITS_GET_SPLITS_SUCCESS,
-  DASHBOARD_SPLITS_MERGE_NODES,
-  DASHBOARD_SPLITS_MERGE_NODES_SUCCESS,
-  DASHBOARD_SPLITS_SPLIT_NODES,
-  DASHBOARD_SPLITS_SPLIT_NODES_SUCCESS,
   DashboardSplitsActions,
-  DashboardSplitsClose,
-  DashboardSplitsGetSplits,
-  DashboardSplitsMergeNodes,
-  DashboardSplitsMergeNodesSuccess,
-  DashboardSplitsSplitNodesSuccess,
+  DashboardSplitsGetSplitsSuccess,
 } from '@network/splits/dashboard-splits.actions';
 import { DashboardSplitsService } from '@network/splits/dashboard-splits.service';
 import { MinaState, selectMinaState } from '@app/app.setup';
-import { DashboardSplits } from '@shared/types/network/splits/dashboard-splits.type';
 import { MinaErrorType } from '@shared/types/error-preview/mina-error-type.enum';
-import { catchErrorAndRepeat } from '@shared/constants/store-functions';
-import { DashboardSplitsState } from '@network/splits/dashboard-splits.state';
+import { addError } from '@shared/constants/store-functions';
 
 @Injectable({
   providedIn: 'root',
 })
-export class DashboardSplitsEffects extends MinaRustBaseEffect<DashboardSplitsActions> {
+export class DashboardSplitsEffects extends MinaRustBaseEffect<
+  DashboardSplitsActions | ReturnType<typeof AppActions.changeActiveNode>
+> {
   readonly getSplits$: Effect;
-  readonly splitNodes$: Effect;
-  readonly mergeNodes$: Effect;
+  private active = false;
 
   constructor(
     private actions$: Actions,
@@ -45,60 +37,40 @@ export class DashboardSplitsEffects extends MinaRustBaseEffect<DashboardSplitsAc
       this.actions$.pipe(
         ofType(
           DASHBOARD_SPLITS_GET_SPLITS,
-          DASHBOARD_SPLITS_SPLIT_NODES_SUCCESS,
-          DASHBOARD_SPLITS_MERGE_NODES_SUCCESS,
           DASHBOARD_SPLITS_CLOSE,
+          AppActions.changeActiveNode,
         ),
         this.latestActionState<
-          | DashboardSplitsGetSplits
-          | DashboardSplitsSplitNodesSuccess
-          | DashboardSplitsMergeNodesSuccess
-          | DashboardSplitsClose
+          | DashboardSplitsActions
+          | ReturnType<typeof AppActions.changeActiveNode>
         >(),
-        switchMap(({ action }) =>
-          action.type === DASHBOARD_SPLITS_CLOSE
-            ? EMPTY
-            : this.splitService.getPeers(),
-        ),
-        map((payload: DashboardSplits) => ({
-          type: DASHBOARD_SPLITS_GET_SPLITS_SUCCESS,
-          payload,
-        })),
-        catchErrorAndRepeat(
-          MinaErrorType.RUST,
-          DASHBOARD_SPLITS_GET_SPLITS_SUCCESS,
-          { peers: [], links: [] },
-        ),
-      ),
-    );
-
-    this.splitNodes$ = createEffect(() =>
-      this.actions$.pipe(
-        ofType(DASHBOARD_SPLITS_SPLIT_NODES),
-        this.latestStateSlice<DashboardSplitsState, DashboardSplitsMergeNodes>(
-          'network.splits',
-        ),
-        tap(state => this.splitService.splitNodes(state.state.peers)),
-        map(() => ({ type: DASHBOARD_SPLITS_SPLIT_NODES_SUCCESS })),
-        catchErrorAndRepeat(
-          MinaErrorType.RUST,
-          DASHBOARD_SPLITS_SPLIT_NODES_SUCCESS,
-        ),
-      ),
-    );
-
-    this.mergeNodes$ = createEffect(() =>
-      this.actions$.pipe(
-        ofType(DASHBOARD_SPLITS_MERGE_NODES),
-        this.latestStateSlice<DashboardSplitsState, DashboardSplitsMergeNodes>(
-          'network.splits',
-        ),
-        tap(state => this.splitService.mergeNodes(state.state.peers)),
-        map(() => ({ type: DASHBOARD_SPLITS_MERGE_NODES_SUCCESS })),
-        catchErrorAndRepeat(
-          MinaErrorType.RUST,
-          DASHBOARD_SPLITS_MERGE_NODES_SUCCESS,
-        ),
+        switchMap(({ action, state }) => {
+          if (action.type === DASHBOARD_SPLITS_CLOSE) {
+            this.active = false;
+            return EMPTY;
+          }
+          if (action.type === DASHBOARD_SPLITS_GET_SPLITS) {
+            this.active = true;
+          }
+          if (!this.active) {
+            return EMPTY;
+          }
+          const node = state.app.activeNode;
+          return this.splitService.getPeers(node).pipe(
+            map(payload => ({
+              type: DASHBOARD_SPLITS_GET_SPLITS_SUCCESS,
+              payload,
+            })),
+            catchError(error => [
+              addError(error, MinaErrorType.RUST),
+              new DashboardSplitsGetSplitsSuccess({
+                peers: [],
+                links: [],
+                node: node.name,
+              }),
+            ]),
+          );
+        }),
       ),
     );
   }

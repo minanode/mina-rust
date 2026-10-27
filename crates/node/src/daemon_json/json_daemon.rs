@@ -7,14 +7,25 @@ pub struct Daemon {
     peer_list_url: Option<String>,
     slot_tx_end: Option<u32>,
     slot_chain_end: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hard_fork_genesis_slot_delta: Option<u32>,
 }
 
 impl Daemon {
+    pub fn stop_slots(&self) -> mina_core::constants::StopSlots {
+        mina_core::constants::StopSlots {
+            slot_tx_end: self.slot_tx_end,
+            slot_chain_end: self.slot_chain_end,
+            hard_fork_genesis_slot_delta: self.hard_fork_genesis_slot_delta,
+        }
+    }
+
     pub const DEFAULT: Daemon = Daemon {
         txpool_max_size: Some(3000),
         peer_list_url: None,
         slot_tx_end: None,
         slot_chain_end: None,
+        hard_fork_genesis_slot_delta: None,
     };
 
     pub fn tx_pool_max_size(&self) -> usize {

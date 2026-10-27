@@ -1,5 +1,5 @@
 <div class="fx-row-vert-cent flex-between pl-12 pr-12 h-xl">
-  <span class="secondary f-600">Nodes</span>
+  <span class="secondary f-600">Peers</span>
   <span
     class="mina-icon pointer tertiary primary-hover f-18"
     (click)="closeSidePanel()"
@@ -19,8 +19,12 @@
           class="flex-row align-center flex-between h-lg bg-container-hover tertiary primary-hover border-rad-4 pl-12 pr-8 pointer"
         >
           <div>
-            <span class="mr-5 f-600 primary">Branch {{ i + 1 }}</span>
-            <span>{{ set.peers.length }} Nodes</span>
+            <span class="mr-5 f-600 primary">This node</span>
+            <span>
+              and {{ set.peers.length - 1 }} connected peer{{
+                set.peers.length - 1 | plural
+              }}
+            </span>
           </div>
           <span
             [class.rotate-90]="expandedItems.includes(i)"

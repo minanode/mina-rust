@@ -5,8 +5,10 @@ import { WebNodeLandingPageComponent } from '@app/layout/web-node-landing-page/w
 import { getMergedRoute, MergedRoute } from '@mina-rust/shared';
 import { filter, take } from 'rxjs';
 import { landingPageGuard } from '@shared/guards/landing-page.guard';
+import { PUBLIC_ROUTES } from '@shared/helpers/public-api';
+import { controlsGuard } from '@shared/guards/controls.guard';
 
-const APP_TITLE: string = 'The Mina Rust Node';
+const APP_TITLE: string = 'minanode';
 
 export const DASHBOARD_TITLE: string = APP_TITLE + ' - Dashboard';
 export const RESOURCES_TITLE: string = APP_TITLE + ' - Resources';
@@ -22,6 +24,30 @@ export const FUZZING_TITLE: string = APP_TITLE + ' - Fuzzing';
 
 export function generateRoutes(): Routes {
   const routes: Routes = [
+    {
+      path: 'blocks',
+      loadComponent: () =>
+        import('@app/features/chain/blocks.component').then(
+          m => m.BlocksComponent,
+        ),
+      title: APP_TITLE + ' - Blocks',
+    },
+    {
+      path: 'blocks/:stateHash',
+      loadComponent: () =>
+        import('@app/features/chain/block-detail.component').then(
+          m => m.BlockDetailComponent,
+        ),
+      title: APP_TITLE + ' - Block',
+    },
+    {
+      path: 'accounts',
+      loadComponent: () =>
+        import('@app/features/chain/accounts.component').then(
+          m => m.AccountsComponent,
+        ),
+      title: APP_TITLE + ' - Accounts',
+    },
     {
       path: 'dashboard',
       loadChildren: () =>
@@ -68,7 +94,7 @@ export function generateRoutes(): Routes {
           m => m.BlockProductionModule,
         ),
       title: BLOCK_PRODUCTION_TITLE,
-      canActivate: [landingPageGuard],
+      canActivate: [controlsGuard('producer'), landingPageGuard],
     },
     {
       path: 'mempool',
@@ -82,7 +108,7 @@ export function generateRoutes(): Routes {
       loadChildren: () =>
         import('@benchmarks/benchmarks.module').then(m => m.BenchmarksModule),
       title: BENCHMARKS_TITLE,
-      canActivate: [landingPageGuard],
+      canActivate: [controlsGuard('send'), landingPageGuard],
     },
     {
       path: 'fuzzing',
@@ -106,7 +132,9 @@ export function generateRoutes(): Routes {
   }
 
   return [
-    ...routes,
+    ...(CONFIG.publicApi
+      ? routes.filter(route => PUBLIC_ROUTES.includes(route.path))
+      : routes),
     {
       path: '**',
       redirectTo: CONFIG.showWebNodeLandingPage ? '' : getFirstFeature(),

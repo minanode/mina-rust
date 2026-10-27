@@ -21,10 +21,14 @@ use kimchi::{
 };
 use mina_curves::pasta::Fq;
 use mina_p2p_messages::bigint::{BigInt, InvalidBigInt};
-use once_cell::sync::OnceCell;
-use poly_commitment::{
-    commitment::CommitmentCurve, hash_map_cache::HashMapCache, ipa::SRS, PolyComm,
-};
+/// ab84160: kimchi `VerifierIndex` uses `std::sync::OnceLock` for its
+/// `permutation_vanishing_polynomial_m`/`w` fields. Build a pre-filled `OnceLock`.
+fn once_lock_with<T>(value: T) -> std::sync::OnceLock<T> {
+    let cell = std::sync::OnceLock::new();
+    let _ = cell.set(value);
+    cell
+}
+use poly_commitment::{commitment::CommitmentCurve, ipa::SRS, PolyComm};
 use serde::{Deserialize, Serialize};
 
 use super::VerifierIndex;
@@ -123,7 +127,7 @@ where
 impl<T> From<&GroupAffineCached> for ark_ec::models::short_weierstrass::Affine<T>
 where
     T: ark_ec::short_weierstrass::SWCurveConfig,
-    <T as CurveConfig>::BaseField: From<ark_ff::BigInteger256>,
+    <T as CurveConfig>::BaseField: ark_ff::PrimeField + From<ark_ff::BigInteger256>,
 {
     // This is copy of old `GroupAffine::new` function
     fn from(pallas: &GroupAffineCached) -> Self {
@@ -188,18 +192,13 @@ where
             g: into(&srs.g),
             h: (&srs.h).into(),
             lagrange_bases: {
-                let cloned = srs.lagrange_bases.clone();
-                let map = HashMap::from(cloned);
+                // ab84160: `SRS.lagrange_bases` is private; read it via the
+                // `lagrange_bases()` getter (returns &HashMapCache) and convert into a
+                // plain HashMap (values are now Arc<Vec<PolyComm<G>>>).
+                let cloned = srs.lagrange_bases().clone();
+                let map: HashMap<usize, std::sync::Arc<Vec<PolyComm<G>>>> = HashMap::from(cloned);
                 map.into_iter()
-                    .map(|(key, value)| {
-                        (
-                            key,
-                            value
-                                .into_iter()
-                                .map(|pc| PolyCommCached::from(&pc))
-                                .collect(),
-                        )
-                    })
+                    .map(|(key, value)| (key, value.iter().map(PolyCommCached::from).collect()))
                     .collect()
             },
         }
@@ -211,19 +210,15 @@ where
     G: CommitmentCurve + From<&'a GroupAffineCached>,
 {
     fn from(srs: &'a SRSCached) -> Self {
-        Self {
-            g: into(&srs.g),
-            h: (&srs.h).into(),
-            lagrange_bases: {
-                let lagrange_bases = srs
-                    .lagrange_bases
-                    .iter()
-                    .map(|(key, value)| (*key, value.iter().map(PolyComm::from).collect()))
-                    .collect();
-
-                HashMapCache::new_from_hashmap(lagrange_bases)
-            },
+        // ab84160: `SRS.lagrange_bases` is private and `HashMapCache::new_from_hashmap`
+        // is pub(crate). Build the SRS via `SRS::new(g, h)` and fill the lagrange-base
+        // cache through the public `lagrange_bases()` getter + `set_once`.
+        let out: SRS<G> = SRS::new(into(&srs.g), (&srs.h).into());
+        for (key, value) in srs.lagrange_bases.iter() {
+            let comms: Vec<PolyComm<G>> = value.iter().map(PolyComm::from).collect();
+            out.lagrange_bases().set_once(*key, comms);
         }
+        out
     }
 }
 
@@ -460,11 +455,11 @@ impl From<&VerifierIndexCached> for VerifierIndex<Fq> {
             foreign_field_add_comm: foreign_field_add_comm.clone(),
             xor_comm: xor_comm.clone(),
             shift: shift.each_ref().map(|s: &BigInt| s.to_field().unwrap()), // We trust cached data
-            permutation_vanishing_polynomial_m: OnceCell::with_value(
+            permutation_vanishing_polynomial_m: once_lock_with(
                 permutation_vanishing_polynomial_m.into(),
             ),
-            w: OnceCell::with_value(w.to_field().unwrap()), // We trust cached data
-            endo: endo.to_field().unwrap(),                 // We trust cached data
+            w: once_lock_with(w.to_field().unwrap()), // We trust cached data
+            endo: endo.to_field().unwrap(),           // We trust cached data
             lookup_index: lookup_index.clone(),
             linearization: conv_linearization(linearization, |v: &BigInt| v.to_field().unwrap()),
             powers_of_alpha: {

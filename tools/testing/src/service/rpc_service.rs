@@ -14,10 +14,19 @@ macro_rules! to_real {
 
 impl RpcService for super::NodeTestingService {
     to_real!(respond_state_get, (&State, Option<&str>));
+    to_real!(
+        respond_snark_work_coverage_get,
+        mina_node::snark_pool::WorkCoverageStatus
+    );
     to_real!(respond_status_get, mina_node::rpc::RpcStatusGetResponse);
+    to_real!(respond_metrics_get, mina_node::rpc::RpcMetricsGetResponse);
     to_real!(
         respond_heartbeat_get,
         mina_node::rpc::RpcHeartbeatGetResponse
+    );
+    to_real!(
+        respond_proof_memory_get,
+        mina_node::rpc::RpcProofMemoryGetResponse
     );
     to_real!(
         respond_sync_stats_get,
@@ -83,6 +92,18 @@ impl RpcService for super::NodeTestingService {
         respond_snarker_config_get,
         mina_node::rpc::RpcSnarkerConfigGetResponse,
     );
+    to_real!(
+        respond_snark_worker_control_get,
+        mina_node::rpc::RpcSnarkWorkerControlGetResponse,
+    );
+    to_real!(
+        respond_snark_worker_control_set,
+        mina_node::rpc::RpcSnarkWorkerControlSetResponse,
+    );
+    to_real!(
+        respond_snark_work_included_get,
+        mina_node::rpc::RpcSnarkWorkIncludedGetResponse,
+    );
     to_real!(respond_health_check, mina_node::rpc::RpcHealthCheckResponse,);
     to_real!(
         respond_readiness_check,
@@ -125,6 +146,10 @@ impl RpcService for super::NodeTestingService {
         respond_transaction_status,
         mina_node::rpc::RpcTransactionStatusGetResponse,
     );
+    to_real!(
+        respond_transaction_nonce,
+        mina_node::rpc::RpcTransactionNonceGetResponse,
+    );
     to_real!(respond_block_get, mina_node::rpc::RpcGetBlockResponse,);
     to_real!(
         respond_pooled_user_commands,
@@ -150,4 +175,27 @@ impl RpcService for super::NodeTestingService {
         respond_ledger_account_delegators_get,
         mina_node::rpc::RpcLedgerAccountDelegatorsGetResponse,
     );
+    to_real!(
+        respond_ledger_export,
+        mina_node::rpc::RpcLedgerExportResponse,
+    );
+    to_real!(
+        respond_hard_fork_config,
+        mina_node::rpc::RpcHardForkExportResponse,
+    );
+    to_real!(
+        respond_light_best_tip,
+        mina_node::rpc::RpcLightBestTipResponse,
+    );
+    to_real!(
+        respond_light_account,
+        mina_node::rpc::RpcLightAccountResponse,
+    );
+    fn respond_verification_stats_get(
+        &mut self,
+        rpc_id: RpcId,
+        response: mina_node::rpc::RpcVerificationStatsGetResponse,
+    ) -> Result<(), RespondError> {
+        self.real.respond_verification_stats_get(rpc_id, response)
+    }
 }

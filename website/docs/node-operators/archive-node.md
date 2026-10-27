@@ -323,8 +323,9 @@ redundancy. Each mode stores blockchain data in a different location or format.
 
 ### Access Logs
 
-Logs are stored in the working directory with filenames like
-`mina.log.2024-10-14`, `mina.log.2024-10-15`, etc.
+Logs are stored in the working directory as `mina.log`, rotated to `mina.log.1`
+and so on, at most 200 MB by default. See
+[Logs and log levels](node-management#logs-and-log-levels).
 
 ### Provide Feedback
 

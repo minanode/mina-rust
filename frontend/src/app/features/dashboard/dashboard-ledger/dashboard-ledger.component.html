@@ -41,6 +41,7 @@
           context: {
             snarked: ledgers.stakingEpoch.snarked,
             config: configMap.stakingEpoch,
+            fromStore: ledgers.stakingEpoch.fromStore,
           }
         "
       ></ng-container>
@@ -65,6 +66,7 @@
           context: {
             snarked: ledgers.nextEpoch.snarked,
             config: configMap.nextEpoch,
+            fromStore: ledgers.nextEpoch.fromStore,
           }
         "
       ></ng-container>
@@ -92,6 +94,7 @@
           context: {
             snarked: ledgers.rootSnarked.snarked,
             config: configMap.rootSnarked,
+            fromStore: ledgers.rootSnarked.fromStore,
           }
         "
       ></ng-container>
@@ -126,88 +129,108 @@
         </div>
       </div>
       <div class="steps flex-column">
-        <div
-          class="flex-row flex-between h-lg lh-lg"
-          (mouseenter)="
-            show(
-              $event,
-              ledgers.rootStaged.staged.fetchPartsStart,
-              ledgers.rootStaged.staged.fetchPartsEnd
-            )
-          "
-          (mouseleave)="hide()"
-        >
-          <div class="step">
-            Fetch parts
-            @if (fetchedParts.total) {
-              {{ fetchedParts.current }}/{{ fetchedParts.total }}
-            }
+        @if (ledgers.rootStaged.fromStore) {
+          <ng-container *ngTemplateOutlet="fromStoreStep"></ng-container>
+        } @else {
+          <div
+            class="flex-row flex-between h-lg lh-lg"
+            (mouseenter)="
+              show(
+                $event,
+                ledgers.rootStaged.staged.fetchPartsStart,
+                ledgers.rootStaged.staged.fetchPartsEnd
+              )
+            "
+            (mouseleave)="hide()"
+          >
+            <div class="step">
+              Fetch parts
+              @if (fetchedParts.total) {
+                {{ fetchedParts.current }}/{{ fetchedParts.total }}
+              }
+            </div>
+            <div>
+              {{
+                ledgers.rootStaged.staged.fetchPartsDuration ??
+                  ledgers.rootStaged.staged.fetchPassedTime
+                  | secDuration: configMap.rootStaged
+              }}
+            </div>
           </div>
-          <div>
-            {{
-              ledgers.rootStaged.staged.fetchPartsDuration ??
-                ledgers.rootStaged.staged.fetchPassedTime
-                | secDuration: configMap.rootStaged
-            }}
+          <div
+            class="flex-row flex-between h-lg lh-lg"
+            (mouseenter)="
+              show(
+                $event,
+                ledgers.rootStaged.staged.reconstructStart,
+                ledgers.rootStaged.staged.reconstructEnd
+              )
+            "
+            (mouseleave)="hide()"
+          >
+            <div class="step">Reconstruct</div>
+            <div>
+              {{
+                ledgers.rootStaged.staged.reconstructDuration ??
+                  ledgers.rootStaged.staged.reconstructPassedTime
+                  | secDuration: configMap.rootStaged
+              }}
+            </div>
           </div>
-        </div>
-        <div
-          class="flex-row flex-between h-lg lh-lg"
-          (mouseenter)="
-            show(
-              $event,
-              ledgers.rootStaged.staged.reconstructStart,
-              ledgers.rootStaged.staged.reconstructEnd
-            )
-          "
-          (mouseleave)="hide()"
-        >
-          <div class="step">Reconstruct</div>
-          <div>
-            {{
-              ledgers.rootStaged.staged.reconstructDuration ??
-                ledgers.rootStaged.staged.reconstructPassedTime
-                | secDuration: configMap.rootStaged
-            }}
-          </div>
-        </div>
+        }
       </div>
     </div>
   </div>
 </div>
 
-<ng-template #snarkedSteps let-snarked="snarked" let-config="config">
+<ng-template
+  #snarkedSteps
+  let-snarked="snarked"
+  let-config="config"
+  let-fromStore="fromStore"
+>
   <div class="steps flex-column">
-    <div
-      class="flex-row flex-between h-lg lh-lg"
-      (mouseenter)="
-        show($event, snarked.fetchHashesStart, snarked.fetchHashesEnd)
-      "
-      (mouseleave)="hide()"
-    >
-      <div class="step">Fetch hashes</div>
-      <div>
-        {{
-          snarked.fetchHashesDuration ?? snarked.fetchHashesPassedTime
-            | secDuration: config
-        }}
+    @if (fromStore) {
+      <ng-container *ngTemplateOutlet="fromStoreStep"></ng-container>
+    } @else {
+      <div
+        class="flex-row flex-between h-lg lh-lg"
+        (mouseenter)="
+          show($event, snarked.fetchHashesStart, snarked.fetchHashesEnd)
+        "
+        (mouseleave)="hide()"
+      >
+        <div class="step">Fetch hashes</div>
+        <div>
+          {{
+            snarked.fetchHashesDuration ?? snarked.fetchHashesPassedTime
+              | secDuration: config
+          }}
+        </div>
       </div>
-    </div>
-    <div
-      class="flex-row flex-between h-lg lh-lg"
-      (mouseenter)="
-        show($event, snarked.fetchAccountsStart, snarked.fetchAccountsEnd)
-      "
-      (mouseleave)="hide()"
-    >
-      <div class="step">Fetch accounts</div>
-      <div>
-        {{
-          snarked.fetchAccountsDuration ?? snarked.fetchAccountsPassedTime
-            | secDuration: config
-        }}
+      <div
+        class="flex-row flex-between h-lg lh-lg"
+        (mouseenter)="
+          show($event, snarked.fetchAccountsStart, snarked.fetchAccountsEnd)
+        "
+        (mouseleave)="hide()"
+      >
+        <div class="step">Fetch accounts</div>
+        <div>
+          {{
+            snarked.fetchAccountsDuration ?? snarked.fetchAccountsPassedTime
+              | secDuration: config
+          }}
+        </div>
       </div>
-    </div>
+    }
+  </div>
+</ng-template>
+
+<!-- A ledger a restart loaded from saved state, not fetched (F-dash3). -->
+<ng-template #fromStoreStep>
+  <div class="flex-row flex-between h-lg lh-lg">
+    <div class="step">Loaded from saved state</div>
   </div>
 </ng-template>
 

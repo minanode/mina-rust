@@ -3,6 +3,8 @@
 //! - `GET /scan-state/summary` - Get scan state summary for best tip
 //! - `GET /scan-state/summary/{block}` - Get scan state summary for specific block
 
+use crate::input_limits::{self as limits, bounded};
+
 use std::str::FromStr;
 
 use axum::{
@@ -16,7 +18,7 @@ use mina_node::rpc::{
 };
 use mina_p2p_messages::v2::StateHash;
 
-use crate::http_server::{AppError, AppResult, AppState, JsonErrorResponse};
+use crate::http_server::{AppError, AppResult, AppState, JsonErrorResponse, MAX_STATE_HASH_CHARS};
 
 /// Block identifier for scan state queries.
 ///
@@ -36,9 +38,13 @@ impl FromStr for BlockIdentifier {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        bounded(s, limits::STATE_HASH).map_err(|e| e.to_string())?;
         if s == "latest" {
             Ok(BlockIdentifier::Latest)
-        } else if let Ok(height) = s.parse::<u32>() {
+        } else if let Some(height) = bounded(s, limits::U32_DECIMAL)
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+        {
             Ok(BlockIdentifier::Height(height))
         } else {
             s.parse::<StateHash>()
@@ -102,13 +108,18 @@ async fn summary_for_block(
     State(state): State<AppState>,
     Path(block): Path<String>,
 ) -> AppResult<Json<RpcScanStateSummary>> {
+    bounded(&block, limits::STATE_HASH).map_err(|e| AppError::BadRequest(e.to_string()))?;
     // Try parsing as height first, then as hash
-    let query = if let Ok(height) = block.parse::<u32>() {
+    let query = if let Some(height) = bounded(&block, limits::U32_DECIMAL)
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+    {
         RpcScanStateSummaryGetQuery::ForBlockWithHeight(height)
     } else {
-        match block.parse() {
-            Ok(hash) => RpcScanStateSummaryGetQuery::ForBlockWithHash(hash),
-            Err(_) => {
+        // Checked before decoding: see MAX_STATE_HASH_CHARS.
+        match (block.len() <= MAX_STATE_HASH_CHARS).then(|| block.parse()) {
+            Some(Ok(hash)) => RpcScanStateSummaryGetQuery::ForBlockWithHash(hash),
+            _ => {
                 return Err(AppError::BadRequest(
                     "invalid arg! Expected block hash or height".to_string(),
                 ))
@@ -125,5 +136,34 @@ async fn summary_for_block(
         None => Err(AppError::ChannelDropped),
         Some(Ok(data)) => Ok(Json(data)),
         Some(Err(err)) => Err(AppError::Internal(err)),
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use mina_node_common::rpc::RpcService;
+    use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn state_hash_length_rejects_before_rpc_in_under_one_ms() {
+        let rpc = RpcService::new();
+        let state = AppState::new(rpc.req_sender());
+        for len in [limits::STATE_HASH + 1, 65_000] {
+            let block = "z".repeat(len);
+            let start = Instant::now();
+            let result = summary_for_block(State(state.clone()), Path(block)).await;
+            let elapsed = start.elapsed();
+            assert!(
+                matches!(result, Err(AppError::BadRequest(ref e)) if e.contains("maximum length"))
+            );
+            assert!(elapsed < Duration::from_millis(1), "{elapsed:?}");
+            println!("REST {len}-byte state hash rejected in {elapsed:?}");
+        }
+        assert!(crate::input_limits::tests::STATE
+            .parse::<BlockIdentifier>()
+            .is_ok());
+        assert!("latest".parse::<BlockIdentifier>().is_ok());
+        assert!("4294967295".parse::<BlockIdentifier>().is_ok());
     }
 }

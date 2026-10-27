@@ -35,6 +35,15 @@ pub enum LedgerReadRequestState {
 }
 
 impl LedgerReadState {
+    pub fn memory_debug_counts(&self) -> (usize, usize) {
+        self.pending
+            .iter()
+            .fold((0, 0), |(pending, success), (_, state)| match state {
+                LedgerReadRequestState::Pending { .. } => (pending + 1, success),
+                LedgerReadRequestState::Success { .. } => (pending, success + 1),
+            })
+    }
+
     pub fn contains(&self, id: LedgerReadId) -> bool {
         self.pending.contains(id)
     }
@@ -49,6 +58,10 @@ impl LedgerReadState {
 
     pub fn is_total_cost_under_limit(&self) -> bool {
         self.total_cost < MAX_TOTAL_COST
+    }
+
+    pub fn can_admit(&self, request: &LedgerReadRequest) -> bool {
+        self.is_total_cost_under_limit() && request.cost() != usize::MAX
     }
 
     pub fn next_req_id(&self) -> LedgerReadId {

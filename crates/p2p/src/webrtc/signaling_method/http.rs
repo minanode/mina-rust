@@ -59,8 +59,8 @@ use super::SignalingMethodParseError;
 /// # Examples
 ///
 /// ```
-/// use mina::webrtc::Host;
-/// use mina::signaling_method::HttpSignalingInfo;
+/// use mina_p2p::webrtc::Host;
+/// use mina_p2p::webrtc::HttpSignalingInfo;
 ///
 /// // IPv4 signaling server
 /// let info = HttpSignalingInfo {
@@ -73,6 +73,7 @@ use super::SignalingMethodParseError;
 ///     host: Host::Domain("signal.example.com".into()),
 ///     port: 443,
 /// };
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(BinProtWrite, BinProtRead, Eq, PartialEq, Ord, PartialOrd, Debug, Clone)]
 pub struct HttpSignalingInfo {
@@ -119,6 +120,8 @@ impl From<([u8; 4], u16)> for HttpSignalingInfo {
     /// # Example
     ///
     /// ```
+    /// use mina_p2p::webrtc::HttpSignalingInfo;
+    ///
     /// let info = HttpSignalingInfo::from(([192, 168, 1, 100], 8080));
     /// assert_eq!(info.port, 8080);
     /// ```
@@ -148,7 +151,7 @@ impl FromStr for HttpSignalingInfo {
     /// # Examples
     ///
     /// ```
-    /// use mina::signaling_method::HttpSignalingInfo;
+    /// use mina_p2p::webrtc::HttpSignalingInfo;
     ///
     /// // Domain and port
     /// let info: HttpSignalingInfo = "signal.example.com/443".parse()?;
@@ -158,6 +161,7 @@ impl FromStr for HttpSignalingInfo {
     ///
     /// // With leading slash
     /// let info: HttpSignalingInfo = "/localhost/8080".parse()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     ///
     /// # Errors

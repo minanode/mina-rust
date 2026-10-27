@@ -54,8 +54,8 @@ export class DashboardSplitsSidePanelTableComponent
   }
 
   protected override setupTable(): void {
-    this.table.gridTemplateColumns = [140, 85, '1fr'];
-    this.table.minWidth = 400;
+    this.table.gridTemplateColumns = [150, 110, '1fr'];
+    this.table.minWidth = 420;
     this.table.sortClz = DashboardSplitsSortPeers;
     this.table.sortSelector = selectDashboardSplitsSort;
     this.table.rows = this.peers;

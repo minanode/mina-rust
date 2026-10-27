@@ -27,7 +27,7 @@ fi
 PUBLIC_KEY=$(cat "tests/files/accounts/test-block-producer.pub")
 
 echo "Test: Verify --address option works with public key (JSON format)"
-BALANCE_JSON=$(./target/release/mina wallet balance --address "$PUBLIC_KEY" --endpoint "$MINA_NODE_ENDPOINT" --format json 2>&1 || true)
+BALANCE_JSON=$(./target/release/mina wallet balance --address "$PUBLIC_KEY" --node "$MINA_NODE_ENDPOINT" --format json 2>&1 || true)
 
 echo "Balance command output:"
 echo "$BALANCE_JSON"

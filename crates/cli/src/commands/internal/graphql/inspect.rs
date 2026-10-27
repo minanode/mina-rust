@@ -6,8 +6,14 @@ pub struct Inspect {
     /// The GraphQL endpoint to inspect (e.g., 'account', 'sync_status', 'send_payment')
     pub endpoint: String,
 
-    /// GraphQL server URL
-    #[arg(long, default_value = "http://localhost:3000/graphql")]
+    /// The node's HTTP base URL (its `--port`). Requests go to
+    /// `<URL>/graphql`.
+    #[arg(
+        long,
+        default_value = "http://localhost:3000",
+        env = "MINA_NODE_URL",
+        value_name = "URL"
+    )]
     pub node: String,
 }
 
@@ -100,7 +106,7 @@ impl Inspect {
         // Make the introspection request
         let client = reqwest::blocking::Client::new();
         let response = client
-            .post(&self.node)
+            .post(crate::commands::node_api::graphql_url(&self.node))
             .json(&request)
             .send()
             .map_err(|e| anyhow!("Failed to connect to GraphQL server: {}", e))?;
@@ -295,7 +301,10 @@ impl Inspect {
             // Show curl command
             let query_escaped = format!("query {{ {} }}", self.endpoint).replace('"', "\\\"");
             println!("Curl Command:");
-            println!("  curl -X POST {} \\", self.node);
+            println!(
+                "  curl -X POST {} \\",
+                crate::commands::node_api::graphql_url(&self.node)
+            );
             println!("    -H \"Content-Type: application/json\" \\");
             println!("    -d '{{\"query\": \"{}\"}}'", query_escaped);
             println!();
@@ -389,7 +398,7 @@ impl Inspect {
 
         let client = reqwest::blocking::Client::new();
         let response = client
-            .post(&self.node)
+            .post(crate::commands::node_api::graphql_url(&self.node))
             .json(&request)
             .send()
             .map_err(|e| anyhow!("Failed to execute example query: {}", e))?;

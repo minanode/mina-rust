@@ -1,6 +1,8 @@
 <div
   class="header h-lg fx-row-vert-cent p-relative"
-  [class.hide]="connectedProgress + ledgerProgress + blockSyncProgress === 100"
+  [class.hide]="
+    connectedProgress + ledgerProgress + blockSyncProgress === 100 && !restored
+  "
 >
   <div
     [style.width.%]="connectedProgress + ledgerProgress + blockSyncProgress"
@@ -16,10 +18,15 @@
     <span class="tertiary">{{ updateDetail }}</span>
   </div>
 </div>
-<div class="comps flex-row flex-column-lg w-100 flex-grow overflow-auto pb-12">
-  <mina-dashboard-network></mina-dashboard-network>
-  <mina-dashboard-ledger></mina-dashboard-ledger>
-  <mina-dashboard-blocks-sync
-    class="flex-1 flex-column"
-  ></mina-dashboard-blocks-sync>
+<div class="body flex-column flex-grow overflow-auto">
+  <mina-freshness />
+  <mina-dashboard-roles />
+  <div class="comps flex-row flex-column-lg">
+    <mina-dashboard-network></mina-dashboard-network>
+    <mina-dashboard-ledger></mina-dashboard-ledger>
+    <mina-dashboard-blocks-sync
+      class="flex-1 flex-column"
+    ></mina-dashboard-blocks-sync>
+  </div>
+  <mina-verification-panel [compact]="true" />
 </div>

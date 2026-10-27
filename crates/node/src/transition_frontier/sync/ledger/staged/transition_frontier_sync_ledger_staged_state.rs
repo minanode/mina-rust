@@ -1,6 +1,5 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use crate::p2p::channels::rpc::StagedLedgerAuxAndPendingCoinbases;
 use mina_p2p_messages::v2::{MinaStateProtocolStateValueStableV2, StateHash};
 use redux::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -111,7 +110,7 @@ impl TransitionFrontierSyncLedgerStagedState {
         &self,
     ) -> Option<(
         &SyncLedgerTargetWithStaged,
-        Option<&Arc<StagedLedgerAuxAndPendingCoinbases>>,
+        Option<&Arc<StagedLedgerAuxAndPendingCoinbasesValid>>,
     )> {
         Some(match self {
             Self::PartsFetchSuccess { target, parts, .. } => (target, Some(parts)),
@@ -140,6 +139,23 @@ impl TransitionFrontierSyncLedgerStagedState {
 impl PeerStagedLedgerPartsFetchState {
     pub fn is_error(&self) -> bool {
         matches!(self, Self::Error { .. } | Self::Invalid { .. })
+    }
+
+    /// A lost response or validation follow-up must not block parts forever.
+    pub fn is_failed_or_stale(&self, now: Timestamp) -> bool {
+        self.is_error() || self.retry_ready(now)
+    }
+
+    pub fn retry_ready(&self, now: Timestamp) -> bool {
+        match self {
+            Self::Error { time, .. } | Self::Invalid { time } => now
+                .checked_sub(*time)
+                .is_some_and(|elapsed| elapsed >= super::super::snarked::LEDGER_QUERY_RETRY_DELAY),
+            Self::Pending { time, .. } | Self::Success { time, .. } | Self::Valid { time, .. } => {
+                now.checked_sub(*time)
+                    .is_some_and(|elapsed| elapsed >= super::STAGED_LEDGER_PARTS_STALE_AFTER)
+            }
+        }
     }
 
     pub fn is_valid(&self) -> bool {

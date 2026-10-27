@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Run the official OCaml Mina 4.0.2 reference binaries, extracted user-locally
+# from the stable.apt.packages.minaprotocol.com noble debs (no sudo needed).
+#
+#   scripts/ocaml-mina version
+#   scripts/ocaml-mina internal dump-type-shapes
+#   MINA_PROFILE=devnet scripts/ocaml-mina internal chain-id ...
+#   OCAML_MINA_BIN=coda-libp2p_helper scripts/ocaml-mina ...
+set -euo pipefail
+
+prefix="${OCAML_MINA_PREFIX:-$HOME/.local/opt/mina-4.0.2}"
+bin="${OCAML_MINA_BIN:-mina}"
+
+export LD_LIBRARY_PATH="$prefix/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export MINA_PROFILE="${MINA_PROFILE:-mainnet}"
+export MINA_LIBP2P_HELPER_PATH="${MINA_LIBP2P_HELPER_PATH:-$prefix/usr/local/bin/coda-libp2p_helper}"
+
+exec "$prefix/usr/local/bin/$bin" "$@"

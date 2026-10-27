@@ -3,7 +3,8 @@ pub use self::p2p_network_yamux_actions::*;
 
 mod p2p_network_yamux_state;
 pub use self::p2p_network_yamux_state::{
-    P2pNetworkYamuxState, StreamId, YamuxFlags, YamuxPing, YamuxStreamKind,
+    P2pNetworkYamuxState, StreamId, YamuxFlags, YamuxFrame, YamuxFrameInner, YamuxPing,
+    YamuxStreamKind, YamuxStreamState, INITIAL_WINDOW_SIZE, MAX_CONNECTION_RECEIVE_WINDOW,
 };
 
 #[cfg(feature = "p2p-libp2p")]

@@ -90,6 +90,21 @@ impl Behaviour {
         self.dispatch_command(peer_id, Command::Open { outgoing_stream_id })
     }
 
+    /// Half-close this RPC stream at the transport level.
+    pub fn close(&mut self, peer_id: PeerId, stream_id: StreamId) {
+        self.dispatch_command(peer_id, Command::Close { stream_id });
+    }
+
+    /// Model OCaml 4.0.2's completed RPC: no more heartbeats, but no FIN.
+    pub fn stop_heartbeats(&mut self, peer_id: PeerId, stream_id: StreamId) {
+        self.dispatch_command(peer_id, Command::StopHeartbeats { stream_id });
+    }
+
+    /// Abandon a stream, including outstanding queries, without closing the peer.
+    pub fn reset(&mut self, peer_id: PeerId, stream_id: StreamId) {
+        self.dispatch_command(peer_id, Command::Reset { stream_id });
+    }
+
     pub fn respond<M>(
         &mut self,
         peer_id: PeerId,

@@ -9,14 +9,17 @@ impl BlockProducerVrfEvaluatorEffectfulAction {
             BlockProducerVrfEvaluatorEffectfulAction::EvaluateSlot { vrf_input } => {
                 store.service.evaluate(vrf_input);
             }
-            BlockProducerVrfEvaluatorEffectfulAction::SlotEvaluated { epoch } => {
+            BlockProducerVrfEvaluatorEffectfulAction::SlotEvaluated { epoch, won } => {
                 if let Some(stats) = store.service.stats() {
-                    stats.block_producer().increment_slot_evaluated(epoch);
+                    stats.block_producer().increment_slot_evaluated(epoch, won);
                 }
             }
             BlockProducerVrfEvaluatorEffectfulAction::InitializeStats {
                 epoch,
                 initial_slot,
+                delegated_stake,
+                total_currency,
+                delegators,
             } => {
                 if let Some(stats) = store.service.stats() {
                     let slots_per_epoch =
@@ -28,10 +31,18 @@ impl BlockProducerVrfEvaluatorEffectfulAction {
                         initial_slot.saturating_add(1)
                     };
                     let remaining_slots = slots_per_epoch.saturating_sub(initial_slot);
-                    stats
-                        .block_producer()
-                        .new_epoch_evaluation(epoch, remaining_slots);
+                    stats.block_producer().new_epoch_evaluation(
+                        epoch,
+                        remaining_slots,
+                        crate::stats::block_producer::EpochStake {
+                            delegated_stake,
+                            total_currency,
+                            delegators,
+                        },
+                    );
                 }
+                // The epoch's stake, kept for a restart (F-producer).
+                store.service.save_block_production();
             }
         }
     }

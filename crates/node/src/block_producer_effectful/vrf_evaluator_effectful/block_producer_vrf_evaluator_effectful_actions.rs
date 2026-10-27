@@ -4,9 +4,23 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone, ActionEvent)]
 pub enum BlockProducerVrfEvaluatorEffectfulAction {
-    EvaluateSlot { vrf_input: VrfEvaluatorInput },
-    SlotEvaluated { epoch: u32 },
-    InitializeStats { epoch: u32, initial_slot: u32 },
+    EvaluateSlot {
+        vrf_input: VrfEvaluatorInput,
+    },
+    /// `won`: the slot is ours, counted once.
+    SlotEvaluated {
+        epoch: u32,
+        won: bool,
+    },
+    /// The epoch's evaluation starts: its stake, for the dashboard's expected
+    /// wins (the key's delegated stake and the staking ledger's total).
+    InitializeStats {
+        epoch: u32,
+        initial_slot: u32,
+        delegated_stake: u64,
+        total_currency: u64,
+        delegators: u32,
+    },
 }
 
 impl redux::EnablingCondition<crate::State> for BlockProducerVrfEvaluatorEffectfulAction {

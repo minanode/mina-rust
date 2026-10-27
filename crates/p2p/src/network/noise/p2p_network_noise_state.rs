@@ -241,8 +241,13 @@ pub enum NoiseError {
     InvalidSignature,
     #[error("remote and local public keys are same")]
     SelfConnection,
-    #[error("remote peer id doesn't match expected peer id: {0}")]
-    RemotePeerIdMismatch(String),
+    /// We dialled `expected`, and the address answered as `got`.
+    #[error(
+        "remote peer id doesn't match expected peer id: {} != {}",
+        .expected.to_libp2p_string(),
+        .got.to_libp2p_string()
+    )]
+    RemotePeerIdMismatch { expected: PeerId, got: PeerId },
     #[error("failed to encrypt data")]
     Encryption,
 }

@@ -9,14 +9,22 @@ import {
   ViewContainerRef,
 } from '@angular/core';
 import { AppSelectors } from '@app/app.state';
-import { filter, take } from 'rxjs';
+import { filter, take, timer } from 'rxjs';
 import {
   isDesktop,
   isMobile,
-  ONE_MILLION,
   MinaRustEagerSharedModule,
   PluralPipe,
 } from '@mina-rust/shared';
+import {
+  Freshness,
+  formatAge,
+  formatHeight,
+  freshness,
+  StatusChip,
+  statusChip,
+  utcTime,
+} from '@shared/helpers/freshness.helper';
 import { AppMenu } from '@shared/types/app/app-menu.type';
 import { MinaNode } from '@shared/types/core/environment/mina-env.type';
 import { ComponentPortal, TemplatePortal } from '@angular/cdk/portal';
@@ -28,7 +36,6 @@ import {
   AppNodeDetails,
   AppNodeStatus,
 } from '@shared/types/app/app-node-details.type';
-import { getTimeDiff } from '@shared/helpers/date.helper';
 import { CONFIG } from '@shared/constants/config';
 import {
   animate,
@@ -80,7 +87,11 @@ export class ServerStatusComponent extends StoreDispatcher implements OnInit {
   activeNode: MinaNode;
   details: AppNodeDetails;
   isOnline: boolean;
-  blockTimeAgo: string;
+  chip: StatusChip;
+  fresh: Freshness;
+  protected readonly formatAge = formatAge;
+  protected readonly formatHeight = formatHeight;
+  protected readonly utcTime = utcTime;
   hideNodeStats: boolean = CONFIG.hideNodeStats;
   hidePeers: boolean = CONFIG.hidePeersPill;
   hideTx: boolean = CONFIG.hideTxPill;
@@ -146,12 +157,35 @@ export class ServerStatusComponent extends StoreDispatcher implements OnInit {
           AppNodeStatus.PENDING,
           AppNodeStatus.OFFLINE,
         ].includes(activeNodeDetails?.status);
-        this.blockTimeAgo = getTimeDiff(
-          activeNodeDetails?.blockTime / ONE_MILLION,
-        ).diff;
-        this.detect();
+        this.refreshFreshness();
       },
     );
+    // Ages grow between samples, and a missing sample must show as stale.
+    timer(1000, 1000)
+      .pipe(untilDestroyed(this))
+      .subscribe(() => this.refreshFreshness());
+  }
+
+  private refreshFreshness(): void {
+    if (!this.details) {
+      return;
+    }
+    const now = Date.now();
+    this.chip = statusChip(this.details, now);
+    this.fresh = freshness(this.details, now);
+    this.detect();
+  }
+
+  /** The colour class: green only for a synced node with a fresh sample. */
+  get chipClass(): string {
+    if (!this.chip || this.details?.status === AppNodeStatus.PENDING) {
+      return AppNodeStatus.PENDING;
+    }
+    return {
+      ok: AppNodeStatus.SYNCED,
+      aware: AppNodeStatus.BOOTSTRAP,
+      warn: AppNodeStatus.OFFLINE,
+    }[this.chip.tone];
   }
 
   private listenToRouterChange(): void {
@@ -179,7 +213,7 @@ export class ServerStatusComponent extends StoreDispatcher implements OnInit {
     }
     this.tooltipOverlayRef = this.overlay.create({
       hasBackdrop: false,
-      width: isDesktop() ? 188 : 205,
+      width: isDesktop() ? 300 : 280,
       positionStrategy: this.overlay
         .position()
         .flexibleConnectedTo(anchor)

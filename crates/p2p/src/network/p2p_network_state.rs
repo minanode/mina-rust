@@ -9,6 +9,14 @@ use super::*;
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct P2pNetworkState {
     pub scheduler: P2pNetworkSchedulerState,
+    /// Local correlation IDs for allowlisted inbound RPCs; wire IDs are
+    /// scoped to a stream and can collide across concurrent streams.
+    #[serde(default)]
+    pub next_incoming_rpc_id: u64,
+    #[serde(default)]
+    pub serving_limits: crate::channels::rpc::ServingLimits,
+    #[serde(default)]
+    pub refusal_warnings: RpcRefusalWarnings,
 }
 
 impl P2pNetworkState {
@@ -35,6 +43,9 @@ impl P2pNetworkState {
         });
 
         P2pNetworkState {
+            next_incoming_rpc_id: 0,
+            serving_limits: Default::default(),
+            refusal_warnings: Default::default(),
             scheduler: P2pNetworkSchedulerState {
                 interfaces: Default::default(),
                 listeners: Default::default(),
@@ -73,6 +84,7 @@ impl P2pNetworkState {
                             .pending
                             .as_ref()
                             .is_some_and(|query_header| query_header.id == id)
+                            || state.pending_incoming.contains_key(&id)
                         {
                             Some(state)
                         } else {

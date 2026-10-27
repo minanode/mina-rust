@@ -12,6 +12,10 @@ pub struct Witness<F: FieldWitness> {
     // Following fields are used to compare our witness with OCaml
     pub ocaml_aux: Vec<F>,
     ocaml_aux_index: usize,
+    /// For tests: the `aux` indexes whose push prints a backtrace, to find
+    /// the code that pushes a value a failing row of the circuit uses.
+    #[cfg(test)]
+    pub(crate) trace_at: Vec<usize>,
 }
 
 impl<F: FieldWitness> Witness<F> {
@@ -21,6 +25,8 @@ impl<F: FieldWitness> Witness<F> {
             aux: Vec::with_capacity(C::AUX_LEN),
             ocaml_aux: Vec::new(),
             ocaml_aux_index: 0,
+            #[cfg(test)]
+            trace_at: Vec::new(),
         }
     }
 
@@ -30,6 +36,8 @@ impl<F: FieldWitness> Witness<F> {
             aux: Vec::new(),
             ocaml_aux: Vec::new(),
             ocaml_aux_index: 0,
+            #[cfg(test)]
+            trace_at: Vec::new(),
         }
     }
 
@@ -59,8 +67,25 @@ impl<F: FieldWitness> Witness<F> {
 
         #[cfg(test)]
         self.assert_ocaml_aux(start);
+        #[cfg(test)]
+        self.trace(start);
 
         data
+    }
+
+    /// Prints where each of `trace_at` was pushed, with its value.
+    #[cfg(test)]
+    fn trace(&self, start: usize) {
+        for &at in self.trace_at.iter().filter(|&&at| at >= start) {
+            if at < self.aux.len() {
+                eprintln!(
+                    "witness aux {at} (of {} pushed by this call) = {:?}, pushed at:\n{}",
+                    self.aux.len() - start,
+                    self.aux[at],
+                    std::backtrace::Backtrace::force_capture()
+                );
+            }
+        }
     }
 
     /// Compare our witness with OCaml

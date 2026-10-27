@@ -1,0 +1,109 @@
+{
+  "source": "R32 differential test against the OCaml 4.0.2 devnet endpoint https://devnet-plain-1.gcp.o1test.net/graphql, 2026-10-21 (raw parity report retained privately). Each response is OCaml's as R32 recorded it: the fields R32 lists as differing hold OCaml's values, the others were equal on both nodes. The public key of the omitted-variable case stands in for R32's masked key; OCaml fails before reading it.",
+  "cases": [
+    {
+      "name": "bad public key",
+      "query": "query { account(publicKey: \"invalid\") { nonce } }",
+      "variables": {},
+      "ocaml": {
+        "errors": [
+          {
+            "message": "Argument `publicKey` of type `PublicKey` expected on field `account`, found \"invalid\"."
+          }
+        ],
+        "data": null
+      }
+    },
+    {
+      "name": "bad state hash",
+      "query": "query { block(stateHash: \"invalid\") { stateHash } }",
+      "variables": {},
+      "ocaml": {
+        "errors": [
+          {
+            "message": "Error decoding invalid\nInvalid base58 character in State hash",
+            "path": [
+              "block"
+            ]
+          }
+        ],
+        "data": null
+      }
+    },
+    {
+      "name": "missing block selector",
+      "query": "query { block { stateHash } }",
+      "variables": {},
+      "ocaml": {
+        "errors": [
+          {
+            "message": "Must provide exactly one of state hash, height",
+            "path": [
+              "block"
+            ]
+          }
+        ],
+        "data": null
+      }
+    },
+    {
+      "name": "both block selectors",
+      "query": "query { block(height: 1, stateHash: \"invalid\") { stateHash } }",
+      "variables": {},
+      "ocaml": {
+        "errors": [
+          {
+            "message": "Must provide exactly one of state hash, height",
+            "path": [
+              "block"
+            ]
+          }
+        ],
+        "data": null
+      }
+    },
+    {
+      "name": "auro.graphql:txStatus",
+      "query": "query txStatus($paymentId: ID!) {\n  transactionStatus(payment: $paymentId)\n}",
+      "variables": {
+        "paymentId": "invalid"
+      },
+      "ocaml": {
+        "errors": [
+          {
+            "message": "Invalid transaction provided (Wrong padding)",
+            "path": [
+              "transactionStatus"
+            ]
+          }
+        ],
+        "data": null
+      }
+    },
+    {
+      "name": "optional token variable omitted",
+      "query": "query R32Account($publicKey: PublicKey!, $token: TokenId) { account(publicKey: $publicKey, token: $token) { nonce } }",
+      "variables": {
+        "publicKey": "B62qiy32p8kAKnny8ZFwoMhYpBppM1DWVCqAPBYNcXnsAHhnfAAuXgg"
+      },
+      "ocaml": {
+        "errors": [
+          {
+            "message": "Missing variable `token`"
+          }
+        ],
+        "data": null
+      }
+    },
+    {
+      "name": "auro.graphql:tokenInfo",
+      "query": "query tokenInfo {\n  wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf: tokenOwner(tokenId: \"wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf\") {\n    publicKey\n    tokenSymbol\n    zkappState\n  }\n}",
+      "variables": {},
+      "ocaml": {
+        "data": {
+          "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf": null
+        }
+      }
+    }
+  ]
+}

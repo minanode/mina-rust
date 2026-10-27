@@ -17,7 +17,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 cd "$REPO_ROOT"
 
 echo "Test: Verify error when no account specified"
-ERROR_OUTPUT=$(./target/release/mina wallet balance --endpoint "$MINA_NODE_ENDPOINT" 2>&1 || true)
+ERROR_OUTPUT=$(./target/release/mina wallet balance --node "$MINA_NODE_ENDPOINT" 2>&1 || true)
 
 echo "Command output:"
 echo "$ERROR_OUTPUT"

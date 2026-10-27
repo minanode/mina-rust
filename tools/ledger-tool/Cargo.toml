@@ -1,10 +1,13 @@
 [package]
+license.workspace = true
 name = "ledger-tool"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+blake2 = { workspace = true }
+hex = { workspace = true }
 ledger = { workspace = true }
 mina-curves = { workspace = true }
 mina-node = { workspace = true }

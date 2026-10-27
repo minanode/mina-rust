@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "p2p-testing"
 version.workspace = true
 edition.workspace = true

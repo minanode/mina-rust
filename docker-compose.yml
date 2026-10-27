@@ -1,26 +1,62 @@
-services:
-  mina-node:
-    image: o1labs/mina-rust:${MINA_RUST_TAG:-latest}
-    entrypoint: ["/bin/sh", "-c"]
-    command: >
-      "
-      ARGS='node --network devnet';
-      if [ -n \"$$MINA_LIBP2P_EXTERNAL_IP\" ]; then ARGS=\"$$ARGS --libp2p-external-ip $$MINA_LIBP2P_EXTERNAL_IP\"; fi;
-      if [ -n \"$$MINA_LIBP2P_PORT\" ]; then ARGS=\"$$ARGS --libp2p-port $$MINA_LIBP2P_PORT\"; fi;
-      exec mina $$ARGS
-      "
-    volumes:
-      - ./mina-workdir:/root/.mina:rw
-    ports:
-      - "3000:3000"
-      - "${MINA_LIBP2P_PORT:-8302}:${MINA_LIBP2P_PORT:-8302}"
-    environment:
-      MINA_LIBP2P_EXTERNAL_IP: "${MINA_LIBP2P_EXTERNAL_IP:-}"
-      MINA_LIBP2P_PORT: "${MINA_LIBP2P_PORT:-8302}"
+# A minanode devnet node in Docker: https://minanode.org/docs/docker/
+#
+#   mkdir -p mina-state && docker compose up -d
+#   docker compose logs -f      follow its log
+#   docker compose stop         stop it; start it again with `start`
+#
+# A full node whose SNARK worker you start, stop and price from the
+# dashboard, at http://localhost:3000 on this computer only. Its state (the
+# synced chain, caches, peer identity and logs) is in ./mina-state.
+#
+# Optional settings go in a file named .env next to this one:
+#
+#   UID=1000 and GID=1000   the user the node runs as, so the state dir
+#                           stays yours: printf 'UID=%s\nGID=%s\n' \
+#                           "$(id -u)" "$(id -g)" >> .env
+#   MINA_STATE_DIR=./mina-state   the state dir; a native node's full path,
+#                                 e.g. /home/you/.mina (stop that node first)
+#   MINA_IMAGE=ghcr.io/minanode/mina-rust:0.20.0
+#   MINA_NODE_ARGS=--libp2p-external-ip 203.0.113.7
+#                                 more options for `mina node`
+#   MINA_LIBP2P_PORT=8302         the peer port, inside and outside
+#   MINA_DASHBOARD_PORT=3000      the dashboard's port on this computer
+#
+# A block producer adds docker-compose.block-producer.yml through COMPOSE_FILE
+# in .env (see that file).
 
-  frontend:
-    image: o1labs/mina-rust-frontend:${MINA_FRONTEND_TAG:-latest}
+name: minanode
+
+services:
+  mina:
+    image: ${MINA_IMAGE:-ghcr.io/minanode/mina-rust:0.20.0}
+    container_name: mina
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    # Replaces the image's default command, `node --network devnet`.
+    # --allow-worker-control is safe only because the dashboard's port is
+    # published on 127.0.0.1 below: it decides where SNARK fees go.
+    command: >-
+      node --network devnet --allow-worker-control ${MINA_NODE_ARGS:-}
     environment:
-      MINA_FRONTEND_ENVIRONMENT: local
+      MINA_LIBP2P_PORT: ${MINA_LIBP2P_PORT:-8302}
     ports:
-      - "8070:80"
+      # The dashboard and API, on 127.0.0.1 only. A bare "3000:3000" would
+      # open them to the network, past ufw's rules.
+      - "127.0.0.1:${MINA_DASHBOARD_PORT:-3000}:3000"
+      # Peers. Open it in your firewall or router to accept incoming peers.
+      - "${MINA_LIBP2P_PORT:-8302}:${MINA_LIBP2P_PORT:-8302}"
+    volumes:
+      # The state dir. Create it first: Docker would make a missing one
+      # owned by root, which the node can't write to.
+      - type: bind
+        source: ${MINA_STATE_DIR:-./mina-state}
+        target: /data
+        bind:
+          create_host_path: false
+    logging:
+      # Bound Docker's copy of the log. The node also keeps up to 200 MB of
+      # rotated logs in the state dir, for `mina report`.
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

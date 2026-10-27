@@ -36,6 +36,7 @@ juniper = { workspace = true }
 kimchi = { workspace = true }
 lazy_static = { workspace = true }
 libc = { workspace = true }
+md5 = { workspace = true }
 mina-core = { workspace = true }
 mina-curves = { workspace = true }
 mina-hasher = { workspace = true }
@@ -69,9 +70,11 @@ wasm-bindgen-futures = { workspace = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 zstd = { workspace = true, optional = true }
+ruzstd = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["blocking"] }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 criterion = { workspace = true }
 rand_pcg = { workspace = true }
 rand_seeder = { workspace = true }
@@ -94,6 +97,7 @@ web-sys = { workspace = true, features = [
 ] }
 
 [features]
+embedded-circuits = ["dep:ruzstd"]
 # Put zstd behind a feature, cargo always re-compile it without touching the files
 compression = ["zstd"]
 # Add this feature to run tests in both nodejs and browser:
@@ -101,6 +105,7 @@ compression = ["zstd"]
 in_nodejs = []
 fuzzing = []
 openapi = ["dep:utoipa"]
+peak-alloc = []
 
 [profile.release]
 debug = true

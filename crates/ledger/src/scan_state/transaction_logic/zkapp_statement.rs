@@ -77,7 +77,7 @@ impl ZkappStatement {
         }
     }
 
-    pub fn zkapp_statements_of_forest_prime<Data: Clone>(
+    pub fn zkapp_statements_of_forest_prime<Data: Clone + Sync>(
         forest: CallForest<(AccountUpdate, Data)>,
     ) -> CallForest<(AccountUpdate, (Data, Self))> {
         forest.map_with_trees_to(|(account_update, data), tree| {

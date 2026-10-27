@@ -24,3 +24,6 @@ pub use signaling_method::{
 
 mod connection_auth;
 pub use connection_auth::{ConnectionAuth, ConnectionAuthEncrypted};
+
+mod ice;
+pub use ice::{IceServer, IceServersError, UdpPortRange, WebrtcConfig};

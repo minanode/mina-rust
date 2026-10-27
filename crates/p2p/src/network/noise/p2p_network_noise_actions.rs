@@ -4,7 +4,7 @@ use mina_core::ActionEvent;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone, ActionEvent)]
-#[action_event(level = debug, fields(display(addr), incoming, debug(data), display(peer_id)))]
+#[action_event(level = trace, fields(display(addr), incoming, debug(data), display(peer_id)))]
 pub enum P2pNetworkNoiseAction {
     Init {
         addr: ConnectionAddr,

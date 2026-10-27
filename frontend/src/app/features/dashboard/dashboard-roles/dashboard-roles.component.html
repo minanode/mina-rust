@@ -1,0 +1,159 @@
+@if (!publicApi) {
+  <section class="roles" aria-label="What this node does" data-roles>
+    @let p = producer();
+    <div class="role" data-role-producer>
+      <div class="role-head">
+        <h2>Block producer</h2>
+        <span [class]="'badge ' + p.tone" data-role-state>{{ p.label }}</span>
+        @if (p.on && wonSlotsLink()) {
+          <a
+            class="more"
+            routerLink="/block-production/won-slots"
+            queryParamsHandling="preserve"
+          >
+            Won slots
+            <span class="mina-icon f-16" aria-hidden="true">chevron_right</span>
+          </a>
+        }
+      </div>
+      @if (p.publicKey) {
+        <div class="facts">
+          <div data-producer-key>
+            <span>Key</span>
+            <strong>
+              <mina-chain-value [value]="p.publicKey" kind="account" />
+            </strong>
+          </div>
+          <div data-producer-won>
+            <span>Won slots ahead</span>
+            <strong>{{ p.wonAhead === null ? '–' : count(p.wonAhead) }}</strong>
+            <small>{{ p.wonAheadNote }}</small>
+          </div>
+          <div data-producer-next>
+            <span>Next won slot</span>
+            @if (p.next) {
+              <strong>{{ inTime(p.next.at) }}</strong>
+              <small>
+                {{ utcTime(p.next.at) }} · slot {{ p.next.globalSlot }}
+              </small>
+            } @else {
+              <strong>none known</strong>
+              <small>no won slot ahead</small>
+            }
+          </div>
+          <div data-producer-last>
+            <span>Last block produced</span>
+            @if (p.lastBlock) {
+              <strong>
+                @if (explorerUrl(p.lastBlock.height); as url) {
+                  <a
+                    [href]="url"
+                    target="_blank"
+                    rel="noopener"
+                    [title]="p.lastBlock.hash"
+                  >
+                    {{ formatHeight(p.lastBlock.height) }}
+                  </a>
+                } @else {
+                  <span [title]="p.lastBlock.hash">
+                    {{ formatHeight(p.lastBlock.height) }}
+                  </span>
+                }
+              </strong>
+              <small [class]="p.lastBlock.tone">{{ p.lastBlock.fate }}</small>
+            } @else {
+              <strong>none yet</strong>
+              <small>since the node started</small>
+            }
+          </div>
+        </div>
+      }
+      @if (p.note) {
+        <p class="note" [class.warn]="p.noteWarn">{{ p.note }}</p>
+      }
+    </div>
+
+    @let w = snarker();
+    <div class="role" data-role-worker>
+      <div class="role-head">
+        <h2>SNARK worker</h2>
+        <span [class]="'badge ' + (w?.tone ?? 'off')" data-role-state>
+          {{ w?.label ?? '…' }}
+        </span>
+        @if (workerLink()) {
+          <a
+            class="more"
+            routerLink="/snarks/worker"
+            queryParamsHandling="preserve"
+          >
+            Worker
+            <span class="mina-icon f-16" aria-hidden="true">chevron_right</span>
+          </a>
+        }
+      </div>
+      @let included =
+        w && w.includedBundles !== null && (w.on || w.includedBundles > 0);
+      @if (w && (w.on || included)) {
+        <div class="facts">
+          @if (w.on) {
+            @if (w.publicKey) {
+              <div data-worker-key>
+                <span>Key</span>
+                <strong>
+                  <mina-chain-value [value]="w.publicKey" kind="account" />
+                </strong>
+              </div>
+            }
+            <div data-worker-fee>
+              <span>Fee</span>
+              <strong>{{ formatMina(w.fee) }} MINA</strong>
+              <small>asked per bundle</small>
+            </div>
+            <div data-worker-job>
+              <span>Current job</span>
+              <strong>{{ w.job ?? w.jobNote }}</strong>
+            </div>
+            <div data-worker-proofs>
+              <span>Proofs made</span>
+              <strong>
+                {{ w.proofsMade === null ? '–' : count(w.proofsMade) }}
+              </strong>
+              <small>
+                {{
+                  w.proofsMade === null
+                    ? 'this node does not say'
+                    : 'since start'
+                }}
+              </small>
+            </div>
+          }
+          @if (included) {
+            <div data-worker-included>
+              <span>Work included in blocks</span>
+              <strong>
+                {{ count(w.includedBundles) }} bundle{{
+                  w.includedBundles === 1 ? '' : 's'
+                }}
+                · {{ formatMina(w.includedFees) }} MINA
+              </strong>
+              <small>
+                in {{ count(w.includedBlocks) }} block{{
+                  w.includedBlocks === 1 ? '' : 's'
+                }}{{
+                  w.pendingBundles
+                    ? ', ' + count(w.pendingBundles) + ' not final yet'
+                    : ''
+                }}
+              </small>
+            </div>
+          }
+        </div>
+      }
+      @if (w?.note) {
+        <p class="note" [class.warn]="w.noteWarn">
+          {{ w.note }}
+        </p>
+      }
+    </div>
+  </section>
+}

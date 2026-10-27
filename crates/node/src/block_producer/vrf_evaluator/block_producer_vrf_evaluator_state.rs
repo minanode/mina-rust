@@ -14,6 +14,8 @@ pub const SLOTS_PER_EPOCH: u32 = 7140;
 pub struct BlockProducerVrfEvaluatorState {
     pub status: BlockProducerVrfEvaluatorStatus,
     pub won_slots: BTreeMap<u32, VrfWonSlotWithHash>,
+    #[serde(default)]
+    pub total_won_slots: u64,
     pub latest_evaluated_slot: u32,
     pub genesis_timestamp: redux::Timestamp,
     last_evaluated_epoch: Option<u32>,
@@ -26,6 +28,7 @@ impl BlockProducerVrfEvaluatorState {
         Self {
             status: BlockProducerVrfEvaluatorStatus::Idle { time: now },
             won_slots: Default::default(),
+            total_won_slots: 0,
             latest_evaluated_slot: Default::default(),
             genesis_timestamp: redux::Timestamp::ZERO,
             last_evaluated_epoch: Default::default(),
@@ -55,6 +58,11 @@ impl BlockProducerVrfEvaluatorState {
     /// Fetches the next slot that has been won based on the current global slot and the best tip information.
     /// If there are no future won slots, returns `None`.
     ///
+    /// A won slot of the best tip's slot is skipped if the best tip's VRF
+    /// output is greater: our block would be its sibling, as long, and lose.
+    /// With an equal one, from a node sharing our key, the state hash decides
+    /// once our block is made.
+    ///
     /// Arguments:
     /// - `cur_global_slot`: The current global slot as a 32-bit unsigned integer.
     /// - `best_tip`: A reference to the `ArcBlockWithHash` representing the current best tip.
@@ -71,7 +79,7 @@ impl BlockProducerVrfEvaluatorState {
             .map(|(_, won_slot)| {
                 BlockProducerWonSlot::from_vrf_won_slot(won_slot, best_tip.genesis_timestamp())
             })
-            .find(|won_slot| won_slot > best_tip)
+            .find(|won_slot| won_slot >= best_tip)
     }
 
     /// Retrieves the current epoch context.
@@ -659,6 +667,7 @@ mod test {
                     next_epoch_data: Box::new(DUMMY_NEXT_EPOCH_DATA.to_owned()),
                 },
                 won_slots: BTreeMap::new(),
+                total_won_slots: 0,
                 latest_evaluated_slot: 0,
                 genesis_timestamp: redux::Timestamp::global_now(),
                 last_evaluated_epoch: None,
@@ -682,6 +691,7 @@ mod test {
                     next_epoch_data: Box::new(DUMMY_NEXT_EPOCH_DATA.to_owned()),
                 },
                 won_slots: BTreeMap::new(),
+                total_won_slots: 0,
                 latest_evaluated_slot: 7139,
                 genesis_timestamp: redux::Timestamp::global_now(),
                 last_evaluated_epoch: Some(0),
@@ -705,6 +715,7 @@ mod test {
                     next_epoch_data: Box::new(DUMMY_NEXT_EPOCH_DATA.to_owned()),
                 },
                 won_slots: BTreeMap::new(),
+                total_won_slots: 0,
                 latest_evaluated_slot: 14279,
                 genesis_timestamp: redux::Timestamp::global_now(),
                 last_evaluated_epoch: Some(1),
@@ -728,6 +739,7 @@ mod test {
                     next_epoch_data: Box::new(DUMMY_NEXT_EPOCH_DATA.to_owned()),
                 },
                 won_slots: BTreeMap::new(),
+                total_won_slots: 0,
                 latest_evaluated_slot: 0,
                 genesis_timestamp: redux::Timestamp::global_now(),
                 last_evaluated_epoch: None,
@@ -751,6 +763,7 @@ mod test {
                     next_epoch_data: Box::new(DUMMY_NEXT_EPOCH_DATA.to_owned()),
                 },
                 won_slots: BTreeMap::new(),
+                total_won_slots: 0,
                 latest_evaluated_slot: 21419,
                 genesis_timestamp: redux::Timestamp::global_now(),
                 last_evaluated_epoch: Some(2),

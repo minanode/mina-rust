@@ -12,6 +12,7 @@ members = [
   "crates/node/common",
   "crates/node/invariants",
   "crates/node/native",
+  "crates/node/report",
   "crates/node/web",
   "crates/p2p",
   "crates/p2p/libp2p-rpc-behaviour",
@@ -19,15 +20,22 @@ members = [
   "crates/p2p-messages",
   "crates/snark",
   "crates/vrf",
+  "crates/web-relay",
+  "crates/web-verifier",
   # Crates to be removed (kept at root for now)
   # poseidon: https://github.com/o1-labs/mina-rust/issues/1215
   "poseidon",
   # Tools
   "tools/archive-breadcrumb-compare",
+  "tools/block-replay",
   "tools/bootstrap-sandbox",
   "tools/fuzzing",
   "tools/gossipsub-sandbox",
+  "tools/tx-gossip-probe",
   "tools/hash-tool",
+  "tools/isolated-prover",
+  "tools/light-probe",
+  "tools/rpc-capture",
   "tools/ledger-tool",
   "tools/testing",
   "tools/transport",
@@ -40,6 +48,8 @@ members = [
   # Build/CI tooling
   "xtask",
 ]
+# Vendored crates are patched in below, not workspace members.
+exclude = ["vendor/rustrtc"]
 
 resolver = "2"
 
@@ -49,7 +59,7 @@ edition = "2021"
 homepage = "https://o1-labs.github.io/mina-rust/"
 license = "Apache-2.0"
 repository = "https://github.com/o1-labs/mina-rust"
-version = "0.19.0"
+version = "0.20.0"
 
 [workspace.lints.clippy]
 #unwrap_used = "warn"
@@ -72,8 +82,10 @@ axum = "0.8"
 backtrace = "0.3"
 base64 = "0.22"
 bincode = "1.3.3"
-binprot = { git = "https://github.com/openmina/binprot-rs", rev = "400b52c" }
-binprot_derive = { git = "https://github.com/openmina/binprot-rs", rev = "400b52c" }
+# Vendored from https://github.com/openmina/binprot-rs at 400b52c, with integer
+# readers that accept exactly what OCaml's bin_prot v0.14.0 accepts (P6).
+binprot = { path = "libs/binprot-rs" }
+binprot_derive = { path = "libs/binprot-rs/binprot_derive" }
 bitflags = "2.8.0"
 bitvec = "1.0.1"
 blake2 = "0.10"
@@ -109,7 +121,6 @@ dotenvy = "0.15"
 ed25519-dalek = { version = "2.1.1", features = ["serde", "pem"] }
 env_logger = "0.11.6"
 etherparse = "0.17.0"
-faster-stun = "1.0.1"
 firestore = "0.44"
 flate2 = "1.0.24"
 flume = { version = "0.11.1", features = ["async", "spin"] }
@@ -139,7 +150,7 @@ js-sys = "0.3.64"
 jsonpath-rust = "0.5.0"
 juniper = "0.17"
 juniper_axum = "0.3"
-kimchi = { git = "https://github.com/o1-labs/proof-systems", tag = "0.3.0" }
+kimchi = { git = "https://github.com/o1-labs/proof-systems", rev = "ab84160fa2c22290a8506a7742ac1378879fc386" }
 lazy_static = "1.4.0"
 leb128 = "0.2.1"
 ledger = { path = "crates/ledger", package = "mina-tree" }
@@ -153,20 +164,21 @@ md5 = "0.7.0"
 mina-bootstrap-sandbox = { path = "tools/bootstrap-sandbox" }
 mina-cli = { path = "crates/cli" }
 mina-core = { path = "crates/core" }
-mina-curves = { git = "https://github.com/o1-labs/proof-systems", tag = "0.3.0" }
+mina-curves = { git = "https://github.com/o1-labs/proof-systems", rev = "ab84160fa2c22290a8506a7742ac1378879fc386" }
 mina-fuzzer = { path = "crates/fuzzer" }
-mina-hasher = { git = "https://github.com/o1-labs/proof-systems", tag = "0.3.0" }
+mina-hasher = { git = "https://github.com/o1-labs/proof-systems", rev = "ab84160fa2c22290a8506a7742ac1378879fc386" }
 mina-macros = { path = "crates/macros" }
 mina-node = { path = "crates/node" }
 mina-node-account = { path = "crates/node/account" }
 mina-node-common = { path = "crates/node/common" }
 mina-node-invariants = { path = "crates/node/invariants" }
 mina-node-native = { path = "crates/node/native" }
+mina-node-report = { path = "crates/node/report" }
 mina-node-testing = { path = "tools/testing" }
 mina-p2p = { path = "crates/p2p" }
 mina-p2p-messages = { path = "crates/p2p-messages" }
-mina-poseidon = { git = "https://github.com/o1-labs/proof-systems", tag = "0.3.0" }
-mina-signer = { git = "https://github.com/o1-labs/proof-systems", tag = "0.3.0" }
+mina-poseidon = { git = "https://github.com/o1-labs/proof-systems", rev = "ab84160fa2c22290a8506a7742ac1378879fc386" }
+mina-signer = { git = "https://github.com/o1-labs/proof-systems", rev = "ab84160fa2c22290a8506a7742ac1378879fc386" }
 mina-snark = { path = "crates/snark" }
 mina-transport = { path = "tools/transport" }
 mina-vrf = { path = "crates/vrf" }
@@ -180,7 +192,7 @@ num-bigint = { git = "https://github.com/openmina/num-bigint", branch = "rebase-
 num-traits = "0.2"
 num_cpus = "1.0"
 num_enum = "0.5.7"
-o1-utils = { git = "https://github.com/o1-labs/proof-systems", tag = "0.3.0" }
+o1-utils = { git = "https://github.com/o1-labs/proof-systems", rev = "ab84160fa2c22290a8506a7742ac1378879fc386" }
 object = "0.37.1"
 once_cell = "1"
 p256 = { version = "0.13", features = ["default", "ecdh", "ecdsa"] }
@@ -188,7 +200,7 @@ p384 = "0.13"
 pcap = "2.4"
 percent-encoding = "2.3"
 pin-project-lite = "0.2.10"
-poly-commitment = { git = "https://github.com/o1-labs/proof-systems", tag = "0.3.0" }
+poly-commitment = { git = "https://github.com/o1-labs/proof-systems", rev = "ab84160fa2c22290a8506a7742ac1378879fc386" }
 poseidon = { path = "poseidon" }
 postcard = { version = "1.0.9", features = ["use-std"] }
 proc-macro2 = "1.0.103"
@@ -204,13 +216,23 @@ rayon = "1.5"
 rcgen = { version = "0.13", features = ["pem", "x509-parser"] }
 redux = { path = "libs/redux", features = ["serde"] }
 regex = "1"
-reqwest = { version = "0.12.8", features = ["blocking", "json"] }
+reqwest = { version = "0.12.8", default-features = false, features = [
+  "blocking",
+  "json",
+  "charset",
+  "http2",
+  "rustls-tls",
+] }
 ring_buffer = "2.0.2"
 rsa = "0.9.10"
 rsexp = "0.2.3"
 rsexp-derive = "0.2.3"
 rsprocmaps = "0.3.2"
 rust-format = "0.3"
+rustrtc = { version = "=0.4.9", default-features = false, features = [
+  "std",
+] } # patched: vendor/rustrtc; no UPnP
+ruzstd = "0.8.1"
 salsa-simple = { path = "vendor/salsa-simple" }
 salsa20 = "0.10.2"
 serde = { version = "1.0.228", features = ["derive", "rc"] }
@@ -287,6 +309,8 @@ codegen-units = 1
 [patch.crates-io]
 num-bigint = { git = "https://github.com/openmina/num-bigint", branch = "rebase-onstack" }     # branch: rebase-onstack
 num-rational = { git = "https://github.com/openmina/num-rational", branch = "rebase-onstack" } # branch: rebase-onstack
+# rustrtc 0.4.9 with our fixes, see vendor/README.md.
+rustrtc = { path = "vendor/rustrtc" }
 
 [profile.test.package."*"]
 opt-level = 3

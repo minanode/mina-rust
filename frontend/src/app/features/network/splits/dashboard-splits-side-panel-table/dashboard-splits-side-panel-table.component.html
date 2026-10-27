@@ -4,7 +4,9 @@
   <span class="truncate">
     <mina-copy [value]="row.address"></mina-copy>
   </span>
-  <span>{{ row.node || '-' }}</span>
+  <span class="truncate" [title]="row.peerId || row.node">
+    {{ row.node || '-' }}
+  </span>
   <span class="primary text-right pr-12 mr-5">
     <span class="tertiary">→</span>
     {{ row.incomingConnections }}

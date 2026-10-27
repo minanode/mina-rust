@@ -11,7 +11,8 @@ use mina_core::{
 };
 
 use crate::{
-    snark::block_verify::SnarkBlockVerifyId, transition_frontier::TransitionFrontierState,
+    p2p::PeerId, snark::block_verify::SnarkBlockVerifyId,
+    transition_frontier::TransitionFrontierState,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -74,6 +75,14 @@ impl TransitionFrontierCandidateStatus {
     pub fn is_pending(&self) -> bool {
         matches!(self, Self::SnarkVerifyPending { .. })
     }
+
+    /// When the block's proof was verified, if it has been.
+    pub fn snark_verified_at(&self) -> Option<redux::Timestamp> {
+        match self {
+            Self::SnarkVerifySuccess { time } => Some(*time),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -81,6 +90,11 @@ pub struct TransitionFrontierCandidateState {
     pub block: ArcBlockWithHash,
     pub status: TransitionFrontierCandidateStatus,
     pub chain_proof: Option<(Vec<StateHash>, ArcBlockWithHash)>,
+    /// Peers asked for their best tip with proof for this block's chain
+    /// proof. None is asked twice: one whose answer lacked the block won't
+    /// have it as its best tip later either, as best tips only get better.
+    #[serde(default)]
+    pub chain_proof_asked: BTreeSet<PeerId>,
 }
 
 impl Ord for TransitionFrontierCandidateState {
@@ -131,11 +145,25 @@ pub struct TransitionFrontierCandidatesState {
     /// consume less memory while still preventing us from triggering
     /// revalidation for an invalid block if we receive it on p2p again.
     invalid: BTreeMap<StateHash, u32>,
+    /// When a peer first sent us a best tip, its answer to our request or a
+    /// gossiped block, a genesis block included: OCaml's first message, which
+    /// makes its node online (F-dash3).
+    #[serde(default)]
+    pub(super) first_peer_best_tip: Option<redux::Timestamp>,
 }
 
 impl TransitionFrontierCandidatesState {
+    pub fn memory_debug_len(&self) -> usize {
+        self.ordered.len()
+    }
+
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// When a peer first sent us a best tip since the start, if one has.
+    pub fn first_peer_best_tip(&self) -> Option<redux::Timestamp> {
+        self.first_peer_best_tip
     }
 
     pub fn contains(&self, hash: &StateHash) -> bool {
@@ -156,6 +184,7 @@ impl TransitionFrontierCandidatesState {
             block,
             status: TransitionFrontierCandidateStatus::Received { time },
             chain_proof,
+            chain_proof_asked: Default::default(),
         });
     }
 
@@ -240,6 +269,56 @@ impl TransitionFrontierCandidatesState {
             .find(|s| s.status.is_snark_verify_success())
     }
 
+    pub(super) fn add_chain_proof_asked(&mut self, hash: &StateHash, peer_id: PeerId) -> bool {
+        self.update(hash, move |mut s| {
+            s.chain_proof_asked.insert(peer_id);
+            s
+        })
+    }
+
+    /// The best verified candidate, if it should be our next sync target but
+    /// lacks a chain proof: it doesn't extend our best chain, so the proof has
+    /// to come from a peer's best tip answer.
+    ///
+    /// During a bootstrap there is no best chain yet, so every new best tip a
+    /// peer gossips needs one.
+    pub fn chain_proof_wanted(
+        &self,
+        transition_frontier: &TransitionFrontierState,
+    ) -> Option<&TransitionFrontierCandidateState> {
+        let candidate = self.best_verified()?;
+        if candidate.chain_proof.is_some() {
+            return None;
+        }
+        let better_than_ours = [
+            transition_frontier.best_tip(),
+            transition_frontier.sync.best_tip(),
+        ]
+        .into_iter()
+        .flatten()
+        .all(|b| {
+            b.hash() != candidate.block.hash()
+                && consensus_take(
+                    b.consensus_state(),
+                    candidate.block.consensus_state(),
+                    b.hash(),
+                    candidate.block.hash(),
+                )
+        });
+        if !better_than_ours {
+            return None;
+        }
+        // A block on our best tip or on its predecessor gets its proof from
+        // our best chain (`block_chain_proof`), which is built only then.
+        let extends_best_chain = transition_frontier.best_tip().is_some_and(|best_tip| {
+            best_tip.hash() == candidate.block.pred_hash()
+                || best_tip.pred_hash() == candidate.block.pred_hash()
+        }) && self
+            .block_chain_proof(candidate, transition_frontier)
+            .is_some();
+        (!extends_best_chain).then_some(candidate)
+    }
+
     pub fn is_chain_proof_needed(&self, hash: &StateHash) -> bool {
         self.get(hash).is_some_and(|s| s.chain_proof.is_none())
     }
@@ -279,5 +358,167 @@ impl TransitionFrontierCandidatesState {
                 None
             }
         })
+    }
+}
+
+/// A ready peer, as [`choose_chain_proof_peer`] sees it.
+#[derive(Debug, Clone, Copy)]
+pub struct ChainProofPeer {
+    pub peer_id: PeerId,
+    /// Its best tip, as we know it, is the candidate.
+    pub advertised: bool,
+    /// Its RPC slot is free and its best tip budget allows a request now.
+    pub available: bool,
+    /// A best tip request of ours to it is waiting for an answer, and hasn't
+    /// timed out.
+    pub best_tip_request_pending: bool,
+}
+
+/// How long to wait for a peer that advertised a candidate, while it is busy
+/// or out of best tip budget, before asking peers that didn't advertise it.
+///
+/// A busy peer's RPC slot frees within a round trip, and the chain proof query
+/// takes it before ledger and block queries do. A peer out of budget may not be
+/// asked for up to the 20 s interval: by then the block has spread, and most
+/// peers that didn't send it to us have it too.
+pub const CHAIN_PROOF_ADVERTISER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The peer to ask next for a candidate's chain proof, if any should be asked
+/// now, given the peers already asked for this candidate.
+///
+/// - One request at a time per candidate: none while an asked peer's request
+///   is pending. After a timeout it is retried with another peer.
+/// - A peer that advertised the candidate as its best tip has it, so those go
+///   first. While `wait_for_advertisers`, and one that hasn't been asked is
+///   busy or out of budget, we wait for it rather than ask a peer that may not
+///   have the block yet ([`CHAIN_PROOF_ADVERTISER_WAIT`]).
+/// - Then any other peer not yet asked: an OCaml peer forwards a block only
+///   once it has it in its frontier, so a peer we didn't hear it from likely
+///   has it or a better one.
+pub fn choose_chain_proof_peer<R: rand::Rng + ?Sized>(
+    asked: &BTreeSet<PeerId>,
+    peers: impl IntoIterator<Item = ChainProofPeer>,
+    wait_for_advertisers: bool,
+    rng: &mut R,
+) -> Option<PeerId> {
+    use rand::seq::SliceRandom;
+
+    let mut advertisers = Vec::new();
+    let mut others = Vec::new();
+    let mut advertiser_unavailable = false;
+    for peer in peers {
+        if asked.contains(&peer.peer_id) {
+            if peer.best_tip_request_pending {
+                return None;
+            }
+            continue;
+        }
+        match (peer.advertised, peer.available) {
+            (true, true) => advertisers.push(peer.peer_id),
+            (true, false) => advertiser_unavailable = true,
+            (false, true) => others.push(peer.peer_id),
+            (false, false) => {}
+        }
+    }
+    if !advertisers.is_empty() {
+        return advertisers.choose(rng).copied();
+    }
+    if advertiser_unavailable && wait_for_advertisers {
+        return None;
+    }
+    others.choose(rng).copied()
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::{rngs::StdRng, SeedableRng};
+
+    use super::*;
+
+    fn peer(n: u8, advertised: bool, available: bool) -> ChainProofPeer {
+        ChainProofPeer {
+            peer_id: PeerId::from_bytes([n; 32]),
+            advertised,
+            available,
+            best_tip_request_pending: false,
+        }
+    }
+
+    fn choose(asked: &[u8], peers: &[ChainProofPeer]) -> Option<u8> {
+        choose_waiting(asked, peers, true)
+    }
+
+    fn choose_waiting(
+        asked: &[u8],
+        peers: &[ChainProofPeer],
+        wait_for_advertisers: bool,
+    ) -> Option<u8> {
+        let asked = asked.iter().map(|n| PeerId::from_bytes([*n; 32])).collect();
+        let mut rng = StdRng::seed_from_u64(0);
+        choose_chain_proof_peer(
+            &asked,
+            peers.iter().copied(),
+            wait_for_advertisers,
+            &mut rng,
+        )
+        .map(|id| {
+            (1..=255)
+                .find(|n| PeerId::from_bytes([*n; 32]) == id)
+                .expect("a test peer")
+        })
+    }
+
+    #[test]
+    fn asks_a_peer_that_advertised_the_candidate_first() {
+        let peers = [
+            peer(1, false, true),
+            peer(2, true, true),
+            peer(3, false, true),
+        ];
+        assert_eq!(choose(&[], &peers), Some(2));
+    }
+
+    #[test]
+    fn waits_for_a_busy_advertiser_rather_than_ask_others() {
+        let peers = [peer(1, false, true), peer(2, true, false)];
+        assert_eq!(choose(&[], &peers), None);
+    }
+
+    /// After [`CHAIN_PROOF_ADVERTISER_WAIT`], a busy or out of budget
+    /// advertiser no longer holds the request back.
+    #[test]
+    fn stops_waiting_for_an_unavailable_advertiser() {
+        let peers = [peer(1, false, true), peer(2, true, false)];
+        assert_eq!(choose_waiting(&[], &peers, false), Some(1));
+        // An available advertiser still goes first.
+        let peers = [peer(1, false, true), peer(2, true, true)];
+        assert_eq!(choose_waiting(&[], &peers, false), Some(2));
+    }
+
+    #[test]
+    fn a_peer_whose_answer_lacked_the_candidate_is_not_asked_again() {
+        // Peer 2 advertised the candidate and was asked; its answer had
+        // another best tip. Peer 1 is asked next, peer 2 never again.
+        let peers = [peer(1, false, true), peer(2, true, true)];
+        assert_eq!(choose(&[2], &peers), Some(1));
+        assert_eq!(choose(&[1, 2], &peers), None);
+    }
+
+    #[test]
+    fn one_request_at_a_time() {
+        let mut asked_peer = peer(2, true, false);
+        asked_peer.best_tip_request_pending = true;
+        let peers = [peer(1, true, true), asked_peer];
+        assert_eq!(choose(&[2], &peers), None);
+        // Once it has answered, or timed out, the next peer is asked.
+        asked_peer.best_tip_request_pending = false;
+        let peers = [peer(1, true, true), asked_peer];
+        assert_eq!(choose(&[2], &peers), Some(1));
+    }
+
+    #[test]
+    fn nobody_to_ask() {
+        assert_eq!(choose(&[], &[]), None);
+        assert_eq!(choose(&[], &[peer(1, false, false)]), None);
     }
 }

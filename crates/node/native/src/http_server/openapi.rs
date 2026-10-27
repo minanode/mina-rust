@@ -25,6 +25,8 @@ use utoipa::OpenApi;
         (name = "snarker", description = "SNARK worker operations"),
         (name = "transaction", description = "Transaction pool and accounts"),
         (name = "discovery", description = "P2P discovery info"),
+        (name = "ledger", description = "Ledger export"),
+        (name = "light", description = "Light client reads: best tip and account paths"),
         (name = "webrtc", description = "WebRTC signaling"),
     )
 )]
@@ -34,4 +36,21 @@ pub struct ApiDoc;
 #[cfg(feature = "stoplight-elements")]
 pub async fn stoplight_elements() -> axum::response::Html<&'static str> {
     axum::response::Html(include_str!("stoplight_elements.html"))
+}
+
+/// `GET /api-docs/openapi.json` without Swagger UI: the same spec it would
+/// serve, as JSON, serialized once.
+#[cfg(not(feature = "swagger-ui"))]
+pub fn spec_route<S>(api: &utoipa::openapi::OpenApi) -> axum::routing::MethodRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    use axum::http::header;
+    let body = axum::body::Bytes::from(
+        serde_json::to_vec(api).expect("the OpenAPI spec serializes to JSON"),
+    );
+    axum::routing::get(move || {
+        let body = body.clone();
+        async move { ([(header::CONTENT_TYPE, "application/json")], body) }
+    })
 }

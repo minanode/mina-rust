@@ -1,4 +1,19 @@
 use std::sync::Arc;
+#[cfg(feature = "peak-alloc")]
+use std::sync::OnceLock;
+
+/// Optional checkpoints for the single-threaded block replay allocation
+/// harness. Production builds do not contain these calls.
+#[cfg(feature = "peak-alloc")]
+pub static ALLOC_CHECKPOINT: OnceLock<fn(u8)> = OnceLock::new();
+
+#[cfg(feature = "peak-alloc")]
+#[inline]
+fn alloc_checkpoint(phase: u8) {
+    if let Some(checkpoint) = ALLOC_CHECKPOINT.get() {
+        checkpoint(phase);
+    }
+}
 
 use mina_core::constants::ConstraintConstants;
 use mina_curves::pasta::Fp;
@@ -17,8 +32,8 @@ use crate::{
         },
         scan_state::{
             transaction_snark::{
-                work, InitStack, LedgerHash, LedgerProof, LedgerProofWithSokMessage, OneOrTwo,
-                Registers, SokMessage, Statement, TransactionWithWitness,
+                work, LedgerHash, LedgerProof, OneOrTwo, Registers, SokMessage, Statement,
+                TransactionWithWitness,
             },
             AvailableJob, Pass, ScanState, SpacePartition, StatementCheck, TransactionsOrdered,
         },
@@ -76,8 +91,6 @@ pub enum StagedLedgerError {
     Unexpected(String),
 }
 
-const ZKAPP_LIMIT_PER_BLOCK: Option<usize> = None;
-
 pub struct PreStatement<L: LedgerNonSnark> {
     partially_applied_transaction: TransactionPartiallyApplied<L>,
     expected_status: TransactionStatus,
@@ -88,7 +101,7 @@ pub struct PreStatement<L: LedgerNonSnark> {
     first_pass_ledger_target_hash: LedgerHash,
     pending_coinbase_stack_source: Stack,
     pending_coinbase_stack_target: Stack,
-    init_stack: InitStack,
+    init_stack: Stack,
 }
 
 #[derive(Debug)]
@@ -99,6 +112,9 @@ pub struct DiffResult {
         Vec<TransactionsOrdered<(WithStatus<Transaction>, Fp, Slot)>>,
     )>,
     pub pending_coinbase_update: (bool, Update),
+    /// Accounts the diff's transactions created. Mesa scan states no longer
+    /// keep applied transactions, so they come from applying the diff.
+    pub accounts_created: Vec<AccountId>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -171,7 +187,7 @@ impl StagedLedger {
             StatementCheck::<fn(Fp) -> MinaStateProtocolStateValueStableV2>::Partial;
         let last_proof_statement = scan_state
             .latest_ledger_proof()
-            .map(|(proof_with_sok, _)| proof_with_sok.proof.statement());
+            .map(|(proof, _)| proof.statement());
 
         scan_state.check_invariants(
             constraint_constants,
@@ -254,6 +270,38 @@ impl StagedLedger {
         })
     }
 
+    /// Builds a staged ledger from parts persisted by this node: its ledger
+    /// (the snarked ledger with the scan state's transactions already applied),
+    /// its scan state and its pending coinbase collection.
+    ///
+    /// Unlike [`Self::of_scan_state_pending_coinbases_and_snarked_ledger`], it
+    /// re-applies no transaction, and unlike `of_scan_state_and_ledger_unchecked`
+    /// it doesn't check the scan state's invariants either: the parts were
+    /// checked when they were first built. The caller must check
+    /// [`Self::hash`] against the staged ledger hash of the block the parts
+    /// belong to, which commits to all three, and discard the result if they
+    /// differ. That check is the validation.
+    ///
+    /// OCaml has no equivalent: its persistent frontier rebuilds the root
+    /// staged ledger with
+    /// `of_scan_state_pending_coinbases_and_snarked_ledger_unchecked`, which
+    /// re-applies the scan state's transactions. This is
+    /// `of_scan_state_and_ledger_unchecked` without its invariant check:
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/436023ba41c43a50458a551b7ef7a9ae61670b25/src/lib/staged_ledger/staged_ledger.ml#L325>
+    pub fn from_persisted_unchecked(
+        constraint_constants: &ConstraintConstants,
+        scan_state: ScanState,
+        ledger: Mask,
+        pending_coinbase_collection: PendingCoinbase,
+    ) -> Self {
+        Self {
+            scan_state,
+            ledger,
+            constraint_constants: constraint_constants.clone(),
+            pending_coinbase_collection,
+        }
+    }
+
     /// <https://github.com/MinaProtocol/mina/blob/436023ba41c43a50458a551b7ef7a9ae61670b25/src/lib/staged_ledger/staged_ledger.ml#L353>
     fn of_scan_state_pending_coinbases_and_snarked_ledger_prime<F, G>(
         constraint_constants: &ConstraintConstants,
@@ -326,7 +374,7 @@ impl StagedLedger {
 
         let last_proof_statement = scan_state
             .latest_ledger_proof()
-            .map(|(proof_with_sok, _)| proof_with_sok.proof.statement());
+            .map(|(proof, _)| proof.statement());
 
         fun(
             constraint_constants,
@@ -441,6 +489,17 @@ impl StagedLedger {
         }
     }
 
+    /// Commits the masks from the current one up to its base, the first whose
+    /// parent `is_base_parent` accepts (or the root), detaching those in
+    /// between, and makes the base the current mask. See
+    /// [`Mask::commit_and_reparent_to_base`].
+    pub fn commit_and_reparent_to_base<F>(&mut self, is_base_parent: F)
+    where
+        F: Fn(&Mask) -> bool,
+    {
+        self.ledger = self.ledger.commit_and_reparent_to_base(is_base_parent);
+    }
+
     /// <https://github.com/MinaProtocol/mina/blob/05c2f73d0f6e4f1341286843814ce02dcb3919e0/src/lib/staged_ledger/staged_ledger.ml#424>
     pub fn create_exn(
         constraint_constants: ConstraintConstants,
@@ -457,7 +516,7 @@ impl StagedLedger {
     }
 
     /// <https://github.com/MinaProtocol/mina/blob/05c2f73d0f6e4f1341286843814ce02dcb3919e0/src/lib/staged_ledger/staged_ledger.ml#434>
-    fn current_ledger_proof(&self) -> Option<&LedgerProofWithSokMessage> {
+    fn current_ledger_proof(&self) -> Option<&LedgerProof> {
         self.scan_state.latest_ledger_proof().map(|(f, _)| f)
     }
 
@@ -548,7 +607,7 @@ impl StagedLedger {
                 first_pass_ledger_target_hash: target_ledger_hash,
                 pending_coinbase_stack_source: pending_coinbase_stack_state.pc.source.clone(),
                 pending_coinbase_stack_target: pending_coinbase_target.clone(),
-                init_stack: InitStack::Base(pending_coinbase_stack_state.init_stack.clone()),
+                init_stack: pending_coinbase_stack_state.init_stack.clone(),
             },
             StackStateWithInitStack {
                 pc: StackState {
@@ -567,7 +626,7 @@ impl StagedLedger {
         state_and_body_hash: (Fp, Fp),
         global_slot: Slot,
         pre_stmt: PreStatement<Mask>,
-    ) -> Result<TransactionWithWitness, StagedLedgerError> {
+    ) -> Result<(TransactionWithWitness, Vec<AccountId>), StagedLedgerError> {
         let empty_local_state = LocalState::empty();
         let second_pass_ledger_source_hash = ledger.merkle_root();
         let ledger_witness =
@@ -614,15 +673,18 @@ impl StagedLedger {
             sok_digest: (),
         };
 
-        Ok(TransactionWithWitness {
-            transaction_with_info: applied_txn,
+        let witness = TransactionWithWitness {
+            transaction_with_status: applied_txn.transaction(),
             state_hash: state_and_body_hash,
             statement,
             init_stack: pre_stmt.init_stack,
             first_pass_ledger_witness: pre_stmt.first_pass_ledger_witness,
             second_pass_ledger_witness: ledger_witness,
             block_global_slot: global_slot,
-        })
+            hash_cache: Default::default(),
+        };
+
+        Ok((witness, applied_txn.new_accounts().to_vec()))
     }
 
     fn apply_transactions_first_pass(
@@ -677,7 +739,7 @@ impl StagedLedger {
         ledger: &mut Mask,
         state_and_body_hash: (Fp, Fp),
         pre_stmts: Vec<PreStatement<Mask>>,
-    ) -> Result<Vec<TransactionWithWitness>, StagedLedgerError> {
+    ) -> Result<Vec<(TransactionWithWitness, Vec<AccountId>)>, StagedLedgerError> {
         let connecting_ledger = ledger.merkle_root();
 
         pre_stmts
@@ -706,7 +768,15 @@ impl StagedLedger {
         ),
         current_state_view: &ProtocolStateView,
         state_and_body_hash: (Fp, Fp),
-    ) -> Result<(Vec<TransactionWithWitness>, Stack, Stack, Fp), StagedLedgerError> {
+    ) -> Result<
+        (
+            Vec<(TransactionWithWitness, Vec<AccountId>)>,
+            Stack,
+            Stack,
+            Fp,
+        ),
+        StagedLedgerError,
+    > {
         let (_, state_body_hash) = state_and_body_hash;
         let (ts, ts_opt) = tss;
 
@@ -851,7 +921,7 @@ impl StagedLedger {
 
         let txns_from_data = |data: &[TransactionWithWitness]| -> Vec<WithStatus<Transaction>> {
             data.iter()
-                .map(|tx| tx.transaction_with_info.transaction())
+                .map(|tx| tx.transaction_with_status.clone())
                 .collect::<Vec<_>>()
         };
 
@@ -899,8 +969,16 @@ impl StagedLedger {
         transactions: Vec<WithStatus<Transaction>>,
         current_state_view: &ProtocolStateView,
         state_and_body_hash: (Fp, Fp),
-    ) -> Result<(bool, Vec<TransactionWithWitness>, Action, StackUpdate, Pass), StagedLedgerError>
-    {
+    ) -> Result<
+        (
+            bool,
+            Vec<(TransactionWithWitness, Vec<AccountId>)>,
+            Action,
+            StackUpdate,
+            Pass,
+        ),
+        StagedLedgerError,
+    > {
         let coinbase_exists = |txns: &[WithStatus<Transaction>]| {
             txns.iter()
                 .any(|tx| matches!(tx.data, Transaction::Coinbase(_)))
@@ -1088,27 +1166,24 @@ impl StagedLedger {
     ) -> Result<DiffResult, StagedLedgerError> {
         let skip_verification = skip_verification.unwrap_or(false);
 
-        let max_throughput = 2u64.pow(constraint_constants.transaction_capacity_log_2 as u32);
-
-        let (_spots_available, _proofs_waiting) = {
-            let jobs = self.scan_state.all_work_statements_exn();
-            let free_space = self.scan_state.free_space();
-            (free_space.min(max_throughput), jobs.len())
-        };
-
         let mut new_ledger = self.ledger.make_child();
+        #[cfg(feature = "peak-alloc")]
+        alloc_checkpoint(3);
 
         let (transactions, works, _commands_count, coinbases) = pre_diff_info;
 
-        if let Some(zkapp_limit) = ZKAPP_LIMIT_PER_BLOCK {
-            let zkapp_count = transactions.iter().filter(|t| t.data.is_zkapp()).count();
-            if zkapp_count > zkapp_limit {
-                return Err(StagedLedgerError::ZkAppsExceedLimit {
-                    count: zkapp_count,
-                    limit: zkapp_limit,
-                });
-            }
-        };
+        // Check that the number of zkApp commands in a block does not exceed
+        // the hardcap. Unreachable on mainnet, whose blocks hold at most 128
+        // (2^transaction_capacity_log_2) transactions, but OCaml checks it.
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/staged_ledger/staged_ledger.ml#L1032-L1050>
+        let zkapp_limit = scan_state::GENESIS_CONSTANT.zkapp_cmd_limit_hardcap;
+        let zkapp_count = transactions.iter().filter(|t| t.data.is_zkapp()).count();
+        if zkapp_count > zkapp_limit {
+            return Err(StagedLedgerError::ZkAppsExceedLimit {
+                count: zkapp_count,
+                limit: zkapp_limit,
+            });
+        }
 
         let (
             is_new_stack,
@@ -1126,6 +1201,10 @@ impl StagedLedger {
             current_state_view,
             state_and_body_hash,
         )?;
+        #[cfg(feature = "peak-alloc")]
+        alloc_checkpoint(4);
+        let (data, accounts_created): (Vec<_>, Vec<_>) = data.into_iter().unzip();
+        let accounts_created = accounts_created.into_iter().flatten().collect();
 
         let slots = data.len();
         let work_count = works.len();
@@ -1161,6 +1240,8 @@ impl StagedLedger {
                 })?
             // TODO: OCaml print the error in json format here
         };
+        #[cfg(feature = "peak-alloc")]
+        alloc_checkpoint(5);
 
         Self::update_pending_coinbase_collection(
             constraint_constants.pending_coinbase_depth,
@@ -1169,6 +1250,8 @@ impl StagedLedger {
             is_new_stack,
             &res_opt,
         )?;
+        #[cfg(feature = "peak-alloc")]
+        alloc_checkpoint(6);
 
         let coinbase_amount = Self::coinbase_for_blockchain_snark(&coinbases)?;
 
@@ -1187,8 +1270,12 @@ impl StagedLedger {
         self.ledger = new_ledger;
         self.constraint_constants = constraint_constants.clone();
 
+        let hash_after_applying = self.hash();
+        #[cfg(feature = "peak-alloc")]
+        alloc_checkpoint(7);
+
         Ok(DiffResult {
-            hash_after_applying: self.hash(),
+            hash_after_applying,
             ledger_proof: res_opt,
             pending_coinbase_update: (
                 is_new_stack,
@@ -1197,6 +1284,7 @@ impl StagedLedger {
                     coinbase_amount,
                 },
             ),
+            accounts_created,
         })
     }
 
@@ -1255,6 +1343,8 @@ impl StagedLedger {
         coinbase_receiver: CompressedPubKey,
         supercharge_coinbase: bool,
     ) -> Result<DiffResult, StagedLedgerError> {
+        #[cfg(feature = "peak-alloc")]
+        alloc_checkpoint(0);
         let work = witness.completed_works();
         let works_count = work.len();
 
@@ -1262,7 +1352,9 @@ impl StagedLedger {
         if skip_verification.is_none() {
             Self::check_completed_works(logger, verifier, &self.scan_state, work)?;
         }
-        eprintln!(
+        #[cfg(feature = "peak-alloc")]
+        alloc_checkpoint(1);
+        mina_core::debug!(
             "verification time={:?} ({works_count} completed works)",
             now.elapsed()
         );
@@ -1273,6 +1365,8 @@ impl StagedLedger {
             coinbase_receiver,
             supercharge_coinbase,
         )?;
+        #[cfg(feature = "peak-alloc")]
+        alloc_checkpoint(2);
 
         self.apply_diff(
             logger,
@@ -1428,7 +1522,7 @@ impl StagedLedger {
                     AtMostTwo::Zero => AtMostOne::Zero,
                     AtMostTwo::One(v) => AtMostOne::One(v),
                     AtMostTwo::Two(_) => {
-                        eprintln!(
+                        mina_core::warn!(
                             "Error creating staged ledger diff: Should have at most one \
                              coinbase in the second pre_diff"
                         );
@@ -1629,23 +1723,23 @@ impl StagedLedger {
                     )
                 };
 
-                dbg!(res.available_space_dbg());
+                mina_core::debug!(mina_core::log::system_time(); available_space = ?res.available_space_dbg());
 
                 let (res1, res2) = if res.commands_rev.is_empty() {
-                    println!("edge_case: No user command added, add a coinbase only (Sequence.is_empty res.commands_rev)");
+                    mina_core::debug!("edge_case: No user command added, add a coinbase only (Sequence.is_empty res.commands_rev)");
 
                     let res = try_with_coinbase();
                     (res, None)
                 } else {
                     match res.available_space() {
                         0 => {
-                            println!("edge_case: Split commands in 2 diffs/partitions with at least 1 coinbase on next tree (Resources.available_space res = 0)");
+                            mina_core::debug!("edge_case: Split commands in 2 diffs/partitions with at least 1 coinbase on next tree (Resources.available_space res = 0)");
                             // generate the next prediff with a coinbase at least
                             let res2 = second_pre_diff(res.clone(), y, true, cw_seq_2);
                             ((res, log1), Some(res2))
                         }
                         1 => {
-                            println!("edge_case: only 1 slot available, add coinbase and rest on 2nd diff/partition (Resources.available_space res = 1)");
+                            mina_core::debug!("edge_case: only 1 slot available, add coinbase and rest on 2nd diff/partition (Resources.available_space res = 1)");
                             // There's a slot available in the first partition, fill it
                             // with coinbase and create another pre_diff for the slots
                             // in the second partiton with the remaining user commands and work
@@ -1653,14 +1747,14 @@ impl StagedLedger {
                             incr_coinbase_and_compute(res, IncreaseBy::One)
                         }
                         2 => {
-                            println!("edge_case: 2 slots available, split coinbase in 2 (Resources.available_space res = 2)");
+                            mina_core::debug!("edge_case: 2 slots available, split coinbase in 2 (Resources.available_space res = 2)");
                             // There are two slots which cannot be filled using user commands,
                             // so we split the coinbase into two parts and fill those two spots
 
                             incr_coinbase_and_compute(res, IncreaseBy::Two)
                         }
                         _ => {
-                            println!("edge_case: transactions fit in current tree (Resources.available_space res = _)");
+                            mina_core::debug!("edge_case: transactions fit in current tree (Resources.available_space res = _)");
                             // Too many slots left in the first partition. Either there wasn't
                             // enough work to add transactions or there weren't enough
                             // transactions. Create a new pre_diff for just the first partition
@@ -1841,7 +1935,7 @@ impl StagedLedger {
                             proof_count += cw_checked.proofs.len();
                             completed_works_seq.push(cw_checked);
                         } else {
-                            eprintln!(
+                            mina_core::debug!(
                                 "Staged_ledger_diff creation: Snark fee {:?} \
                                  insufficient to create the snark worker account",
                                 cw_checked.fee,
@@ -1850,7 +1944,7 @@ impl StagedLedger {
                         }
                     }
                     None => {
-                        eprintln!(
+                        mina_core::debug!(
                             "Staged_ledger_diff creation: No snark work found for {:#?}",
                             work
                         );
@@ -1864,11 +1958,19 @@ impl StagedLedger {
             let length = transactions_by_fee.len();
             let mut valid_on_this_ledger = Vec::with_capacity(length);
             let mut invalid_on_this_ledger = Vec::with_capacity(length);
-            let mut count = 0;
+            let mut selection =
+                super::application_state::CommandSelection::new(self.scan_state.free_space());
 
             let _transactions_by_fee_len = transactions_by_fee.len();
 
             for txn in transactions_by_fee {
+                if selection.is_full() {
+                    break;
+                }
+                let is_zkapp = matches!(txn, valid::UserCommand::ZkAppCommand(_));
+                if !selection.should_apply(txn.fee_payer(), is_zkapp) {
+                    continue;
+                }
                 let res = transaction_validator::apply_transaction_first_pass(
                     constraint_constants,
                     global_slot,
@@ -1879,7 +1981,7 @@ impl StagedLedger {
 
                 match res {
                     Err(e) => {
-                        eprintln!(
+                        mina_core::debug!(
                             "Staged_ledger_diff creation: Skipping user command: {:#?} due to error: {:?}",
                             txn, e
                         );
@@ -1887,10 +1989,7 @@ impl StagedLedger {
                     }
                     Ok(_txn_partially_applied) => {
                         valid_on_this_ledger.push(txn);
-                        count += 1;
-                        if count >= self.scan_state.free_space() {
-                            break;
-                        }
+                        selection.applied(is_zkapp);
                     }
                 }
             }
@@ -1931,7 +2030,7 @@ impl StagedLedger {
             // let diff = diff?;
 
             // curr_job_seq_no is incremented later, but for the logs we increment it now
-            println!(
+            mina_core::debug!(
                 "sequence_number={:?}",
                 self.scan_state.scan_state.curr_job_seq_no.incr()
             );
@@ -1957,47 +2056,6 @@ impl StagedLedger {
 
             Ok((diff, invalid_on_this_ledger))
         })
-    }
-
-    /// <https://github.com/MinaProtocol/mina/blob/05c2f73d0f6e4f1341286843814ce02dcb3919e0/src/lib/staged_ledger/staged_ledger.ml#L2024>
-    pub fn latest_block_accounts_created(&self, previous_block_state_hash: Fp) -> Vec<AccountId> {
-        use scan_state::transaction_logic::transaction_applied::{
-            signed_command_applied::Body, CommandApplied, Varying,
-        };
-
-        let block_transactions_applied = {
-            let f = |t: Arc<TransactionWithWitness>| {
-                let TransactionWithWitness {
-                    transaction_with_info,
-                    state_hash: (leaf_block_hash, _),
-                    ..
-                } = t.as_ref();
-                if leaf_block_hash == &previous_block_state_hash {
-                    Some(transaction_with_info.varying.to_owned())
-                } else {
-                    None
-                }
-            };
-
-            let latest = self.scan_state.base_jobs_on_latest_tree().filter_map(f);
-
-            let earlier = self.scan_state.base_jobs_on_earlier_tree(0).filter_map(f);
-
-            latest.chain(earlier)
-        };
-
-        block_transactions_applied
-            .flat_map(|cmd| match cmd {
-                Varying::Command(CommandApplied::SignedCommand(cmd)) => match cmd.body {
-                    Body::Payments { new_accounts } => new_accounts,
-                    Body::StakeDelegation { .. } => Vec::new(),
-                    Body::Failed => Vec::new(),
-                },
-                Varying::Command(CommandApplied::ZkappCommand(cmd)) => cmd.new_accounts,
-                Varying::FeeTransfer(ft) => ft.new_accounts,
-                Varying::Coinbase(cb) => cb.new_accounts,
-            })
-            .collect::<Vec<_>>()
     }
 }
 
@@ -2136,6 +2194,7 @@ mod tests_ocaml {
             hash_after_applying: hash,
             ledger_proof,
             pending_coinbase_update: (is_new_stack, pc_update),
+            ..
         } = sl
             .apply(
                 None,
@@ -2387,7 +2446,7 @@ mod tests_ocaml {
 
                         let mut signer =
                             mina_signer::create_legacy(mina_signer::NetworkId::TESTNET);
-                        signer.sign(sender_pk, &payload_to_sign, false)
+                        signer.sign(sender_pk, &payload_to_sign, mina_signer::NonceMode::Legacy)
                     }
                 };
 
@@ -3286,6 +3345,108 @@ mod tests_ocaml {
                     provers: NumProvers::One,
                     stmt_to_work: stmt_to_work_one_prover,
                 })
+            },
+        );
+    }
+
+    /// A scan state's clone shares its jobs' witnesses (`SparseLedger`s,
+    /// behind one lock per witness). The frontier store's thread converts a
+    /// checkpoint's clone of the root's scan state to wire types while the
+    /// ledger thread may convert the same jobs (a peer's staged ledger request,
+    /// a commit's available jobs) or copy their witnesses. With a `try_lock`
+    /// one of the two threads panicked (I5c review: 20 of 20 rounds on
+    /// mainnet's scan state); both must wait their turn and get the same
+    /// result as one thread alone.
+    #[test]
+    fn a_scan_state_and_its_clone_convert_on_two_threads_at_once() {
+        use std::sync::Barrier;
+
+        use crate::scan_state::scan_state::AvailableJobMessage;
+
+        const ROUNDS: usize = 40;
+
+        let state = gen_initial_ledger_state();
+        let iters = 4;
+        let cmds = signed_command_sequence(TRANSACTION_CAPACITY * iters, SignKind::Real, &state);
+        let cmd_iters = vec![None; iters];
+        let global_slot = Slot::gen_small();
+
+        async_with_ledgers(
+            &state,
+            cmds.clone(),
+            cmd_iters.clone(),
+            |snarked_ledger, sl, test_mask| {
+                let sl = test_simple(TestSimpleParams {
+                    global_slot,
+                    account_ids_to_check: init_pks(&state),
+                    cmds,
+                    cmd_iters,
+                    sl,
+                    expected_proof_count: None,
+                    allow_failure: None,
+                    check_snarked_ledger_transition: None,
+                    snarked_ledger,
+                    test_mask,
+                    provers: NumProvers::Many,
+                    stmt_to_work: stmt_to_work_random_prover,
+                });
+                let scan_state = sl.scan_state();
+                // The base jobs not yet emitted, each with its witnesses.
+                let base_jobs = scan_state.scan_state.pending_data().concat().len();
+                assert!(base_jobs > 0, "the scan state must hold base jobs");
+
+                let convert = |scan_state: &ScanState| {
+                    mina_p2p_messages::v2::TransactionSnarkScanStateStableV2::from(scan_state)
+                };
+                // As JSON: the wire types of a job don't implement `PartialEq`.
+                let available_jobs = |scan_state: &ScanState| {
+                    let jobs = scan_state
+                        .all_job_pairs_iter()
+                        .map(|job| job.map(|single| AvailableJobMessage::from(single)))
+                        .collect::<Vec<_>>();
+                    (jobs.len(), serde_json::to_vec(&jobs).unwrap())
+                };
+                let copy_witnesses = |scan_state: &ScanState| {
+                    scan_state
+                        .scan_state
+                        .pending_data()
+                        .into_iter()
+                        .flatten()
+                        .map(|job| {
+                            let mut copy = job.first_pass_ledger_witness.copy_content();
+                            copy.merkle_root()
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let want = convert(scan_state);
+                let want_jobs = available_jobs(scan_state);
+                let want_roots = copy_witnesses(scan_state);
+                assert!(want_jobs.0 > 0, "the scan state must have available jobs");
+
+                for round in 0..ROUNDS {
+                    // As the snapshot hands it over: a clone, converted on
+                    // another thread.
+                    let store_copy = scan_state.clone();
+                    let start = &Barrier::new(2);
+                    std::thread::scope(|scope| {
+                        let store_thread = scope.spawn(move || {
+                            start.wait();
+                            convert(&store_copy)
+                        });
+                        start.wait();
+                        // The ledger thread, on the original, in turn: a full
+                        // conversion, the available jobs, copied witnesses.
+                        let (converted, jobs, roots) = match round % 3 {
+                            0 => (Some(convert(scan_state)), None, None),
+                            1 => (None, Some(available_jobs(scan_state)), None),
+                            _ => (None, None, Some(copy_witnesses(scan_state))),
+                        };
+                        assert!(store_thread.join().unwrap() == want, "round {round}");
+                        assert!(converted.is_none_or(|c| c == want), "round {round}");
+                        assert!(jobs.is_none_or(|j| j == want_jobs), "round {round}");
+                        assert!(roots.is_none_or(|r| r == want_roots), "round {round}");
+                    });
+                }
             },
         );
     }
@@ -5585,7 +5746,7 @@ mod tests_ocaml {
         let payload_to_sign = TransactionUnionPayload::of_user_command_payload(&payload);
 
         let mut signer = mina_signer::create_legacy(mina_signer::NetworkId::TESTNET);
-        let signature = signer.sign(kp, &payload_to_sign, false);
+        let signature = signer.sign(kp, &payload_to_sign, mina_signer::NonceMode::Legacy);
 
         let signed_command = SignedCommand {
             payload,
@@ -5681,7 +5842,7 @@ mod tests_ocaml {
             let payload_to_sign = TransactionUnionPayload::of_user_command_payload(&payload);
 
             let mut signer = mina_signer::create_legacy(mina_signer::NetworkId::TESTNET);
-            let signature = signer.sign(&kp, &payload_to_sign, false);
+            let signature = signer.sign(&kp, &payload_to_sign, mina_signer::NonceMode::Legacy);
 
             let signed_command = SignedCommand {
                 payload,
@@ -5850,6 +6011,195 @@ mod tests_ocaml {
             // for_tests::create_trivial_zkapp_account(Some(snapp_permissions), vk, &mut new_mask, snapp_pk);
         };
     }
+
+    /// A staged ledger rebuilt from its parts with `from_persisted_unchecked`
+    /// has the hash of the one they came from, and a different ledger gives a
+    /// different hash. The real check, on a mainnet root, is the ignored
+    /// `persisted_root_staged_ledger_matches_reconstruct` in `mina-node`.
+    #[test]
+    fn from_persisted_unchecked_keeps_the_hash() {
+        let mut ledger = Mask::create(CONSTRAINT_CONSTANTS.ledger_depth as usize);
+        for _ in 0..10 {
+            let account = Account::rand();
+            ledger.get_or_create_account(account.id(), account).unwrap();
+        }
+        let mut staged = StagedLedger::create_exn(CONSTRAINT_CONSTANTS, ledger).unwrap();
+        let expected = staged.hash();
+
+        let mut persisted = StagedLedger::from_persisted_unchecked(
+            &CONSTRAINT_CONSTANTS,
+            staged.scan_state().clone(),
+            staged.ledger().copy(),
+            staged.pending_coinbase_collection().clone(),
+        );
+        assert_eq!(persisted.hash(), expected);
+
+        let mut other = staged.ledger().copy();
+        let account = Account::rand();
+        other.get_or_create_account(account.id(), account).unwrap();
+        let mut changed = StagedLedger::from_persisted_unchecked(
+            &CONSTRAINT_CONSTANTS,
+            staged.scan_state().clone(),
+            other,
+            staged.pending_coinbase_collection().clone(),
+        );
+        assert_ne!(changed.hash(), expected);
+    }
+
+    /// PRUNE-1: a valid transaction sequence leaves the root snarked ledger,
+    /// at a proof boundary, holding an account just as the root staged
+    /// ledger's mask holds it, while transactions still in the scan state
+    /// changed it in between. The mask must keep its own account: the next
+    /// proof can end part way through those transactions.
+    ///
+    /// Two accounts let anyone move their funds (`send` is `None`), so the
+    /// zkApp transfers between them change neither nonce nor receipt chain
+    /// hash: A goes 100 -> 150 -> 100 -> 150, and after the third transfer
+    /// it is the account it was after the first. The snarked ledger moves on
+    /// as `LedgerService::compact_snarked_ledgers` folds it: a mask over it
+    /// with the emitted transactions applied, committed into it and removed.
+    #[test]
+    fn staged_mask_keeps_an_account_changed_back_across_a_proof_boundary() {
+        use crate::scan_state::currency::{Sgn, Signed};
+        use zkapp_command::{AccountUpdate, CallForest};
+
+        let depth = CONSTRAINT_CONSTANTS.ledger_depth as usize;
+        let id = |pk: &CompressedPubKey| AccountId::new(pk.clone(), TokenId::default());
+        let fee_payer = gen_keypair().public.into_compressed();
+        let a = gen_keypair().public.into_compressed();
+        let b = gen_keypair().public.into_compressed();
+        let genesis = || {
+            let mut root = Mask::new_root(crate::Database::create(depth as u8));
+            let fee_payer_account =
+                Account::create_with(id(&fee_payer), Balance::from_u64(1_000_000_000_000));
+            root.get_or_create_account(id(&fee_payer), fee_payer_account)
+                .unwrap();
+            for pk in [&a, &b] {
+                let mut account = Account::create_with(id(pk), Balance::from_u64(100_000_000_000));
+                account.permissions.send = AuthRequired::None;
+                root.get_or_create_account(id(pk), account).unwrap();
+            }
+            root
+        };
+
+        let update = |pk: &CompressedPubKey, sgn: Sgn| AccountUpdate {
+            body: zkapp_command::Body {
+                public_key: pk.clone(),
+                token_id: TokenId::default(),
+                update: zkapp_command::Update::noop(),
+                balance_change: Signed {
+                    magnitude: Amount::from_u64(50_000_000_000),
+                    sgn,
+                },
+                increment_nonce: false,
+                events: zkapp_command::Events::empty(),
+                actions: zkapp_command::Actions::empty(),
+                call_data: Fp::from(0),
+                preconditions: zkapp_command::Preconditions {
+                    network: zkapp_command::ZkAppPreconditions::accept(),
+                    account: zkapp_command::AccountPreconditions(zkapp_command::Account::accept()),
+                    valid_while: zkapp_command::Numeric::Ignore,
+                },
+                use_full_commitment: false,
+                implicit_account_creation_fee: false,
+                may_use_token: zkapp_command::MayUseToken::No,
+                authorization_kind: zkapp_command::AuthorizationKind::NoneGiven,
+            },
+            authorization: zkapp_command::Control::NoneGiven,
+        };
+        let transfer = |nonce: u32, from: &CompressedPubKey, to: &CompressedPubKey| {
+            let account_updates = CallForest::empty()
+                .cons(None, update(to, Sgn::Pos))
+                .cons(None, update(from, Sgn::Neg));
+            Transaction::Command(UserCommand::ZkAppCommand(Box::new(
+                zkapp_command::ZkAppCommand {
+                    fee_payer: zkapp_command::FeePayer {
+                        body: zkapp_command::FeePayerBody {
+                            public_key: fee_payer.clone(),
+                            fee: Fee::from_u64(10_000_000),
+                            valid_until: None,
+                            nonce: Nonce::from_u32(nonce),
+                        },
+                        authorization: Signature::dummy(),
+                    },
+                    account_updates,
+                    memo: Memo::empty(),
+                },
+            )))
+        };
+        let txns = [
+            transfer(0, &b, &a),
+            transfer(1, &a, &b),
+            transfer(2, &b, &a),
+        ];
+
+        let view = dummy_state_view(None);
+        let apply = |ledger: &mut Mask, txns: &[Transaction]| {
+            let applied =
+                apply_transactions(&CONSTRAINT_CONSTANTS, Slot::zero(), &view, ledger, txns)
+                    .unwrap();
+            for applied in applied {
+                assert_eq!(applied.transaction_status(), &TransactionStatus::Applied);
+            }
+        };
+        let fold = |snarked: &Mask, txns: &[Transaction]| {
+            let mut mt = snarked.make_child();
+            apply(&mut mt, txns);
+            mt.commit();
+            mt.remove_and_reparent();
+        };
+        let account = |ledger: &Mask, pk: &CompressedPubKey| {
+            ledger
+                .get(ledger.location_of_account(&id(pk)).unwrap())
+                .unwrap()
+        };
+
+        let mut expected = genesis();
+        apply(&mut expected, &txns);
+        let snarked = genesis();
+        let mut staged = snarked.make_child();
+        apply(&mut staged, &txns);
+        let block = staged.make_child();
+        let staged_a = account(&staged, &a);
+        assert_eq!(staged_a, account(&expected, &a));
+
+        // The first proof emits the first transfer: the snarked ledger holds
+        // A, and B, as the staged mask does.
+        let mut after_first = genesis();
+        apply(&mut after_first, &txns[..1]);
+        assert_eq!(account(&after_first, &a), staged_a);
+        fold(&snarked, &txns[..1]);
+        assert_eq!(account(&snarked, &a), staged_a);
+        let pending = txns[1..]
+            .iter()
+            .flat_map(Transaction::accounts_referenced)
+            .collect();
+        snarked.clone().merkle_root();
+        assert_eq!(staged.reclaim_unreferenced_accounts(&pending), 0);
+
+        // The second proof emits the second transfer only.
+        fold(&snarked, &txns[1..2]);
+        let pending = txns[2].accounts_referenced().into_iter().collect();
+        snarked.clone().merkle_root();
+        assert_eq!(staged.reclaim_unreferenced_accounts(&pending), 0);
+        assert_ne!(account(&snarked, &a), staged_a);
+        assert_eq!(account(&staged, &a), staged_a);
+        assert_eq!(account(&block, &a), staged_a);
+        assert_eq!(staged.clone().merkle_root(), expected.clone().merkle_root());
+        assert_eq!(block.clone().merkle_root(), expected.clone().merkle_root());
+
+        // The third proof emits the rest: the snarked ledger catches up.
+        fold(&snarked, &txns[2..]);
+        assert_eq!(
+            snarked.clone().merkle_root(),
+            expected.clone().merkle_root()
+        );
+        assert_eq!(staged.clone().merkle_root(), expected.clone().merkle_root());
+        assert_eq!(staged.reclaim_unreferenced_accounts(&Default::default()), 3);
+        assert_eq!(staged.num_own_accounts(), 0);
+        assert_eq!(staged.clone().merkle_root(), expected.clone().merkle_root());
+        assert_eq!(block.clone().merkle_root(), expected.clone().merkle_root());
+    }
 }
 
 #[cfg(test)]
@@ -5877,6 +6227,73 @@ mod tests {
     use binprot::BinProtRead;
     use mina_p2p_messages::{rpc::GetStagedLedgerAuxAndPendingCoinbasesAtHashV2Response, v2};
     use mina_signer::CompressedPubKey;
+
+    /// P4.6d's stalled state has 79 free base slots and 79 required bundles.
+    /// The first bundle belongs to the first missing block; later pool work
+    /// cannot replace it. OCaml removes commands AND coinbase at zero prefix.
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/staged_ledger/staged_ledger.ml#L1650-L1669>
+    #[test]
+    fn missing_required_prefix_leaves_empty_diff_despite_free_scan_slots() {
+        use crate::scan_state::transaction_logic::valid;
+        use mina_p2p_messages::{
+            rpc::GetTransitionChainV2,
+            rpc_kernel::{ResponsePayload, RpcMethod},
+        };
+        let bytes = include_bytes!(
+            "../../../p2p-messages/tests/files/mesa/get_transition_chain_v2_563900_zkapp.bin"
+        );
+        let blocks =
+            ResponsePayload::<<GetTransitionChainV2 as RpcMethod>::Response>::binprot_read(
+                &mut &bytes[..],
+            )
+            .unwrap()
+            .0
+            .unwrap()
+            .0
+            .unwrap();
+        let block = blocks.front().unwrap();
+        let command: valid::UserCommand = (&block
+            .body
+            .staged_ledger_diff
+            .diff
+            .0
+            .commands
+            .front()
+            .unwrap()
+            .data)
+            .try_into()
+            .unwrap();
+        let receiver = command.fee_payer().public_key.clone();
+        let constants = mina_core::constants::ConstraintConstants {
+            coinbase_amount: 360_000_000_000,
+            supercharged_coinbase_factor: 1,
+            block_window_duration_ms: 90_000,
+            ..CONSTRAINT_CONSTANTS
+        };
+        // This tests resource selection after transaction validation; the
+        // repeated command supplies fees without depending on ledger nonces.
+        let commands = vec![command; 115];
+        let ((first, second), _) = StagedLedger::generate(
+            &constants,
+            (),
+            vec![],
+            commands,
+            &receiver,
+            false,
+            false,
+            crate::scan_state::scan_state::SpacePartition {
+                first: (79, 79),
+                second: Some((49, 49)),
+            },
+        );
+        assert!(first.commands.is_empty());
+        assert!(first.completed_works.is_empty());
+        assert!(matches!(
+            first.coinbase,
+            crate::staged_ledger::diff::AtMostTwo::Zero
+        ));
+        assert!(second.is_none());
+    }
 
     #[test]
     fn staged_ledger_hash() {
@@ -6124,7 +6541,7 @@ mod tests {
 
         // for height in 1016..1202 {
         //     dbg!(height);
-        //     let file = format!("/home/sebastien/travaux/openmina/apply_{}.bin", height);
+        //     let file = format!("/path/to/captures/apply_{}.bin", height);
         //     let mut f = std::fs::File::open(file).unwrap();
         //     let v: Ser = BinProtRead::binprot_read(&mut f).unwrap();
 
@@ -6275,5 +6692,202 @@ mod tests {
         let now = std::time::Instant::now();
         dbg!(staged_ledger.hash());
         eprintln!("time to hash: {:?}", now.elapsed());
+    }
+
+    /// Replays a block application the node dumped after a staged ledger hash
+    /// mismatch (`failed_application_ctx_<height>.binprot`) on mainnet.
+    ///
+    /// With `MINA_REPLAY_OCAML_AUX` set to the block's
+    /// `get_staged_ledger_aux_and_pending_coinbases_at_hash` response from an
+    /// OCaml peer, it also compares the base jobs the block added to the scan
+    /// state, which pins down the first transaction that applies differently.
+    ///
+    ///   MINA_REPLAY_CTX=... MINA_REPLAY_OCAML_AUX=... cargo test --release \
+    ///       -p mina-tree --lib replay_failed_application -- --nocapture
+    #[test]
+    fn replay_failed_application() {
+        use crate::{
+            scan_state::scan_state::{
+                transaction_snark::TransactionWithWitness, JobValue, JobValueBase,
+            },
+            staged_ledger::staged_ledger::SkipVerification,
+        };
+        use binprot::macros::{BinProtRead, BinProtWrite};
+        use mina_p2p_messages::rpc_kernel::ResponsePayload;
+        use std::sync::Arc;
+
+        #[derive(BinProtRead, BinProtWrite)]
+        struct ApplyContext {
+            accounts: Vec<v2::MinaBaseAccountBinableArgStableV2>,
+            scan_state: v2::TransactionSnarkScanStateStableV2,
+            pending_coinbase: v2::MinaBasePendingCoinbaseStableV2,
+            pred_block: v2::MinaBlockBlockStableV2,
+            blocks: Vec<v2::MinaBlockBlockStableV2>,
+        }
+
+        let Ok(path) = std::env::var("MINA_REPLAY_CTX") else {
+            eprintln!("MINA_REPLAY_CTX not set");
+            return;
+        };
+        mina_core::NetworkConfig::init("mainnet").unwrap();
+        let constraint_constants = mina_core::constants::constraint_constants();
+
+        let ApplyContext {
+            accounts,
+            scan_state,
+            pending_coinbase,
+            pred_block,
+            blocks,
+        } = ApplyContext::binprot_read(&mut std::fs::read(path).unwrap().as_slice()).unwrap();
+
+        let mut root = Mask::new_root(Database::create(35));
+        for account in &accounts {
+            let account: Account = account.try_into().unwrap();
+            root.get_or_create_account(account.id(), account).unwrap();
+        }
+        let mut staged_ledger = StagedLedger {
+            scan_state: (&scan_state).try_into().unwrap(),
+            ledger: root.make_child(),
+            constraint_constants: constraint_constants.clone(),
+            pending_coinbase_collection: (&pending_coinbase).try_into().unwrap(),
+        };
+
+        let block = &blocks[0];
+        let prev_protocol_state = &pred_block.header.protocol_state;
+        let prev_state_view = protocol_state_view(prev_protocol_state).unwrap();
+        let prev_state: crate::proofs::block::ProtocolState =
+            prev_protocol_state.try_into().unwrap();
+        let prev_hashes = prev_state.hashes();
+        let consensus_state = &block.header.protocol_state.body.consensus_state;
+
+        let result = staged_ledger
+            .apply(
+                Some(SkipVerification::All),
+                constraint_constants,
+                Slot::from_u32(consensus_state.global_slot_since_genesis.as_u32()),
+                (&block.body.staged_ledger_diff).try_into().unwrap(),
+                (),
+                &Verifier,
+                &prev_state_view,
+                prev_hashes,
+                (&consensus_state.coinbase_receiver).try_into().unwrap(),
+                consensus_state.supercharge_coinbase,
+            )
+            .unwrap();
+        let found = v2::MinaBaseStagedLedgerHashStableV1::from(&result.hash_after_applying);
+        let expected = &block
+            .header
+            .protocol_state
+            .body
+            .blockchain_state
+            .staged_ledger_hash;
+        eprintln!(
+            "block {}: ledger {} (expected {}), aux hash {}",
+            consensus_state.blockchain_length.as_u32(),
+            found.non_snark.ledger_hash,
+            expected.non_snark.ledger_hash,
+            if found.non_snark.aux_hash == expected.non_snark.aux_hash {
+                "matches"
+            } else {
+                "differs"
+            },
+        );
+
+        let Ok(aux_path) = std::env::var("MINA_REPLAY_OCAML_AUX") else {
+            return;
+        };
+        let aux = std::fs::read(aux_path).unwrap();
+        let payload =
+            ResponsePayload::<GetStagedLedgerAuxAndPendingCoinbasesAtHashV2Response>::binprot_read(
+                &mut aux.as_slice(),
+            )
+            .unwrap();
+        let (ocaml_scan_state, ..) = payload.0.unwrap().0.unwrap();
+        let ocaml_scan_state: ScanState = (&ocaml_scan_state).try_into().unwrap();
+
+        // The base jobs of this block carry the state hash of its parent.
+        let block_jobs = |scan_state: &ScanState| -> Vec<Arc<TransactionWithWitness>> {
+            scan_state
+                .view()
+                .flatten()
+                .filter_map(|value| match value.job {
+                    JobValue::Leaf(JobValueBase::Full(record))
+                        if record.job.state_hash.0 == prev_hashes.0 =>
+                    {
+                        Some(record.job.clone())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let ours = block_jobs(&staged_ledger.scan_state);
+        let theirs = block_jobs(&ocaml_scan_state);
+        eprintln!("base jobs: {} here, {} in OCaml", ours.len(), theirs.len());
+
+        // Compared in wire form: sparse ledgers compare their lazily computed
+        // hashes, which may not be there.
+        type Wire = v2::TransactionSnarkScanStateTransactionWithWitnessStableV2;
+        for (index, (ours, theirs)) in ours.iter().zip(&theirs).enumerate() {
+            let (ours_wire, theirs_wire) = (Wire::from(ours.as_ref()), Wire::from(theirs.as_ref()));
+            if ours_wire == theirs_wire {
+                continue;
+            }
+            let kind = match &theirs.transaction_with_status.data {
+                crate::scan_state::transaction_logic::Transaction::Command(cmd) => match cmd {
+                    crate::scan_state::transaction_logic::UserCommand::SignedCommand(_) => {
+                        "signed command"
+                    }
+                    crate::scan_state::transaction_logic::UserCommand::ZkAppCommand(_) => {
+                        "zkApp command"
+                    }
+                },
+                crate::scan_state::transaction_logic::Transaction::FeeTransfer(_) => "fee transfer",
+                crate::scan_state::transaction_logic::Transaction::Coinbase(_) => "coinbase",
+            };
+            let differs = [
+                (
+                    "transaction",
+                    ours_wire.transaction_with_status.data
+                        != theirs_wire.transaction_with_status.data,
+                ),
+                (
+                    "status",
+                    ours.transaction_with_status.status != theirs.transaction_with_status.status,
+                ),
+                ("source", ours.statement.source != theirs.statement.source),
+                ("target", ours.statement.target != theirs.statement.target),
+                (
+                    "supply increase",
+                    ours.statement.supply_increase != theirs.statement.supply_increase,
+                ),
+                (
+                    "fee excess",
+                    ours.statement.fee_excess != theirs.statement.fee_excess,
+                ),
+                (
+                    "first pass witness",
+                    ours_wire.first_pass_ledger_witness != theirs_wire.first_pass_ledger_witness,
+                ),
+                (
+                    "second pass witness",
+                    ours_wire.second_pass_ledger_witness != theirs_wire.second_pass_ledger_witness,
+                ),
+                ("init stack", ours.init_stack != theirs.init_stack),
+            ]
+            .into_iter()
+            .filter_map(|(name, differs)| differs.then_some(name))
+            .collect::<Vec<_>>();
+            eprintln!(
+                "job #{index} ({kind}, {:?}): {} differ",
+                theirs.transaction_with_status.status,
+                differs.join(", ")
+            );
+            let dump = |name: &str, wire: &Wire| {
+                let path = format!("/tmp/replay_job_{index}_{name}.json");
+                std::fs::write(&path, serde_json::to_string_pretty(wire).unwrap()).unwrap();
+            };
+            dump("rust", &ours_wire);
+            dump("ocaml", &theirs_wire);
+        }
     }
 }

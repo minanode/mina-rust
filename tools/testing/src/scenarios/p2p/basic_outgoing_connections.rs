@@ -315,8 +315,14 @@ impl ConnectToInitialPeersBecomeReady {
                 (init_opts, (bytes, port))
             })
             .unzip();
-        let (node_ut, _) = driver
-            .add_rust_node(RustNodeTestingConfig::devnet_default().initial_peers(initial_peers));
+        // The node redials peers that failed only to keep its libp2p target
+        // (I18b, 20 by default, OCaml's `min_connections`): to see it reach
+        // every one of its initial peers once they listen, keep them all.
+        let (node_ut, _) = driver.add_rust_node(
+            RustNodeTestingConfig::devnet_default()
+                .initial_peers(initial_peers)
+                .with_libp2p_target_peers(MAX.into()),
+        );
 
         driver
             .wait_for(Duration::from_secs(10), |_, _, _| false)

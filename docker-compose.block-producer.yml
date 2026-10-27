@@ -1,29 +1,31 @@
-services:
-  mina-node:
-    image: o1labs/mina-rust:${MINA_RUST_TAG:-latest}
-    entrypoint: ["/bin/sh", "-c"]
-    command: >
-      "
-      ARGS='node --producer-key /root/.mina/producer-key';
-      if [ -n \"$$COINBASE_RECEIVER\" ]; then ARGS=\"$$ARGS --coinbase-receiver $$COINBASE_RECEIVER\"; fi;
-      if [ -n \"$$MINA_LIBP2P_EXTERNAL_IP\" ]; then ARGS=\"$$ARGS --libp2p-external-ip $$MINA_LIBP2P_EXTERNAL_IP\"; fi;
-      if [ -n \"$$MINA_LIBP2P_PORT\" ]; then ARGS=\"$$ARGS --libp2p-port $$MINA_LIBP2P_PORT\"; fi;
-      exec mina $$ARGS
-      "
-    ports:
-      - "3000:3000"
-      - "${MINA_LIBP2P_PORT:-8302}:${MINA_LIBP2P_PORT:-8302}"
-    volumes:
-      - ./mina-workdir:/root/.mina:rw
-    environment:
-      MINA_PRIVKEY_PASS: "${MINA_PRIVKEY_PASS:-}"
-      COINBASE_RECEIVER: "${COINBASE_RECEIVER:-}"
-      MINA_LIBP2P_EXTERNAL_IP: "${MINA_LIBP2P_EXTERNAL_IP:-}"
-      MINA_LIBP2P_PORT: "${MINA_LIBP2P_PORT:-8302}"
+# A block producer, on top of docker-compose.yml. Add this line to .env, and
+# every docker compose command uses both files:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.block-producer.yml
+#
+# Before starting (https://minanode.org/docs/docker/#block-producer):
+# - the encrypted key file at ./keys/producer-key, outside the state dir;
+#   it is mounted read-only. Override with MINA_PRODUCER_KEY in .env.
+# - its password in ./producer.env, readable by you only (chmod 600):
+#     MINA_PRIVKEY_PASS='your password'
+#   Never in this file, in .env or on a command line, and never committed.
+# - for rewards to another account, in .env:
+#     MINA_NODE_ARGS=--coinbase-receiver B62q...
 
-  frontend:
-    image: o1labs/mina-rust-frontend:${MINA_FRONTEND_TAG:-latest}
-    environment:
-      MINA_FRONTEND_ENVIRONMENT: local
-    ports:
-      - "8070:80"
+services:
+  mina:
+    # --block-inject-delay-ms 3000 sends each block at least 3 s into its
+    # slot, as the project's devnet producer does; the default is 1 s.
+    command: >-
+      node --network devnet --producer-key /keys/producer-key
+      --block-inject-delay-ms 3000 --allow-worker-control
+      ${MINA_NODE_ARGS:-}
+    env_file:
+      - producer.env
+    volumes:
+      - type: bind
+        source: ${MINA_PRODUCER_KEY:-./keys/producer-key}
+        target: /keys/producer-key
+        read_only: true
+        bind:
+          create_host_path: false

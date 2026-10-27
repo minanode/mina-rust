@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mina Mesa, verified in your browser</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Mina Mesa, verified in your browser</h1>
+      <p class="lede">
+        Every Mina block carries a recursive zk-SNARK showing that the whole chain up to
+        it is valid. This page takes blocks from an untrusted source, either live from
+        the network's gossip through a relay or from the public block archive, and checks
+        those proofs here, in WebAssembly, against the network's verification key. It
+        then picks the best tip with the node's own fork-choice rule.
+      </p>
+    </header>
+
+    <section class="controls">
+      <label>Source
+        <select id="source">
+          <option value="live">Live gossip (relay)</option>
+          <option value="bucket">Block archive (bucket)</option>
+        </select>
+      </label>
+      <label data-source="live">Relay
+        <input id="relay" type="text" size="30" value="ws://127.0.0.1:8741/blocks">
+      </label>
+      <label data-source="bucket">Network
+        <select id="network">
+          <option value="mainnet">Mainnet (Mesa)</option>
+          <option value="devnet">Devnet (Mesa)</option>
+        </select>
+      </label>
+      <label data-source="bucket">Heights
+        <input id="count" type="number" min="1" max="50" value="6">
+      </label>
+      <button id="verify">Start</button>
+      <button id="tamper" data-source="bucket" disabled>Tamper with a block</button>
+    </section>
+
+    <section>
+      <h2>Best tip</h2>
+      <div id="tip" class="tip">No verified block yet.</div>
+    </section>
+
+    <section>
+      <h2>Setup</h2>
+      <ol id="setup" class="steps"></ol>
+    </section>
+
+    <section>
+      <h2>Blocks</h2>
+      <div class="table-wrap">
+        <table id="blocks">
+          <thead>
+            <tr>
+              <th>Height</th><th>Slot</th><th>Produced</th><th>State hash</th>
+              <th class="num">Verify</th><th>Proof</th><th>Chain</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p id="summary" class="muted"></p>
+    </section>
+
+    <footer class="muted">
+      <p>
+        A verified proof attests its block and, by recursion, every ancestor back to
+        genesis, but competing blocks at one height can all be valid. Fork choice compares
+        the verified consensus states (chain length for short forks, window density for
+        long ones) to pick the best tip; blocks off its chain are marked. The source
+        cannot forge blocks, only withhold them, so a tip that falls behind the clock is
+        flagged as stale.
+      </p>
+      <p>
+        The relay joins the network's libp2p gossip and forwards raw block messages; the
+        archive is the public <code>mina_network_block_data</code> bucket. Verification
+        uses the Rust Mina node's proof code compiled to threaded WebAssembly. Known
+        issue: the first few blocks after the Mesa hard fork do not verify yet.
+      </p>
+    </footer>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

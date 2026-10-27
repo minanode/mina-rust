@@ -10,7 +10,7 @@ use super::{
     P2pChannelsSnarkAction, P2pChannelsSnarkState, SnarkPropagationChannelMsg,
     SnarkPropagationState,
 };
-use mina_p2p_messages::{gossip::GossipNetMessageV2, v2};
+use mina_p2p_messages::gossip::GossipNetMessageV2;
 
 impl P2pChannelsSnarkState {
     pub fn reducer<Action, State>(
@@ -222,20 +222,22 @@ impl P2pChannelsSnarkState {
                 let p2p_state: &P2pState = state.substate()?;
                 let pubsub_state = &p2p_state.network.scheduler.broadcast_state.mcache;
 
-                let message_id = crate::BroadcastMessageId::Snark {
-                    job_id: snark.job_id(),
-                };
-
-                if pubsub_state.contains_broadcast_id(&message_id) {
-                    dispatcher
-                        .push(P2pNetworkPubsubAction::BroadcastValidatedMessage { message_id });
-
+                if let Some(message_id) = pubsub_state.snark_message_id(&snark) {
+                    dispatcher.push(P2pNetworkPubsubAction::BroadcastValidatedMessage {
+                        message_id: crate::BroadcastMessageId::MessageId { message_id },
+                    });
                     return Ok(());
-                };
+                }
 
-                let message = Box::new((snark.statement(), (&snark).into()));
-                let message = v2::NetworkPoolSnarkPoolDiffVersionedStableV2::AddSolvedWork(message);
-                let nonce = nonce.into();
+                // A pool work's proofs come back from the proof cache (PC1).
+                let message = match snark.gossip_diff() {
+                    Ok(message) => message,
+                    Err(error) => {
+                        mina_core::log::inner::error!("snark not gossiped: {error}");
+                        return Ok(());
+                    }
+                };
+                let nonce = u64::from(nonce).into();
                 let message = GossipNetMessageV2::SnarkPoolDiff { message, nonce };
                 if is_local {
                     dispatcher.push(P2pNetworkPubsubAction::Broadcast { message });

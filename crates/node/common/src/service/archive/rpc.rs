@@ -1,12 +1,13 @@
 use binprot::BinProtWrite;
 use mina_p2p_messages::{
     rpc_kernel::{Message, NeedsLength, Query, RpcMethod},
-    v2::{self, ArchiveRpc},
+    v2,
 };
 use mio::{event::Event, net::TcpStream, Events, Interest, Poll, Registry, Token};
 use std::{
     io::{self, Read, Write},
     net::SocketAddr,
+    time::{Duration, Instant},
 };
 
 const MAX_RECURSION_DEPTH: u8 = 25;
@@ -14,8 +15,6 @@ const MAX_RECURSION_DEPTH: u8 = 25;
 // messages
 const HEADER_MSG: [u8; 7] = [2, 253, 82, 80, 67, 0, 1];
 const OK_MSG: [u8; 5] = [2, 1, 0, 1, 0];
-// Note: this is the close message that the ocaml node receives
-const CLOSE_MSG: [u8; 7] = [2, 254, 167, 7, 0, 1, 0];
 const HEARTBEAT_MSG: [u8; 1] = [0];
 
 fn prepend_length(message: &[u8]) -> Vec<u8> {
@@ -39,10 +38,38 @@ impl HandleResult {
 
 pub fn send_diff(address: SocketAddr, data: v2::ArchiveRpc) -> io::Result<HandleResult> {
     let rpc = encode_to_rpc(data)?;
-    process_rpc(address, &rpc)
+    process_rpc(address, &rpc, None)
 }
 
-fn encode_to_rpc(data: ArchiveRpc) -> io::Result<Vec<u8>> {
+/// The binprot encoding of a [`v2::ArchiveRpc`], as the archive outbox keeps
+/// it.
+pub fn encode_payload(data: &v2::ArchiveRpc) -> io::Result<Vec<u8>> {
+    let mut v = Vec::new();
+    data.binprot_write(&mut v)?;
+    Ok(v)
+}
+
+/// Sends a payload from [`encode_payload`] and waits for the archive's
+/// answer, at most `timeout` for the whole exchange.
+pub fn send_payload(
+    address: SocketAddr,
+    payload: &[u8],
+    timeout: Duration,
+) -> io::Result<HandleResult> {
+    let rpc = encode_to_rpc(RawBinprot(payload))?;
+    process_rpc(address, &rpc, Some(Instant::now() + timeout))
+}
+
+/// Bytes that are already binprot.
+struct RawBinprot<'a>(&'a [u8]);
+
+impl BinProtWrite for RawBinprot<'_> {
+    fn binprot_write<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w.write_all(self.0)
+    }
+}
+
+fn encode_to_rpc<T: BinProtWrite>(data: T) -> io::Result<Vec<u8>> {
     type Method = mina_p2p_messages::rpc::SendArchiveDiffUnversioned;
     let mut v = vec![0; 8];
 
@@ -71,7 +98,11 @@ fn encode_to_rpc(data: ArchiveRpc) -> io::Result<Vec<u8>> {
     Ok(v)
 }
 
-fn process_rpc(address: SocketAddr, data: &[u8]) -> io::Result<HandleResult> {
+fn process_rpc(
+    address: SocketAddr,
+    data: &[u8],
+    deadline: Option<Instant>,
+) -> io::Result<HandleResult> {
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(128);
     let mut event_count = 0;
@@ -89,7 +120,20 @@ fn process_rpc(address: SocketAddr, data: &[u8]) -> io::Result<HandleResult> {
         .register(&mut stream, TOKEN, Interest::WRITABLE)?;
 
     loop {
-        if let Err(e) = poll.poll(&mut events, None) {
+        let timeout = match deadline {
+            Some(deadline) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "archive did not answer in time",
+                    ));
+                }
+                Some(deadline - now)
+            }
+            None => None,
+        };
+        if let Err(e) = poll.poll(&mut events, timeout) {
             if interrupted(&e) {
                 continue;
             }
@@ -309,7 +353,7 @@ fn handle_connection_event(
                 ParsedMessage::Header => {
                     *handshake_received = true;
                 }
-                ParsedMessage::Ok | ParsedMessage::Close => {
+                ParsedMessage::Ok => {
                     connection.flush()?;
                     registry.deregister(connection)?;
                     connection.shutdown(std::net::Shutdown::Both)?;
@@ -345,7 +389,6 @@ fn interrupted(err: &io::Error) -> bool {
 enum ParsedMessage {
     Heartbeat,
     Ok,
-    Close,
     Header,
     Unknown(Vec<u8>),
 }
@@ -397,10 +440,6 @@ impl RawMessage {
                 && self.data[parsed_bytes..parsed_bytes + length] == HEARTBEAT_MSG
             {
                 messages.push(ParsedMessage::Heartbeat);
-            } else if length == CLOSE_MSG.len()
-                && self.data[parsed_bytes..parsed_bytes + length] == CLOSE_MSG
-            {
-                messages.push(ParsedMessage::Close);
             } else {
                 messages.push(ParsedMessage::Unknown(
                     self.data[parsed_bytes..parsed_bytes + length].to_vec(),
@@ -410,5 +449,24 @@ impl RawMessage {
             parsed_bytes += length;
         }
         Ok(messages)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn acknowledgement_must_match_the_request_id() {
+        // Async RPC: Response(id=1, Ok(length=1, unit)).
+        let reply = RawMessage::from_bytes(&prepend_length(&OK_MSG));
+        assert!(matches!(&reply.parse_raw().unwrap()[0], ParsedMessage::Ok));
+        // Same unit success for id=1959, formerly misnamed CLOSE_MSG.
+        let other_id = [2, 254, 167, 7, 0, 1, 0];
+        let reply = RawMessage::from_bytes(&prepend_length(&other_id));
+        assert!(matches!(
+            &reply.parse_raw().unwrap()[0],
+            ParsedMessage::Unknown(_)
+        ));
     }
 }

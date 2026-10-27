@@ -266,9 +266,9 @@ impl generated::MinaBaseZkappCommandTStableV1WireStableV1 {
         let default_signature = generated::MinaBaseSignatureStableV1(BigInt::one(), BigInt::one());
         let default_proof = super::dummy_transaction_proof();
         *auth = match auth {
-            MinaBaseControlStableV2::Proof(_) => {
-                MinaBaseControlStableV2::Proof(Box::new(default_proof.0.clone().into()))
-            }
+            MinaBaseControlStableV2::Proof(_) => MinaBaseControlStableV2::Proof(
+                super::PicklesProofProofsVerifiedMaxStableV2::from(default_proof.0.clone()).into(),
+            ),
             MinaBaseControlStableV2::Signature(_) => {
                 MinaBaseControlStableV2::Signature(default_signature.clone().into())
             }
@@ -870,27 +870,34 @@ mod hash_tests {
         assert_eq!(hash, expected_hash)
     }
 
+    /// The zkApp command of OCaml's "zkApp v1 hash from transaction id" test,
+    /// whose account update carries a proof, and the hash OCaml expects. It
+    /// covers replacing proofs with the dummy transaction proof.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction/transaction_hash.ml#L338-L345>
     #[test]
     fn test_zkapp_with_proof_auth_hash() {
-        // expected: 5JtkEP5AugQKKQAk3YKFxxUDggWf8AiAYyCQy49t2kLHRgPqcP8o
-        // MinaBaseZkappCommandTStableV1WireStableV1
-        //
-        let expected_hash = "5JtkEP5AugQKKQAk3YKFxxUDggWf8AiAYyCQy49t2kLHRgPqcP8o".to_string();
+        let expected_hash = "5Ju9x9Wq7Thdv5m2bd6FP5cYvS8TU8CMi9JwezaafbVtNCZjPTn1".to_string();
         let bytes = include_bytes!("../../../../tests/files/zkapps/with_proof_auth.bin");
-        let zkapp =
-            MinaBaseZkappCommandTStableV1WireStableV1::binprot_read(&mut bytes.as_slice()).unwrap();
+        let mut cursor = bytes.as_slice();
+        let zkapp = MinaBaseZkappCommandTStableV1WireStableV1::binprot_read(&mut cursor).unwrap();
+        assert!(cursor.is_empty());
         let hash = zkapp.hash().unwrap().to_string();
 
         assert_eq!(expected_hash, hash);
     }
 
+    /// A zkApp command of mainnet block 564394
+    /// (3NLFiuyf22KmWGnX4NPLNtkVjirFdrLBqfTeEpVbCvSHPjATUkBK), signed by its
+    /// fee payer and first account update, with its hash: both as an OCaml
+    /// 4.0.2 node's GraphQL gives them (`zkappCommands { id hash }`).
     #[test]
-
     fn test_zkapp_with_sig_auth_hash() {
-        let expected_hash = "5JvQ6xQeGgCTe2d4KpCsJ97yK61mNRZHixJxPbKTppY1qSGgtj6t".to_string();
+        let expected_hash = "5JujTCnniKowhhAi5ZHUrzsKyq2BzHmLqMCJjmWnXvKxTcB9tniq".to_string();
         let bytes = include_bytes!("../../../../tests/files/zkapps/with_sig_auth.bin");
-        let zkapp =
-            MinaBaseZkappCommandTStableV1WireStableV1::binprot_read(&mut bytes.as_slice()).unwrap();
+        let mut cursor = bytes.as_slice();
+        let zkapp = MinaBaseZkappCommandTStableV1WireStableV1::binprot_read(&mut cursor).unwrap();
+        assert!(cursor.is_empty());
         let hash = zkapp.hash().unwrap().to_string();
 
         assert_eq!(expected_hash, hash);

@@ -1,240 +1,181 @@
-<div align="center">
-  <img src="website/static/img/rust-node-social-card.svg" alt="Mina Rust Node - Fast and secure implementation of the Mina protocol in Rust" width="600px">
+# Mina Rust node
 
-![Beta][beta-badge] [![release-badge]][release-link]
-![GitHub Repo stars](https://img.shields.io/github/stars/o1-labs/mina-rust?style=social)
-[![Changelog][changelog-badge]][changelog] [![Apache licensed]][Apache link]
+A Rust implementation of the [Mina protocol](https://minaprotocol.com): a native
+node with a built-in dashboard, and a web node that runs in the browser. It is
+maintained by the community.
 
-_The **Mina Rust Node** is a fast and secure implementation of the Mina protocol
-in **Rust**._ _Currently in **public beta**, join our
-[Discord community](https://discord.com/channels/484437221055922177/1290662938734231552)
-to help test future releases._
+This is a community-maintained continuation of
+[o1-labs/mina-rust](https://github.com/o1-labs/mina-rust) (Apache-2.0), which
+o1Labs has paused upstream. It is not affiliated with o1Labs or the Mina
+Foundation. The node was created by o1Labs and the original OpenMina team, and
+this work builds directly on theirs.
 
-</div>
+Documentation: **[minanode.org](https://minanode.org)**.
 
----
-<div align="center">
-⚠️ 
-  
-Development of the Mina Rust Node is currently paused as o1Labs focuses engineering efforts on other priorities.
-The repository will remain publicly available for reference and experimentation. During this period, o1Labs is not actively developing the project, reviewing pull requests, or accepting external contributions, and there is currently no committed timeline for future releases or mainnet deployment.
-If development resumes in the future and official Mina ecosystem channels.
-Developers are welcome to fork the repository to continue experimenting or building on the existing codebase.
+## Status
 
-⚠️ 
-</div>
+Release 0.20.0 runs on Mina devnet. It follows the chain, produces blocks and
+runs a SNARK worker. Mainnet support comes later, and the web node is coming
+soon.
 
----
+See the [0.20.0 release notes](docs/release/0.20.0.md), including the known
+issues, and the [CHANGELOG](CHANGELOG.md).
 
-## What is Mina Protocol?
+## Quick start
 
-Mina is a lightweight blockchain using zero-knowledge proofs to maintain a
-constant blockchain size, making it the world's lightest blockchain. Learn more
-at **[minaprotocol.com](https://minaprotocol.com)**.
+The full steps are in the [quickstart](https://minanode.org/docs/quickstart/).
 
-## Quick Start
+1. Download and check:
 
-**[View full system requirements and setup instructions →](https://o1-labs.github.io/mina-rust/docs/node-operators/getting-started)**
+   ```sh
+   # Choose x86_64 or arm64 for your Linux CPU.
+   arch=x86_64
+   url=https://github.com/minanode/mina-rust/releases/download/v0.20.0
+   curl -fLO "$url/mina-0.20.0-linux-$arch.tar.gz" &&
+   curl --fail-early -fLO "$url/SHA256SUMS" \
+     -O "$url/SHA256SUMS.sig" -O https://minanode.org/allowed_signers &&
+   ssh-keygen -Y verify -f allowed_signers \
+     -I release@minanode.org -n file \
+     -s SHA256SUMS.sig < SHA256SUMS &&
+   sha256sum --check --ignore-missing SHA256SUMS
+   ```
 
-## Getting Started
+   Continue only after a good signature and an `OK` checksum. The
+   [install page](https://minanode.org/docs/install/#check) explains the check.
 
-For comprehensive installation and setup instructions, visit our documentation
-website:
+2. Unpack and run:
 
-**[Complete Setup Guide →](https://o1-labs.github.io/mina-rust/docs/node-operators/getting-started)**
+   ```sh
+   mkdir mina-0.20.0
+   tar -xzf "mina-0.20.0-linux-$arch.tar.gz" -C mina-0.20.0
+   cd mina-0.20.0
+   ./mina node --network devnet
+   ```
 
-### Quick Links
+   The node runs in the foreground and stops when you close the terminal. To
+   keep it running, see
+   [run in the background](https://minanode.org/docs/run-a-node/#service).
 
-- **[Docker Installation](https://o1-labs.github.io/mina-rust/docs/node-operators/docker-usage)**
-- **[Building from Source](https://o1-labs.github.io/mina-rust/docs/node-operators/building-from-source)**
-- **[Block Producer Setup](https://o1-labs.github.io/mina-rust/docs/node-operators/block-producer)**
-- **[Archive Node](https://o1-labs.github.io/mina-rust/docs/node-operators/archive-node)**
+3. Open the dashboard at <http://localhost:3000>. For a server, run this tunnel
+   on your computer first (your SSH account must allow forwarding):
 
-<img src="website/static/img/NodeUI.png" alt="Block production Node UI">
+   ```sh
+   ssh -N -L 3000:127.0.0.1:3000 you@server
+   ```
 
----
+Then see [install](https://minanode.org/docs/install/),
+[run a node](https://minanode.org/docs/run-a-node/),
+[SNARK worker](https://minanode.org/docs/snark-worker/) and
+[block producer](https://minanode.org/docs/block-producer/).
 
-## Release Process
+## Supported platforms
 
-**This project is in beta**. We maintain a monthly release cycle, providing
-[updates every month](https://github.com/o1-labs/mina-rust/releases).
+| Platform     | CPU                                                          | C library           |
+| ------------ | ------------------------------------------------------------ | ------------------- |
+| Linux x86_64 | BMI2 and ADX (Intel Broadwell or AMD Zen 1, or newer)        | glibc 2.31 or newer |
+| Linux arm64  | AArch64 (ARMv8-A), including a Raspberry Pi 4 on a 64-bit OS | glibc 2.31 or newer |
 
-## Core Features
+Distributions that meet the glibc floor include Ubuntu 20.04, Debian 11,
+Raspberry Pi OS (64-bit) based on Debian 11, Fedora 32, and RHEL, Rocky Linux or
+AlmaLinux 9, and their later releases.
 
-The Mina Rust Node implements the complete Mina protocol in Rust, including
-network connectivity, block production, SNARK generation, and debugging tools.
+Older releases such as Ubuntu 18.04, Debian 10 and RHEL 8 have an older glibc
+and are not supported. The arm64 build has been run on a Raspberry Pi 4; a
+Raspberry Pi 5 has not been tested yet, in particular with its default 16
+KiB-page kernel.
 
-**[Learn More About Architecture →](https://o1-labs.github.io/mina-rust/docs/developers/getting-started)**
+There are no native macOS or Windows builds for 0.20.0. Building from source on
+macOS may work, but it is not tested. On macOS and Windows, run the Docker image
+with Docker Desktop.
 
-## Repository Structure
+## Docker
 
-This repository contains the complete Mina Rust Node implementation organized as
-a Cargo workspace:
+The image `ghcr.io/minanode/mina-rust:0.20.0`, for linux/amd64 and linux/arm64,
+holds the same `mina` as the release archives and is built from them. To run a
+devnet node with its state in `~/mina-state` and the dashboard at
+<http://localhost:3000>:
 
-### crates/
+```sh
+mkdir -p ~/mina-state
+docker run -d --name mina --restart unless-stopped \
+  --user "$(id -u):$(id -g)" \
+  -p 127.0.0.1:3000:3000 -p 8302:8302 \
+  -v ~/mina-state:/data \
+  ghcr.io/minanode/mina-rust:0.20.0
+```
 
-Main project crates implementing the Mina protocol. Add new Mina-specific
-functionality here.
+Keep the dashboard port on `127.0.0.1`. [docker-compose.yml](docker-compose.yml)
+runs the same node with Docker Compose; a block producer adds
+[docker-compose.block-producer.yml](docker-compose.block-producer.yml). The full
+guide is [run with Docker](https://minanode.org/docs/docker/). The image's files
+are in [tools/release/docker](tools/release/docker), and its release steps in
+[docs/release/DOCKER.md](docs/release/DOCKER.md).
 
-- [cli](crates/cli) - Mina command-line interface
-- [core](crates/core) - Shared types across different node components
-- [fuzzer](crates/fuzzer) - Fuzzing infrastructure
-- [ledger](crates/ledger) - Mina ledger implementation in Rust
-- [macros](crates/macros) - Procedural macros
-- [node](crates/node) - Core node business logic
-  - [native](crates/node/native) - OS-specific node implementation
-    (Linux/Mac/Windows)
-- [p2p](crates/p2p) - P2P implementation for Mina node
-- [p2p-messages](crates/p2p-messages) - P2P message definitions
-- [snark](crates/snark) - SNARK/Proof verification
-- [vrf](crates/vrf) - Verifiable Random Function implementation
+## Requirements
 
-### tools/
+Every role needs Linux as above, a clock kept in sync by NTP and 5 GB of free
+disk. The recommended machines are:
 
-Development and debugging utilities. Add new tooling here.
+- **follower:** 2 cores, 4 GB RAM;
+- **SNARK worker:** 4 or more cores, 8 GB RAM;
+- **block producer:** 4 or more cores, 8 GB RAM.
 
-- [bootstrap-sandbox](tools/bootstrap-sandbox) - Bootstrap testing utilities
-- [ledger-tool](tools/ledger-tool) - Ledger manipulation utilities
-- [testing](tools/testing) - Node testing framework
+Measured memory use and the details are on the
+[requirements](https://minanode.org/docs/requirements/) page.
 
-### libs/
+## Build from source
 
-Reusable, project-agnostic libraries that could be published independently. Add
-generic libraries here that are not Mina-specific.
+Build the dashboard first, then the node. The repository pins Rust 1.92 and
+Node.js 24.11.0:
 
-- [alloc-test](libs/alloc-test) - Memory allocation testing utilities
-- [redux](libs/redux) - Redux-style state management pattern
+```sh
+git clone https://github.com/minanode/mina-rust mina-rust
+cd mina-rust
+cd ui && npm ci && npm run build:dashboard && cd ..
+CARGO_BUILD_JOBS=8 cargo build --release --locked \
+  -p mina-cli --bin mina
+```
 
-### vendor/
+The binary is `target/release/mina`; the devnet circuits are embedded, so there
+is nothing else to download. System packages and toolchain setup are on the
+[build from source](https://minanode.org/docs/build-from-source/) page.
 
-Third-party libraries with local modifications. Add vendored dependencies here.
+## Repository layout
 
-- [salsa-simple](vendor/salsa-simple) - Query system with incremental
-  computation
+- [crates/cli](crates/cli): the `mina` command-line program.
+- [crates/node](crates/node): the node's state machine and logic, with the
+  [native](crates/node/native) and [web](crates/node/web) (browser) builds.
+- [crates/p2p](crates/p2p) and [crates/p2p-messages](crates/p2p-messages):
+  networking (libp2p and WebRTC) and its messages.
+- [crates/ledger](crates/ledger): the ledger, transaction logic, staged ledger
+  and scan state.
+- [crates/snark](crates/snark): proof verification.
+- [crates/core](crates/core): types shared by the other crates.
+- [crates/web-relay](crates/web-relay) and
+  [crates/web-verifier](crates/web-verifier): relaying blocks to browsers and
+  verifying block proofs in the browser.
+- [libs/redux](libs/redux): the Redux-style state machine framework.
+- [ui/dashboard](ui/dashboard): the dashboard built into `mina`.
+- [ui/minanode-site](ui/minanode-site): the minanode.org website.
+- [ui/design-system](ui/design-system): components shared by the dashboard and
+  the website.
+- [tools/release](tools/release): the scripts that build the release archives.
+- [docs/release](docs/release): release notes and verification instructions.
 
-### Other directories
+## Contributing, security and help
 
-- [frontend/](frontend) - Mina Rust Node frontend
-- [poseidon/](poseidon) - Poseidon hash function (to be removed, see
-  [#1215](https://github.com/o1-labs/mina-rust/issues/1215))
+**Contributing:** pull requests are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-**[Learn more about the architecture →](https://o1-labs.github.io/mina-rust/docs/developers/getting-started)**
+**Security:** please report security issues privately to
+[security@minanode.org](mailto:security@minanode.org), not in a public issue.
 
-## Community & Support
+**Getting help:** see [reporting a bug](https://minanode.org/docs/bug-reports/).
+`mina report` collects what the developers need and opens a pre-filled GitHub
+issue for you to review and submit.
 
-**[Visit our comprehensive documentation website →](https://o1-labs.github.io/mina-rust)**
+## Licence
 
-### Get Help & Contribute
-
-- **[GitHub Discussions](https://github.com/o1-labs/mina-rust/discussions)** -
-  Ask questions and share ideas
-- **[Issues](https://github.com/o1-labs/mina-rust/issues)** - Report bugs or
-  request features
-- **[Discord Community](https://discord.com/channels/484437221055922177/1290662938734231552)** -
-  Real-time support and testing
-- **[Contributing Guide](https://o1-labs.github.io/mina-rust/docs/developers/getting-started)** -
-  How to contribute code
-
-### Key Documentation Sections
-
-- **[Node Operators](https://o1-labs.github.io/mina-rust/docs/node-operators/getting-started)** -
-  Installation and operation guides
-- **[Developers](https://o1-labs.github.io/mina-rust/docs/developers/getting-started)** -
-  Architecture and contribution guides
-- **[API Documentation](https://o1-labs.github.io/mina-rust/api-docs/)** -
-  Comprehensive API reference
-
-## Supported Platforms
-
-[![CI Status][ci-badge]][ci-link]
-
-| Platform                                | Architecture  | Build Status                                                     |
-| --------------------------------------- | ------------- | ---------------------------------------------------------------- |
-| ![Ubuntu][ubuntu-icon] **Ubuntu 22.04** | x64           | [![Ubuntu 22.04 x64][ubuntu-22-badge]][ubuntu-22-link]           |
-| ![Ubuntu][ubuntu-icon] **Ubuntu 24.04** | x64           | [![Ubuntu 24.04 x64][ubuntu-24-badge]][ubuntu-24-link]           |
-| ![Ubuntu][ubuntu-icon] **Ubuntu 24.04** | ARM64         | [![Ubuntu 24.04 ARM64][ubuntu-24-arm-badge]][ubuntu-24-arm-link] |
-| ![macOS][macos-icon] **macOS 14**       | Apple Silicon | [![macOS 14 M1/M2][macos-14-badge]][macos-14-link]               |
-| ![macOS][macos-icon] **macOS 15**       | Apple Silicon | [![macOS 15 M1/M2/M3][macos-15-badge]][macos-15-link]            |
-| ![macOS][macos-icon] **macOS Latest**   | Apple Silicon | [![macOS Latest][macos-latest-badge]][macos-latest-link]         |
-
-> **Note**: Multi-platform builds run automatically on `develop` and `main`
-> branches. Pull requests run fast Ubuntu-only builds for quick feedback.
-
-## Nightly Status
-
-[![Documentation Scripts][doc-scripts-badge]][doc-scripts-link]
-[![GraphQL API Tests][graphql-api-badge]][graphql-api-link]
-[![Infrastructure Tests][infra-tests-badge]][infra-tests-link]
-[![Remote GraphQL][remote-graphql-badge]][remote-graphql-link]
-[![Board Carryover][board-carryover-badge]][board-carryover-link]
-
-[changelog]: ./CHANGELOG.md
-[beta-badge]: https://img.shields.io/badge/status-beta-yellow
-[changelog-badge]: https://img.shields.io/badge/changelog-Changelog-%23E05735
-[release-badge]: https://img.shields.io/github/v/release/o1-labs/mina-rust
-[release-link]: https://github.com/o1-labs/mina-rust/releases/latest
-[Apache licensed]: https://img.shields.io/badge/license-Apache_2.0-blue.svg
-[Apache link]: https://github.com/o1-labs/mina-rust/blob/master/LICENSE
-
-<!-- Platform support badges -->
-
-[ci-badge]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/tests.yaml/badge.svg?branch=develop
-[ci-link]: https://github.com/o1-labs/mina-rust/actions/workflows/tests.yaml
-[ubuntu-icon]:
-  https://img.shields.io/badge/-Ubuntu-E95420?style=flat&logo=ubuntu&logoColor=white
-[macos-icon]:
-  https://img.shields.io/badge/-macOS-000000?style=flat&logo=apple&logoColor=white
-
-<!-- Individual platform badges -->
-
-[ubuntu-22-badge]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/build-ubuntu-22-04.yaml/badge.svg?branch=develop
-[ubuntu-24-badge]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/build-ubuntu-24-04.yaml/badge.svg?branch=develop
-[ubuntu-24-arm-badge]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/build-ubuntu-24-04-arm.yaml/badge.svg?branch=develop
-[macos-14-badge]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/build-macos-14.yaml/badge.svg?branch=develop
-[macos-15-badge]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/build-macos-15.yaml/badge.svg?branch=develop
-[macos-latest-badge]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/build-macos-latest.yaml/badge.svg?branch=develop
-
-<!-- Platform-specific build links -->
-
-[ubuntu-22-link]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/build-ubuntu-22-04.yaml
-[ubuntu-24-link]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/build-ubuntu-24-04.yaml
-[ubuntu-24-arm-link]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/build-ubuntu-24-04-arm.yaml
-[macos-14-link]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/build-macos-14.yaml
-[macos-15-link]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/build-macos-15.yaml
-[macos-latest-link]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/build-macos-latest.yaml
-
-<!-- Nightly workflow badges -->
-
-[doc-scripts-badge]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/test-docs-scripts.yaml/badge.svg?branch=develop
-[doc-scripts-link]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/test-docs-scripts.yaml
-[graphql-api-badge]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/test-docs-graphql-api.yaml/badge.svg?branch=develop
-[graphql-api-link]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/test-docs-graphql-api.yaml
-[infra-tests-badge]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/test-docs-infrastructure.yaml/badge.svg?branch=develop
-[infra-tests-link]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/test-docs-infrastructure.yaml
-[remote-graphql-badge]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/test-graphql-remote.yml/badge.svg?branch=develop
-[remote-graphql-link]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/test-graphql-remote.yml
-[board-carryover-badge]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/board-carryover-interation.yaml/badge.svg?branch=develop
-[board-carryover-link]:
-  https://github.com/o1-labs/mina-rust/actions/workflows/board-carryover-interation.yaml
+Apache-2.0; see [LICENSE](LICENSE). Notices for third-party code and data are in
+[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES) and
+[THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES).

@@ -259,12 +259,13 @@ impl rsexp::OfSexp for LimbVectorConstantHex64StableV1 {
     }
 }
 
+/// Sixteen lowercase hex digits, as OCaml writes them.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/pickles/limb_vector/constant.ml#L33-L46>
 impl rsexp::SexpOf for LimbVectorConstantHex64StableV1 {
     fn sexp_of(&self) -> rsexp::Sexp {
         let value: u64 = self.0.as_u64();
-        let hex_str = format!("{:016x}", value);
-
-        rsexp::Sexp::Atom(format!("0x{}", hex_str).into_bytes())
+        rsexp::Sexp::Atom(format!("{value:016x}").into_bytes())
     }
 }
 
@@ -339,8 +340,9 @@ impl serde::Serialize for TransactionSnarkProofStableV2 {
             use base64::{engine::general_purpose::URL_SAFE, Engine as _};
             use rsexp::SexpOf;
 
+            // OCaml's `Sexp.to_string_mach`.
             let sexp = self.sexp_of();
-            let sexp_bytes = sexp.to_bytes();
+            let sexp_bytes = sexp.to_bytes_mach();
             let base64_data = URL_SAFE.encode(&sexp_bytes);
 
             base64_data.serialize(serializer)
@@ -439,8 +441,9 @@ impl serde::Serialize for PicklesProofProofsVerifiedMaxStableV2 {
             use base64::{engine::general_purpose::URL_SAFE, Engine as _};
             use rsexp::SexpOf as _;
 
+            // OCaml's `Sexp.to_string_mach`.
             let sexp = self.sexp_of();
-            let sexp_bytes = sexp.to_bytes();
+            let sexp_bytes = sexp.to_bytes_mach();
             let base64_data = URL_SAFE.encode(&sexp_bytes);
 
             base64_data.serialize(serializer)
@@ -828,84 +831,6 @@ pub enum ArchiveRpc {
     SendDiff(ArchiveTransitionFrontierDiff),
 }
 
-#[derive(Clone, Debug, PartialEq, BinProtRead, BinProtWrite)]
-pub struct PrecomputedBlockProof(pub MinaBaseProofStableV2);
-
-impl Serialize for PrecomputedBlockProof {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::ser::Serializer,
-    {
-        use base64::{engine::general_purpose::URL_SAFE, Engine as _};
-        use binprot::BinProtWrite;
-        let mut buf = Vec::new();
-        self.0
-            .binprot_write(&mut buf)
-            .map_err(serde::ser::Error::custom)?;
-        let base64_data = URL_SAFE.encode(&buf);
-        serializer.serialize_str(&base64_data)
-    }
-}
-
-impl<'de> Deserialize<'de> for PrecomputedBlockProof {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::de::Deserializer<'de>,
-    {
-        use base64::{engine::general_purpose::URL_SAFE, Engine as _};
-        let base64_data = String::deserialize(deserializer)?;
-        let binprot_data = URL_SAFE
-            .decode(&base64_data)
-            .map_err(serde::de::Error::custom)?;
-        let mut read = binprot_data.as_slice();
-        let proof: MinaBaseProofStableV2 =
-            binprot::BinProtRead::binprot_read(&mut read).map_err(serde::de::Error::custom)?;
-        Ok(PrecomputedBlockProof(proof))
-    }
-}
-
-impl From<MinaBaseProofStableV2> for PrecomputedBlockProof {
-    fn from(value: MinaBaseProofStableV2) -> Self {
-        Self(value)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite)]
-pub struct PrecomputedBlock {
-    pub scheduled_time: BlockTimeTimeStableV1,
-    pub protocol_state: MinaStateProtocolStateValueStableV2,
-    pub protocol_state_proof: PrecomputedBlockProof,
-    pub staged_ledger_diff: StagedLedgerDiffDiffStableV2,
-    // FIXME: for some reason in OCaml the base58check conversion for the JSON value
-    // uses version byte = 0x05 (ledger hash) instead of 0x10 (StateHash) and 0x11 (StateBodyHash)
-    // Note: keeping the proper types here, we should raise an issue in the ocaml repo
-    pub delta_transition_chain_proof: (
-        StateHash,           // LedgerHash,       // StateHash
-        List<StateBodyHash>, // List<LedgerHash>, // StateBodyHash
-    ),
-    pub protocol_version: ProtocolVersionStableV2,
-    #[serde(default)]
-    pub proposed_protocol_version: Option<ProtocolVersionStableV2>,
-    pub accounts_accessed: List<(crate::number::UInt64, MinaBaseAccountBinableArgStableV2)>,
-    pub accounts_created: List<(MinaBaseAccountIdStableV2, CurrencyFeeStableV1)>,
-    pub tokens_used: List<(MinaBaseTokenIdStableV2, Option<MinaBaseAccountIdStableV2>)>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite)]
-pub struct PrecomputedBlockData {
-    pub version: u32,
-    pub data: PrecomputedBlock,
-}
-
-impl PrecomputedBlock {
-    pub fn with_version(&self, version: u32) -> PrecomputedBlockData {
-        PrecomputedBlockData {
-            version,
-            data: self.clone(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use binprot::{BinProtRead, BinProtWrite};
@@ -1163,7 +1088,57 @@ impl<'de> Deserialize<'de> for ConsensusVrfOutputTruncatedStableV1 {
     }
 }
 
+/// Besides its own field-by-field form, accepts the forms OCaml writes in JSON:
+/// a base58check string, or that string as `data` next to its `hash`, as in
+/// account updates of precomputed blocks.
+impl<'de> Deserialize<'de> for MinaBaseVerificationKeyWireStableV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Fields {
+            max_proofs_verified: PicklesBaseProofsVerifiedStableV1,
+            actual_wrap_domain_size: PicklesBaseProofsVerifiedStableV1,
+            wrap_index: MinaBaseVerificationKeyWireStableV1WrapIndex,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Json {
+            Fields(Fields),
+            Base58(String),
+            WithHash { data: String },
+        }
+
+        let fields = if deserializer.is_human_readable() {
+            match Json::deserialize(deserializer)? {
+                Json::Fields(fields) => fields,
+                Json::Base58(b58) | Json::WithHash { data: b58 } => {
+                    return Self::from_base58check(&b58).map_err(serde::de::Error::custom);
+                }
+            }
+        } else {
+            Fields::deserialize(deserializer)?
+        };
+        Ok(Self {
+            max_proofs_verified: fields.max_proofs_verified,
+            actual_wrap_domain_size: fields.actual_wrap_domain_size,
+            wrap_index: fields.wrap_index,
+        })
+    }
+}
+
 impl MinaBaseVerificationKeyWireStableV1 {
+    /// The base58check form OCaml uses for JSON: bin_prot behind version byte
+    /// 0x1b.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/codable/codable.ml#L80-L99>
+    pub fn from_base58check(b58: &str) -> Result<Self, conv::Error> {
+        let bytes = crate::b58::decode(b58, crate::b58version::VERIFICATION_KEY)?;
+        Ok(Self::binprot_read(&mut &bytes[1..])?)
+    }
+
     pub fn to_base64(&self) -> Result<String, conv::Error> {
         let mut buffer: Vec<u8> = Vec::new();
         self.binprot_write(&mut buffer)?;
@@ -1198,15 +1173,21 @@ impl MinaBaseSignedCommandStableV2 {
     pub fn from_base64(base64_data: &str) -> Result<Self, conv::Error> {
         use base64::{engine::general_purpose::STANDARD, Engine as _};
         let decoded_data = STANDARD.decode(&base64_data)?;
-        let res = MinaBaseSignedCommandStableV2::binprot_read(&mut decoded_data[1..].as_ref())?;
+        let res = MinaBaseSignedCommandStableV2::binprot_read(
+            &mut decoded_data.get(1..).unwrap_or_default(),
+        )?;
         Ok(res)
     }
 }
 
 /// TODO(adonagy): implement the base64 conversions similarly to the base58check ones (versioned/not versioned)
 impl MinaBaseZkappCommandTStableV1WireStableV1 {
+    /// The transaction id: base64 of the command's top version tag, 2 since
+    /// Mesa (`Zkapp_command.Stable.V2`), and its binprot.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/zkapp_command.ml#L878-L879>
     pub fn to_base64(&self) -> Result<String, conv::Error> {
-        const ZKAPP_VERSION_TAG: u8 = 1;
+        const ZKAPP_VERSION_TAG: u8 = 2;
 
         let mut buffer: Vec<u8> = Vec::new();
         ZKAPP_VERSION_TAG.binprot_write(&mut buffer)?;
@@ -1221,7 +1202,7 @@ impl MinaBaseZkappCommandTStableV1WireStableV1 {
         use base64::{engine::general_purpose::STANDARD, Engine as _};
         let decoded_data = STANDARD.decode(&base64_data)?;
         let res = MinaBaseZkappCommandTStableV1WireStableV1::binprot_read(
-            &mut decoded_data[1..].as_ref(),
+            &mut decoded_data.get(1..).unwrap_or_default(),
         )?;
         Ok(res)
     }
@@ -1908,16 +1889,23 @@ mod test {
 
     use crate::v2;
 
+    /// The transaction id an OCaml 4.0.2 node's GraphQL gives for the zkApp
+    /// command in `with_sig_auth.bin` (`zkappCommands { id }`, mainnet block
+    /// 564394), whose bytes are that id's after the version tag.
     #[test]
     fn test_zkapp_with_sig_auth_hash() {
-        let expexcted = "AbliNXLg4Keq0ZJyxK/QNAx8SxrJeffYytk5lbcTF9s9Af0A4fUFAP2+oQMA48vntxcABLty3SXWjvuadrLtBjcsxT1oJ3C2hwS/LDh364LKUxrLe3uF/9lr8VlW/J+ctbiI+m9I61sb9BC/AAG5YjVy4OCnqtGScsSv0DQMfEsayXn32MrZOZW3ExfbPQEBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEBAQEBAQEBAAEBAQEBAQH9AJQ1dwEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAEBAQEBAAAAAePL57cXAAS7ct0l1o77mnay7QY3LMU9aCdwtocEvyw4d+uCylMay3t7hf/Za/FZVvyfnLW4iPpvSOtbG/QQvwAAAcwXZjv4NJwWwlJhFZPh2AK+o0dKOpIy1a6CXlskW7gmAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEBAQEBAQEAAQEBAQEBAf0AlDV3AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEAAQEBAQAAAAICAAAAACIBFlRlc3QgWktBcHAgdG8gUmVjZWl2ZXIAAAAAAAAAAAAA".to_string();
+        let expected = include_str!("../../../../tests/files/zkapps/with_sig_auth_id.txt").trim();
         let bytes = include_bytes!("../../../../tests/files/zkapps/with_sig_auth.bin");
         let zkapp =
             v2::MinaBaseZkappCommandTStableV1WireStableV1::binprot_read(&mut bytes.as_slice())
                 .unwrap();
 
         let zkapp_id = zkapp.to_base64().unwrap();
-        assert_eq!(expexcted, zkapp_id);
+        assert_eq!(expected, zkapp_id);
+        assert_eq!(
+            v2::MinaBaseZkappCommandTStableV1WireStableV1::from_base64(expected).unwrap(),
+            zkapp
+        );
     }
 
     #[test]
@@ -1932,12 +1920,59 @@ mod test {
         assert!(verification_key.is_ok());
     }
 
+    /// A proof's S-expression reads back as the same proof: its Hex64 limbs
+    /// are written as OCaml writes them, without a `0x` prefix, which the
+    /// reader requires. OCaml's JSON for a proof is the base64 of this
+    /// S-expression (`Pickles.Proof.to_yojson`).
     #[test]
+    fn proof_sexp_round_trip() {
+        use rsexp::{OfSexp, SexpOf};
+
+        let limb = v2::LimbVectorConstantHex64StableV1(0x04fe2d8be3af1fd7u64.into());
+        assert_eq!(limb.sexp_of().to_bytes(), b"04fe2d8be3af1fd7");
+
+        let proof = v2::dummy_blockchain_proof();
+        let bytes = proof.0.sexp_of().to_bytes_mach();
+        let sexp = rsexp::from_slice(&bytes).unwrap();
+        let read = v2::PicklesProofProofsVerified2ReprStableV2::of_sexp(&sexp).unwrap();
+        assert_eq!(read, proof.0);
+    }
+
+    /// A Berkeley archive diff: it stops decoding at its first zkApp
+    /// `app_state` update, which has 32 fields since Mesa. A Mesa diff can only
+    /// come from an OCaml daemon feeding an archive process.
+    #[test]
+    #[ignore = "Berkeley fixture (8-field zkApp state); needs a Mesa archive diff capture (P8)"]
     fn test_archive_breadcrumb_deserialization() {
         let breadcrumb_bytes = include_bytes!("../../../../tests/files/archive-breadcrumb/3NK56ZbCS31qb8SvCtCCYza4beRDtKgXA2JL6s3evKouG2KkKtiy.bin");
         let result =
             v2::ArchiveTransitionFrontierDiff::binprot_read(&mut breadcrumb_bytes.as_slice());
 
         assert!(result.is_ok());
+    }
+}
+
+/// OCaml `Int64`, not `int`: `Unsigned_extended.UInt64` is binable as `Int64`,
+/// so amounts, fees, balances and times may use the whole 64 bits.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/unsigned_extended/unsigned_extended.ml#L81>
+impl BinProtRead for UnsignedExtendedUInt64Int64ForVersionTagsStableV1 {
+    fn binprot_read<R: std::io::Read + ?Sized>(r: &mut R) -> Result<Self, binprot::Error>
+    where
+        Self: Sized,
+    {
+        crate::number::read_ocaml_int64(r).map(Self)
+    }
+}
+
+/// OCaml `Int64`: Pickles' 64-bit limbs take every value.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/pickles/limb_vector/constant.ml#L60>
+impl BinProtRead for LimbVectorConstantHex64StableV1 {
+    fn binprot_read<R: std::io::Read + ?Sized>(r: &mut R) -> Result<Self, binprot::Error>
+    where
+        Self: Sized,
+    {
+        crate::number::read_ocaml_int64(r).map(Self)
     }
 }

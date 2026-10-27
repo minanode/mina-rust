@@ -20,6 +20,17 @@ mod http {
 
         assert!(resp_value.is_instance_of::<Response>());
         let resp: Response = resp_value.dyn_into().unwrap();
+        // An error status has a body too (a 404 page): it is not the file.
+        if !resp.ok() {
+            let kind = match resp.status() {
+                404 | 410 => std::io::ErrorKind::NotFound,
+                _ => std::io::ErrorKind::Other,
+            };
+            return Err(std::io::Error::new(
+                kind,
+                format!("GET {url}: HTTP {} {}", resp.status(), resp.status_text()),
+            ));
+        }
         let js = JsFuture::from(resp.array_buffer().map_err(to_io_err)?)
             .await
             .map_err(to_io_err)?;

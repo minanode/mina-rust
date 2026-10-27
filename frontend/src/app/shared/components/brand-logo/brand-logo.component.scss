@@ -1,0 +1,27 @@
+:host {
+  display: inline-flex;
+  flex-shrink: 0;
+  line-height: 0;
+}
+
+.mark {
+  stroke: #12a594;
+}
+
+.mina {
+  fill: #f5f8f9;
+}
+
+.node {
+  fill: #a1afb4;
+}
+
+:host-context(.light) {
+  .mina {
+    fill: #0a0f14;
+  }
+
+  .node {
+    fill: #566962;
+  }
+}

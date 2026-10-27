@@ -28,6 +28,12 @@ pub enum P2pNetworkKademliaStreamAction {
         stream_id: StreamId,
         data: Data,
     },
+    /// An incomplete framed message exceeded its receive deadline.
+    Timeout {
+        addr: ConnectionAddr,
+        peer_id: PeerId,
+        stream_id: StreamId,
+    },
     /// Remote peer sent FIN to close the stream.
     RemoteClose {
         addr: ConnectionAddr,
@@ -92,6 +98,7 @@ macro_rules! enum_field {
             match self {
                 P2pNetworkKademliaStreamAction::New { $field, .. }
                 | P2pNetworkKademliaStreamAction::IncomingData { $field, .. }
+                | P2pNetworkKademliaStreamAction::Timeout { $field, .. }
                 | P2pNetworkKademliaStreamAction::WaitOutgoing { $field, .. }
                 | P2pNetworkKademliaStreamAction::SendRequest { $field, .. }
                 | P2pNetworkKademliaStreamAction::SendResponse { $field, .. }

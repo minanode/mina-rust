@@ -1,0 +1,104 @@
+{
+  "$comment": "GET /status from the devnet-dev node (HTTP 3600), 2026-10-23 16:1x UTC; peers cut to four, resources, queues and ledger removed.",
+  "status": {
+    "network": "devnet",
+    "uptime_secs": 37631,
+    "chain_id": "ebfce0d570bc22eb041e1a7b0a46bbc3ed5d0a1030ef2ab5e36eef908b93eba8",
+    "transition_frontier": {
+      "root": {
+        "timestamp_ms": 1792716930000,
+        "hash": "3NLvAqUyeq4Vis1Hk9qcY5fwTQYo9junwSKLE6GLAMnfyHfNUiou",
+        "height": 578593,
+        "global_slot": 61717,
+        "timestamp": 1792716930000000000
+      },
+      "best_tip": {
+        "timestamp_ms": 1792771470000,
+        "hash": "3NLqEMZA6dJ16P9fMWA4oxFQTUcNVyoSCyZkabNbichyFH5vuc5W",
+        "height": 578883,
+        "global_slot": 62323,
+        "timestamp": 1792771470000000000
+      },
+      "sync": {
+        "time": 1792771479828168231,
+        "status": "Synced",
+        "phase": "Synced",
+        "target": null
+      }
+    },
+    "snark_pool": {
+      "total_jobs": 338,
+      "snarks": 261
+    },
+    "transaction_pool": {
+      "transactions": 1,
+      "transactions_for_propagation": 1,
+      "transaction_candidates": 0
+    },
+    "current_block_production_attempt": null,
+    "previous_block_production_attempt": null,
+    "peers": [
+      {
+        "peer_id": "2aTKv6vapFoRUoKea9FTD3vxJm5qiYBMJcD2mGyjgdcryXGHHFt",
+        "best_tip": "3NLGjybCgi7vmdnA4X15neDxAGByg9tZNbYzjAHkuQx13g2sEpTi",
+        "best_tip_height": 578879,
+        "best_tip_global_slot": 921878,
+        "best_tip_timestamp": 1792771020000000000,
+        "connection_status": "Connected",
+        "connecting_details": null,
+        "address": "/ip4/34.136.105.213/tcp/10003/p2p/12D3KooWAdgYL6hv18M3iDBdaK1dRygPivSfAfBNDzie6YqydVbs",
+        "incoming": false,
+        "is_libp2p": true,
+        "time": 1792734197969028011
+      },
+      {
+        "peer_id": "2aWLP4o18kevEAfXmXdfdUeH1HaKiukTRwBKJNNWhJPGtUE4icn",
+        "best_tip": "3NKPqviw4sVDnFQQ6DpfAKaRpNYLzGx2T35aT6F2b7L7SEkPQKgT",
+        "best_tip_height": 578688,
+        "best_tip_global_slot": 921468,
+        "best_tip_timestamp": 1792734120000000000,
+        "connection_status": "Connected",
+        "connecting_details": null,
+        "address": "/ip4/37.27.120.57/tcp/32120/p2p/12D3KooWB6LvMEwwciuBB814GdgdztRj7m3ozUSaTiXMKScJamrs",
+        "incoming": false,
+        "is_libp2p": true,
+        "time": 1792734199644471599
+      },
+      {
+        "peer_id": "2acGWjoBhnVSi6pwW2pD9ZdRrFkbJnfP5ExYajnYSGoEDnKCYxs",
+        "best_tip": "3NKQTwfLHFim3uLeiF1s6H4BxKVj64g4J96zVDGUcGLBZsaJ1kmE",
+        "best_tip_height": 578882,
+        "best_tip_global_slot": 921882,
+        "best_tip_timestamp": 1792771380000000000,
+        "connection_status": "Connected",
+        "connecting_details": null,
+        "address": "/ip4/37.27.118.240/tcp/32107/p2p/12D3KooWBzwA4uRgwbmjX7LAsp9nMacW8xPqJejbmw1W96nXX1Ra",
+        "incoming": false,
+        "is_libp2p": true,
+        "time": 1792734214610884902
+      },
+      {
+        "peer_id": "2aNz4mYTzCshqKFuTRhRrQcSjQU5NnDgbPZ7ZhyvgH3kxHjrGfg",
+        "best_tip": null,
+        "best_tip_height": null,
+        "best_tip_global_slot": null,
+        "best_tip_timestamp": null,
+        "connection_status": "Disconnected",
+        "connecting_details": "Error { time: Timestamp(1792734318746040019), error: Timeout, rpc_id: None }",
+        "address": "/ip4/65.21.68.205/tcp/8302/p2p/12D3KooW9yCFNdgXtNrSAsCuiGLPT77S1ubbWu5gjwoQjnJWiMEy",
+        "incoming": false,
+        "is_libp2p": true,
+        "time": 1792734318746040019
+      }
+    ],
+    "network_info": {
+      "bind_ip": "0.0.0.0",
+      "external_ip": null,
+      "client_port": 3600,
+      "libp2p_port": 8760
+    },
+    "block_producer": null,
+    "coinbase_receiver": null,
+    "next_block_production": null
+  }
+}

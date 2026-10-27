@@ -1,0 +1,101 @@
+# The daemon queries OCaml's Rosetta server sends (exchanges use it), from
+# src/app/rosetta/lib/{mempool,construction,network,account}.ml of OCaml
+# 4.0.2, without the graphql_ppx decorators. Its send mutations (P6) are not
+# here.
+
+query RosettaAllTransactions {
+  initialPeers
+  daemonStatus {
+    chainId
+  }
+  pooledUserCommands(publicKey: null) {
+    hash
+  }
+}
+
+query RosettaTransactionsByHash($hashes: [String!]) {
+  initialPeers
+  daemonStatus {
+    chainId
+    peers { host }
+  }
+  pooledUserCommands(hashes: $hashes) {
+    hash
+    amount
+    fee
+    kind
+    feeToken
+    validUntil
+    memo
+    feePayer {
+      publicKey
+    }
+    nonce
+    receiver {
+      publicKey
+    }
+  }
+}
+
+query RosettaOptionsMetadata($sender: PublicKey!, $token_id: TokenId, $receiver_key: PublicKey!) {
+  bestChain(maxLength: 5) {
+    transactions {
+      userCommands {
+        fee
+      }
+    }
+  }
+  receiver: account(publicKey: $receiver_key, token: $token_id) {
+    nonce
+  }
+  account(publicKey: $sender, token: $token_id) {
+    inferredNonce
+  }
+}
+
+query RosettaGenesisBlockIdentifier {
+  genesisBlock {
+    stateHash
+    protocolState {
+      consensusState {
+        blockHeight
+      }
+    }
+  }
+}
+
+query RosettaStatus {
+  bestChain(maxLength: 1) {
+    stateHash
+    protocolState {
+      blockchainState {
+        utcDate
+      }
+      consensusState {
+        blockHeight
+      }
+    }
+  }
+  daemonStatus {
+    peers { peerId }
+  }
+  syncStatus
+  initialPeers
+  networkID
+}
+
+query RosettaVersion {
+  version
+}
+
+query RosettaBalance($public_key: PublicKey!, $token_id: TokenId) {
+  account(publicKey: $public_key, token: $token_id) {
+    balance {
+      blockHeight
+      stateHash
+      liquid
+      total
+    }
+    nonce
+  }
+}

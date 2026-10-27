@@ -1,0 +1,5 @@
+# The staged ledger dump the baseline's rebuild row uses (baseline.py,
+# profile_reconstruct), written by the test relay with MINA_DUMP_RECONSTRUCT.
+#
+# sha256, size in bytes, path relative to the inputs directory
+bd770fd38cf71a5d36a5984e18fefa11a1e45c581fd472cb3d9ac3588a19b16c  136790878  reconstruct-current.binprot

@@ -1,0 +1,31 @@
+[package]
+name = "mina-isolated-prover"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "verify-isolated-proof"
+path = "src/bin/verify.rs"
+
+[dependencies]
+anyhow.workspace = true
+ledger.workspace = true
+mina-core.workspace = true
+mina-curves.workspace = true
+mina-p2p-messages.workspace = true
+mina-signer.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+console_error_panic_hook.workspace = true
+futures.workspace = true
+js-sys.workspace = true
+rayon.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true

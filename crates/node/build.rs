@@ -49,6 +49,18 @@ fn is_same_file<P: AsRef<Path>>(file1: P, file2: P) -> Result<bool, std::io::Err
     Ok(b1 == b2)
 }
 
+fn publish_generated_file(from: &Path, to: &Path) -> io::Result<()> {
+    // OUT_DIR can come from a hard-linked Cargo cache. Never move that inode
+    // into the source tree, or truncate a possibly linked existing source.
+    let mut output = tempfile::NamedTempFile::new_in(to.parent().unwrap())?;
+    io::copy(&mut fs::File::open(from)?, output.as_file_mut())?;
+    output
+        .as_file()
+        .set_permissions(fs::metadata(from)?.permissions())?;
+    output.persist(to)?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 enum EnumElement {
     InlineFields {
@@ -98,6 +110,35 @@ impl ActionMeta {
     }
 }
 
+/// Reruns this script when the checked-out branch gets a commit. vergen
+/// watches HEAD and looks for the branch's ref under `--git-dir`, which in a
+/// worktree holds no refs, so a commit on a worktree's branch kept the
+/// previous commit in the build (RC7-FIXES review). The ref is in the common
+/// directory, loose or in `packed-refs`. Only existing paths are named: a
+/// missing one would rerun the script at every build.
+fn rerun_on_branch_commit() {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    let (Some(common), Some(branch)) = (
+        git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+        git(&["symbolic-ref", "-q", "HEAD"]),
+    ) else {
+        return;
+    };
+    let common = PathBuf::from(common);
+    for path in [common.join(&branch), common.join("packed-refs")] {
+        if path.exists() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     // Check if all required VERGEN environment variables are already set
     // If so, skip running vergen to avoid git repository dependency
@@ -129,6 +170,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .all_git()
             .all_rustc()
             .emit_and_set()?;
+        rerun_on_branch_commit();
     } else {
         // Re-emit the environment variables as cargo environment variables
         // so they're available at compile time via env!() macro
@@ -401,7 +443,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let path = crate_dir.join("src/action_kind.rs");
 
     if !is_same_file(&tmp_path, &path)? {
-        fs::rename(tmp_path, path)?;
+        publish_generated_file(&tmp_path, &path)?;
     }
 
     Ok(())

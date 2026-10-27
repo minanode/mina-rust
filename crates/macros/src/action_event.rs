@@ -146,7 +146,9 @@ fn level(variant_level: &Option<Level>, variant_name: &Ident, enum_level: &Optio
             (s.ends_with("Error") || s.ends_with("Warn")).then_some(Level::Warn)
         })
         .or_else(|| enum_level.as_ref().cloned())
-        .unwrap_or(Level::Debug)
+        // Unlabelled actions are traces: a node dispatches thousands a
+        // minute. DEBUG holds the ones labelled for it (O1).
+        .unwrap_or(Level::Trace)
 }
 
 fn fields(
@@ -351,9 +353,9 @@ impl mina_core::ActionEvent for Action {
     {
         #[allow(unused_variables)]
         match self {
-            Action::Unit => mina_core::action_debug!(context),
-            Action::UnitWithDoc => mina_core::action_debug!(context, summary = "documentation"),
-            Action::UnitWithMultilineDoc => mina_core::action_debug!(context, summary = "Multiline documentation"),
+            Action::Unit => mina_core::action_trace!(context, kind = "Unit"),
+            Action::UnitWithDoc => mina_core::action_trace!(context, kind = "UnitWithDoc", summary = "documentation"),
+            Action::UnitWithMultilineDoc => mina_core::action_trace!(context, kind = "UnitWithMultilineDoc", summary = "Multiline documentation"),
         }
     }
 }
@@ -382,10 +384,10 @@ impl mina_core::ActionEvent for Action {
     {
         #[allow(unused_variables)]
         match self {
-            Action::ActionDefaultLevel => mina_core::action_trace!(context),
-            Action::ActionOverrideLevel => mina_core::action_warn!(context),
-            Action::ActionWithError => mina_core::action_warn!(context),
-            Action::ActionWithWarn => mina_core::action_warn!(context),
+            Action::ActionDefaultLevel => mina_core::action_trace!(context, kind = "ActionDefaultLevel"),
+            Action::ActionOverrideLevel => mina_core::action_warn!(context, kind = "ActionOverrideLevel"),
+            Action::ActionWithError => mina_core::action_warn!(context, kind = "ActionWithError"),
+            Action::ActionWithWarn => mina_core::action_warn!(context, kind = "ActionWithWarn"),
         }
     }
 }
@@ -421,13 +423,13 @@ impl mina_core::ActionEvent for Action {
     {
         #[allow(unused_variables)]
         match self {
-            Action::NoFields { f1 } => mina_core::action_debug!(context),
-            Action::Field { f1 } => mina_core::action_debug!(context, f1 = f1),
-            Action::FieldWithName { f1 } => mina_core::action_debug!(context, f = f1),
-            Action::FieldExpr { f } => mina_core::action_debug!(context, f = f.subfield),
-            Action::FieldDisplayExpr { f } => mina_core::action_debug!(context, f = display(f.subfield)),
-            Action::DebugField { f1 } => mina_core::action_debug!(context, f1 = debug(f1)),
-            Action::DisplayField { f1 } => mina_core::action_debug!(context, f1 = display(f1)),
+            Action::NoFields { f1 } => mina_core::action_trace!(context, kind = "NoFields"),
+            Action::Field { f1 } => mina_core::action_trace!(context, kind = "Field", f1 = f1),
+            Action::FieldWithName { f1 } => mina_core::action_trace!(context, kind = "FieldWithName", f = f1),
+            Action::FieldExpr { f } => mina_core::action_trace!(context, kind = "FieldExpr", f = f.subfield),
+            Action::FieldDisplayExpr { f } => mina_core::action_trace!(context, kind = "FieldDisplayExpr", f = display(f.subfield)),
+            Action::DebugField { f1 } => mina_core::action_trace!(context, kind = "DebugField", f1 = debug(f1)),
+            Action::DisplayField { f1 } => mina_core::action_trace!(context, kind = "DisplayField", f1 = display(f1)),
         }
     }
 }
@@ -455,10 +457,10 @@ impl mina_core::ActionEvent for Action {
     {
         #[allow(unused_variables)]
         match self {
-            Action::Unit => mina_core::action_debug!(context),
-            Action::AllFields { f1, f2, f3 } => mina_core::action_debug!(context, f1 = f1, f2 = f2.sub, f3 = display(f3.sub), f4 = foo()),
-            Action::OnlyF1 { f1 } => mina_core::action_debug!(context, f1 = f1, f4 = foo()),
-            Action::WithF3 { f1, f3 } => mina_core::action_debug!(context, f1 = f1, f3 = display(f3.sub), f4 = foo()),
+            Action::Unit => mina_core::action_trace!(context, kind = "Unit"),
+            Action::AllFields { f1, f2, f3 } => mina_core::action_trace!(context, kind = "AllFields", f1 = f1, f2 = f2.sub, f3 = display(f3.sub), f4 = foo()),
+            Action::OnlyF1 { f1 } => mina_core::action_trace!(context, kind = "OnlyF1", f1 = f1, f4 = foo()),
+            Action::WithF3 { f1, f3 } => mina_core::action_trace!(context, kind = "WithF3", f1 = f1, f3 = display(f3.sub), f4 = foo()),
         }
     }
 }

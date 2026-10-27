@@ -55,7 +55,9 @@ where
         self.queue.push_back(action);
     }
 
-    pub(crate) fn pop(&mut self) -> Option<Action> {
+    /// Takes the next queued action. The store drains the queue after each
+    /// reducer; tests that run reducers without a store do the same.
+    pub fn pop(&mut self) -> Option<Action> {
         self.queue.pop_front()
     }
 }

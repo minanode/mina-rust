@@ -149,6 +149,8 @@ pub struct NodeTestingService {
     dyn_effects: Option<DynEffects>,
 
     snarker_sok_digest: Option<ByteString>,
+    /// The worker's key and fee, which its results carry (P5.4).
+    snarker: Option<(NonZeroCurvePoint, CurrencyFeeStableV1)>,
 
     cluster_invariants_state: Arc<StdMutex<InvariantsState>>,
     /// Once dropped, it will cause all threads associated to shutdown.
@@ -172,6 +174,7 @@ impl NodeTestingService {
             pending_events: PendingEvents::new(),
             dyn_effects: None,
             snarker_sok_digest: None,
+            snarker: None,
             cluster_invariants_state,
             _shutdown,
         }
@@ -358,9 +361,66 @@ impl mina_node::event_source::EventSourceService for NodeTestingService {
     }
 }
 
+impl mina_node::service::TransitionFrontierPersistService for NodeTestingService {
+    fn persist_open(
+        &mut self,
+        chain_id: mina_node::core::ChainId,
+        genesis_state_hash: mina_p2p_messages::v2::StateHash,
+    ) -> bool {
+        mina_node::service::TransitionFrontierPersistService::persist_open(
+            &mut self.real,
+            chain_id,
+            genesis_state_hash,
+        )
+    }
+
+    fn persist_chain_put(
+        &mut self,
+        chain: Vec<mina_node::persist::ChainEntry>,
+        blocks: Vec<mina_node::core::block::ArcBlockWithHash>,
+    ) -> bool {
+        mina_node::service::TransitionFrontierPersistService::persist_chain_put(
+            &mut self.real,
+            chain,
+            blocks,
+        )
+    }
+
+    fn persist_load(
+        &mut self,
+        request: mina_node::persist::load::PersistLoadRequest,
+        verifier: Option<mina_node::persist::load::BlockProofVerifier>,
+    ) -> bool {
+        mina_node::service::TransitionFrontierPersistService::persist_load(
+            &mut self.real,
+            request,
+            verifier,
+        )
+    }
+
+    fn persist_load_cancel(&mut self) -> bool {
+        mina_node::service::TransitionFrontierPersistService::persist_load_cancel(&mut self.real)
+    }
+
+    fn persist_restore_done(&mut self) -> bool {
+        mina_node::service::TransitionFrontierPersistService::persist_restore_done(&mut self.real)
+    }
+
+    fn persist_discard(&mut self, reason: String) -> bool {
+        mina_node::service::TransitionFrontierPersistService::persist_discard(
+            &mut self.real,
+            reason,
+        )
+    }
+}
+
 impl TransitionFrontierGenesisService for NodeTestingService {
     fn load_genesis(&mut self, config: Arc<GenesisConfig>) {
         TransitionFrontierGenesisService::load_genesis(&mut self.real, config);
+    }
+
+    fn load_genesis_ledgers(&mut self, config: Arc<GenesisConfig>, expected: Arc<GenesisConfig>) {
+        TransitionFrontierGenesisService::load_genesis_ledgers(&mut self.real, config, expected);
     }
 }
 
@@ -529,15 +589,18 @@ thread_local! {
     static GENESIS_PROOF: RefCell<Option<(StateHash, Arc<MinaBaseProofStableV2>)>> = const { RefCell::new(None)};
 }
 
-impl BlockProducerService for NodeTestingService {
+impl NodeTestingService {
     fn provers(&self) -> ledger::proofs::provers::BlockProver {
         self.real.provers()
     }
+}
 
+impl BlockProducerService for NodeTestingService {
     fn prove(
         &mut self,
         block_hash: StateHash,
         mut input: Box<ProverExtendBlockchainInputStableV2>,
+        _deadline: redux::Timestamp,
     ) {
         fn dummy_proof_event(block_hash: StateHash) -> Event {
             let dummy_proof = (*ledger::dummy::dummy_blockchain_proof()).clone();
@@ -619,8 +682,9 @@ impl ExternalSnarkWorkerService for NodeTestingService {
         public_key: NonZeroCurvePoint,
         fee: CurrencyFeeStableV1,
         _: TransactionVerifier,
+        _: Arc<VerifierSRS>,
     ) -> Result<(), mina_node::external_snark_worker::ExternalSnarkWorkerError> {
-        let pub_key = AccountPublicKey::from(public_key);
+        let pub_key = AccountPublicKey::from(public_key.clone());
         let sok_message = SokMessage::create(
             (&fee).into(),
             pub_key.try_into().map_err(|e| {
@@ -631,6 +695,7 @@ impl ExternalSnarkWorkerService for NodeTestingService {
             })?,
         );
         self.set_snarker_sok_digest((&sok_message.digest()).into());
+        self.snarker = Some((public_key, fee));
         let _ = self
             .real
             .event_sender()
@@ -660,7 +725,7 @@ impl ExternalSnarkWorkerService for NodeTestingService {
                     fee_excess: statement.fee_excess,
                     sok_digest: sok_digest.clone(),
                 },
-                proof: (*dummy_transaction_proof()).clone(),
+                proof: dummy_transaction_proof().into(),
             })
         };
         let res = match spec {
@@ -670,10 +735,16 @@ impl ExternalSnarkWorkerService for NodeTestingService {
                 make_dummy_proof(v2),
             )),
         };
+        let (snarker, fee) = self.snarker.clone().unwrap();
+        let work = mina_node::core::snark::Snark {
+            snarker,
+            fee,
+            proofs: res.into(),
+        };
         let _ = self
             .real
             .event_sender()
-            .send(ExternalSnarkWorkerEvent::WorkResult(Arc::new(res)).into());
+            .send(ExternalSnarkWorkerEvent::WorkResult(work).into());
         Ok(())
         // self.real.submit(spec)
     }

@@ -172,6 +172,23 @@ impl Mask {
         self.unregister_mask_impl(behavior, true)
     }
 
+    /// Moves this attached mask onto `parent`, keeping its accounts, its
+    /// children, its uuid and its cached hashes, where `unregister_mask` and
+    /// `register_mask` would drop the hashes. Only for a parent that holds
+    /// the same account as the current one at every account this mask
+    /// doesn't own ([`MaskImpl::replace_parent`]). False if this mask isn't
+    /// attached.
+    pub fn move_onto_parent(&self, parent: &Mask) -> bool {
+        let uuid = self.get_uuid();
+        let Some(old) = self.with(|this| this.replace_parent(parent.clone())) else {
+            return false;
+        };
+        // A copy made by `Mask::copy` isn't registered with its parent.
+        old.remove_child_uuid(uuid);
+        parent.with(|this| this.adopt_child(self.clone()));
+        true
+    }
+
     pub(super) fn unregister_mask_impl(
         &self,
         behavior: UnregisterBehavior,
@@ -238,10 +255,38 @@ impl Mask {
         self.with(|this| this.commit_and_reparent_to_root())
     }
 
-    /// called when parent sets an account; update local state
+    /// Commits this mask into its parent and removes it, its children moving
+    /// to the parent, then does the same with the parent, and so on up the
+    /// chain. Stops at the root, or at the first mask whose parent
+    /// `is_base_parent` accepts, and returns the mask it stopped at, which now
+    /// holds what this one did.
     ///
-    /// if the mask's parent sets an account, we can prune an entry in the mask
-    /// if the account in the parent is the same in the mask *)
+    /// [`Self::commit_and_reparent_to_root`] is this with a predicate that
+    /// accepts nothing. A staged ledger's chain stops at its base mask, whose
+    /// parent is a snarked ledger that must not take the staged changes.
+    /// OCaml's `move_root` likewise commits the new root's mask into the old
+    /// root's, which is parented off the root snarked ledger.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transition_frontier/full_frontier/full_frontier.ml#L457-L479>
+    pub fn commit_and_reparent_to_base<F>(&self, is_base_parent: F) -> Mask
+    where
+        F: Fn(&Mask) -> bool,
+    {
+        let mut mask = self.clone();
+        loop {
+            let Some(parent) = mask.get_parent() else {
+                return mask;
+            };
+            if is_base_parent(&parent) {
+                return mask;
+            }
+            mask.commit();
+            mask.remove_and_reparent();
+            mask = parent;
+        }
+    }
+
+    /// called when parent sets an account; update local state
     pub fn parent_set_notify(&self, account_index: AccountIndex, account: &Account) {
         self.with(|this| this.parent_set_notify(account_index, account))
     }
@@ -298,6 +343,154 @@ impl Mask {
     }
     pub fn has_token_owners(&self) -> bool {
         self.with(|this| this.has_token_owners())
+    }
+
+    /// Moves a root database's accounts to a file in `dir`, where they stay
+    /// readable and writable through this mask and the masks above it (PC3a).
+    /// `Ok(None)` for a mask that isn't a root, or a root already frozen with
+    /// no change since.
+    pub fn freeze_to_disk(
+        &self,
+        dir: &std::path::Path,
+    ) -> std::io::Result<Option<crate::database::FreezeReport>> {
+        self.with(|this| match this {
+            MaskImpl::Root { database, .. } => database.freeze_to_disk(dir),
+            _ => Ok(None),
+        })
+    }
+
+    /// For a root, calls `fun` with each account and its address, in slot
+    /// order, and returns true; false for a mask that isn't a root.
+    pub fn root_iter_with_addr<F>(&self, fun: F) -> bool
+    where
+        F: FnMut(Address, &Account),
+    {
+        self.with(|this| match this {
+            MaskImpl::Root { database, .. } => {
+                database.iter_with_addr(fun);
+                true
+            }
+            _ => false,
+        })
+    }
+
+    /// For a root whose accounts are in a file, whether its changes are
+    /// enough to write the file again (PC3b).
+    pub fn refreeze_due(&self) -> bool {
+        self.with(|this| match this {
+            MaskImpl::Root { database, .. } => database.refreeze_due(),
+            _ => false,
+        })
+    }
+
+    /// For a root whose accounts are in a file, the accounts its read cache
+    /// holds.
+    pub fn disk_cached(&self) -> Option<usize> {
+        self.with(|this| match this {
+            MaskImpl::Root { database, .. } => database.disk_cached(),
+            _ => None,
+        })
+    }
+
+    /// The accounts an attached or unattached mask holds itself; a root's
+    /// count.
+    pub fn num_own_accounts(&self) -> usize {
+        self.with(|this| match this {
+            MaskImpl::Root { .. } => this.num_accounts(),
+            MaskImpl::Attached { owning_account, .. }
+            | MaskImpl::Unattached { owning_account, .. } => owning_account.len(),
+        })
+    }
+
+    /// Makes an attached mask over a root a root of its own, a copy of its
+    /// parent's database with its changes committed in; see
+    /// [`MaskImpl::detach_into_root`]. The accounts moved, or None.
+    pub fn detach_into_root(&self) -> Option<usize> {
+        self.with(|this| this.detach_into_root())
+    }
+
+    /// A copy of this ledger that is a database of its own, with no parent:
+    /// for a root the same as [`Self::copy`] (which shares the file of a
+    /// database on disk); for a mask, its parent's independent copy with the
+    /// mask's own accounts set in. [`Self::copy`] of a mask reads through the
+    /// same parent without being registered as its child, so folding it into
+    /// that parent later (`remove_and_reparent`) panics, and so would a fold
+    /// of another mask into the parent under it (PC3c review).
+    pub fn copy_independent(&self) -> Mask {
+        let Some(parent) = self.get_parent() else {
+            return self.copy();
+        };
+        let mut base = parent.copy_independent();
+        for index in self.own_account_indexes() {
+            if let Some(account) = self.get_at_index(index) {
+                base.set_at_index(index, account)
+                    .expect("a database takes an account at any index");
+            }
+        }
+        base
+    }
+
+    /// Whether masks are registered over this one.
+    pub fn has_children(&self) -> bool {
+        self.with(|this| this.any_child_alive())
+    }
+
+    /// For a root whose accounts are in a file, the slots changed since.
+    pub fn disk_state(&self) -> Option<usize> {
+        self.with(|this| match this {
+            MaskImpl::Root { database, .. } => database.disk_state(),
+            _ => None,
+        })
+    }
+
+    /// Checks a root database's derived indexes against its leaves without
+    /// changing it. Persistence loads independent roots, not attached masks.
+    /// Returns the number of filled leaves checked.
+    pub fn validate_account_indexes(&self) -> Result<usize, String> {
+        self.with(|this| match this {
+            MaskImpl::Root { database, .. } => database.with(|db| db.validate_account_indexes()),
+            _ => Err("account index validation requires a root ledger".into()),
+        })
+    }
+
+    /// As [`Self::validate_account_indexes`], for a mask over a root ledger
+    /// (a restored root staged ledger over its snarked ledger, I5d5): its own
+    /// indexes against its own accounts, and its accounts against the
+    /// parent's (see `MaskImpl::validate_child_account_indexes`). The
+    /// parent's own indexes are checked separately. Returns the number of the
+    /// mask's own accounts checked.
+    pub fn validate_child_account_indexes(&self) -> Result<usize, String> {
+        self.with(|this| this.validate_child_account_indexes())
+    }
+
+    /// Makes a mask hold its own copy of each of these accounts it reads from
+    /// its parent, without changing what it reads (see
+    /// `MaskImpl::hold_parent_accounts`). Returns how many it now holds that
+    /// it didn't.
+    pub fn hold_parent_accounts(&self, account_ids: impl IntoIterator<Item = AccountId>) -> usize {
+        self.with(|this| this.hold_parent_accounts(account_ids))
+    }
+
+    /// Release own accounts equal to the parent's resident account hashes,
+    /// except those referenced by pending work. Only call for the root staged
+    /// mask after the snarked fold and rebase, with all pending scan-state
+    /// references (including incomplete second passes). No disk reads.
+    pub fn reclaim_unreferenced_accounts(&self, pending: &HashSet<AccountId>) -> usize {
+        #[cfg(debug_assertions)]
+        let before = self.clone().merkle_root();
+        let reclaimed = self.with(|this| this.reclaim_unreferenced_accounts(pending));
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            before,
+            self.clone().merkle_root(),
+            "reclamation changed the root"
+        );
+        reclaimed
+    }
+
+    /// The indices of the accounts the mask holds itself.
+    pub fn own_account_indexes(&self) -> Vec<AccountIndex> {
+        self.with(|this| this.own_account_indexes())
     }
 
     /// For tests only, check if the address is in the mask, without checking parent
@@ -512,6 +705,283 @@ mod tests {
     #[cfg(target_family = "wasm")]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
+    // OCaml 4.0.2 `mina ledger hash` of the empty mainnet ledger.
+    const EMPTY_ROOT: &str = "jwkaDMeSMeL94hwJg6EYtSRD6gxB1BHpXnGKnZ1VW6jthKzgcef";
+
+    #[test]
+    fn empty_unattached_mask_hashes_without_parent() {
+        let mut mask = Mask::new_unattached(35);
+        assert_eq!(
+            mina_p2p_messages::v2::LedgerHash::from_fp(mask.merkle_root()).to_string(),
+            EMPTY_ROOT
+        );
+    }
+
+    #[test]
+    fn empty_unattached_mask_merkle_path_without_parent() {
+        // Start with a cold cache, independently of the root-hash test.
+        let mut mask = Mask::new_unattached(35);
+        let path = mask.merkle_path(Address::first(35));
+        assert_eq!(path.len(), 35);
+        assert_eq!(
+            mina_p2p_messages::v2::LedgerHash::from_fp(mask.merkle_root()).to_string(),
+            EMPTY_ROOT
+        );
+    }
+
+    // Build the reference directly in a database from the input accounts, never
+    // from the mask's root or path. Check every leaf, including absent accounts,
+    // and both root-first and path-first cache population orders.
+    fn assert_mask_view(mask: &mut Mask, accounts: &[Option<Account>], root_first: bool) {
+        let depth = 4;
+        let mut reference = Database::<V2>::create(depth as u8);
+        for (index, account) in accounts.iter().enumerate() {
+            if let Some(account) = account {
+                reference.set(
+                    Address::from_index(AccountIndex(index as u64), depth),
+                    Box::new(account.clone()),
+                );
+            }
+        }
+        if root_first {
+            assert_eq!(mask.merkle_root(), reference.merkle_root());
+        }
+        for index in 0..(1 << depth) {
+            let addr = Address::from_index(AccountIndex(index), depth);
+            assert_eq!(mask.get(addr.clone()), reference.get(addr.clone()));
+            assert_eq!(mask.merkle_path(addr.clone()), reference.merkle_path(addr));
+        }
+        for account in accounts.iter().flatten() {
+            assert_eq!(
+                mask.index_of_account(account.id()),
+                reference.index_of_account(account.id())
+            );
+        }
+        assert_eq!(mask.merkle_root(), reference.merkle_root());
+    }
+
+    fn set_fixture(mask: &mut Mask, index: u64, account: &Account) {
+        mask.set(
+            Address::from_index(AccountIndex(index), 4),
+            Box::new(account.clone()),
+        );
+    }
+
+    #[test]
+    fn parent_change_attach_invalidates_cached_roots_and_paths() {
+        for root_first in [false, true] {
+            for owns_account in [false, true] {
+                let inherited = Account::rand();
+                let owned = Account::rand();
+                let descendant = Account::rand();
+                let mut parent = Mask::create(4);
+                set_fixture(&mut parent, 0, &inherited);
+                let mut mask = Mask::new_unattached(4);
+                let own = owns_account.then_some(owned);
+                if let Some(account) = &own {
+                    set_fixture(&mut mask, 1, account);
+                }
+                let mut child = mask.make_child();
+                set_fixture(&mut child, 2, &descendant);
+                assert_mask_view(&mut mask, &[None, own.clone()], root_first);
+                assert_mask_view(
+                    &mut child,
+                    &[None, own.clone(), Some(descendant.clone())],
+                    root_first,
+                );
+
+                parent.register_mask(mask.clone());
+                assert_mask_view(
+                    &mut mask,
+                    &[Some(inherited.clone()), own.clone()],
+                    root_first,
+                );
+                assert_mask_view(
+                    &mut child,
+                    &[Some(inherited), own, Some(descendant)],
+                    root_first,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parent_change_detach_invalidates_cached_roots_and_paths() {
+        for root_first in [false, true] {
+            let inherited = Account::rand();
+            let owned = Account::rand();
+            let descendant = Account::rand();
+            let mut parent = Mask::create(4);
+            set_fixture(&mut parent, 0, &inherited);
+            let mut mask = parent.make_child();
+            set_fixture(&mut mask, 1, &owned);
+            let mut child = mask.make_child();
+            set_fixture(&mut child, 2, &descendant);
+            assert_mask_view(
+                &mut mask,
+                &[Some(inherited.clone()), Some(owned.clone())],
+                root_first,
+            );
+            assert_mask_view(
+                &mut child,
+                &[
+                    Some(inherited.clone()),
+                    Some(owned.clone()),
+                    Some(descendant.clone()),
+                ],
+                root_first,
+            );
+
+            mask.unregister_mask(UnregisterBehavior::IPromiseIAmReparentingThisMask);
+            assert_mask_view(&mut mask, &[None, Some(owned.clone())], root_first);
+            assert_mask_view(
+                &mut child,
+                &[None, Some(owned), Some(descendant)],
+                root_first,
+            );
+            assert!(mask.index_of_account(inherited.id()).is_none());
+            assert!(child.index_of_account(inherited.id()).is_none());
+            parent.register_mask(mask);
+        }
+    }
+
+    #[test]
+    fn parent_change_reparent_invalidates_cached_roots_and_paths() {
+        for root_first in [false, true] {
+            let inherited = Account::rand();
+            let replacement = Account::rand();
+            let owned = Account::rand();
+            let descendant = Account::rand();
+            let mut parent = Mask::create(4);
+            let mut next_parent = Mask::create(4);
+            set_fixture(&mut parent, 0, &inherited);
+            set_fixture(&mut next_parent, 0, &replacement);
+            let mut mask = parent.make_child();
+            set_fixture(&mut mask, 1, &owned);
+            let mut child = mask.make_child();
+            set_fixture(&mut child, 2, &descendant);
+            assert_mask_view(
+                &mut mask,
+                &[Some(inherited.clone()), Some(owned.clone())],
+                root_first,
+            );
+            assert_mask_view(
+                &mut child,
+                &[
+                    Some(inherited.clone()),
+                    Some(owned.clone()),
+                    Some(descendant.clone()),
+                ],
+                root_first,
+            );
+
+            mask.unregister_mask(UnregisterBehavior::IPromiseIAmReparentingThisMask);
+            next_parent.register_mask(mask.clone());
+            assert_mask_view(
+                &mut mask,
+                &[Some(replacement.clone()), Some(owned.clone())],
+                root_first,
+            );
+            assert_mask_view(
+                &mut child,
+                &[Some(replacement), Some(owned), Some(descendant)],
+                root_first,
+            );
+            assert!(mask.index_of_account(inherited.id()).is_none());
+            assert!(child.index_of_account(inherited.id()).is_none());
+        }
+    }
+
+    #[test]
+    fn parent_change_commit_orders_preserve_roots_and_paths() {
+        for root_first in [false, true] {
+            for child_first in [false, true] {
+                let inherited = Account::rand();
+                let owned = Account::rand();
+                let descendant = Account::rand();
+                let mut root = Mask::create(4);
+                set_fixture(&mut root, 0, &inherited);
+                let mut mask = root.make_child();
+                set_fixture(&mut mask, 1, &owned);
+                let mut child = mask.make_child();
+                set_fixture(&mut child, 2, &descendant);
+                let mut sibling = root.make_child();
+                let root_view = [Some(inherited.clone())];
+                let mask_view = [Some(inherited.clone()), Some(owned.clone())];
+                let full_view = [Some(inherited), Some(owned), Some(descendant)];
+                assert_mask_view(&mut root, &root_view, root_first);
+                assert_mask_view(&mut sibling, &root_view, root_first);
+                assert_mask_view(&mut mask, &mask_view, root_first);
+                assert_mask_view(&mut child, &full_view, root_first);
+
+                if child_first {
+                    child.commit();
+                    assert_mask_view(&mut mask, &full_view, root_first);
+                    assert_mask_view(&mut child, &full_view, root_first);
+                }
+                mask.commit();
+                let committed = if child_first {
+                    &full_view[..]
+                } else {
+                    &mask_view[..]
+                };
+                assert_mask_view(&mut root, committed, root_first);
+                assert_mask_view(&mut sibling, committed, root_first);
+                assert_mask_view(&mut mask, committed, root_first);
+                assert_mask_view(&mut child, &full_view, root_first);
+                mask.remove_and_reparent();
+                assert_mask_view(&mut mask, &[], root_first);
+                assert_eq!(child.get_parent().unwrap().get_uuid(), root.get_uuid());
+                assert_mask_view(&mut child, &full_view, root_first);
+                child.commit();
+                assert_mask_view(&mut root, &full_view, root_first);
+                assert_mask_view(&mut sibling, &full_view, root_first);
+                assert_mask_view(&mut child, &full_view, root_first);
+                child.unregister_mask(UnregisterBehavior::Check);
+                assert_mask_view(&mut child, &[], root_first);
+            }
+        }
+    }
+
+    #[test]
+    fn copied_mask_does_not_retain_original_children() {
+        let root = Mask::create(4);
+        // All three variants may have registered children. A copy must not
+        // retain those children or change their actual parent.
+        for parent in [root.clone(), root.make_child(), Mask::new_unattached(4)] {
+            let child = parent.make_child();
+            let child_id = child.get_uuid();
+            let copy = parent.copy();
+            assert!(!copy.with(|inner| inner.any_child_alive()));
+            assert_eq!(child.get_parent().unwrap().get_uuid(), parent.get_uuid());
+            drop(child);
+            assert!(!crate::mask::is_alive(&child_id));
+            drop(copy);
+            drop(parent);
+        }
+        assert!(!root.with(|inner| inner.any_child_alive()));
+    }
+
+    #[test]
+    fn frontier_length_mask_chains_are_released_after_compaction() {
+        // Exercise more than 16,000 generations while bounding the live chain
+        // at mainnet k + a root. Track our UUIDs, not the process-global count,
+        // because other ledger tests run concurrently.
+        let mut tip = Mask::create(35);
+        for _ in 0..56 {
+            let mut ids = Vec::new();
+            for _ in 0..290 {
+                tip = tip.make_child();
+                ids.push(tip.get_uuid());
+            }
+            assert!(tip.get(Address::first(35)).is_none());
+            let root = tip.commit_and_reparent_to_root().unwrap();
+            tip = root;
+            assert!(ids.iter().all(|id| !crate::mask::is_alive(id)));
+            assert_eq!(tip.nmasks_to_root(), 0);
+        }
+    }
+
     #[test]
     fn test_drop_mask() {
         let root_uuid;
@@ -705,6 +1175,151 @@ mod tests {
     }
 }
 
+/// PC3b: an attached mask over a frozen root made a root of its own.
+#[cfg(all(test, not(target_family = "wasm")))]
+mod tests_detach {
+    use crate::{scan_state::currency::Balance, Account, AccountIndex, BaseLedger, Database, Mask};
+
+    const DEPTH: usize = 20;
+
+    fn set_balance(mask: &mut Mask, index: u64, balance: u64) {
+        let mut account = mask.get_at_index(AccountIndex(index)).unwrap();
+        account.balance = Balance::from_u64(balance);
+        mask.set_at_index(AccountIndex(index), account).unwrap();
+    }
+
+    #[test]
+    fn detach_into_root_keeps_the_ledger_parent_and_children() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut parent = Mask::new_root(Database::create_with_token_owners(DEPTH as u8));
+        for _ in 0..100 {
+            let account = Account::rand();
+            parent.get_or_create_account(account.id(), account).unwrap();
+        }
+        parent.freeze_to_disk(dir.path()).unwrap().unwrap();
+        let parent_root = parent.merkle_root();
+        let parent_list = parent.to_list();
+
+        let mut mask = parent.make_child();
+        for index in [0, 3, 99] {
+            set_balance(&mut mask, index, index + 1000);
+        }
+        let added = Account::rand();
+        mask.get_or_create_account(added.id(), added.clone())
+            .unwrap();
+        let mut child = mask.make_child();
+        set_balance(&mut child, 3, 7);
+        set_balance(&mut child, 4, 8);
+        let mask_root = mask.merkle_root();
+        let mask_list = mask.to_list();
+        let child_root = child.merkle_root();
+        let child_list = child.to_list();
+        let uuid = mask.get_uuid();
+
+        assert_eq!(mask.detach_into_root(), Some(4));
+        assert!(mask.is_root());
+        assert_eq!(mask.get_uuid(), uuid);
+        assert!(crate::mask::is_alive(&uuid));
+        // The copy shares the parent's file, its changes in its overlay.
+        assert_eq!(mask.disk_state(), Some(4));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(mask.merkle_root(), mask_root);
+        assert_eq!(mask.to_list(), mask_list);
+        assert_eq!(
+            mask.location_of_account(&added.id()),
+            Some(crate::Address::from_index(AccountIndex(100), DEPTH))
+        );
+        // The child is still the child of the same mask, and sees the same.
+        assert_eq!(child.get_parent().unwrap().get_uuid(), uuid);
+        assert_eq!(child.merkle_root(), child_root);
+        assert_eq!(child.to_list(), child_list);
+        // The parent lost a child and nothing else.
+        assert_eq!(parent.merkle_root(), parent_root);
+        assert_eq!(parent.to_list(), parent_list);
+        assert!(parent.remove_child_uuid(uuid.clone()).is_none());
+        // The root of its own takes commits and writes its own file.
+        child.commit();
+        let mut expected = parent.copy();
+        for (index, balance) in [(0, 1000), (3, 7), (4, 8), (99, 1099)] {
+            set_balance(&mut expected, index, balance);
+        }
+        expected.get_or_create_account(added.id(), added).unwrap();
+        assert_eq!(mask.merkle_root(), expected.merkle_root());
+        mask.freeze_to_disk(dir.path()).unwrap().unwrap();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+        assert_eq!(mask.to_list(), expected.to_list());
+        // A root, or a mask over another mask, isn't detached.
+        assert_eq!(parent.detach_into_root(), None);
+        let grandchild = child.make_child().make_child();
+        assert_eq!(grandchild.detach_into_root(), None);
+    }
+
+    /// An independent copy of a mask over a mask over a frozen database is a
+    /// database of its own holding the same ledger; the originals can then
+    /// be folded into their parents, or changed, without touching it.
+    #[test]
+    fn copy_independent_of_a_chain_of_masks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut root = Mask::new_root(Database::create_with_token_owners(DEPTH as u8));
+        for _ in 0..40 {
+            let account = Account::rand();
+            root.get_or_create_account(account.id(), account).unwrap();
+        }
+        root.freeze_to_disk(dir.path()).unwrap().unwrap();
+        let mut middle = root.make_child();
+        set_balance(&mut middle, 1, 1001);
+        let mut top = middle.make_child();
+        set_balance(&mut top, 2, 2002);
+        let added = Account::rand();
+        top.get_or_create_account(added.id(), added.clone())
+            .unwrap();
+        let (top_root, top_list) = (top.merkle_root(), top.to_list());
+
+        let mut copy = top.copy_independent();
+        assert!(copy.is_root());
+        assert!(copy.get_parent().is_none());
+        assert_eq!(copy.merkle_root(), top_root);
+        assert_eq!(copy.to_list(), top_list);
+        // Folding the originals down and changing them leaves the copy as it was.
+        top.commit();
+        set_balance(&mut middle, 3, 3003);
+        middle.commit();
+        assert_eq!(copy.merkle_root(), top_root);
+        assert_eq!(copy.to_list(), top_list);
+        // A root's independent copy is its copy.
+        assert!(root.copy_independent().is_root());
+    }
+
+    /// A copy of a mask reads through the same parent without being its
+    /// registered child (PC3c: a sync ledger copied from a mask). It detaches
+    /// as a registered one does, and the original is untouched.
+    #[test]
+    fn detach_into_root_of_an_unregistered_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut parent = Mask::new_root(Database::create_with_token_owners(DEPTH as u8));
+        for _ in 0..50 {
+            let account = Account::rand();
+            parent.get_or_create_account(account.id(), account).unwrap();
+        }
+        parent.freeze_to_disk(dir.path()).unwrap().unwrap();
+        let mut mask = parent.make_child();
+        set_balance(&mut mask, 1, 1001);
+        let mut copy = mask.copy();
+        set_balance(&mut copy, 2, 2002);
+        let (mask_root, copy_root) = (mask.merkle_root(), copy.merkle_root());
+        let copy_list = copy.to_list();
+
+        assert_eq!(copy.detach_into_root(), Some(2));
+        assert!(copy.is_root());
+        assert_eq!(copy.merkle_root(), copy_root);
+        assert_eq!(copy.to_list(), copy_list);
+        // The registered original still reads through the parent.
+        assert!(!mask.is_root());
+        assert_eq!(mask.merkle_root(), mask_root);
+        assert!(parent.has_children());
+    }
+}
+
 #[cfg(test)]
 mod tests_mask_ocaml {
     use crate::scan_state::currency::{Balance, Magnitude};
@@ -811,9 +1426,11 @@ mod tests_mask_ocaml {
         assert_eq!(account, child_account);
     }
 
-    // "mask prune after parent notification"
+    // "mask prune after parent notification", inverted: OCaml's test calls
+    // `Maskable.set`, which no production path does (PRUNE-1). A mask keeps
+    // its own account when the parent's becomes the same.
     #[test]
-    fn test_mask_prune_after_parent_notif() {
+    fn test_mask_keeps_own_account_after_parent_notif() {
         let (mut root, mask) = new_instances(DEPTH);
         let mut mask = root.register_mask(mask);
 
@@ -825,8 +1442,8 @@ mod tests_mask_ocaml {
 
         root.set(FIRST_LOC, account);
 
-        // The address is no more in the mask
-        assert!(!mask.test_is_in_mask(&FIRST_LOC));
+        // The address is still in the mask
+        assert!(mask.test_is_in_mask(&FIRST_LOC));
     }
 
     // "commit puts mask contents in parent, flushes mask"
@@ -1381,5 +1998,403 @@ mod tests_mask_ocaml {
             assert_eq!(mask.nmasks_to_root(), 2 + index);
             mask = mask.make_child();
         }
+    }
+}
+
+/// Masks over a ledger that changes under them, and chains of masks committed
+/// up to a base, as the root snarked ledger, the root staged ledger's mask over
+/// it and the masks of the blocks after it are (R38).
+#[cfg(test)]
+mod tests_mask_chain {
+    use std::collections::BTreeMap;
+
+    use crate::scan_state::currency::Balance;
+
+    use super::*;
+
+    #[cfg(target_family = "wasm")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
+
+    const DEPTH: usize = 4;
+    const SIZE: u64 = 1 << DEPTH;
+
+    /// What a ledger should hold: accounts by index.
+    type View = BTreeMap<u64, Account>;
+
+    fn addr(index: u64) -> Address {
+        Address::from_index(AccountIndex(index), DEPTH)
+    }
+
+    /// A database of `n` random accounts, and what it holds.
+    fn database(n: u64) -> (Mask, View) {
+        let mut db = Mask::new_root(Database::create(DEPTH as u8));
+        let mut view = View::new();
+        for index in 0..n {
+            let account = Account::rand();
+            let at = db
+                .get_or_create_account(account.id(), account.clone())
+                .unwrap()
+                .addr();
+            assert_eq!(at, addr(index));
+            view.insert(index, account);
+        }
+        (db, view)
+    }
+
+    /// Gives the accounts at `indexes` of `view` new balances in `ledger`
+    /// and returns what `ledger` then holds.
+    fn set_balances(ledger: &mut Mask, view: &View, balances: &[(u64, u64)]) -> View {
+        let mut view = view.clone();
+        for (index, balance) in balances {
+            let account = view.get_mut(index).unwrap();
+            account.balance = Balance::from_u64(*balance);
+            ledger.set(addr(*index), Box::new(account.clone()));
+        }
+        view
+    }
+
+    /// Creates an account in `ledger`, at the next free index.
+    fn create(ledger: &mut Mask, view: &View) -> View {
+        let mut view = view.clone();
+        let account = Account::rand();
+        let at = ledger
+            .get_or_create_account(account.id(), account.clone())
+            .unwrap()
+            .addr();
+        view.insert(at.to_index().as_u64(), account);
+        view
+    }
+
+    /// Reads every hash of `ledger`, so that it caches what it reads from its
+    /// parents.
+    fn warm(ledger: &mut Mask) {
+        ledger.merkle_root();
+        for index in 0..SIZE {
+            ledger.merkle_path(addr(index));
+        }
+    }
+
+    /// `ledger` reads the accounts, root hash and Merkle paths of a database
+    /// holding `view`.
+    fn assert_reads(name: &str, ledger: &Mask, view: &View) {
+        let mut ledger = ledger.clone();
+        let mut expected = Mask::new_root(Database::create(DEPTH as u8));
+        for (index, account) in view {
+            expected.set(addr(*index), Box::new(account.clone()));
+        }
+        for index in 0..SIZE {
+            assert_eq!(
+                ledger.get(addr(index)).map(|account| *account),
+                view.get(&index).cloned(),
+                "{name}: account {index}"
+            );
+        }
+        assert_eq!(ledger.merkle_root(), expected.merkle_root(), "{name}: root");
+        for index in 0..SIZE {
+            assert_eq!(
+                ledger.merkle_path(addr(index)),
+                expected.merkle_path(addr(index)),
+                "{name}: path {index}"
+            );
+        }
+    }
+
+    /// The root snarked ledger changes under the root staged ledger's mask
+    /// and the masks of the blocks after it, as `compact_snarked_ledgers`
+    /// commits the new snarked ledger into it: every mask reads what it did,
+    /// except at an index that neither it nor a mask between it and the
+    /// database holds. Notifying every descendant made `block2` prune index 0
+    /// (the database now has its account) and read the root's instead.
+    #[test]
+    fn a_database_changing_under_a_chain_of_masks() {
+        let (mut db, base) = database(10);
+        let mut root = db.make_child();
+        let root_view = set_balances(&mut root, &base, &[(0, 100), (1, 101), (2, 102), (3, 103)]);
+        let mut block1 = root.make_child();
+        let block1_view = set_balances(&mut block1, &root_view, &[(2, 202), (4, 204), (5, 205)]);
+        let mut block2 = block1.make_child();
+        let block2_view = set_balances(&mut block2, &block1_view, &[(0, 300), (4, 304), (6, 306)]);
+        let block2_view = create(&mut block2, &block2_view);
+        let mut fork = root.make_child();
+        let fork_view = set_balances(&mut fork, &root_view, &[(1, 401), (7, 407)]);
+        for ledger in [&mut db, &mut root, &mut block1, &mut block2, &mut fork] {
+            warm(ledger);
+        }
+
+        // 0: as `block2` has it, `root` has another. 1: as `root` has it,
+        // `fork` has another. 5: `block1` has its own. 7: `fork` has its own.
+        // 8: nobody has its own.
+        let mut snarked = db.make_child();
+        let new_base = set_balances(
+            &mut snarked,
+            &base,
+            &[(0, 300), (1, 101), (5, 605), (7, 507), (8, 508)],
+        );
+        snarked.commit();
+        snarked.remove_and_reparent();
+
+        let changed = |view: &View| {
+            let mut view = view.clone();
+            for index in [5, 7, 8] {
+                if view[&index].balance == base[&index].balance {
+                    view.insert(index, new_base[&index].clone());
+                }
+            }
+            view
+        };
+        assert_reads("db", &db, &new_base);
+        assert_reads("root", &root, &changed(&root_view));
+        assert_reads("block1", &block1, &changed(&block1_view));
+        assert_reads("block2", &block2, &changed(&block2_view));
+        assert_reads("fork", &fork, &changed(&fork_view));
+        // `root` keeps the account the database now holds too (PRUNE-1).
+        assert!(root.test_is_in_mask(&addr(1)));
+        assert!(root.test_is_in_mask(&addr(0)));
+    }
+
+    /// A chain committed up to a base: the new root's mask (`block2`) into
+    /// the old root's (`root`), whose parent is the snarked ledger, which
+    /// keeps its hash. The masks of the blocks after the new root move to the
+    /// root's mask and read what they did.
+    #[test]
+    fn commit_and_reparent_to_base_stops_under_the_base() {
+        let (mut db, base) = database(8);
+        let mut root = db.make_child();
+        let root_view = set_balances(&mut root, &base, &[(0, 100), (1, 101)]);
+        let mut block1 = root.make_child();
+        let block1_view = set_balances(&mut block1, &root_view, &[(1, 201), (2, 202)]);
+        let mut block2 = block1.make_child();
+        let block2_view = set_balances(&mut block2, &block1_view, &[(2, 302), (3, 303)]);
+        let block2_view = create(&mut block2, &block2_view);
+        let mut next = block2.make_child();
+        let next_view = set_balances(&mut next, &block2_view, &[(0, 400), (4, 404)]);
+        let mut other = block2.make_child();
+        let other_view = set_balances(&mut other, &block2_view, &[(0, 500)]);
+        for ledger in [
+            &mut db,
+            &mut root,
+            &mut block1,
+            &mut block2,
+            &mut next,
+            &mut other,
+        ] {
+            warm(ledger);
+        }
+
+        let db_uuid = db.get_uuid();
+        let new_root = block2.commit_and_reparent_to_base(|parent| parent.get_uuid() == db_uuid);
+
+        assert_eq!(new_root.get_uuid(), root.get_uuid());
+        assert_eq!(new_root.get_parent().unwrap().get_uuid(), db_uuid);
+        assert!(!block1.is_attached());
+        assert!(!block2.is_attached());
+        for child in [&next, &other] {
+            assert_eq!(child.get_parent().unwrap().get_uuid(), root.get_uuid());
+        }
+        assert_reads("db", &db, &base);
+        assert_reads("new root", &new_root, &block2_view);
+        assert_reads("next", &next, &next_view);
+        assert_reads("other", &other, &other_view);
+
+        // Already at the base, or a root: nothing to do.
+        let same = new_root.commit_and_reparent_to_base(|parent| parent.get_uuid() == db_uuid);
+        assert_eq!(same.get_uuid(), root.get_uuid());
+        assert_eq!(db.commit_and_reparent_to_base(|_| true).get_uuid(), db_uuid);
+        assert_reads("new root again", &same, &block2_view);
+    }
+
+    /// With no base among its parents the chain goes into the database, as
+    /// with `commit_and_reparent_to_root`: a staged ledger over a database of
+    /// its own, as the genesis staged ledger's copy is.
+    #[test]
+    fn commit_and_reparent_to_base_stops_at_a_root() {
+        let (db, base) = database(6);
+        let mut block1 = db.make_child();
+        let block1_view = set_balances(&mut block1, &base, &[(0, 100), (1, 101)]);
+        let mut block2 = block1.make_child();
+        let block2_view = set_balances(&mut block2, &block1_view, &[(1, 201), (2, 202)]);
+        let mut next = block2.make_child();
+        let next_view = set_balances(&mut next, &block2_view, &[(3, 303)]);
+
+        let new_root = block2.commit_and_reparent_to_base(|_| false);
+
+        assert_eq!(new_root.get_uuid(), db.get_uuid());
+        assert!(new_root.is_root());
+        assert!(!block1.is_attached());
+        assert!(!block2.is_attached());
+        assert_eq!(next.get_parent().unwrap().get_uuid(), db.get_uuid());
+        assert_reads("db", &db, &block2_view);
+        assert_reads("next", &next, &next_view);
+    }
+
+    /// A mask over a database whose accounts are updated in place or new
+    /// (I5d5's restored root staged ledger) passes; one that puts an account
+    /// the database holds somewhere else, or another account where the
+    /// database holds one, fails, though each lookup through the mask alone
+    /// would agree with its leaves.
+    #[test]
+    fn child_account_indexes_agree_with_the_parent() {
+        let (db, base) = database(6);
+        assert!(db.validate_child_account_indexes().is_err());
+        let mut staged = db.make_child();
+        let view = set_balances(&mut staged, &base, &[(1, 101), (4, 104)]);
+        create(&mut staged, &view);
+        assert_eq!(staged.validate_child_account_indexes(), Ok(3));
+        assert_eq!(db.validate_account_indexes(), Ok(6));
+        // Nothing of its own: nothing to check.
+        assert_eq!(db.make_child().validate_child_account_indexes(), Ok(0));
+
+        // The database's accounts 0 and 1, swapped.
+        let mut swapped = db.make_child();
+        swapped.set(addr(0), Box::new(base[&1].clone()));
+        swapped.set(addr(1), Box::new(base[&0].clone()));
+        let error = swapped.validate_child_account_indexes().unwrap_err();
+        assert!(error.contains("id-to-address"), "{error}");
+        assert_eq!(swapped.location_of_account(&base[&1].id()), Some(addr(0)));
+
+        // Another account over one the database holds.
+        let mut replaced = db.make_child();
+        replaced.set(addr(2), Box::new(Account::rand()));
+        let error = replaced.validate_child_account_indexes().unwrap_err();
+        assert!(error.contains("id-to-address"), "{error}");
+
+        // An account the database holds, again past its last account.
+        let mut duplicated = db.make_child();
+        duplicated.set(addr(6), Box::new(base[&3].clone()));
+        let error = duplicated.validate_child_account_indexes().unwrap_err();
+        assert!(error.contains("id-to-address"), "{error}");
+    }
+
+    #[test]
+    fn reclamation_keeps_equal_pending_accounts() {
+        let (mut db, base) = database(6);
+        db.set_token_owners();
+        let mut staged = db.make_child();
+        staged.hold_parent_accounts([base[&0].id(), base[&5].id()]);
+        let view = set_balances(&mut staged, &base, &[(2, 102)]);
+        let child = staged.make_child();
+        warm(&mut db);
+        warm(&mut staged);
+        let pending = HashSet::from([base[&0].id()]);
+        assert_eq!(staged.reclaim_unreferenced_accounts(&pending), 1);
+        assert_eq!(
+            staged.own_account_indexes(),
+            vec![AccountIndex(0), AccountIndex(2)]
+        );
+        assert_eq!(staged.validate_child_account_indexes(), Ok(2));
+        assert_reads("reclaimed", &staged, &view);
+        assert_reads("child", &child, &view);
+        // A later partial proof must still be hidden by the pending account.
+        set_balances(&mut db, &base, &[(0, 500)]);
+        assert_reads("pending after parent change", &staged, &view);
+        assert_reads("child after parent change", &child, &view);
+    }
+
+    #[test]
+    fn reclamation_drops_equal_finalized_accounts_without_disk_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut db, base) = database(6);
+        db.set_token_owners();
+        let mut staged = db.make_child();
+        staged.hold_parent_accounts(base.values().map(Account::id));
+        let mut child = staged.make_child();
+        warm(&mut staged);
+        warm(&mut child);
+        let root = staged.merkle_root();
+        db.freeze_to_disk(dir.path()).unwrap().unwrap();
+        assert_eq!(db.disk_cached(), Some(0));
+        assert_eq!(staged.reclaim_unreferenced_accounts(&HashSet::new()), 6);
+        assert_eq!(staged.num_own_accounts(), 0);
+        assert!(staged.get_raw_inner_hashes().is_empty());
+        assert_eq!(staged.merkle_root(), root);
+        assert_eq!(child.merkle_root(), root);
+        // The cold account cache remains empty: only resident hashes were read.
+        assert_eq!(db.disk_cached(), Some(0));
+        assert_eq!(staged.validate_child_account_indexes(), Ok(0));
+        assert_reads("finalized", &staged, &base);
+        assert_reads("child", &child, &base);
+        // Index removal must not lose the parent's last location or tokens.
+        assert_eq!(staged.last_filled(), db.last_filled());
+        for account in base.values() {
+            assert_eq!(
+                staged.token_owner(account.id().derive_token_id()),
+                db.token_owner(account.id().derive_token_id())
+            );
+        }
+        set_balances(&mut db, &base, &[(5, 505)]);
+        let mut changed = base.clone();
+        changed.get_mut(&5).unwrap().balance = Balance::from_u64(505);
+        assert_reads("inherited after reclaim", &staged, &changed);
+        assert_reads("child after reclaim", &child, &changed);
+    }
+
+    #[test]
+    fn reclamation_keeps_accounts_when_parent_leaf_hash_is_missing() {
+        let (mut db, base) = database(6);
+        warm(&mut db);
+        let mut parent = db.make_child();
+        let parent_view = set_balances(&mut parent, &base, &[(0, 700)]);
+        // The parent's owned leaf has no cached hash. It must not fall
+        // through to the old database hash, which equals the staged value.
+        let mut staged = parent.make_child();
+        staged.set(addr(0), Box::new(base[&0].clone()));
+        assert_eq!(staged.reclaim_unreferenced_accounts(&HashSet::new()), 0);
+        assert_eq!(staged.num_own_accounts(), 1);
+        assert_reads("missing hash", &staged, &base);
+        assert_reads("parent", &parent, &parent_view);
+    }
+
+    /// A mask holding its own copy of accounts it reads from its database
+    /// (I5d5): what it reads and its hashes stay as they were; a later change
+    /// of a held account in the database, folded in from a snarked mask as
+    /// `compact_snarked_ledgers` does, doesn't show through, and one to the
+    /// same account leaves it held; an account it doesn't hold does show
+    /// through.
+    #[test]
+    fn held_parent_accounts_stop_the_parent_showing_through() {
+        let (db, base) = database(6);
+        let mut staged = db.make_child();
+        let view = set_balances(&mut staged, &base, &[(1, 101)]);
+        warm(&mut staged);
+        let mut unknown = Account::rand();
+        unknown.balance = Balance::from_u64(9);
+        let ids = [0, 1, 2, 4].map(|index| view[&index].id());
+        let held = staged.hold_parent_accounts(ids.clone().into_iter().chain([unknown.id()]));
+        assert_eq!(held, 3);
+        assert_eq!(staged.hold_parent_accounts(ids.clone()), 0);
+        assert_eq!(
+            staged
+                .own_account_indexes()
+                .into_iter()
+                .map(|index| index.as_u64())
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 4]
+        );
+        assert_eq!(staged.validate_child_account_indexes(), Ok(4));
+        assert_reads("held", &staged, &view);
+
+        // A snarked ledger part way: 0 as the staged mask holds it, 2 and 3
+        // otherwise.
+        let mut snarked = db.make_child();
+        let mut snarked_view = set_balances(&mut snarked, &base, &[(2, 502), (3, 503)]);
+        snarked.set(addr(0), Box::new(view[&0].clone()));
+        snarked_view.insert(0, view[&0].clone());
+        snarked.commit();
+        snarked.remove_and_reparent();
+        assert_reads("db", &db, &snarked_view);
+        // 2 is held: unchanged; 3 isn't: the database's.
+        let mut expected = view.clone();
+        expected.insert(3, snarked_view[&3].clone());
+        assert_reads("staged", &staged, &expected);
+        // 0 was the same: still held, with 1, 2 and 4.
+        assert_eq!(
+            staged
+                .own_account_indexes()
+                .into_iter()
+                .map(|index| index.as_u64())
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 4]
+        );
+        assert_eq!(db.hold_parent_accounts(ids), 0);
     }
 }

@@ -10,6 +10,8 @@ pub enum Error {
     BinProt(#[from] binprot::Error),
     #[error("Base64 error: {0}")]
     Base64(#[from] base64::DecodeError),
+    #[error("Base58check error: {0}")]
+    Base58(#[from] bs58::decode::Error),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

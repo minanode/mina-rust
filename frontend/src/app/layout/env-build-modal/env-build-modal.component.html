@@ -8,8 +8,26 @@
   </div>
 </div>
 <div class="flex-column flex-grow h-minus-lg overflow-auto">
-  <mina-json-viewer
-    [expanded]="true"
-    [json]="envBuild || {}"
-  ></mina-json-viewer>
+  <dl class="identity pl-12 pr-12 mt-0" data-build-identity>
+    <dt class="tertiary">Data on this page comes from</dt>
+    <dd class="primary" data-build-source>{{ source }}</dd>
+    <dt class="tertiary">That node's build</dt>
+    <dd class="primary" data-build-node>
+      @if (nodeBuild) {
+        {{ nodeBuild.version || 'version not reported' }} · commit
+        {{ nodeBuild.git?.commit_hash || 'unknown' }} ·
+        {{ nodeBuild.cargo?.target || 'target unknown' }}
+      } @else {
+        Not known yet: waiting for the node's /build_env
+      }
+    </dd>
+    <dt class="tertiary">This page (UI) was built from</dt>
+    <dd class="primary" data-build-ui>commit {{ frontendCommit }}</dd>
+  </dl>
+  @if (nodeBuild) {
+    <div class="tertiary pl-12 mt-10">
+      The node's /build_env, as it answered:
+    </div>
+    <mina-json-viewer [expanded]="true" [json]="nodeBuild"></mina-json-viewer>
+  }
 </div>

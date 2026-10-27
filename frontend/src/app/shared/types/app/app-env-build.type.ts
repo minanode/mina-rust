@@ -1,5 +1,7 @@
 export interface AppEnvBuild {
   time: string;
+  /** Product version of the node's build. */
+  version?: string;
   git: GitEnvBuild;
   cargo: CargoEnvBuild;
   rustc: RustcEnvBuild;
@@ -9,6 +11,7 @@ interface GitEnvBuild {
   commit_time: string;
   commit_hash: string;
   branch: string;
+  describe?: string;
 }
 
 interface CargoEnvBuild {

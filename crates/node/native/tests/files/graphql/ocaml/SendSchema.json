@@ -1,0 +1,98 @@
+{
+  "SendDelegationPayload": {
+    "kind": "OBJECT",
+    "fields": {
+      "delegation": "NON_NULL(INTERFACE:UserCommand)"
+    },
+    "possibleTypes": [],
+    "interfaces": []
+  },
+  "SendPaymentPayload": {
+    "kind": "OBJECT",
+    "fields": {
+      "payment": "NON_NULL(INTERFACE:UserCommand)"
+    },
+    "possibleTypes": [],
+    "interfaces": []
+  },
+  "UserCommandPayment": {
+    "kind": "OBJECT",
+    "fields": {
+      "id": "NON_NULL(SCALAR:TransactionId)",
+      "hash": "NON_NULL(SCALAR:TransactionHash)",
+      "kind": "NON_NULL(SCALAR:UserCommandKind)",
+      "nonce": "NON_NULL(SCALAR:Int)",
+      "source": "NON_NULL(OBJECT:Account)",
+      "receiver": "NON_NULL(OBJECT:Account)",
+      "feePayer": "NON_NULL(OBJECT:Account)",
+      "validUntil": "NON_NULL(SCALAR:Globalslot)",
+      "token": "NON_NULL(SCALAR:TokenId)",
+      "amount": "NON_NULL(SCALAR:Amount)",
+      "feeToken": "NON_NULL(SCALAR:TokenId)",
+      "fee": "NON_NULL(SCALAR:Fee)",
+      "memo": "NON_NULL(SCALAR:String)",
+      "isDelegation": "NON_NULL(SCALAR:Boolean)",
+      "from": "NON_NULL(SCALAR:PublicKey)",
+      "fromAccount": "NON_NULL(OBJECT:Account)",
+      "to": "NON_NULL(SCALAR:PublicKey)",
+      "toAccount": "NON_NULL(OBJECT:Account)",
+      "failureReason": "SCALAR:TransactionStatusFailure"
+    },
+    "possibleTypes": [],
+    "interfaces": ["UserCommand"]
+  },
+  "UserCommandDelegation": {
+    "kind": "OBJECT",
+    "fields": {
+      "delegator": "NON_NULL(OBJECT:Account)",
+      "delegatee": "NON_NULL(OBJECT:Account)",
+      "id": "NON_NULL(SCALAR:TransactionId)",
+      "hash": "NON_NULL(SCALAR:TransactionHash)",
+      "kind": "NON_NULL(SCALAR:UserCommandKind)",
+      "nonce": "NON_NULL(SCALAR:Int)",
+      "source": "NON_NULL(OBJECT:Account)",
+      "receiver": "NON_NULL(OBJECT:Account)",
+      "feePayer": "NON_NULL(OBJECT:Account)",
+      "validUntil": "NON_NULL(SCALAR:Globalslot)",
+      "token": "NON_NULL(SCALAR:TokenId)",
+      "amount": "NON_NULL(SCALAR:Amount)",
+      "feeToken": "NON_NULL(SCALAR:TokenId)",
+      "fee": "NON_NULL(SCALAR:Fee)",
+      "memo": "NON_NULL(SCALAR:String)",
+      "isDelegation": "NON_NULL(SCALAR:Boolean)",
+      "from": "NON_NULL(SCALAR:PublicKey)",
+      "fromAccount": "NON_NULL(OBJECT:Account)",
+      "to": "NON_NULL(SCALAR:PublicKey)",
+      "toAccount": "NON_NULL(OBJECT:Account)",
+      "failureReason": "SCALAR:TransactionStatusFailure"
+    },
+    "possibleTypes": [],
+    "interfaces": ["UserCommand"]
+  },
+  "UserCommand": {
+    "kind": "INTERFACE",
+    "fields": {
+      "id": "NON_NULL(SCALAR:TransactionId)",
+      "hash": "NON_NULL(SCALAR:TransactionHash)",
+      "kind": "NON_NULL(SCALAR:UserCommandKind)",
+      "nonce": "NON_NULL(SCALAR:Int)",
+      "source": "NON_NULL(OBJECT:Account)",
+      "receiver": "NON_NULL(OBJECT:Account)",
+      "feePayer": "NON_NULL(OBJECT:Account)",
+      "validUntil": "NON_NULL(SCALAR:Globalslot)",
+      "token": "NON_NULL(SCALAR:TokenId)",
+      "amount": "NON_NULL(SCALAR:Amount)",
+      "feeToken": "NON_NULL(SCALAR:TokenId)",
+      "fee": "NON_NULL(SCALAR:Fee)",
+      "memo": "NON_NULL(SCALAR:String)",
+      "isDelegation": "NON_NULL(SCALAR:Boolean)",
+      "from": "NON_NULL(SCALAR:PublicKey)",
+      "fromAccount": "NON_NULL(OBJECT:Account)",
+      "to": "NON_NULL(SCALAR:PublicKey)",
+      "toAccount": "NON_NULL(OBJECT:Account)",
+      "failureReason": "SCALAR:TransactionStatusFailure"
+    },
+    "possibleTypes": ["UserCommandDelegation", "UserCommandPayment"],
+    "interfaces": []
+  }
+}

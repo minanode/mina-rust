@@ -1,0 +1,6 @@
+/* The design system brings Tailwind, the fonts and the tokens. The dashboard
+   adds no styles of its own: every colour, size and font comes from the
+   tokens, so a design pass can restyle it there. */
+@import "@minanode/design-system/styles.css";
+
+@source "./";

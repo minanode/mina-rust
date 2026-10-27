@@ -18,6 +18,17 @@
         <span class="text-nowrap truncate">{{ menu.name }}</span>
       </div>
     }
+    <a
+      class="menu fx-col-full-cent"
+      [href]="docsUrl"
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label="Docs (opens in a new tab)"
+      data-docs-link
+    >
+      <span class="mina-icon icon-200">menu_book</span>
+      <span class="text-nowrap truncate">Docs</span>
+    </a>
     <div
       class="menu fx-col-full-cent"
       #anchor
@@ -35,17 +46,33 @@
     class="flex-column w-100 border-rad-6 border bg-surface-top"
     (clickOutside)="closeOverlay()"
   >
+    @if (pageDocsUrl) {
+      <a
+        class="border-bottom w-100 flex-row align-center flex-between p-relative h-xl pl-12 pr-12"
+        [href]="pageDocsUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+        (click)="closeOverlay()"
+        data-page-docs-link
+      >
+        <div class="fx-row-vert-cent secondary">
+          <span class="mina-icon f-18 mr-5">menu_book</span>
+          Docs for this page
+        </div>
+        <span class="mina-icon icon-200 f-18 tertiary">open_in_new</span>
+      </a>
+    }
     <div
       class="w-100 flex-row align-center flex-between p-relative h-xl pl-12 pr-12"
       (click)="openEnvBuildModal()"
     >
       <div class="fx-row-vert-cent secondary">
-        <span class="mina-icon f-18 mr-5">commit</span>
-        Build
+        <span class="mina-icon f-18 mr-5">dns</span>
+        {{ activeNode?.isWebNode ? 'Web node' : 'Native node' }} build
       </div>
       <div class="tertiary fx-row-vert-cent">
         <span>
-          {{ envBuild ? envBuild.git.commit_hash.slice(0, 6) : '' }}..
+          {{ envBuild?.git?.commit_hash?.slice(0, 7) || '…' }}
         </span>
         <span class="mina-icon icon-200 f-18 ml-5">open_in_full</span>
       </div>

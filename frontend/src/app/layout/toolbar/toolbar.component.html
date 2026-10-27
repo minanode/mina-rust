@@ -1,5 +1,6 @@
 <div
-  class="toolbar bg-base h-100 flex-row flex-stretch align-stretch w-100 p-relative flex-column-reverse-sm"
+  class="toolbar bg-base h-100 flex-row flex-stretch align-stretch w-100 p-relative"
+  [class.mobile]="isMobile"
   [ngClass]="isMobile ? 'pl-8 pr-8 pt-8' : ''"
 >
   <div class="flex-row align-center flex-grow overflow-hidden">
@@ -10,6 +11,20 @@
     <span class="title f-600 f-big shrink-0 text-capitalize pr-12">
       {{ title }}
     </span>
+    @if (pageDocsUrl && !isMobile) {
+      <a
+        class="page-docs fx-row-vert-cent shrink-0 h-sm border-rad-4 mr-10"
+        [href]="pageDocsUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+        title="The docs for this page, in a new tab"
+        data-page-docs-link
+      >
+        <span class="mina-icon icon-300">menu_book</span>
+        <span class="ml-5">Docs</span>
+        <span class="mina-icon external icon-300 ml-5">open_in_new</span>
+      </a>
+    }
     @if (!isMobile) {
       <mina-submenu-tabs class="pl-12 h-xl overflow-hidden"></mina-submenu-tabs>
     }

@@ -16,7 +16,6 @@ bytes = { workspace = true }
 cfg-if = { workspace = true }
 derive_more = { workspace = true }
 ed25519-dalek = { workspace = true }
-faster-stun = { workspace = true, optional = true }
 hex = { workspace = true }
 multihash = { workspace = true }
 percent-encoding = { workspace = true }
@@ -69,12 +68,14 @@ crypto-bigint = { workspace = true, features = ["rand_core"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 clap = { workspace = true, features = ["derive", "env"] }
 p2p-testing = { path = "testing" }
+tracing-subscriber = { workspace = true }
 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 redux = { workspace = true, features = ["serializable_callbacks"] }
 tokio = { workspace = true, features = ["rt"] }
 webrtc = { workspace = true, optional = true }
+rustrtc = { workspace = true, optional = true }
 datachannel = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["json"] }
@@ -112,8 +113,18 @@ getrandom = { workspace = true, features = ["js"] }
 [features]
 openapi = ["dep:utoipa"]
 serializable_callbacks = []
-p2p-webrtc = ["p2p-webrtc-rs"]
-p2p-webrtc-rs = ["webrtc", "rcgen"]
+# The WebRTC service (browser peers, the web node's relay). Natively it uses
+# rustrtc (vendor/rustrtc) with ready events; the web node uses the browser's
+# WebRTC with ready events.
+p2p-webrtc = ["p2p-webrtc-rustrtc-lib", "p2p-webrtc-ready-events"]
+# The fallback: the openmina webrtc-rs fork instead of rustrtc.
+p2p-webrtc-rs = ["p2p-webrtc", "webrtc", "rcgen"]
 p2p-webrtc-cpp = ["datachannel"]
-p2p-libp2p = ["fuzzing", "dep:reqwest", "dep:faster-stun"]
+# rustrtc, the default; kept as a name for build scripts.
+p2p-webrtc-rustrtc = ["p2p-webrtc"]
+p2p-webrtc-rustrtc-lib = ["dep:rustrtc"]
+# Ready events on channel 0 instead of the driver's 1 s and 3 s sleeps, and
+# Failed handled (service_impl/webrtc/ready.rs). Works with peers without it.
+p2p-webrtc-ready-events = []
+p2p-libp2p = ["fuzzing", "dep:reqwest"]
 fuzzing = ["mina-fuzzer", "mina-core/fuzzing"]

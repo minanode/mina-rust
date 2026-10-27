@@ -1,4 +1,4 @@
-query PooledZkApps($publicKey: String) {
+query PooledZkApps($publicKey: PublicKey) {
   pooledZkappCommands(publicKey: $publicKey) {
     id
     hash

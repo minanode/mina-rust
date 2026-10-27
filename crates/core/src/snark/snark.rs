@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use malloc_size_of::MallocSizeOf;
 use mina_p2p_messages::{
     binprot::macros::{BinProtRead, BinProtWrite},
@@ -7,25 +5,29 @@ use mina_p2p_messages::{
         CurrencyFeeStableV1, MinaBaseFeeWithProverStableV1,
         MinaStateBlockchainStateValueStableV2LedgerProofStatement,
         MinaStateSnarkedLedgerStateStableV2, MinaStateSnarkedLedgerStateWithSokStableV2,
+        NetworkPoolSnarkPoolDiffVersionedStableV2,
         NetworkPoolSnarkPoolDiffVersionedStableV2AddSolvedWork1, NonZeroCurvePoint,
         TransactionSnarkWorkStatementStableV2, TransactionSnarkWorkTStableV2,
-        TransactionSnarkWorkTStableV2Proofs,
     },
 };
 use serde::{Deserialize, Serialize};
 
-use super::{SnarkInfo, SnarkJobId};
+use super::{
+    snark_proofs::{ProofUnavailable, SnarkProofs},
+    SnarkInfo, SnarkJobId,
+};
 
 #[derive(BinProtRead, BinProtWrite, Serialize, Deserialize, Debug, Clone)]
 pub struct Snark {
     pub snarker: NonZeroCurvePoint,
     pub fee: CurrencyFeeStableV1,
-    pub proofs: Arc<TransactionSnarkWorkTStableV2Proofs>,
+    /// Decoded, or cached once the snark pool stores the work (PC1).
+    pub proofs: SnarkProofs,
 }
 
 impl Snark {
     pub fn job_id(&self) -> SnarkJobId {
-        (&*self.proofs).into()
+        self.proofs.job_id()
     }
 
     pub fn info(&self) -> SnarkInfo {
@@ -34,6 +36,28 @@ impl Snark {
             fee: self.fee.clone(),
             prover: self.snarker.clone(),
         }
+    }
+
+    /// This work with its proofs in the node's proof cache (PC1).
+    pub fn cached(&self) -> Self {
+        Self {
+            snarker: self.snarker.clone(),
+            fee: self.fee.clone(),
+            proofs: self.proofs.cache(),
+        }
+    }
+
+    /// The snark pool diff that offers this work, as OCaml builds it:
+    /// `Add_solved_work (statement, {proof; fee = {fee; prover}})`.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/snark_pool_diff.ml#L27-L29>
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/priced_proof.ml#L8-L10>
+    pub fn gossip_diff(
+        &self,
+    ) -> Result<NetworkPoolSnarkPoolDiffVersionedStableV2, ProofUnavailable> {
+        Ok(NetworkPoolSnarkPoolDiffVersionedStableV2::AddSolvedWork(
+            Box::new((self.statement(), self.try_into()?)),
+        ))
     }
 
     pub fn statement(&self) -> TransactionSnarkWorkStatementStableV2 {
@@ -52,20 +76,26 @@ impl Snark {
             };
             MinaStateSnarkedLedgerStateStableV2(v)
         }
-        match &*self.proofs {
-            TransactionSnarkWorkTStableV2Proofs::One(p) => {
-                TransactionSnarkWorkStatementStableV2::One(conv_stmt(&p.0.statement))
-            }
-            TransactionSnarkWorkTStableV2Proofs::Two((p1, p2)) => {
-                let stmt1 = conv_stmt(&p1.0.statement);
-                let stmt2 = conv_stmt(&p2.0.statement);
-                TransactionSnarkWorkStatementStableV2::Two((stmt1, stmt2))
+        match self.proofs.statements() {
+            (first, None) => TransactionSnarkWorkStatementStableV2::One(conv_stmt(first)),
+            (first, Some(second)) => {
+                TransactionSnarkWorkStatementStableV2::Two((conv_stmt(first), conv_stmt(second)))
             }
         }
     }
 
     pub fn tie_breaker_hash(&self) -> [u8; 32] {
         super::tie_breaker_hash(&self.job_id(), &self.snarker)
+    }
+
+    /// The work as the wire carries it, its proofs decoded (from the cache
+    /// if they are cached).
+    pub fn to_wire(&self) -> Result<TransactionSnarkWorkTStableV2, ProofUnavailable> {
+        Ok(TransactionSnarkWorkTStableV2 {
+            fee: self.fee.clone(),
+            proofs: self.proofs.get()?.as_ref().clone(),
+            prover: self.snarker.clone(),
+        })
     }
 }
 
@@ -75,16 +105,6 @@ impl From<TransactionSnarkWorkTStableV2> for Snark {
             snarker: value.prover,
             fee: value.fee,
             proofs: value.proofs.into(),
-        }
-    }
-}
-
-impl From<Snark> for TransactionSnarkWorkTStableV2 {
-    fn from(value: Snark) -> Self {
-        Self {
-            fee: value.fee,
-            proofs: value.proofs.as_ref().clone(),
-            prover: value.snarker,
         }
     }
 }
@@ -99,21 +119,22 @@ impl From<NetworkPoolSnarkPoolDiffVersionedStableV2AddSolvedWork1> for Snark {
     }
 }
 
-impl From<&Snark> for NetworkPoolSnarkPoolDiffVersionedStableV2AddSolvedWork1 {
-    fn from(value: &Snark) -> Self {
-        Self {
-            proof: (*value.proofs).clone(),
+impl TryFrom<&Snark> for NetworkPoolSnarkPoolDiffVersionedStableV2AddSolvedWork1 {
+    type Error = ProofUnavailable;
+
+    fn try_from(value: &Snark) -> Result<Self, Self::Error> {
+        Ok(Self {
+            proof: value.proofs.get()?.as_ref().clone(),
             fee: MinaBaseFeeWithProverStableV1 {
                 fee: value.fee.clone(),
                 prover: value.snarker.clone(),
             },
-        }
+        })
     }
 }
 
 impl MallocSizeOf for Snark {
     fn size_of(&self, ops: &mut malloc_size_of::MallocSizeOfOps) -> usize {
-        usize::from(!ops.have_seen_ptr(Arc::as_ptr(&self.proofs)))
-            * (size_of::<TransactionSnarkWorkTStableV2Proofs>() + self.proofs.size_of(ops))
+        self.proofs.size_of(ops)
     }
 }

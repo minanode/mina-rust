@@ -9,8 +9,7 @@ use crate::{
     connection::{
         incoming::P2pConnectionIncomingError,
         incoming_effectful::P2pConnectionIncomingEffectfulAction,
-        outgoing::{P2pConnectionOutgoingInitLibp2pOpts, P2pConnectionOutgoingInitOpts},
-        P2pConnectionResponse, P2pConnectionState,
+        outgoing::P2pConnectionOutgoingInitOpts, P2pConnectionResponse, P2pConnectionState,
     },
     disconnection::{P2pDisconnectionAction, P2pDisconnectionReason},
     webrtc::{Host, HttpSignalingInfo, SignalingMethod},
@@ -419,13 +418,9 @@ impl P2pConnectionIncomingState {
                         .entry(peer_id)
                         .or_insert_with(|| P2pPeerState {
                             is_libp2p: true,
-                            dial_opts: Some(P2pConnectionOutgoingInitOpts::LibP2P(
-                                P2pConnectionOutgoingInitLibp2pOpts {
-                                    peer_id,
-                                    host: Host::from(addr.ip()),
-                                    port: addr.port(),
-                                },
-                            )),
+                            // The accepted socket's source port is ephemeral. Identify or
+                            // discovery may supply a listening address later.
+                            dial_opts: None,
                             status: P2pPeerStatus::Disconnected { time: meta.time() },
                             identify: None,
                         });

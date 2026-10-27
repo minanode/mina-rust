@@ -9,18 +9,15 @@ use crate::{
     block_producer::BlockProducerWonSlot,
     external_snark_worker::available_job_to_snark_worker_spec,
     p2p::{
-        channels::streaming_rpc::{
-            staged_ledger_parts::calc_total_pieces_to_transfer, P2pStreamingRpcReceiveProgress,
-        },
-        connection::P2pConnectionResponse,
+        channels::streaming_rpc::P2pStreamingRpcReceiveProgress, connection::P2pConnectionResponse,
     },
     p2p_ready,
     rpc::{
         AccountQuery, AccountSlim, ActionStatsQuery, ActionStatsResponse, CurrentMessageProgress,
         MessagesStats, NodeHeartbeat, ProducedBlockInfo, RootLedgerSyncProgress,
         RootStagedLedgerSyncProgress, RpcAction, RpcBlockProducerStats, RpcMessageProgressResponse,
-        RpcNodeStatus, RpcNodeStatusLedger, RpcNodeStatusNetworkInfo, RpcNodeStatusResources,
-        RpcNodeStatusTransactionPool, RpcNodeStatusTransitionFrontier,
+        RpcNextBlockProduction, RpcNodeStatus, RpcNodeStatusLedger, RpcNodeStatusNetworkInfo,
+        RpcNodeStatusResources, RpcNodeStatusTransactionPool, RpcNodeStatusTransitionFrontier,
         RpcNodeStatusTransitionFrontierBlockSummary, RpcNodeStatusTransitionFrontierSync,
         RpcRequestExtraData, RpcScanStateSummary, RpcScanStateSummaryBlock,
         RpcScanStateSummaryBlockTransaction, RpcScanStateSummaryBlockTransactionKind,
@@ -45,6 +42,100 @@ use mina_p2p_messages::{rpc_kernel::QueryHeader, v2};
 use mina_signer::CompressedPubKey;
 use redux::ActionWithMeta;
 
+pub fn memory_debug(
+    state: &crate::State,
+    stats: Option<&crate::stats::Stats>,
+    ledger_service: Option<serde_json::Value>,
+) -> serde_json::Value {
+    static OBSERVED_PEERS: std::sync::OnceLock<std::sync::Mutex<BTreeSet<crate::p2p::PeerId>>> =
+        std::sync::OnceLock::new();
+    let stats = stats.map(|stats| stats.memory_debug());
+    let (ledger_reads_pending, ledger_reads_success) = state.ledger.read.memory_debug_counts();
+    let p2p = state.p2p.ready();
+    let p2p_parts = p2p.map(|p2p| {
+        let observed_peers = OBSERVED_PEERS.get_or_init(Default::default);
+        let peers_observed = observed_peers.lock().ok().map(|mut peers| {
+            // The diagnostic itself must not retain every peer ID forever.
+            for peer in p2p.peers.keys() {
+                if peers.len() == 4096 {
+                    break;
+                }
+                peers.insert(peer.clone());
+            }
+            (peers.len(), peers.len() == 4096)
+        });
+        let scheduler = &p2p.network.scheduler;
+        let measured = |value: &dyn MallocSizeOf| {
+            let mut set = BTreeSet::new();
+            let fun = move |ptr: *const c_void| !set.insert(ptr.addr());
+            let mut ops = MallocSizeOfOps::new(None, Some(Box::new(fun)));
+            value.size_of(&mut ops)
+        };
+        serde_json::json!({
+            "peers_heap_bytes": p2p.peers.values().map(|peer| measured(peer)).sum::<usize>(),
+            "connections_heap_bytes": scheduler.connections.iter().map(|(addr, conn)| {
+                std::mem::size_of_val(addr) + std::mem::size_of_val(conn) + measured(conn)
+            }).sum::<usize>(),
+            "pubsub_heap_bytes": measured(&scheduler.broadcast_state),
+            "pubsub_message_cache_heap_bytes": measured(&scheduler.broadcast_state.mcache),
+            "kad_heap_bytes": scheduler.discovery_state.as_ref().map(|s| measured(s)),
+            "pubsub_serialized_bytes": crate::stats::serialized_size(&scheduler.broadcast_state),
+            "connections_serialized_bytes": crate::stats::serialized_size(&scheduler.connections),
+            "kad_serialized_bytes": crate::stats::serialized_size(&scheduler.discovery_state),
+            "peers_serialized_bytes": crate::stats::serialized_size(&p2p.peers),
+            "peer_table_entries": p2p.peers.len(),
+            "peers_observed_ever": peers_observed.map(|(count, _)| count),
+            "peers_observed_saturated": peers_observed.map(|(_, saturated)| saturated),
+            "dial_addresses": p2p.dial_addresses.len(),
+            "connections": scheduler.connections.len(),
+            "kad_peers": scheduler.discovery_state.as_ref().map(|s| s.routing_table.buckets.iter().map(|b| b.len()).sum::<usize>()),
+            "pubsub_seen": scheduler.broadcast_state.seen.len(),
+            "pubsub_message_cache": scheduler.broadcast_state.mcache.map.len(),
+            "pubsub_block_sources": scheduler.broadcast_state.block_sources.len(),
+            "pubsub_clients": scheduler.broadcast_state.clients.len(),
+            "pubsub_iwant": scheduler.broadcast_state.iwant.len(),
+            "kad_requests": scheduler.discovery_state.as_ref().map(|s| s.requests.len()),
+            "rpc_incoming_peers": scheduler.rpc_incoming_streams.len(),
+            "rpc_outgoing_peers": scheduler.rpc_outgoing_streams.len(),
+        })
+    });
+    serde_json::json!({
+        "measurement": "streaming JSON bytes are a size proxy, not heap bytes",
+        "transition_frontier_serialized_bytes": crate::stats::serialized_size(&state.transition_frontier),
+        "snark_pool_serialized_bytes": crate::stats::serialized_size(&state.snark_pool),
+        "transaction_pool": state.transaction_pool.memory_debug(),
+        "ledger_state_serialized_bytes": crate::stats::serialized_size(&state.ledger),
+        "ledger_read_serialized_bytes": crate::stats::serialized_size(&state.ledger.read),
+        "ledger_write_serialized_bytes": crate::stats::serialized_size(&state.ledger.write),
+        "ledger_write_kind": state.ledger.write.kind().map(|kind| format!("{kind:?}")),
+        "ledger_reads_pending": ledger_reads_pending,
+        "ledger_reads_success": ledger_reads_success,
+        "rpc_state_serialized_bytes": crate::stats::serialized_size(&state.rpc),
+        "block_producer_serialized_bytes": crate::stats::serialized_size(&state.block_producer),
+        "p2p": p2p_parts,
+        "stats": stats,
+        "worker_stats": {
+            "recent_outcomes": state.external_snark_worker.0.recent.len(),
+            "recent_bytes": crate::stats::serialized_size(&state.external_snark_worker.0.recent),
+            "included_blocks": state.external_snark_worker.0.included.entries.len(),
+            "included_bytes": crate::stats::serialized_size(&state.external_snark_worker.0.included),
+        },
+        "verification_stats_bytes": crate::stats::serialized_size(&state.verification),
+        "ledger_service": ledger_service,
+        "pending_rpc_requests": state.rpc.requests.len(),
+        "frontier_best_chain_blocks": state.transition_frontier.best_chain.len(),
+        "frontier_candidate_blocks": state.transition_frontier.candidates.memory_debug_len(),
+        "frontier_root_history_blocks": state.transition_frontier.root_history.iter().count(),
+    })
+}
+
+pub fn memory_debug_p2p_heap(state: &crate::State) -> usize {
+    let mut set = BTreeSet::new();
+    let fun = move |ptr: *const c_void| !set.insert(ptr.addr());
+    let mut ops = MallocSizeOfOps::new(None, Some(Box::new(fun)));
+    size_of_val(&state.p2p).saturating_add(state.p2p.size_of(&mut ops))
+}
+
 macro_rules! respond_or_log {
     ($e:expr, $t:expr) => {
         if let Err(err) = $e {
@@ -65,6 +156,113 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
         RpcEffectfulAction::StatusGet { rpc_id } => {
             let status = compute_node_status(store);
             let _ = store.service.respond_status_get(rpc_id, Some(status));
+        }
+        RpcEffectfulAction::MemoryDebugGet { rpc_id } => {
+            let state = store.state.get().clone();
+            let stats = store.service.stats().cloned();
+            let _ = store.service.respond_memory_debug(rpc_id, state, stats);
+        }
+        RpcEffectfulAction::MetricsGet { rpc_id } => {
+            let state = store.state.get();
+            let mut peers_connecting = 0;
+            let mut peers_connected = 0;
+            let mut peers_disconnecting = 0;
+            let mut peers_disconnected = 0;
+            let mut highest_peer_tip_height = None;
+            if let Some(p2p) = state.p2p.ready() {
+                for peer in p2p.peers.values() {
+                    match &peer.status {
+                        crate::p2p::P2pPeerStatus::Connecting(_) => peers_connecting += 1,
+                        crate::p2p::P2pPeerStatus::Ready(ready) => {
+                            peers_connected += 1;
+                            if let Some(tip) = &ready.best_tip {
+                                highest_peer_tip_height =
+                                    Some(highest_peer_tip_height.unwrap_or(0).max(tip.height()));
+                            }
+                        }
+                        crate::p2p::P2pPeerStatus::Disconnecting { .. } => peers_disconnecting += 1,
+                        crate::p2p::P2pPeerStatus::Disconnected { .. } => peers_disconnected += 1,
+                    }
+                }
+            }
+            let (ledger_sync_fetched, ledger_sync_estimated) = match &state.transition_frontier.sync
+            {
+                TransitionFrontierSyncState::StakingLedgerPending(pending)
+                | TransitionFrontierSyncState::NextEpochLedgerPending(pending)
+                | TransitionFrontierSyncState::RootLedgerPending(pending) => {
+                    let progress = pending
+                        .ledger
+                        .snarked()
+                        .and_then(|ledger| ledger.estimation());
+                    (
+                        progress.as_ref().map(|p| p.fetched),
+                        progress.map(|p| p.estimation),
+                    )
+                }
+                _ => (None, None),
+            };
+            let mut snark_pool_jobs = 0;
+            let mut snark_pool_completed = 0;
+            for job in state.snark_pool.jobs_iter() {
+                snark_pool_jobs += 1;
+                if job.snark.is_some() {
+                    snark_pool_completed += 1;
+                }
+            }
+            let (block_producer_blocks_produced, block_producer_blocks_failed) =
+                store.service.stats().map_or((0, 0), |stats| {
+                    let stats = stats.block_producer();
+                    (stats.blocks_produced, stats.blocks_failed)
+                });
+            let tip = state.transition_frontier.best_tip();
+            let sync_phase = state.reported_sync_phase();
+            let response = rpc::RpcMetricsGetResponse {
+                chain_id: state.p2p.ready().map(|p2p| p2p.chain_id.to_hex()),
+                uptime_secs: u64::from(state.time()).saturating_sub(u64::from(state.start_time()))
+                    / 1_000_000_000,
+                sync_phase: sync_phase.to_string(),
+                ready: rpc::readiness_check(
+                    sync_phase,
+                    &state.transition_frontier.sync,
+                    state.p2p.ready_peers_iter().count(),
+                    meta.time(),
+                )
+                .is_ok(),
+                best_tip_height: tip.map(|tip| tip.height()),
+                best_tip_global_slot: tip.map(|tip| tip.global_slot()),
+                highest_peer_tip_height,
+                peers_connecting,
+                peers_connected,
+                peers_disconnecting,
+                peers_disconnected,
+                transaction_pool_size: state.transaction_pool.size(),
+                transaction_pool_diff_received: state.transaction_pool.telemetry.diffs_received,
+                transaction_pool_diff_broadcasted: state
+                    .transaction_pool
+                    .telemetry
+                    .diffs_broadcasted,
+                transactions_added_to_pool: state.transaction_pool.telemetry.transactions_added,
+                snark_pool_jobs,
+                snark_pool_completed,
+                snark_pool_diff_received: state.snark_pool.admission_stats.received_gossip,
+                snark_pool_diff_broadcasted: state.snark_pool.admission_stats.forwarded,
+                block_production_delay_buckets: state.block_production_delay_buckets,
+                block_production_delay_sum_ms: state.block_production_delay_sum_ms,
+                snark_work_received_total: state.snark_pool.completed_snarks_received,
+                verification: state.verification.summary(),
+                block_producer_slots_won: state
+                    .block_producer
+                    .vrf_evaluator()
+                    .map_or(0, |vrf| vrf.total_won_slots),
+                block_producer_blocks_produced,
+                block_producer_blocks_failed,
+                snark_worker_proofs_made: state.external_snark_worker.0.proofs_made,
+                snark_worker_proofs_failed: state.external_snark_worker.0.proofs_failed,
+                snark_worker_proofs_sold: state.external_snark_worker.0.proofs_sold,
+                ledger_sync_fetched,
+                ledger_sync_estimated,
+            };
+            let _ = store.service.respond_metrics_get(rpc_id, response);
         }
         RpcEffectfulAction::HeartbeatGet { rpc_id } => {
             let status = compute_node_status(store);
@@ -127,6 +325,40 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
                 .stats()
                 .map(|s| s.collect_sync_stats(query.limit));
             let _ = store.service.respond_sync_stats_get(rpc_id, resp);
+        }
+        RpcEffectfulAction::VerificationStatsGet { rpc_id, query } => {
+            let snapshot = store.state().verification.snapshot(query);
+            let _ = store
+                .service
+                .respond_verification_stats_get(rpc_id, snapshot);
+        }
+        RpcEffectfulAction::ProofMemoryGet { rpc_id } => {
+            // Waits for the ledger thread, then walks the state: a
+            // diagnostic, served on request only.
+            let started = std::time::Instant::now();
+            let ledger = store.service.ledger_manager().proof_memory();
+            let report =
+                crate::proof_memory::ProofMemoryReport::new(store.state(), ledger, started);
+            let _ = store.service.respond_proof_memory_get(rpc_id, report);
+        }
+        RpcEffectfulAction::SnarkWorkCoverageGet { rpc_id } => {
+            let state = store.state();
+            let mut response = state.snark_pool.work_coverage.clone();
+            response.matches_current_tip = state.transition_frontier.sync.is_synced()
+                && response.snapshot.as_ref().is_some_and(|snapshot| {
+                    state
+                        .transition_frontier
+                        .best_tip()
+                        .is_some_and(|tip| tip.hash() == &snapshot.parent_hash)
+                });
+            response.fetch_requests = state
+                .p2p
+                .ready()
+                .map_or(0, |p2p| p2p.completed_snarks_requests.sent);
+            response.fetched_works = state.snark_pool.completed_snarks_received;
+            let _ = store
+                .service
+                .respond_snark_work_coverage_get(rpc_id, response);
         }
         RpcEffectfulAction::BlockProducerStatsGet { rpc_id } => {
             let mut create_response = || {
@@ -262,7 +494,7 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
                         let staged = match state.fetch_attempts() {
                             None => state.target_with_parts().map(|(_, parts)| {
                                 let v = parts
-                                    .map(|parts| calc_total_pieces_to_transfer(parts))
+                                    .map(|parts| parts.total_pieces_to_transfer())
                                     .unwrap_or(0);
                                 RootStagedLedgerSyncProgress {
                                     fetched: v,
@@ -498,7 +730,14 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
             let _ = store.service().respond_snarker_config_get(rpc_id, config);
         }
         RpcEffectfulAction::SnarkerJobCommit { rpc_id, job_id } => {
-            if !store.state().snark_pool.should_create_commitment(&job_id) {
+            // The gate of `SnarkPoolAction::CommitmentCreate`: our worker
+            // proves the job at our configured fee.
+            let state = store.state();
+            if !state.config.snarker.as_ref().is_some_and(|config| {
+                state
+                    .snark_pool
+                    .should_create_commitment(&job_id, config.fee.0.as_u64())
+            }) {
                 let _ = store
                     .service()
                     .respond_snarker_job_commit(rpc_id, RpcSnarkerJobCommitResponse::JobNotFound);
@@ -564,53 +803,64 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
             // TODO: handle potential errors
             let _ = store
                 .service()
-                .respond_snarker_workers(rpc_id, vec![snark_worker.into()]);
+                .respond_snarker_workers(rpc_id, vec![*snark_worker]);
         }
-        RpcEffectfulAction::HealthCheck { rpc_id, has_peers } => {
+        RpcEffectfulAction::SnarkWorkerControlGet { rpc_id } => {
+            let response = store.state().snark_worker_control();
             respond_or_log!(
-                store.service().respond_health_check(rpc_id, has_peers),
+                store
+                    .service()
+                    .respond_snark_worker_control_get(rpc_id, response),
+                meta.time()
+            );
+        }
+        RpcEffectfulAction::SnarkWorkerControlSet { rpc_id, error } => {
+            let response = match error {
+                Some(error) => Err(error),
+                None => Ok(store.state().snark_worker_control()),
+            };
+            respond_or_log!(
+                store
+                    .service()
+                    .respond_snark_worker_control_set(rpc_id, response),
+                meta.time()
+            );
+        }
+        RpcEffectfulAction::SnarkWorkIncludedGet { rpc_id } => {
+            let state = store.state();
+            let response = state
+                .external_snark_worker
+                .included_work()
+                .view()
+                .with_market(
+                    &state.transition_frontier.best_chain,
+                    state.snark_pool.completed_snarks_iter(),
+                );
+            respond_or_log!(
+                store
+                    .service()
+                    .respond_snark_work_included_get(rpc_id, response),
+                meta.time()
+            );
+        }
+        RpcEffectfulAction::HealthCheck { rpc_id } => {
+            respond_or_log!(
+                store
+                    .service()
+                    .respond_health_check(rpc_id, rpc::health_check()),
                 meta.time()
             );
         }
         RpcEffectfulAction::ReadinessCheck { rpc_id } => {
-            const THRESH: Duration = Duration::from_secs(60 * 3 * 10);
-            let synced = match store.state().transition_frontier.sync {
-                TransitionFrontierSyncState::Synced { time }
-                    if meta.time().checked_sub(time) <= Some(THRESH) =>
-                {
-                    Ok(())
-                }
-                TransitionFrontierSyncState::Synced { time } => Err(format!(
-                    "Synced {:?} ago, which is more than the threshold {:?}",
-                    meta.time().checked_sub(time),
-                    THRESH
-                )),
-                _ => Err("not synced".to_owned()),
-            };
-            // let synced = store
-            //     .service()
-            //     .stats()
-            //     .and_then(|stats| stats.get_sync_time())
-            //     .ok_or_else(|| String::from("Not synced"))
-            //     .and_then(|t| {
-            //         meta.time().checked_sub(t).ok_or_else(|| {
-            //             format!("Cannot get duration between {t:?} and {:?}", meta.time())
-            //         })
-            //     })
-            //     .and_then(|dur| {
-            //         const THRESH: Duration = Duration::from_secs(60 * 3 * 10);
-            //         if dur <= THRESH {
-            //             Ok(())
-            //         } else {
-            //             Err(format!(
-            //                 "Synced {:?} ago, which is more than the threshold {:?}",
-            //                 dur, THRESH
-            //             ))
-            //         }
-            //     });
-            // mina_core::log::debug!(meta.time(); summary = "readiness check", result = format!("{synced:?}"));
+            let state = store.state();
+            let ready = rpc::readiness_check(
+                state.reported_sync_phase(),
+                &state.transition_frontier.sync,
+                state.p2p.ready_peers_iter().count(),
+                meta.time(),
+            );
             respond_or_log!(
-                store.service().respond_readiness_check(rpc_id, synced),
+                store.service().respond_readiness_check(rpc_id, ready),
                 meta.time()
             );
         }
@@ -691,7 +941,9 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
                         meta.time()
                     )
                 }
-                AccountQuery::MultipleIds(..) => {
+                AccountQuery::MultipleIds(..)
+                | AccountQuery::TokenOwner(..)
+                | AccountQuery::StakingEpochIds(..) => {
                     respond_or_log!(
                         store.service().respond_ledger_accounts(rpc_id, accounts),
                         meta.time()
@@ -745,6 +997,12 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
                 store
                     .service()
                     .respond_consensus_constants(rpc_id, response),
+                meta.time()
+            )
+        }
+        RpcEffectfulAction::TransactionNonceGet { rpc_id, response } => {
+            respond_or_log!(
+                store.service().respond_transaction_nonce(rpc_id, response),
                 meta.time()
             )
         }
@@ -853,6 +1111,32 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
                 meta.time()
             )
         }
+        RpcEffectfulAction::LedgerExportSuccess { rpc_id, response } => {
+            respond_or_log!(
+                store.service().respond_ledger_export(rpc_id, response),
+                meta.time()
+            )
+        }
+        RpcEffectfulAction::LightBestTip { rpc_id, response } => {
+            respond_or_log!(
+                store.service().respond_light_best_tip(rpc_id, response),
+                meta.time()
+            )
+        }
+        RpcEffectfulAction::LightAccountSuccess { rpc_id, response } => {
+            respond_or_log!(
+                store.service().respond_light_account(rpc_id, response),
+                meta.time()
+            );
+            // Answered: nothing is left to retry.
+            store.dispatch(RpcAction::Finish { rpc_id });
+        }
+        RpcEffectfulAction::HardForkConfigSuccess { rpc_id, response } => {
+            respond_or_log!(
+                store.service().respond_hard_fork_config(rpc_id, response),
+                meta.time()
+            )
+        }
         RpcEffectfulAction::LedgerAccountDelegatorsGetSuccess { rpc_id, response } => {
             respond_or_log!(
                 store
@@ -868,9 +1152,11 @@ fn compute_node_status<S: Service>(store: &mut Store<S>) -> RpcNodeStatus {
     let state = store.state.get();
     let chain_id = state.p2p.ready().map(|p2p| p2p.chain_id.to_hex());
     let block_summary = |b: &ArcBlockWithHash| RpcNodeStatusTransitionFrontierBlockSummary {
+        timestamp_ms: Some(u64::from(b.timestamp()) / 1_000_000),
         hash: b.hash().clone(),
         height: b.height(),
         global_slot: b.global_slot(),
+        timestamp: Some(b.timestamp()),
     };
 
     let block_production_attempts = store
@@ -907,16 +1193,23 @@ fn compute_node_status<S: Service>(store: &mut Store<S>) -> RpcNodeStatus {
         .config()
         .map(|config| AccountPublicKey::from(config.coinbase_receiver().clone()));
 
+    let next_block_production = next_block_production(state);
+
     let status = RpcNodeStatus {
+        network: mina_core::NetworkConfig::global().name.to_owned(),
+        uptime_secs: u64::from(state.time()).saturating_sub(u64::from(state.start_time()))
+            / 1_000_000_000,
         chain_id,
         block_producer,
         coinbase_receiver,
+        next_block_production,
         transition_frontier: RpcNodeStatusTransitionFrontier {
+            root: state.transition_frontier.root().map(block_summary),
             best_tip: state.transition_frontier.best_tip().map(block_summary),
             sync: RpcNodeStatusTransitionFrontierSync {
                 time: state.transition_frontier.sync.time(),
-                status: state.transition_frontier.sync.to_string(),
-                phase: state.transition_frontier.sync.sync_phase().to_string(),
+                status: state.reported_sync_status(),
+                phase: state.reported_sync_phase().to_string(),
                 target: state.transition_frontier.sync.best_tip().map(block_summary),
             },
         },
@@ -962,11 +1255,18 @@ fn compute_node_status<S: Service>(store: &mut Store<S>) -> RpcNodeStatus {
             },
             transition_frontier: state.transition_frontier.resources_usage(),
             snark_pool: state.snark_pool.resources_usage(),
+            memory_debug: None,
         },
         service_queues: store.service.queues(),
         network_info,
     };
     status
+}
+
+/// The producer records the timing and its source consensus point together.
+/// Reading status must not recompute either from a newer best tip.
+fn next_block_production(state: &crate::State) -> Option<RpcNextBlockProduction> {
+    state.block_producer.next_block_production()
 }
 
 fn make_produced_block_info(

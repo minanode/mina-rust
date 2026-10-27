@@ -46,6 +46,11 @@ mod work_dir {
         HOME_DIR.set(dir).expect("Work dir can only be set once");
     }
 
+    /// Sets the work dir unless one is already set.
+    pub fn init_work_dir_if_unset(dir: impl FnOnce() -> PathBuf) {
+        HOME_DIR.get_or_init(dir);
+    }
+
     pub fn get_work_dir() -> PathBuf {
         HOME_DIR.get().expect("Work dir is not set").clone()
     }
@@ -55,7 +60,7 @@ mod work_dir {
     }
 }
 
-pub use work_dir::{get_debug_dir, get_work_dir, set_work_dir};
+pub use work_dir::{get_debug_dir, get_work_dir, init_work_dir_if_unset, set_work_dir};
 
 use rand::prelude::*;
 #[inline(always)]

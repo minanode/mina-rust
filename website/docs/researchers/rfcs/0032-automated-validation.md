@@ -43,14 +43,13 @@ releases, and to provide a route to regular CI network validations.
 
 [detailed-design]: #detailed-design
 
-Observing the
-[list of validations we require for stable networks](https://www.notion.so/codaprotocol/Testnet-Validation-1705d5bf03e04d03b21a1f5724a17597),
-the majority of validations can be answered through a combination of log
-processing and graphql queries. As such, we will initially scope the design of
-the validation service to focus on those two aspects, while trying to create a
-design that isn't over-fitted to these two aspects so that we can refit parts of
-the architecture for validations which are outside this scope after the initial
-implementation is complete.
+Observing the list of validations required for stable networks (historical
+private checklist), the majority of validations can be answered through a
+combination of log processing and graphql queries. As such, we will initially
+scope the design of the validation service to focus on those two aspects, while
+trying to create a design that isn't over-fitted to these two aspects so that we
+can refit parts of the architecture for validations which are outside this scope
+after the initial implementation is complete.
 
 ### Architecture
 

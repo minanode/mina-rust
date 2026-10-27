@@ -1,0 +1,92 @@
+{
+  "$comment": "GET /snarker/control, /snarker/included, /transaction-pool and /build_env from the devnet-dev node, 2026-10-23.",
+  "control": {
+    "account_creation_fee": 1000000000,
+    "account_exists": null,
+    "allowed": true,
+    "best_tip_height": 578883,
+    "enabled": false,
+    "fee": null,
+    "fee_problem": null,
+    "job": null,
+    "paused_for_block": false,
+    "proofs_made": 0,
+    "public_key": null,
+    "recent": [],
+    "setting_warning": null,
+    "worker": {
+      "kind": "None"
+    },
+    "zkapp_jobs": 59
+  },
+  "included": {
+    "network": "devnet",
+    "keys": [],
+    "started_ms": null,
+    "final_totals": {
+      "blocks": 0,
+      "bundles": 0,
+      "zkapp_bundles": 0,
+      "fees": 0
+    },
+    "pending_totals": {
+      "blocks": 0,
+      "bundles": 0,
+      "zkapp_bundles": 0,
+      "fees": 0
+    },
+    "max_blocks": 500,
+    "entries": []
+  },
+  "transaction_pool": [
+    {
+      "data": [
+        "Signed_command",
+        {
+          "payload": {
+            "common": {
+              "fee": "0.01",
+              "fee_payer_pk": "B62qp3B9VW1ir5qL1MWRwr6ecjC2NZbGr8vysGeme9vXGcFXTMNXb2t",
+              "nonce": "749856",
+              "valid_until": "4294967295",
+              "memo": "E4YzjHJ6ds2xcGuWvfVGQzp6HXhk5R2c5xrj9apXH5ER941pRxqmS"
+            },
+            "body": [
+              "Payment",
+              {
+                "receiver_pk": "B62qp3B9VW1ir5qL1MWRwr6ecjC2NZbGr8vysGeme9vXGcFXTMNXb2t",
+                "amount": "10000000"
+              }
+            ]
+          },
+          "signer": "B62qp3B9VW1ir5qL1MWRwr6ecjC2NZbGr8vysGeme9vXGcFXTMNXb2t",
+          "signature": "7mX9JpNTL6e2brt4a8bkz7coPHc845wW9SZGbYs2Wtua6mDcbKYpyYwu94AZ3n3zjuyxy7bG6yABnb1qF7Mzhr9wnfSjzU7D"
+        }
+      ],
+      "hash": "5Jtw2VKyj5ZugpiBn9ojWUY7ZkUN9ALoLAZ76FmFc8gUe9ooffqA"
+    }
+  ],
+  "build_env": {
+    "time": "2026-10-23T05:40:05.761476508Z",
+    "version": "m11-browser-block-and-snarks-289-gcdc78990b",
+    "git": {
+      "commit_time": "2026-10-23T05:39:59.000000000Z",
+      "commit_hash": "cdc78990b60b4d2e67bea1c40badfa7765ce8339",
+      "branch": "task/r45-slow-store-load"
+    },
+    "cargo": {
+      "features": "default,exit_on_invalid_peers,openapi,p2p_libp2p,p2p_webrtc,replay",
+      "opt_level": 3,
+      "target": "x86_64-unknown-linux-gnu",
+      "is_debug": false
+    },
+    "rustc": {
+      "channel": "stable",
+      "commit_date": "2025-12-08",
+      "commit_hash": "ded5c06cf21d2b93bffd5d884aa6e96934ee4234",
+      "host": "x86_64-unknown-linux-gnu",
+      "version": "1.92.0",
+      "llvm_version": "21.1"
+    }
+  }
+}

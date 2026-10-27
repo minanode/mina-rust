@@ -40,15 +40,23 @@ impl BlockProducerVrfEvaluatorState {
                 vrf_output,
                 staking_ledger_hash,
             } => {
+                let mut newly_won = false;
                 let global_slot_evaluated = match &vrf_output {
                     mina_vrf::VrfEvaluationOutput::SlotWon(won_slot_data) => {
-                        state.won_slots.insert(
-                            won_slot_data.global_slot,
-                            VrfWonSlotWithHash::new(
-                                won_slot_data.clone(),
-                                staking_ledger_hash.clone(),
-                            ),
-                        );
+                        if state
+                            .won_slots
+                            .insert(
+                                won_slot_data.global_slot,
+                                VrfWonSlotWithHash::new(
+                                    won_slot_data.clone(),
+                                    staking_ledger_hash.clone(),
+                                ),
+                            )
+                            .is_none()
+                        {
+                            state.total_won_slots = state.total_won_slots.saturating_add(1);
+                            newly_won = true;
+                        }
                         won_slot_data.global_slot
                     }
                     mina_vrf::VrfEvaluationOutput::SlotLost(global_slot) => *global_slot,
@@ -66,6 +74,7 @@ impl BlockProducerVrfEvaluatorState {
                     if let Some(pending_evaluation) = vrf_evaluator_state.current_evaluation() {
                         dispatcher.push(BlockProducerVrfEvaluatorEffectfulAction::SlotEvaluated {
                             epoch: pending_evaluation.epoch_number,
+                            won: newly_won,
                         });
                         dispatcher.push(BlockProducerVrfEvaluatorAction::CheckEpochBounds {
                             epoch_number: pending_evaluation.epoch_number,
@@ -457,10 +466,23 @@ impl BlockProducerVrfEvaluatorState {
                     initial_slot: initial_global_slot,
                 };
 
+                // The key's stake in the epoch's staking ledger: its delegators'
+                // balances (its own included) against the ledger's total.
+                let delegated_stake = staking_epoch_data
+                    .delegator_table
+                    .values()
+                    .fold(0u64, |sum, (_, balance)| sum.saturating_add(*balance));
+                let total_currency = staking_epoch_data.total_currency;
+                let delegators =
+                    u32::try_from(staking_epoch_data.delegator_table.len()).unwrap_or(u32::MAX);
+
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
                 dispatcher.push(BlockProducerVrfEvaluatorEffectfulAction::InitializeStats {
                     epoch: epoch_number,
                     initial_slot,
+                    delegated_stake,
+                    total_currency,
+                    delegators,
                 });
                 if let Some(initial_slot) = state
                     .block_producer

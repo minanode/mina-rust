@@ -1,0 +1,566 @@
+{
+  "about": "Mainnet protocol constants of OCaml Mina, each with how it was read. Written by scripts/ocaml-constants-fixture.py: regenerate, don't edit. Checked by ocaml_mainnet_constants.rs in crates/core/tests, crates/ledger/tests and crates/node/tests (P11d).",
+  "generated": "2026-10-20T15:25:33Z",
+  "ocaml_commit": "84b8d96954b218f372b93f65a071abf528e6bb61",
+  "profile": "mainnet",
+  "inputs": {
+    "binary": {
+      "command": "scripts/ocaml-mina",
+      "version": "Commit 84b8d96954b218f372b93f65a071abf528e6bb61"
+    },
+    "runtime_config": {
+      "path": "~/.local/opt/mina-4.0.2/var/lib/coda/config_84b8d969.json",
+      "sha256": "6e954987a9b904f9d373f156aee1efd146052ab4c23866ae93350344987c34b1"
+    },
+    "source": {
+      "base": "https://raw.githubusercontent.com/MinaProtocol/mina/84b8d96954b218f372b93f65a071abf528e6bb61/",
+      "files": {
+        "src/lib/node_config/profiled/mainnet.ml": "58cdc97605145c843f65d222b95d66d2fb22228412d39a1e24d812ec7d0eaec1",
+        "src/lib/node_config/unconfigurable_constants/node_config_unconfigurable_constants.ml": "8e4870b4f044204c0cc64aa9e1f1e2871f53cc7658680cd8ed19fabcadda3ef6",
+        "src/lib/node_config/version/node_config_version.ml": "f353f4710741a0f212ee7d915f6d128133dea175ea6d680e6732a16b4e8a56c2",
+        "src/lib/genesis_constants/genesis_constants.ml": "5e03b78ef7ef5ba1dcfb86acfc4298dc8ab32ce42fee3b2454e18e9bc6a9d207",
+        "src/lib/consensus/constants.ml": "5a6c831dde6a92184b530bf5ac2274d71d6902b55f95c70af239ad2255fab6ce",
+        "src/lib/hash_prefixes/hash_prefixes.ml": "aa98a54019fd658a3b9ca299fd870bca37d278f9c4e6567676c4ae5adac0f5aa",
+        "src/lib/crypto/signature_lib/schnorr.ml": "0348bc420dde55bbafbf215e0c069ac5fb3a2899d5264010befdd0ac5e79a178",
+        "src/lib/consensus/vrf/consensus_vrf.ml": "8f676684bc452745f903b49820d27e3b025d0b3635f528757c17f48e87c59425"
+      }
+    },
+    "graphql": [
+      {
+        "url": "https://mina-mainnet-graphql.aurowallet.com/graphql",
+        "commit": "84b8d96954b218f372b93f65a071abf528e6bb61",
+        "queried": "2026-10-20T15:25Z"
+      }
+    ],
+    "block": {
+      "file": "548148-3NKtYZVHgyWrTzFE8j594Wy6HmFTb9rWw3sfPxZmZgRkrg572bAP.json.zst",
+      "height": 548148,
+      "sha256": "ce9897c37e51ec43302ed281fdfcc66e63c39f25695bc63b42f2798f8799e8dd"
+    }
+  },
+  "constants": {
+    "account_creation_fee": [
+      {
+        "value": 1000000000,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: account_creation_fee_int \"1.0\" MINA"
+      },
+      {
+        "value": 1000000000,
+        "how": "GraphQL of a live OCaml node, https://mina-mainnet-graphql.aurowallet.com/graphql (commit 84b8d969, 2026-10-20T15:25Z), genesisConstants.accountCreationFee"
+      }
+    ],
+    "block_window_duration_ms": [
+      {
+        "value": 90000,
+        "how": "binary: mina advanced compile-time-constants, block_window_duration_ms"
+      },
+      {
+        "value": 90000,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: block_window_duration"
+      },
+      {
+        "value": 90000,
+        "how": "GraphQL of a live OCaml node, https://mina-mainnet-graphql.aurowallet.com/graphql (commit 84b8d969, 2026-10-20T15:25Z), daemonStatus.consensusConfiguration.slotDuration"
+      }
+    ],
+    "chain_id": [
+      {
+        "value": "0718f61ab88f9d0fa643ff4dc3a3d5998dd6d51a6008b2b0339b0dbb26133886",
+        "how": "binary: mina internal chain-id --from-config-hashes-only with the packaged config"
+      },
+      {
+        "value": "0718f61ab88f9d0fa643ff4dc3a3d5998dd6d51a6008b2b0339b0dbb26133886",
+        "how": "gdb trace of the chain id input (scripts/ocaml-chain-id-trace.sh), Blake2b-256 of the traced input"
+      },
+      {
+        "value": "0718f61ab88f9d0fa643ff4dc3a3d5998dd6d51a6008b2b0339b0dbb26133886",
+        "how": "GraphQL of a live OCaml node, https://mina-mainnet-graphql.aurowallet.com/graphql (commit 84b8d969, 2026-10-20T15:25Z), daemonStatus.chainId"
+      }
+    ],
+    "chain_id.genesis_constants_hash": [
+      {
+        "value": "da12a12c460e064b214e8954936f8eb01ecd880f85b9fcce69c863139fb64854",
+        "how": "gdb trace of the chain id input (scripts/ocaml-chain-id-trace.sh), genesis constants hash"
+      }
+    ],
+    "chain_id.genesis_state_hash": [
+      {
+        "value": "3NLuZAmwT1EZ6M67SZn7PtNyfvThgevbd7EJmJJxq1yMG4itvkRH",
+        "how": "gdb trace of the chain id input (scripts/ocaml-chain-id-trace.sh), genesis state hash, zero currencies"
+      }
+    ],
+    "checkpoint_window_size_in_slots": [
+      {
+        "value": 29200,
+        "how": "OCaml source at 84b8d969, src/lib/consensus/constants.ml: slots per year (365 days / block_window_duration) / per_year"
+      }
+    ],
+    "checkpoints_per_year": [
+      {
+        "value": 12,
+        "how": "OCaml source at 84b8d969, src/lib/consensus/constants.ml: per_year"
+      }
+    ],
+    "coinbase_amount": [
+      {
+        "value": 360000000000,
+        "how": "binary: mina advanced compile-time-constants, coinbase (\"360\" MINA)"
+      },
+      {
+        "value": 360000000000,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: coinbase \"360\" MINA"
+      },
+      {
+        "value": 360000000000,
+        "how": "GraphQL of a live OCaml node, https://mina-mainnet-graphql.aurowallet.com/graphql (commit 84b8d969, 2026-10-20T15:25Z), genesisConstants.coinbase"
+      }
+    ],
+    "default_genesis_state_timestamp_ms": [
+      {
+        "value": 1600251300000,
+        "how": "binary: mina advanced compile-time-constants, genesis_state_timestamp (2020-09-16T10:15:00.000000Z)"
+      },
+      {
+        "value": 1600251300000,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: genesis_state_timestamp 2020-09-16 03:15:00-07:00"
+      }
+    ],
+    "default_snark_worker_fee": [
+      {
+        "value": 100000000,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: default_snark_worker_fee \"0.1\" MINA"
+      }
+    ],
+    "default_transaction_fee": [
+      {
+        "value": 250000000,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: default_transaction_fee \"0.25\" MINA"
+      }
+    ],
+    "delta": [
+      {
+        "value": 0,
+        "how": "binary: mina advanced compile-time-constants, delta"
+      },
+      {
+        "value": 0,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: delta"
+      },
+      {
+        "value": 0,
+        "how": "GraphQL of a live OCaml node, https://mina-mainnet-graphql.aurowallet.com/graphql (commit 84b8d969, 2026-10-20T15:25Z), daemonStatus.consensusConfiguration.delta"
+      },
+      {
+        "value": 0,
+        "how": "precomputed block 548148-3NKtYZVHgyWrTzFE8j594Wy6HmFTb9rWw3sfPxZmZgRkrg572bAP.json.zst (height 548148), protocol_state.body.constants.delta"
+      }
+    ],
+    "delta_duration_ms": [
+      {
+        "value": 90000,
+        "how": "OCaml source at 84b8d969, src/lib/consensus/constants.ml: delta_duration = slot duration * (delta + 1)"
+      },
+      {
+        "value": 90000,
+        "how": "GraphQL of a live OCaml node, https://mina-mainnet-graphql.aurowallet.com/graphql (commit 84b8d969, 2026-10-20T15:25Z), daemonStatus.consensusConfiguration.acceptableNetworkDelay"
+      }
+    ],
+    "digest.blockchain-step": [
+      {
+        "value": "558d2b211b606cc00defff075c1f9913",
+        "how": "gdb trace of the chain id input (scripts/ocaml-chain-id-trace.sh), digest blockchain-step"
+      }
+    ],
+    "digest.blockchain-step-without-fork": [
+      {
+        "value": "9ea67872932cb16dd03c1654b7b83b76",
+        "how": "binary: mina advanced constraint-system-digests, blockchain-step (compiled without the fork constants)"
+      }
+    ],
+    "digest.transaction-base": [
+      {
+        "value": "d31948e661cc662675b0c079458f714a",
+        "how": "binary: mina advanced constraint-system-digests, transaction-base"
+      },
+      {
+        "value": "d31948e661cc662675b0c079458f714a",
+        "how": "gdb trace of the chain id input (scripts/ocaml-chain-id-trace.sh), digest transaction-base"
+      }
+    ],
+    "digest.transaction-merge": [
+      {
+        "value": "d71089b3a1669535999e8f181cd59afc",
+        "how": "binary: mina advanced constraint-system-digests, transaction-merge"
+      },
+      {
+        "value": "d71089b3a1669535999e8f181cd59afc",
+        "how": "gdb trace of the chain id input (scripts/ocaml-chain-id-trace.sh), digest transaction-merge"
+      }
+    ],
+    "digest.zkapp-opt_signed": [
+      {
+        "value": "d048877d85e30a1ff9ff4cbdfcc33639",
+        "how": "binary: mina advanced constraint-system-digests, zkapp-opt_signed"
+      },
+      {
+        "value": "d048877d85e30a1ff9ff4cbdfcc33639",
+        "how": "gdb trace of the chain id input (scripts/ocaml-chain-id-trace.sh), digest zkapp-opt_signed"
+      }
+    ],
+    "digest.zkapp-opt_signed-opt_signed": [
+      {
+        "value": "ddaa38405c20a8f7a7cf5235c1ed1713",
+        "how": "binary: mina advanced constraint-system-digests, zkapp-opt_signed-opt_signed"
+      },
+      {
+        "value": "ddaa38405c20a8f7a7cf5235c1ed1713",
+        "how": "gdb trace of the chain id input (scripts/ocaml-chain-id-trace.sh), digest zkapp-opt_signed-opt_signed"
+      }
+    ],
+    "digest.zkapp-proved": [
+      {
+        "value": "2d8810bdbda316e4b1f9f41ae1b28f6c",
+        "how": "binary: mina advanced constraint-system-digests, zkapp-proved"
+      },
+      {
+        "value": "2d8810bdbda316e4b1f9f41ae1b28f6c",
+        "how": "gdb trace of the chain id input (scripts/ocaml-chain-id-trace.sh), digest zkapp-proved"
+      }
+    ],
+    "digest_order": [
+      {
+        "value": [
+          "transaction-merge",
+          "transaction-base",
+          "zkapp-opt_signed-opt_signed",
+          "zkapp-opt_signed",
+          "zkapp-proved",
+          "blockchain-step"
+        ],
+        "how": "gdb trace of the chain id input (scripts/ocaml-chain-id-trace.sh), order of the digests in the input"
+      }
+    ],
+    "epoch_duration_ms": [
+      {
+        "value": 642600000,
+        "how": "OCaml source at 84b8d969, src/lib/consensus/constants.ml: Epoch.duration = slot duration * slots_per_epoch"
+      },
+      {
+        "value": 642600000,
+        "how": "GraphQL of a live OCaml node, https://mina-mainnet-graphql.aurowallet.com/graphql (commit 84b8d969, 2026-10-20T15:25Z), daemonStatus.consensusConfiguration.epochDuration"
+      }
+    ],
+    "fork.blockchain_length": [
+      {
+        "value": 548146,
+        "how": "runtime config ~/.local/opt/mina-4.0.2/var/lib/coda/config_84b8d969.json (sha256 6e954987a9b904f9), proof.fork.blockchain_length"
+      }
+    ],
+    "fork.global_slot_since_genesis": [
+      {
+        "value": 958440,
+        "how": "runtime config ~/.local/opt/mina-4.0.2/var/lib/coda/config_84b8d969.json (sha256 6e954987a9b904f9), proof.fork.global_slot_since_genesis"
+      }
+    ],
+    "fork.state_hash": [
+      {
+        "value": "3NKHyxzgM9z4C1wUz5ZhJBmNhtDzDQGr1PGvWRwiCUcFvsdTco2T",
+        "how": "runtime config ~/.local/opt/mina-4.0.2/var/lib/coda/config_84b8d969.json (sha256 6e954987a9b904f9), proof.fork.state_hash"
+      }
+    ],
+    "genesis_ledger_hash": [
+      {
+        "value": "jwo3EM3zXkK5gpQYZHQP9KJVgH4ZCfv5bMgvyy3Gh2dAWU6AgyN",
+        "how": "runtime config ~/.local/opt/mina-4.0.2/var/lib/coda/config_84b8d969.json (sha256 6e954987a9b904f9), ledger.hash"
+      }
+    ],
+    "genesis_state_timestamp_ms": [
+      {
+        "value": 1788458400000,
+        "how": "runtime config ~/.local/opt/mina-4.0.2/var/lib/coda/config_84b8d969.json (sha256 6e954987a9b904f9), genesis.genesis_state_timestamp (2026-09-03T18:00:00Z)"
+      },
+      {
+        "value": 1788458400000,
+        "how": "GraphQL of a live OCaml node, https://mina-mainnet-graphql.aurowallet.com/graphql (commit 84b8d969, 2026-10-20T15:25Z), genesisConstants.genesisTimestamp (2026-09-03T10:00:00.000000-08:00)"
+      },
+      {
+        "value": 1788458400000,
+        "how": "GraphQL of a live OCaml node, https://mina-mainnet-graphql.aurowallet.com/graphql (commit 84b8d969, 2026-10-20T15:25Z), daemonStatus.consensusConfiguration.genesisStateTimestamp (2026-09-03 18:00:00.000000Z)"
+      },
+      {
+        "value": 1788458400000,
+        "how": "precomputed block 548148-3NKtYZVHgyWrTzFE8j594Wy6HmFTb9rWw3sfPxZmZgRkrg572bAP.json.zst (height 548148), protocol_state.body.constants.genesis_state_timestamp"
+      }
+    ],
+    "grace_period_slots": [
+      {
+        "value": 2160,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: grace_period_slots"
+      },
+      {
+        "value": 2160,
+        "how": "precomputed block 548148-3NKtYZVHgyWrTzFE8j594Wy6HmFTb9rWw3sfPxZmZgRkrg572bAP.json.zst (height 548148), protocol_state.body.constants.grace_period_slots"
+      }
+    ],
+    "k": [
+      {
+        "value": 290,
+        "how": "binary: mina advanced compile-time-constants, k"
+      },
+      {
+        "value": 290,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: k"
+      },
+      {
+        "value": 290,
+        "how": "GraphQL of a live OCaml node, https://mina-mainnet-graphql.aurowallet.com/graphql (commit 84b8d969, 2026-10-20T15:25Z), daemonStatus.consensusConfiguration.k"
+      },
+      {
+        "value": 290,
+        "how": "precomputed block 548148-3NKtYZVHgyWrTzFE8j594Wy6HmFTb9rWw3sfPxZmZgRkrg572bAP.json.zst (height 548148), protocol_state.body.constants.k"
+      }
+    ],
+    "ledger_depth": [
+      {
+        "value": 35,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: ledger_depth"
+      }
+    ],
+    "max_action_elements": [
+      {
+        "value": 1024,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/unconfigurable_constants/node_config_unconfigurable_constants.ml: max_action_elements"
+      }
+    ],
+    "max_event_elements": [
+      {
+        "value": 1024,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/unconfigurable_constants/node_config_unconfigurable_constants.ml: max_event_elements"
+      }
+    ],
+    "max_zkapp_segment_per_transaction": [
+      {
+        "value": 16,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/unconfigurable_constants/node_config_unconfigurable_constants.ml: max_zkapp_segment_per_transaction"
+      }
+    ],
+    "minimum_user_command_fee": [
+      {
+        "value": 1000000,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: minimum_user_command_fee \"0.001\" MINA"
+      }
+    ],
+    "network_id_byte": [
+      {
+        "value": 1,
+        "how": "OCaml source at 84b8d969, src/lib/crypto/signature_lib/schnorr.ml: network_id_mainnet"
+      }
+    ],
+    "network_name": [
+      {
+        "value": "mainnet",
+        "how": "runtime config ~/.local/opt/mina-4.0.2/var/lib/coda/config_84b8d969.json (sha256 6e954987a9b904f9), daemon.network_id"
+      },
+      {
+        "value": "mainnet",
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: network"
+      }
+    ],
+    "next_epoch_ledger_hash": [
+      {
+        "value": "jwCRaGZjgN6fe1ZQWGvti47ERfzdPMbffeL6BJPNj8sk6SLNX8Z",
+        "how": "runtime config ~/.local/opt/mina-4.0.2/var/lib/coda/config_84b8d969.json (sha256 6e954987a9b904f9), epoch_data.next.hash"
+      }
+    ],
+    "next_epoch_seed": [
+      {
+        "value": "2vbu8qY9toPbkrgPEW2Wtd8oqHrbCvDnrvMQq1zvY6V4n3U6VasS",
+        "how": "runtime config ~/.local/opt/mina-4.0.2/var/lib/coda/config_84b8d969.json (sha256 6e954987a9b904f9), epoch_data.next.seed"
+      }
+    ],
+    "pending_coinbase_depth": [
+      {
+        "value": 5,
+        "how": "OCaml source at 84b8d969, src/lib/genesis_constants/genesis_constants.ml: ceil_log2((7 + 1) * (2 + 1) + 1)"
+      }
+    ],
+    "protocol_version.network": [
+      {
+        "value": 0,
+        "how": "gdb trace of the chain id input (scripts/ocaml-chain-id-trace.sh), network version md5 cfcd208495d565ef66e7dff9f98764da"
+      },
+      {
+        "value": 0,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/version/node_config_version.ml: protocol_version_network"
+      },
+      {
+        "value": 0,
+        "how": "precomputed block 548148-3NKtYZVHgyWrTzFE8j594Wy6HmFTb9rWw3sfPxZmZgRkrg572bAP.json.zst (height 548148), protocol_version.network"
+      }
+    ],
+    "protocol_version.patch": [
+      {
+        "value": 0,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/version/node_config_version.ml: protocol_version_patch"
+      },
+      {
+        "value": 0,
+        "how": "precomputed block 548148-3NKtYZVHgyWrTzFE8j594Wy6HmFTb9rWw3sfPxZmZgRkrg572bAP.json.zst (height 548148), protocol_version.patch"
+      }
+    ],
+    "protocol_version.transaction": [
+      {
+        "value": 4,
+        "how": "gdb trace of the chain id input (scripts/ocaml-chain-id-trace.sh), transaction version md5 a87ff679a2f3e71d9181a67b7542122c"
+      },
+      {
+        "value": 4,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/version/node_config_version.ml: protocol_version_transaction"
+      },
+      {
+        "value": 4,
+        "how": "precomputed block 548148-3NKtYZVHgyWrTzFE8j594Wy6HmFTb9rWw3sfPxZmZgRkrg572bAP.json.zst (height 548148), protocol_version.transaction"
+      }
+    ],
+    "signature_kind": [
+      {
+        "value": "mainnet",
+        "how": "binary: mina advanced print-signature-kind"
+      }
+    ],
+    "signature_prefix": [
+      {
+        "value": "MinaSignatureMainnet",
+        "how": "OCaml source at 84b8d969, src/lib/hash_prefixes/hash_prefixes.ml: signature_mainnet"
+      }
+    ],
+    "slots_per_epoch": [
+      {
+        "value": 7140,
+        "how": "binary: mina advanced compile-time-constants, slots_per_epoch"
+      },
+      {
+        "value": 7140,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: slots_per_epoch"
+      },
+      {
+        "value": 7140,
+        "how": "GraphQL of a live OCaml node, https://mina-mainnet-graphql.aurowallet.com/graphql (commit 84b8d969, 2026-10-20T15:25Z), daemonStatus.consensusConfiguration.slotsPerEpoch"
+      },
+      {
+        "value": 7140,
+        "how": "precomputed block 548148-3NKtYZVHgyWrTzFE8j594Wy6HmFTb9rWw3sfPxZmZgRkrg572bAP.json.zst (height 548148), protocol_state.body.constants.slots_per_epoch"
+      },
+      {
+        "value": 7140,
+        "how": "precomputed block 548148-3NKtYZVHgyWrTzFE8j594Wy6HmFTb9rWw3sfPxZmZgRkrg572bAP.json.zst (height 548148), consensus_state.curr_global_slot_since_hard_fork.slots_per_epoch"
+      }
+    ],
+    "slots_per_sub_window": [
+      {
+        "value": 7,
+        "how": "binary: mina advanced compile-time-constants, slots_per_sub_window"
+      },
+      {
+        "value": 7,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: slots_per_sub_window"
+      },
+      {
+        "value": 7,
+        "how": "precomputed block 548148-3NKtYZVHgyWrTzFE8j594Wy6HmFTb9rWw3sfPxZmZgRkrg572bAP.json.zst (height 548148), protocol_state.body.constants.slots_per_sub_window"
+      }
+    ],
+    "slots_per_window": [
+      {
+        "value": 77,
+        "how": "binary: mina advanced compile-time-constants, slots_per_window"
+      }
+    ],
+    "staking_epoch_ledger_hash": [
+      {
+        "value": "jwydedrpUSNZr49ZgNsmZjMVX5BEZp5cwGN68Z7hhU9kp3eAtBa",
+        "how": "runtime config ~/.local/opt/mina-4.0.2/var/lib/coda/config_84b8d969.json (sha256 6e954987a9b904f9), epoch_data.staking.hash"
+      }
+    ],
+    "staking_epoch_seed": [
+      {
+        "value": "2vaPBM2CkpnPhnPsrDEBwhX8d5XBP6UaedLCpVu3Y9bARWPCrQCC",
+        "how": "runtime config ~/.local/opt/mina-4.0.2/var/lib/coda/config_84b8d969.json (sha256 6e954987a9b904f9), epoch_data.staking.seed"
+      }
+    ],
+    "sub_windows_per_window": [
+      {
+        "value": 11,
+        "how": "binary: mina advanced compile-time-constants, sub_windows_per_window"
+      },
+      {
+        "value": 11,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: sub_windows_per_window"
+      },
+      {
+        "value": 11,
+        "how": "precomputed block 548148-3NKtYZVHgyWrTzFE8j594Wy6HmFTb9rWw3sfPxZmZgRkrg572bAP.json.zst (height 548148), length of consensus_state.sub_window_densities"
+      }
+    ],
+    "supercharged_coinbase_factor": [
+      {
+        "value": 1,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: supercharged_coinbase_factor"
+      }
+    ],
+    "sync_ledger_default_subtree_depth": [
+      {
+        "value": 6,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: sync_ledger_default_subtree_depth"
+      }
+    ],
+    "sync_ledger_max_subtree_depth": [
+      {
+        "value": 8,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: sync_ledger_max_subtree_depth"
+      }
+    ],
+    "transaction_capacity_log_2": [
+      {
+        "value": 7,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: scan_state_transaction_capacity_log_2"
+      }
+    ],
+    "txpool_max_size": [
+      {
+        "value": 3000,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: pool_max_size"
+      }
+    ],
+    "vrf_threshold_f": [
+      {
+        "value": "3/4",
+        "how": "OCaml source at 84b8d969, src/lib/consensus/vrf/consensus_vrf.ml: f"
+      }
+    ],
+    "work_delay": [
+      {
+        "value": 2,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: scan_state_work_delay"
+      }
+    ],
+    "zkapp_body_hash_prefix": [
+      {
+        "value": "MainnetZkappBody",
+        "how": "OCaml source at 84b8d969, src/lib/hash_prefixes/hash_prefixes.ml: zkapp_body_mainnet"
+      }
+    ],
+    "zkapp_cmd_limit": [
+      {
+        "value": 12,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/profiled/mainnet.ml: zkapp_cmd_limit"
+      }
+    ],
+    "zkapp_cmd_limit_hardcap": [
+      {
+        "value": 128,
+        "how": "OCaml source at 84b8d969, src/lib/node_config/unconfigurable_constants/node_config_unconfigurable_constants.ml: zkapp_cmd_limit_hardcap"
+      }
+    ]
+  }
+}

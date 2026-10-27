@@ -151,6 +151,7 @@ impl SnarkedLedger {
             let p = p.to_be_bytes()[..b].to_vec();
             let q = v2::MinaLedgerSyncLedgerQueryStableV1::WhatChildHashes(
                 v2::MerkleAddressBinableArgStableV1((depth as u64).into(), p.into()),
+                1u64.into(),
             );
             log::info!("{}", serde_json::to_string(&q).unwrap());
             let r = client
@@ -160,11 +161,26 @@ impl SnarkedLedger {
                 .0
                 .unwrap();
             match r {
-                v2::MinaLedgerSyncLedgerAnswerStableV2::ChildHashesAre(l, r) => {
-                    self.sync_at_depth_boxed_new(client, root.clone(), l, depth + 1, pos * 2)
-                        .await;
-                    self.sync_at_depth_boxed_new(client, root.clone(), r, depth + 1, pos * 2 + 1)
-                        .await;
+                v2::MinaLedgerSyncLedgerAnswerStableV2::ChildHashesAre(hashes) => {
+                    let [l, r] = hashes.as_ref() else {
+                        panic!("expected two child hashes")
+                    };
+                    self.sync_at_depth_boxed_new(
+                        client,
+                        root.clone(),
+                        l.clone(),
+                        depth + 1,
+                        pos * 2,
+                    )
+                    .await;
+                    self.sync_at_depth_boxed_new(
+                        client,
+                        root.clone(),
+                        r.clone(),
+                        depth + 1,
+                        pos * 2 + 1,
+                    )
+                    .await;
                 }
                 _ => panic!(),
             };
@@ -192,7 +208,7 @@ impl SnarkedLedger {
                     self.top_hash.as_ref().unwrap().clone(),
                 )
             }
-            v2::MinaLedgerSyncLedgerQueryStableV1::WhatChildHashes(address) => {
+            v2::MinaLedgerSyncLedgerQueryStableV1::WhatChildHashes(address, _depth) => {
                 let addr = Address::from(address);
 
                 let hash = self
@@ -207,7 +223,9 @@ impl SnarkedLedger {
                     .unwrap();
                 let right = v2::LedgerHash::from(v2::MinaBaseLedgerHash0StableV1(hash.into()));
 
-                v2::MinaLedgerSyncLedgerAnswerStableV2::ChildHashesAre(left, right)
+                v2::MinaLedgerSyncLedgerAnswerStableV2::ChildHashesAre(
+                    [left, right].into_iter().collect(),
+                )
             }
             v2::MinaLedgerSyncLedgerQueryStableV1::WhatContents(address) => {
                 let addr = Address::from(address);

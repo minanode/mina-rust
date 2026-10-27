@@ -1,5 +1,5 @@
 use mina_core::{bug_condition, requests::RpcId, Substate, SubstateAccess};
-use redux::{ActionWithMeta, Dispatcher};
+use redux::{ActionWithMeta, Dispatcher, EnablingCondition};
 
 use crate::{
     connection::outgoing::P2pConnectionOutgoingAction, ConnectionAddr,
@@ -19,7 +19,8 @@ impl P2pNetworkKadRequestState {
         State: SubstateAccess<P2pNetworkKadState> + SubstateAccess<P2pState>,
         Action: crate::P2pActionTrait<State>,
     {
-        let (action, _meta) = action.split();
+        let (action, meta) = action.split();
+        let time = meta.time();
         let state = state_context.get_substate_mut()?;
         let filter_local_addrs = state.filter_addrs;
 
@@ -55,11 +56,47 @@ impl P2pNetworkKadRequestState {
                             P2pNetworkKadRequestAction::PeerIsConnecting { peer_id }
                         }
                     );
-                    dispatcher.push(P2pConnectionOutgoingAction::Init {
+                    let init = P2pConnectionOutgoingAction::Init {
                         opts,
                         rpc_id: None,
                         on_success: Some(callback),
-                    });
+                    };
+                    // A dial the backoff or the peer limits hold back would
+                    // be dropped, and the request would wait for it forever,
+                    // and the bootstrap with it: fail the request now.
+                    //
+                    // Since lookups repeat (I18b), they also keep I18's seed
+                    // policy: a seed is dialled for a lookup only while we
+                    // want seed connections, as OCaml's DHT dials seeds only
+                    // with an empty routing table. And after the first
+                    // lookup, a lookup dials only while we are short of the
+                    // target, as OCaml dials what it discovers only below
+                    // its low-water mark; peers already connected are asked
+                    // on their connection whatever the count.
+                    let has_bootstrapped = p2p_state
+                        .network
+                        .scheduler
+                        .discovery_state()
+                        .is_some_and(|discovery| discovery.has_bootstrapped);
+                    let policy =
+                        if p2p_state.is_seed(&peer_id) && !p2p_state.wants_seed_connections() {
+                            Err("not dialling a seed: enough other peers")
+                        } else if has_bootstrapped && p2p_state.libp2p_dial_deficit() == 0 {
+                            Err("not dialling: enough peers")
+                        } else {
+                            Ok(())
+                        };
+                    match policy {
+                        Ok(()) if init.is_enabled(p2p_state, time) => dispatcher.push(init),
+                        Ok(()) => dispatcher.push(P2pNetworkKadRequestAction::Error {
+                            peer_id,
+                            error: "dial not allowed now (backoff or peer limits)".to_owned(),
+                        }),
+                        Err(error) => dispatcher.push(P2pNetworkKadRequestAction::Error {
+                            peer_id,
+                            error: error.to_owned(),
+                        }),
+                    }
                     Ok(())
                 };
 

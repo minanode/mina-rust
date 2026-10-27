@@ -7,10 +7,8 @@
 //!
 //! ## Overview
 //!
-//! The Mina Rust node automatically handles downloading and caching circuit
-//! files, making the process transparent to users. When you run the node or
-//! generate proofs, the system will automatically fetch the required circuit
-//! data if it's not already available locally.
+//! The native `mina` binary embeds the Mesa devnet circuit files when built
+//! with `embedded-circuits`. Other networks retain local and remote lookup.
 //!
 //! ## Circuit Data Files
 //!
@@ -43,10 +41,11 @@
 //!
 //! The system searches for circuit files in these locations (in order):
 //!
-//! 1. **Environment Variable**: `MINA_CIRCUIT_BLOBS_BASE_DIR`
-//! 2. **Cargo Manifest Directory**: Current project directory
-//! 3. **Home Directory**: `~/.mina/circuit-blobs/`
-//! 4. **System Directory**: `/usr/local/lib/mina/circuit-blobs`
+//! 1. **Embedded Mesa devnet circuits**: native builds with the feature
+//! 2. **Environment Variable**: `MINA_CIRCUIT_BLOBS_BASE_DIR`
+//! 3. **Cargo Manifest Directory**: Current project directory
+//! 4. **Home Directory**: `~/.mina/circuit-blobs/`
+//! 5. **System Directory**: `/usr/local/lib/mina/circuit-blobs`
 //!
 //! ### Remote Fetching
 //!
@@ -69,23 +68,12 @@
 //!
 //! ### First Run Experience
 //!
-//! When you first run the Mina Rust node or generate proofs:
-//!
-//! 1. **Automatic Detection**: The system checks for required circuit files
-//! 2. **Local Search**: Searches in these locations (in order):
-//!    - `$MINA_CIRCUIT_BLOBS_BASE_DIR` (if set)
-//!    - Current project directory
-//!    - `~/.mina/circuit-blobs/`
-//!    - `/usr/local/lib/mina/circuit-blobs`
-//! 3. **Automatic Download**: If files aren't found locally, downloads from GitHub
-//! 4. **Local Caching**: Saves downloaded files to `~/.mina/circuit-blobs/`
-//! 5. **Ready to Use**: Circuit data is loaded and ready for proof generation
-//!
-//! ### Subsequent Runs
-//!
-//! - Uses cached files from `~/.mina/circuit-blobs/`
-//! - No network requests needed
-//! - Fast startup times
+//! A native Mesa devnet build with `embedded-circuits` reads its verified
+//! circuits from the binary on first use; no circuit download or cache is
+//! needed. To opt out of embedded-first, build `mina` without that feature.
+//! Other networks and feature-off builds search the configured, project,
+//! home, and system directories, then try the GitHub release and cache a
+//! successful download under `~/.mina/circuit-blobs/`.
 //!
 //! ## Development Guidelines
 //!
@@ -105,18 +93,189 @@
 //! export MINA_CIRCUIT_BLOBS_BASE_DIR=/path/to/your/circuit-blobs
 //! ```
 //!
+//! ### Mesa (4.0.2) circuits
+//!
+//! No circuit-blobs release has the Mesa mainnet circuits (`4.0.2mainnet` in
+//! `mina_core::network::mainnet::CIRCUITS_CONFIG`). Dump them with the OCaml
+//! 4.0.2 binary, offline, in about a minute:
+//!
+//! ```bash
+//! tools/mesa-circuits/generate.sh /tmp/mesa-blobs
+//! export MINA_CIRCUIT_BLOBS_BASE_DIR=/tmp/mesa-blobs/circuit-blobs
+//! ```
+//!
+//! A feature-off native build can use locally dumped Mesa devnet circuits
+//! (`4.0.2devnet` in
+//! `mina_core::network::devnet::CIRCUITS_CONFIG`) come from the same script,
+//! into another directory, with the devnet profile and the Mesa devnet fork
+//! config. To have both networks under one base directory, link
+//! `4.0.2mainnet` and `4.0.2devnet` into one `circuit-blobs` directory:
+//!
+//! ```bash
+//! MINA_PROFILE=devnet tools/mesa-circuits/generate.sh /tmp/mesa-devnet-blobs \
+//!   tools/mesa-circuits/mesa-devnet-fork.json
+//! export MINA_CIRCUIT_BLOBS_BASE_DIR=/tmp/mesa-devnet-blobs/circuit-blobs
+//! ```
+//!
 //! ## Related Modules
 //!
 //! - [`crate::proofs::provers`]: Prover creation using circuit data
 //! - [`crate::proofs::constants`]: Circuit type definitions
 
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
+
+#[cfg(all(not(target_family = "wasm"), feature = "embedded-circuits"))]
+#[path = "embedded_circuits.rs"]
+mod embedded_circuits;
+
+#[cfg(all(not(target_family = "wasm"), feature = "embedded-circuits"))]
+fn decode_embedded(
+    compressed: &[u8],
+    name: &str,
+    expected_sha256: &str,
+) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+
+    let mut bytes = Vec::new();
+    ruzstd::decoding::StreamingDecoder::new(compressed)
+        .map_err(std::io::Error::other)?
+        .read_to_end(&mut bytes)?;
+    let pins =
+        CircuitPins::parse(&format!("{name}={expected_sha256}")).map_err(std::io::Error::other)?;
+    pins.check(name, &bytes)?;
+    Ok(bytes)
+}
+
+#[cfg(all(not(target_family = "wasm"), feature = "embedded-circuits"))]
+fn fetch_embedded(filename: &Path) -> Option<std::io::Result<Vec<u8>>> {
+    use std::path::Component;
+
+    let mut parts = filename.components();
+    if parts.next()? != Component::Normal("4.0.2devnet".as_ref()) {
+        return None;
+    }
+    let Component::Normal(name) = parts.next()? else {
+        return None;
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    let name = name.to_str()?;
+    let (compressed, digest) = embedded_circuits::get(name)?;
+    Some(decode_embedded(compressed, name, digest))
+}
+
+/// The SHA-256 each circuit file must have, when a web build fetches them
+/// from a host other than the page's (W1 fix round): an asset host serves
+/// bytes the page has no reason to trust, and the node would use them. The
+/// pins are compiled into the WASM by `tools/regression/webnode/build.sh` as
+/// `CIRCUIT_BLOBS_SHA256`, from the files it uploads: `<file>=<hex>` pairs
+/// separated by `;`, `-` for none. The page checks the WASM's own digest
+/// before it runs it, so the pins are as trusted as the page. With pins, a
+/// file without one, or with other bytes, is refused; without (the
+/// same-origin default) files are not checked here.
+///
+/// Already checked without pins: a verifier index cache starts with the
+/// digest of the index source it was made from and the SHA-256 of the rest,
+/// which catch a stale or corrupt cache but not a crafted one, since both are
+/// in the file. Prover circuit files carry no check.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CircuitPins(BTreeMap<String, [u8; 32]>);
+
+impl CircuitPins {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let mut pins = BTreeMap::new();
+        for entry in s.split(';').map(str::trim) {
+            if entry.is_empty() || entry == "-" {
+                continue;
+            }
+            let (file, hex_digest) = entry
+                .rsplit_once('=')
+                .ok_or_else(|| format!("expected <file>=<sha256>, got `{entry}`"))?;
+            let mut digest = [0u8; 32];
+            hex::decode_to_slice(hex_digest, &mut digest)
+                .map_err(|err| format!("bad SHA-256 for {file}: {err}"))?;
+            if pins.insert(file.to_owned(), digest).is_some() {
+                return Err(format!("{file} is pinned twice"));
+            }
+        }
+        Ok(Self(pins))
+    }
+
+    /// Refuses `bytes` unless they are `filename`'s pinned bytes.
+    pub fn check(&self, filename: &str, bytes: &[u8]) -> std::io::Result<()> {
+        use sha2::{Digest, Sha256};
+
+        let refuse = |why: String| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("circuit file {filename} refused: {why}"),
+            ))
+        };
+        let Some(pinned) = self.0.get(filename) else {
+            return refuse("this build pins no SHA-256 for it".to_owned());
+        };
+        let digest = Sha256::digest(bytes);
+        if digest.as_slice() != pinned.as_slice() {
+            return refuse(format!(
+                "its SHA-256 is {}, this build pins {}",
+                hex::encode(digest),
+                hex::encode(pinned)
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The pins compiled into this WASM, if any. A malformed value refuses every
+/// file rather than none.
+#[cfg(target_family = "wasm")]
+fn compiled_pins() -> Option<&'static CircuitPins> {
+    static PINS: std::sync::OnceLock<Option<CircuitPins>> = std::sync::OnceLock::new();
+    PINS.get_or_init(|| {
+        option_env!("CIRCUIT_BLOBS_SHA256").map(|value| {
+            CircuitPins::parse(value).unwrap_or_else(|error| {
+                mina_core::error!(
+                    mina_core::log::system_time();
+                    kind = "ledger proofs",
+                    summary = "malformed circuit file pins: every file is refused",
+                    error = error,
+                );
+                CircuitPins::default()
+            })
+        })
+    })
+    .as_ref()
+}
+
+#[cfg(target_family = "wasm")]
+fn checked(filename: &str, bytes: Vec<u8>) -> std::io::Result<Vec<u8>> {
+    if let Some(pins) = compiled_pins() {
+        pins.check(filename, &bytes)?;
+    }
+    Ok(bytes)
+}
 
 #[cfg(not(target_family = "wasm"))]
 pub fn home_base_dir() -> Option<std::path::PathBuf> {
     let mut path = std::path::PathBuf::from(std::env::var("HOME").ok()?);
     path.push(".mina/circuit-blobs");
     Some(path)
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+thread_local! {
+    static TEST_MISSING_CIRCUIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+pub(crate) fn with_missing_circuit<T>(f: impl FnOnce() -> T) -> T {
+    TEST_MISSING_CIRCUIT.with(|missing| {
+        let previous = missing.replace(true);
+        let result = f();
+        missing.set(previous);
+        result
+    })
 }
 
 fn git_release_url(filename: &impl AsRef<Path>) -> String {
@@ -126,30 +285,84 @@ fn git_release_url(filename: &impl AsRef<Path>) -> String {
     format!("{RELEASES_PATH}/{filename_str}")
 }
 
+/// `filename` in the local sources, in their order: `MINA_CIRCUIT_BLOBS_BASE_DIR`,
+/// this crate's directory, `~/.mina/circuit-blobs`, the system directory.
 #[cfg(not(target_family = "wasm"))]
-pub fn fetch_blocking(filename: &impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
-    use std::path::PathBuf;
-
-    fn try_base_dir<P: Into<PathBuf>>(base_dir: P, filename: &impl AsRef<Path>) -> Option<PathBuf> {
+fn find_local(filename: &impl AsRef<Path>) -> Option<std::path::PathBuf> {
+    fn try_base_dir<P: Into<std::path::PathBuf>>(
+        base_dir: P,
+        filename: &impl AsRef<Path>,
+    ) -> Option<std::path::PathBuf> {
         let mut path = base_dir.into();
         path.push(filename);
         path.exists().then_some(path)
     }
+    None.or_else(|| try_base_dir(std::env::var("MINA_CIRCUIT_BLOBS_BASE_DIR").ok()?, filename))
+        .or_else(|| try_base_dir(env!("CARGO_MANIFEST_DIR").to_string(), filename))
+        .or_else(|| try_base_dir(home_base_dir()?, filename))
+        .or_else(|| try_base_dir("/usr/local/lib/mina/circuit-blobs", filename))
+}
+
+/// A file only the node writes, such as a verifier index cache, from the
+/// local sources; never fetched (RC7-FIXES: no circuit-blobs release has the
+/// caches, so a first start logged a 404 for each). [`std::io::ErrorKind::NotFound`]
+/// if it isn't there.
+#[cfg(not(target_family = "wasm"))]
+pub fn read_local(filename: &impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
+    match find_local(filename) {
+        Some(path) => std::fs::read(path),
+        None => Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{} is not cached", filename.as_ref().display()),
+        )),
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub fn fetch_blocking(filename: &impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
+    #[cfg(test)]
+    if TEST_MISSING_CIRCUIT.with(|missing| missing.get()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "test circuit blob missing",
+        ));
+    }
+
+    #[cfg(feature = "embedded-circuits")]
+    if let Some(result) = fetch_embedded(filename.as_ref()) {
+        let bytes = result?;
+        static LOGGED: std::sync::Once = std::sync::Once::new();
+        LOGGED.call_once(|| {
+            mina_core::info!(
+                mina_core::log::system_time();
+                kind = "ledger proofs",
+                message = "circuit blobs served from embedded Mesa devnet circuits",
+            );
+            #[cfg(test)]
+            eprintln!("R44 circuit source: embedded Mesa devnet (no GitHub request)");
+        });
+        return Ok(bytes);
+    }
 
     fn to_io_err(err: impl std::fmt::Display) -> std::io::Error {
         std::io::Error::other(format!(
-            "failed to find circuit-blobs locally and to fetch the from github! error: {err}"
+            "circuit blob not found in local sources and GitHub fetch failed: {err}"
         ))
     }
 
     let home_base_dir = home_base_dir();
-    let found = None
-        .or_else(|| try_base_dir(std::env::var("MINA_CIRCUIT_BLOBS_BASE_DIR").ok()?, filename))
-        .or_else(|| try_base_dir(env!("CARGO_MANIFEST_DIR").to_string(), filename))
-        .or_else(|| try_base_dir(home_base_dir.clone()?, filename))
-        .or_else(|| try_base_dir("/usr/local/lib/mina/circuit-blobs", filename));
-
-    if let Some(path) = found {
+    if let Some(path) = find_local(filename) {
+        #[cfg(feature = "embedded-circuits")]
+        {
+            static LOGGED: std::sync::Once = std::sync::Once::new();
+            LOGGED.call_once(|| {
+                mina_core::info!(
+                    mina_core::log::system_time();
+                    kind = "ledger proofs",
+                    message = "circuit blobs served from local files",
+                )
+            });
+        }
         return std::fs::read(path);
     }
 
@@ -160,13 +373,35 @@ pub fn fetch_blocking(filename: &impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
         filename = filename.as_ref().to_str().unwrap(),
     );
 
-    let base_dir = home_base_dir.expect("$HOME env not set!");
+    let base_dir = home_base_dir.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "circuit blob not found in local sources; HOME is unset, so GitHub cannot be cached",
+        )
+    })?;
 
+    // A missing file answers 404 with a body: without `error_for_status` that
+    // body was returned and cached in place of the file, and kept failing
+    // after a release appeared. No release has the Mesa (`4.0.2mainnet`)
+    // blobs, so every miss there is a 404.
     let bytes = reqwest::blocking::get(git_release_url(filename))
+        .and_then(|response| response.error_for_status())
         .map_err(to_io_err)?
         .bytes()
         .map_err(to_io_err)?
         .to_vec();
+
+    #[cfg(feature = "embedded-circuits")]
+    {
+        static LOGGED: std::sync::Once = std::sync::Once::new();
+        LOGGED.call_once(|| {
+            mina_core::info!(
+                mina_core::log::system_time();
+                kind = "ledger proofs",
+                message = "circuit blobs served from GitHub release",
+            )
+        });
+    }
 
     // cache it to home dir.
     let cache_path = base_dir.join(filename);
@@ -186,14 +421,129 @@ pub fn fetch_blocking(filename: &impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
 pub async fn fetch(filename: &impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
     let prefix =
         option_env!("CIRCUIT_BLOBS_HTTP_PREFIX").unwrap_or("/assets/webnode/circuit-blobs");
-    let url = format!("{prefix}/{}", filename.as_ref().to_str().unwrap());
-    mina_core::http::get_bytes(&url).await
+    let name = filename.as_ref().to_str().unwrap();
+    let url = format!("{prefix}/{name}");
+    checked(name, mina_core::http::get_bytes(&url).await?)
 }
 
 #[cfg(target_family = "wasm")]
 pub fn fetch_blocking(filename: &impl AsRef<Path>) -> std::io::Result<Vec<u8>> {
     let prefix =
         option_env!("CIRCUIT_BLOBS_HTTP_PREFIX").unwrap_or("/assets/webnode/circuit-blobs");
-    let url = format!("{prefix}/{}", filename.as_ref().to_str().unwrap());
-    mina_core::http::get_bytes_blocking(&url)
+    let name = filename.as_ref().to_str().unwrap();
+    let url = format!("{prefix}/{name}");
+    checked(name, mina_core::http::get_bytes_blocking(&url)?)
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::CircuitPins;
+    use sha2::{Digest, Sha256};
+
+    const FILE: &str = "4.0.2devnet/block_verifier_index.postcard";
+
+    fn hex_of(bytes: &[u8]) -> String {
+        hex::encode(Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn pinned_bytes_pass_and_others_are_refused() {
+        let pins = CircuitPins::parse(&format!("{FILE}={}", hex_of(b"cache"))).unwrap();
+        pins.check(FILE, b"cache").unwrap();
+        let err = pins.check(FILE, b"cachf").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("refused"), "{err}");
+        assert!(err.to_string().contains(&hex_of(b"cache")), "{err}");
+    }
+
+    #[test]
+    fn a_file_without_a_pin_is_refused() {
+        let pins = CircuitPins::parse(&format!("{FILE}={}", hex_of(b"cache"))).unwrap();
+        let err = pins
+            .check("4.0.2devnet/transaction_verifier_index.postcard", b"cache")
+            .unwrap_err();
+        assert!(err.to_string().contains("pins no SHA-256"), "{err}");
+        // No pins at all, the build's `-`: everything is refused.
+        let none = CircuitPins::parse("-").unwrap();
+        assert!(none.check(FILE, b"cache").is_err());
+        assert_eq!(CircuitPins::parse("").unwrap(), none);
+    }
+
+    #[test]
+    fn parses_several_and_refuses_malformed_pins() {
+        let value = format!(
+            "{FILE}={}; 4.0.2devnet/x_gates.json={}",
+            hex_of(b"a"),
+            hex_of(b"b")
+        );
+        let pins = CircuitPins::parse(&value).unwrap();
+        pins.check("4.0.2devnet/x_gates.json", b"b").unwrap();
+        for bad in [
+            "no-equals-sign".to_owned(),
+            format!("{FILE}=abcd"),
+            format!("{FILE}={}", "zz".repeat(32)),
+            format!("{FILE}={};{FILE}={}", hex_of(b"a"), hex_of(b"a")),
+        ] {
+            assert!(CircuitPins::parse(&bad).is_err(), "{bad}");
+        }
+    }
+}
+
+#[cfg(all(test, not(target_family = "wasm"), feature = "embedded-circuits"))]
+mod embedded_tests {
+    use super::*;
+
+    #[test]
+    fn every_embedded_file_matches_ocaml_sha256() {
+        let mut largest = (0, std::time::Duration::ZERO);
+        for line in include_str!("../../../../tools/mesa-circuits/devnet-blobs.sha256").lines() {
+            let (digest, name) = line.split_once("  ").unwrap();
+            let path = format!("4.0.2devnet/{name}");
+            let started = std::time::Instant::now();
+            let bytes = fetch_embedded(Path::new(&path)).unwrap().unwrap();
+            if bytes.len() > largest.0 {
+                largest = (bytes.len(), started.elapsed());
+            }
+            CircuitPins::parse(&format!("{name}={digest}"))
+                .unwrap()
+                .check(name, &bytes)
+                .unwrap();
+        }
+        eprintln!(
+            "R44 largest embedded file: {} bytes, first decode and SHA-256 check: {:.3} s",
+            largest.0,
+            largest.1.as_secs_f64()
+        );
+    }
+
+    #[test]
+    fn corrupt_embedded_payload_is_refused() {
+        let (compressed, digest) = embedded_circuits::get(
+            "step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_rows_rev.bin",
+        )
+        .unwrap();
+        let name = "step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_rows_rev.bin";
+        let mut corrupt = compressed.to_vec();
+        corrupt[0] ^= 1;
+        assert!(decode_embedded(&corrupt, name, digest).is_err());
+        let err = decode_embedded(compressed, name, &"0".repeat(64)).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn other_network_and_unlisted_file_are_not_embedded() {
+        assert!(fetch_embedded(Path::new("4.0.2mainnet/x_gates.json")).is_none());
+        assert!(fetch_embedded(Path::new("4.0.2devnet/unknown_gates.json")).is_none());
+    }
+}
+
+#[cfg(all(test, not(target_family = "wasm"), not(feature = "embedded-circuits")))]
+mod no_embedded_tests {
+    #[test]
+    fn loader_still_reads_a_local_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("fixture_gates.json");
+        std::fs::write(&file, b"local circuit").unwrap();
+        assert_eq!(super::fetch_blocking(&file).unwrap(), b"local circuit");
+    }
 }

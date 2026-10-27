@@ -5,16 +5,13 @@ import { DashboardSplitsSet } from '@shared/types/network/splits/dashboard-split
 import { DashboardSplitsLink } from '@shared/types/network/splits/dashboard-splits-link.type';
 import { MinaState } from '@app/app.setup';
 import { selectDashboardSplitsState } from '@network/network.state';
-import { DashboardNodeCount } from '@shared/types/network/splits/dashboard-node-count.type';
 
 export interface DashboardSplitsState {
+  node?: string;
   peers: DashboardSplitsPeer[];
   links: DashboardSplitsLink[];
   sets: DashboardSplitsSet[];
   activePeer: DashboardSplitsPeer;
-  networkSplitsDetails: string;
-  networkMergeDetails: string;
-  nodeStats: DashboardNodeCount;
   fetching: boolean;
   sort: TableSort<DashboardSplitsPeer>;
   openSidePanel: boolean;
@@ -24,6 +21,8 @@ const select = <T>(
   selector: (state: DashboardSplitsState) => T,
 ): MemoizedSelector<MinaState, T> =>
   createSelector(selectDashboardSplitsState, selector);
+
+export const selectDashboardSplitsNode = select(state => state.node);
 
 export const selectDashboardSplitsPeers = select(
   (state: DashboardSplitsState): DashboardSplitsPeer[] => state.peers,
@@ -43,12 +42,14 @@ export const selectDashboardSplitsPeersAndLinksAndSetsAndFetching =
     selectDashboardSplitsLinks,
     selectDashboardSplitsSets,
     selectDashboardSplitsFetching,
+    selectDashboardSplitsNode,
     (
       peers: DashboardSplitsPeer[],
       links: DashboardSplitsLink[],
       sets: DashboardSplitsSet[],
       fetching: boolean,
-    ) => ({ peers, links, sets, fetching }),
+      node: string,
+    ) => ({ peers, links, sets, fetching, node }),
   );
 export const selectDashboardSplitsPeersAndSets = createSelector(
   selectDashboardSplitsPeers,
@@ -60,15 +61,6 @@ export const selectDashboardSplitsPeersAndSets = createSelector(
 );
 export const selectDashboardSplitsActivePeer = select(
   (state: DashboardSplitsState): DashboardSplitsPeer => state.activePeer,
-);
-export const selectDashboardSplitsNetworkSplitsDetails = select(
-  (state: DashboardSplitsState): string => state.networkSplitsDetails,
-);
-export const selectDashboardSplitsNetworkMergeDetails = select(
-  (state: DashboardSplitsState): string => state.networkMergeDetails,
-);
-export const selectDashboardSplitsNodeStats = select(
-  (state: DashboardSplitsState): DashboardNodeCount => state.nodeStats,
 );
 export const selectDashboardSplitsSort = select(
   (state: DashboardSplitsState): TableSort<DashboardSplitsPeer> => state.sort,

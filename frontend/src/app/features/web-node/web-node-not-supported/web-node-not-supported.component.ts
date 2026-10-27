@@ -7,12 +7,13 @@ import {
 } from '@angular/core';
 import { iOSversion } from '@shared/helpers/webnode.helper';
 import { safelyExecuteInBrowser } from '@mina-rust/shared';
+import { BrandLogoComponent } from '@shared/components/brand-logo/brand-logo.component';
 
 const code = [1, 2, 3, 2];
 
 @Component({
   selector: 'mina-web-node-not-supported',
-  imports: [],
+  imports: [BrandLogoComponent],
   templateUrl: './web-node-not-supported.component.html',
   styleUrl: './web-node-not-supported.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -23,7 +24,7 @@ export class WebNodeNotSupportedComponent {
 
   @Output() bypassUnsupportedDevice = new EventEmitter<void>();
 
-  iOSVersion: string = iOSversion().join('.');
+  iOSVersion: string | null = iOSversion()?.join('.') ?? null;
   devMode: boolean = false;
   private codeVerifier: number[] = [];
 

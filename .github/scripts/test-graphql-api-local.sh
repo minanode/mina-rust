@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Test Documentation Scripts - GraphQL API (Local Runner)
-# This script contains the same logic as .github/workflows/test-docs-graphql-api.yaml
+# Run the documentation's GraphQL examples locally.
 #
 # Usage:
 #   ./test-graphql-api-local.sh

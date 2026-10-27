@@ -1,0 +1,21 @@
+diff --git a/crates/node/src/transition_frontier/sync/ledger/snarked/transition_frontier_sync_ledger_snarked_actions.rs b/crates/node/src/transition_frontier/sync/ledger/snarked/transition_frontier_sync_ledger_snarked_actions.rs
+index 341b81cf..3bb68028 100644
+--- a/crates/node/src/transition_frontier/sync/ledger/snarked/transition_frontier_sync_ledger_snarked_actions.rs
++++ b/crates/node/src/transition_frontier/sync/ledger/snarked/transition_frontier_sync_ledger_snarked_actions.rs
+@@ -19,10 +19,14 @@ use super::{
+ pub const ACCOUNT_SUBTREE_HEIGHT: usize = 6;
+ 
+ /// How many levels of hashes to ask for at once above the account subtrees:
+-/// 2^6 = 64 hashes per query, as OCaml mainnet nodes ask.
++/// at most 2^7 = 128 hashes per query. OCaml mainnet nodes ask for 6 but
++/// serve up to 8 (`sync_ledger_max_subtree_depth`). With mainnet's 290,000
++/// or so accounts, the content root is 13 levels above the account
++/// subtrees: 7 + 6 takes two rounds of hash queries, where 6 + 6 + 1 took
++/// three, the last of them returning only 2 hashes each.
+ ///
+ /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/node_config/profiled/mainnet.ml#L55-L57>
+-pub const SYNC_LEDGER_QUERY_DEPTH: usize = 6;
++pub const SYNC_LEDGER_QUERY_DEPTH: usize = 7;
+ 
+ pub type TransitionFrontierSyncLedgerSnarkedActionWithMeta =
+     redux::ActionWithMeta<TransitionFrontierSyncLedgerSnarkedAction>;

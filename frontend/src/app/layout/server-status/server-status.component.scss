@@ -101,7 +101,8 @@
     gap: 4px;
   }
 
-  @media (max-width: 767px) {
+  // 768 px is the app's mobile breakpoint (isMobile() in values.helper.ts).
+  @media (max-width: 768px) {
     width: 100%;
     &.h-sm,
     .h-sm {
@@ -111,7 +112,7 @@
 }
 
 .node-status {
-  @media (min-width: 768px) {
+  @media (min-width: 769px) {
     &.can-add-nodes {
       .chip,
       .chip::before {
@@ -128,7 +129,7 @@
       }
     }
   }
-  @media (max-width: 767px) {
+  @media (max-width: 768px) {
     font-size: 12px;
     &,
     .shine-parent,

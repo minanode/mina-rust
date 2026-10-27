@@ -8,7 +8,9 @@
       [class.flex-between]="menu.isMobile"
       (click)="toggleMenu()"
     >
-      <span class="fx-row-vert-cent mina-rust-node">The Mina Rust Node</span>
+      <span class="fx-row-vert-cent brand">
+        <mina-brand-logo [size]="24" />
+      </span>
       <span
         [class.flipped]="menu.isMobile ? false : menu.collapsed"
         class="mina-icon f-20"
@@ -37,6 +39,26 @@
         </span>
       </a>
     }
+    <a
+      [href]="docsUrl"
+      target="_blank"
+      rel="noopener noreferrer"
+      [tooltip]="'Docs, in a new tab'"
+      [globalTooltip]="false"
+      [tooltipDisabled]="!menu.collapsed || menu.isMobile"
+      [position]="TooltipPosition.RIGHT"
+      [class.border-bottom]="menu.isMobile"
+      (click)="showHideMenu()"
+      class="item docs h-lg"
+      aria-label="Docs (opens in a new tab)"
+      data-docs-link
+    >
+      <span class="item-content h-sm">
+        <span class="mina-icon">menu_book</span>
+        <span class="text-nowrap">Docs</span>
+        <span class="mina-icon external">open_in_new</span>
+      </span>
+    </a>
   </div>
 }
 
@@ -73,18 +95,42 @@
           <span class="mina-icon f-18 secondary">commit</span>
           <span
             [class.hid]="menu.collapsed && !menu.isMobile"
-            class="network text-capitalize ml-5"
+            class="network ml-5"
           >
-            Build
+            UI build
           </span>
         </div>
         <div
           class="chain-id tertiary fx-row-vert-cent"
           [class.hid]="menu.collapsed && !menu.isMobile"
+          [title]="buildTitle"
+          data-build-stamp
         >
-          <span>
-            {{ envBuild ? envBuild.git.commit_hash.slice(0, 6) : '' }}..
+          <span>{{ buildLabel }}</span>
+          <span class="mina-icon icon-200 f-18">open_in_full</span>
+        </div>
+      </div>
+      <div
+        class="bottom-btn-action w-100 flex-row align-center flex-between p-relative h-sm border-rad-6 pointer mt-5"
+        (click)="openEnvBuildModal()"
+      >
+        <div class="fx-row-vert-cent">
+          <span class="mina-icon f-18 secondary">dns</span>
+          <span
+            [class.hid]="menu.collapsed && !menu.isMobile"
+            class="network ml-5"
+            data-node-build-kind
+          >
+            {{ sourceKind }}
           </span>
+        </div>
+        <div
+          class="chain-id tertiary fx-row-vert-cent"
+          [class.hid]="menu.collapsed && !menu.isMobile"
+          [title]="buildTitle"
+          data-node-build-stamp
+        >
+          <span>{{ nodeCommit || '…' }}</span>
           <span class="mina-icon icon-200 f-18">open_in_full</span>
         </div>
       </div>

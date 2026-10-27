@@ -1,53 +1,42 @@
-use clap::Parser;
-use mina_cli::commands::Network;
 use mina_core::log::system_time;
 use mina_node::stats::sync::{SyncSnarkedLedger, SyncStagedLedger, SyncStatsSnapshot};
 use redux::Timestamp;
 use std::{
     fs::File,
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
 
 #[test]
+#[ignore = "public devnet: set MINA_TEST_PUBLIC_NETWORK=1 and run --ignored --exact bootstrap"]
 fn bootstrap() -> anyhow::Result<()> {
-    let child = spawn_node()?;
-    monitor_node(child)?;
-    Ok(())
+    anyhow::ensure!(
+        std::env::var("MINA_TEST_PUBLIC_NETWORK").as_deref() == Ok("1"),
+        "public devnet requires MINA_TEST_PUBLIC_NETWORK=1"
+    );
+    let work_dir = tempfile::tempdir()?;
+    let child = fork_node(work_dir.path())?;
+    monitor_node(child)
 }
 
-const FORK_VAR: &str = "MINA_BOOTSTRAP_FORK";
 const HTTP_PORT: u16 = 49998;
 const P2P_PORT: u16 = 49999;
 const COMMAND_VAR: &str = "MINA_COMMAND";
 
-fn spawn_node() -> anyhow::Result<Child> {
-    if std::env::var(FORK_VAR).is_ok() {
-        run_node()?;
-        unreachable!();
-    } else {
-        fork_node()
+// Reap the node on success, timeout, or unwinding before its tempdir is removed.
+struct NodeChild(Child);
+
+impl Drop for NodeChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
-fn run_node() -> anyhow::Result<()> {
-    if let Err(e) = mina_cli::commands::MinaCli::parse_from([
-        std::env::args().next().unwrap(),
-        String::from("node"),
-    ])
-    .command
-    .run(Network::Devnet)
-    {
-        anyhow::bail!(format!("{e:#}"));
-    }
-    Ok(())
-}
-
-fn fork_node() -> anyhow::Result<Child> {
-    let mut child = node_command().spawn()?;
+fn fork_node(work_dir: &Path) -> anyhow::Result<NodeChild> {
     let (stdout_file, stderr_file) = if let Ok(path) = std::env::var("OUT_PATH") {
         let path = PathBuf::from(path);
         (
@@ -55,16 +44,14 @@ fn fork_node() -> anyhow::Result<Child> {
             File::create(path.with_extension("stderr"))?,
         )
     } else {
-        let (stdout_file, path) =
-            tempfile::NamedTempFile::with_prefix("bootstrap_stdout_")?.keep()?;
-        println!("piping stdout to {:?}", path);
-        let (stderr_file, path) =
-            tempfile::NamedTempFile::with_prefix("bootstrap_stderr_")?.keep()?;
-        println!("piping stderr to {:?}", path);
-        (stdout_file, stderr_file)
+        (
+            File::create(work_dir.join("bootstrap.stdout"))?,
+            File::create(work_dir.join("bootstrap.stderr"))?,
+        )
     };
-    let stdout = child.stdout.take().ok_or(anyhow::anyhow!("no stdout"))?;
-    let stderr = child.stderr.take().ok_or(anyhow::anyhow!("no stderr"))?;
+    let mut child = NodeChild(node_command(work_dir).spawn()?);
+    let stdout = child.0.stdout.take().ok_or(anyhow::anyhow!("no stdout"))?;
+    let stderr = child.0.stderr.take().ok_or(anyhow::anyhow!("no stderr"))?;
     std::thread::spawn(move || pipe(stdout, stdout_file).unwrap());
     std::thread::spawn(move || pipe(stderr, stderr_file).unwrap());
 
@@ -82,25 +69,25 @@ fn pipe<R: Read, W: Write>(mut read: R, mut write: W) -> std::io::Result<()> {
     }
 }
 
-fn node_command() -> Command {
-    let (exe, fork) = if let Ok(exe) = std::env::var(COMMAND_VAR) {
-        (exe, false)
-    } else {
-        (std::env::args().next().unwrap(), true)
-    };
+fn node_command(work_dir: &Path) -> Command {
+    let exe = std::env::var_os(COMMAND_VAR).unwrap_or_else(|| env!("CARGO_BIN_EXE_mina").into());
     let mut command = Command::new(exe);
-    command
-        .env("PORT", HTTP_PORT.to_string())
-        .env("P2P_PORT", P2P_PORT.to_string());
-    if fork {
-        command.env(FORK_VAR, "true");
-        command.arg("--nocapture");
-    } else {
-        command.arg("node");
+    // Do not inherit producer keys, config paths, or storage paths from the user.
+    command.env_clear();
+    for name in ["PATH", "BPF_ALIAS", "NO_PEER_DISCOVERY", "MINA_RECORD"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
     }
-    command.env("RUST_MIN_STACK", "10000000");
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
+    command
+        .args(["--network", "devnet", "node", "--work-dir"])
+        .arg(work_dir)
+        .args(["--port", &HTTP_PORT.to_string()])
+        .args(["--libp2p-port", &P2P_PORT.to_string()])
+        .env("MINA_HOME", work_dir)
+        .env("RUST_MIN_STACK", "10000000")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     command
 }
 
@@ -230,9 +217,8 @@ fn wait_for(child: &mut Child, f: fn() -> bool, time: Duration) -> anyhow::Resul
     Err(anyhow::anyhow!("node is not healthy within {time:?}"))
 }
 
-fn monitor_node(mut child: Child) -> anyhow::Result<()> {
-    wait_for(&mut child, is_healthy, HEALTHY)?;
-    wait_for(&mut child, is_ready3, READY)?;
-    child.kill()?;
+fn monitor_node(mut child: NodeChild) -> anyhow::Result<()> {
+    wait_for(&mut child.0, is_healthy, HEALTHY)?;
+    wait_for(&mut child.0, is_ready3, READY)?;
     Ok(())
 }

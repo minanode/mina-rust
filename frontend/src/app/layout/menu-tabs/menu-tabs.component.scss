@@ -10,6 +10,7 @@
       color: mina-rust.$base-tertiary;
       min-width: 72px;
       flex: 1 0 auto;
+      text-decoration: none;
 
       &.active {
         color: mina-rust.$selected-primary;

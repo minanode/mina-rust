@@ -1,0 +1,2530 @@
+pub mod handshake;
+#[cfg(all(test, feature = "std", feature = "crypto-p256"))]
+mod interop_tests;
+pub mod record;
+#[cfg(all(test, feature = "std", feature = "crypto-p256"))]
+mod security_tests;
+#[cfg(all(test, feature = "std", feature = "crypto-p256"))]
+mod tests;
+pub mod x509_min;
+
+use crate::prelude::*;
+use aes_gcm::{
+    Aes128Gcm, Nonce, Tag,
+    aead::{Aead, AeadInPlace, KeyInit, Payload},
+};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
+use core::fmt;
+use core::sync::atomic::{AtomicU16, Ordering};
+use hmac::{Hmac, Mac};
+#[cfg(feature = "std")]
+use rcgen::generate_simple_self_signed;
+use sha2::{Digest, Sha256};
+
+use self::handshake::{
+    CertificateMessage, ClientHello, ClientKeyExchange, Finished, HandshakeMessage, HandshakeType,
+    HelloVerifyRequest, Random, ServerHello, ServerHelloDone, ServerKeyExchange,
+};
+use self::record::{ContentType, DtlsRecord, ProtocolVersion};
+use crate::platform::atomic64::AtomicU64;
+use crate::platform::crypto::{self, EcdhSecret, SigningKey};
+use crate::platform::sync::{Mutex, Notify, mpsc, watch};
+use crate::transports::ice::conn::IceConn;
+use tracing::{debug, trace, warn};
+
+pub type Result<T> = core::result::Result<T, crate::errors::RtcError>;
+
+macro_rules! bail {
+    ($($arg:tt)*) => {
+        return Err(crate::errors::RtcError::Internal(alloc::format!($($arg)*)))
+    };
+}
+pub(crate) use bail;
+
+macro_rules! dtls_err {
+    ($($arg:tt)*) => {
+        crate::errors::RtcError::Internal(alloc::format!($($arg)*))
+    };
+}
+pub(crate) use dtls_err;
+
+/// Generate a fresh self-signed DTLS certificate (EC keypair + PEM round-trip).
+/// std-only: certificate *generation* needs rcgen. Embedded targets load a
+/// pre-provisioned DER cert + PKCS#8 key via [`Certificate::from_pkcs8_der`].
+#[cfg(feature = "std")]
+pub fn generate_certificate() -> Result<Certificate> {
+    let cert = generate_simple_self_signed(vec!["localhost".to_string()])
+        .map_err(|e| dtls_err!("failed to generate DTLS certificate: {}", e))?;
+    let key_der = cert.signing_key.serialize_der();
+    // Validate through the active crypto backend.
+    crypto::crypto().signing_key_from_pkcs8_der(&key_der)?;
+
+    Ok(Certificate {
+        certificate: vec![cert.cert.der().to_vec()],
+        private_key_pkcs8: key_der,
+    })
+}
+
+pub fn fingerprint(cert: &Certificate) -> String {
+    fingerprint_from_der(&cert.certificate[0])
+}
+
+pub(crate) fn fingerprint_from_der(certificate_der: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(certificate_der);
+    let result = hasher.finalize();
+    result
+        .iter()
+        .map(|b| format!("{:02X}", b))
+        .collect::<Vec<String>>()
+        .join(":")
+}
+
+fn certificate_public_key(certificate_der: &[u8]) -> Result<Box<dyn crypto::VerifyingKey>> {
+    let point = x509_min::extract_p256_point(certificate_der)?;
+    crypto::crypto().verifying_key_from_point(&point)
+}
+
+pub(crate) fn verify_server_key_exchange_signature(
+    certificate_der: &[u8],
+    client_random: &[u8],
+    server_random: &[u8],
+    server_key_exchange: &ServerKeyExchange,
+) -> Result<()> {
+    let pk_len = server_key_exchange.public_key.len();
+    if pk_len > 255 {
+        return Err(dtls_err!(
+            "ServerKeyExchange public key too long: {} bytes",
+            pk_len
+        ));
+    }
+
+    let verifying_key = certificate_public_key(certificate_der)?;
+
+    let mut signed_params =
+        Vec::with_capacity(client_random.len() + server_random.len() + 4 + pk_len);
+    signed_params.extend_from_slice(client_random);
+    signed_params.extend_from_slice(server_random);
+    signed_params.push(server_key_exchange.curve_type);
+    signed_params.extend_from_slice(&server_key_exchange.named_curve.to_be_bytes());
+    signed_params.push(pk_len as u8);
+    signed_params.extend_from_slice(&server_key_exchange.public_key);
+
+    verifying_key
+        .verify(&signed_params, &server_key_exchange.signature)
+        .map_err(|e| dtls_err!("ServerKeyExchange signature verification failed: {}", e))
+}
+
+pub fn get_client_hello_extensions() -> Vec<u8> {
+    let mut extensions = Vec::new();
+
+    // Extended Master Secret (Type 23)
+    extensions.extend_from_slice(&[0x00, 0x17, 0x00, 0x00]);
+
+    // Use SRTP (Type 14)
+    // Length: 7 (2 profiles * 2 bytes + 2 bytes list length + 1 byte MKI length)
+    // Profiles: 0x0007 (AEAD_AES_128_GCM), 0x0001 (AES_CM_128_HMAC_SHA1_80)
+    extensions.extend_from_slice(&[
+        0x00, 0x0e, 0x00, 0x07, 0x00, 0x04, 0x00, 0x07, 0x00, 0x01, 0x00,
+    ]);
+
+    // Supported Elliptic Curves (Type 10) - secp256r1
+    extensions.extend_from_slice(&[0x00, 0x0a, 0x00, 0x04, 0x00, 0x02, 0x00, 0x17]);
+
+    // Supported Point Formats (Type 11) - uncompressed
+    extensions.extend_from_slice(&[0x00, 0x0b, 0x00, 0x02, 0x01, 0x00]);
+
+    // Signature Algorithms (Type 13)
+    // ecdsa_secp256r1_sha256 (0x0403), rsa_pkcs1_sha256 (0x0401), ecdsa_secp384r1_sha384 (0x0503), rsa_pkcs1_sha384 (0x0501)
+    extensions.extend_from_slice(&[
+        0x00, 0x0d, 0x00, 0x0a, 0x00, 0x08, 0x04, 0x03, 0x04, 0x01, 0x05, 0x03, 0x05, 0x01,
+    ]);
+
+    extensions
+}
+
+pub fn get_client_hello_cipher_suites() -> Vec<u16> {
+    vec![
+        0xC02B, // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        0xC02F, // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        0x009C, // TLS_RSA_WITH_AES_128_GCM_SHA256
+    ]
+}
+
+#[derive(Clone, Default, PartialEq)]
+pub struct Certificate {
+    pub certificate: Vec<Vec<u8>>,
+    pub private_key_pkcs8: Vec<u8>, // PKCS#8 DER
+}
+
+impl core::fmt::Debug for Certificate {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Redacted: this struct carries private key material.
+        f.debug_struct("Certificate")
+            .field("certs", &self.certificate.len())
+            .field("private_key_bytes", &self.private_key_pkcs8.len())
+            .finish()
+    }
+}
+
+impl Certificate {
+    /// Pre-provisioned DER leaf certificate + PKCS#8 DER private key
+    /// (no_std-friendly; no certificate generation involved).
+    pub fn from_pkcs8_der(certificate_der: Vec<u8>, private_key_pkcs8: Vec<u8>) -> Result<Self> {
+        // Validate the key through the active crypto backend.
+        crypto::crypto().signing_key_from_pkcs8_der(&private_key_pkcs8)?;
+        Ok(Self {
+            certificate: vec![certificate_der],
+            private_key_pkcs8,
+        })
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub struct SessionKeys {
+    pub client_write_key: Vec<u8>,
+    pub server_write_key: Vec<u8>,
+    pub client_write_iv: Vec<u8>,
+    pub server_write_iv: Vec<u8>,
+    pub master_secret: Vec<u8>,
+    pub client_random: Vec<u8>,
+    pub server_random: Vec<u8>,
+}
+
+struct DtlsInner {
+    conn: Arc<IceConn>,
+    state: Arc<Mutex<DtlsState>>,
+    state_tx: watch::Sender<DtlsState>,
+    state_rx: watch::Receiver<DtlsState>,
+    handshake_rx_feeder: mpsc::UnboundedSender<Bytes>,
+    write_seq: AtomicU64,
+    write_epoch: AtomicU16,
+    is_client: bool,
+    expected_remote_fingerprint: Option<String>,
+}
+
+/// Maximum time to wait for the DTLS handshake to complete before giving up.
+/// After this deadline the transport transitions to `Failed` and the background
+/// task exits — preventing infinite retransmit loops when the peer never
+/// responds.
+#[cfg(not(all(test, feature = "std")))]
+const DTLS_HANDSHAKE_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(30);
+#[cfg(all(test, feature = "std"))]
+const DTLS_HANDSHAKE_TIMEOUT: core::time::Duration = core::time::Duration::from_secs(5);
+
+/// Maximum plaintext payload carried in a single DTLS ApplicationData record.
+///
+/// Each DTLS record is sent as one UDP datagram. A record larger than the path
+/// MTU must be IP-fragmented, and NATs routinely drop IP fragments — silently
+/// losing the whole message. Sending one record per UDP datagram sized to fit
+/// common MTUs avoids this. The value matches the SCTP packet cap
+/// (`MAX_SCTP_PACKET_SIZE` = 1200 in `transports/sctp.rs`), so data-channel
+/// traffic is never split; only oversized signaling messages are fragmented,
+/// and the peer reassembles them from the ordered record stream using the
+/// upper-layer message framing (the 4-byte length prefix in rport).
+///
+/// 1200 + 13 (header) + 8 (explicit nonce) + 16 (tag) = 1237 bytes per
+/// datagram, well under the 1472-byte payload limit of 1500-byte Ethernet,
+/// 1464 under PPPoE (1492), and 1252 under the IPv6 minimum MTU (1280).
+pub const MAX_APP_DATA_RECORD_SIZE: usize = 1200;
+
+pub struct DtlsTransport {
+    inner: Arc<DtlsInner>,
+    close_tx: Arc<Notify>,
+}
+
+#[derive(Clone)]
+pub struct SessionCrypto {
+    pub keys: SessionKeys,
+    pub client_write_cipher: Aes128Gcm,
+    pub server_write_cipher: Aes128Gcm,
+}
+
+impl PartialEq for SessionCrypto {
+    fn eq(&self, other: &Self) -> bool {
+        self.keys == other.keys
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub enum DtlsState {
+    New,
+    Handshaking,
+    Connected(Arc<SessionCrypto>, Option<u16>),
+    Failed,
+    Closed,
+}
+
+impl fmt::Display for DtlsState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DtlsState::New => write!(f, "New"),
+            DtlsState::Handshaking => write!(f, "Handshaking"),
+            DtlsState::Connected(_, profile) => write!(f, "Connected (SRTP: {:?})", profile),
+            DtlsState::Failed => write!(f, "Failed"),
+            DtlsState::Closed => write!(f, "Closed"),
+        }
+    }
+}
+
+impl DtlsTransport {
+    pub fn get_state(&self) -> DtlsState {
+        self.inner.state.lock().clone()
+    }
+
+    pub async fn new(
+        conn: Arc<IceConn>,
+        certificate: Certificate,
+        is_client: bool,
+        _buffer_size: usize,
+        expected_remote_fingerprint: Option<String>,
+    ) -> Result<(
+        Arc<Self>,
+        mpsc::UnboundedReceiver<Bytes>,
+        impl core::future::Future<Output = ()> + Send,
+    )> {
+        let (incoming_data_tx, incoming_data_rx) = mpsc::unbounded_channel();
+        let (handshake_rx_feeder, handshake_rx) = mpsc::unbounded_channel();
+        let (state_tx, state_rx) = watch::channel(DtlsState::New);
+
+        let inner = Arc::new(DtlsInner {
+            conn: conn.clone(),
+            state: Arc::new(Mutex::new(DtlsState::New)),
+            state_tx,
+            state_rx,
+            handshake_rx_feeder,
+            write_seq: AtomicU64::new(0),
+            write_epoch: AtomicU16::new(0),
+            is_client,
+            expected_remote_fingerprint,
+        });
+
+        let close_tx = Arc::new(Notify::new());
+        let close_rx = close_tx.clone();
+
+        let transport = Arc::new(Self {
+            inner: inner.clone(),
+            close_tx,
+        });
+
+        // Register with IceConn
+        conn.set_dtls_receiver(transport.clone());
+
+        let inner_clone = inner.clone();
+        let runner = async move {
+            if let Err(e) = inner_clone
+                .handshake(
+                    certificate,
+                    is_client,
+                    incoming_data_tx,
+                    handshake_rx,
+                    close_rx,
+                )
+                .await
+            {
+                debug!(
+                    label = inner_clone.conn.label.as_deref().unwrap_or("-"),
+                    "DTLS handshake failed: {e} (remote={})",
+                    (*inner_clone.conn.remote_addr.read())
+                );
+                *inner_clone.state.lock() = DtlsState::Failed;
+                let _ = inner_clone.state_tx.send(DtlsState::Failed);
+            }
+            // Connected state is set inside handshake now
+        };
+
+        Ok((transport, incoming_data_rx, runner))
+    }
+
+    pub fn subscribe_state(&self) -> watch::Receiver<DtlsState> {
+        self.inner.state_rx.clone()
+    }
+
+    pub fn close(&self) {
+        self.close_tx.notify_one();
+    }
+
+    pub async fn send(&self, data: Bytes) -> Result<()> {
+        let crypto = {
+            let state_guard = self.inner.state.lock();
+            if let DtlsState::Connected(crypto, _) = &*state_guard {
+                crypto.clone()
+            } else {
+                // Typed so consumers (the SCTP pump) can match the variant
+                // instead of Display text.
+                return Err(crate::errors::RtcError::InvalidState(
+                    "DTLS not connected".into(),
+                ));
+            }
+        };
+
+        // DTLS application data is delivered one record per UDP datagram with
+        // no retransmission. If the whole payload were put in a single record
+        // larger than the path MTU, it would be IP-fragmented and commonly
+        // dropped by NATs, losing the message silently. Split oversized
+        // payloads into MTU-safe records instead; the peer concatenates the
+        // ordered record stream and recovers the message using the upper-layer
+        // framing (SCTP packets are capped at 1200 bytes, so they are never
+        // split and remain byte-identical to the unfragmented path).
+        for chunk in data.chunks(MAX_APP_DATA_RECORD_SIZE) {
+            self.send_record(&crypto, chunk).await?;
+        }
+        Ok(())
+    }
+
+    /// Build, encrypt and transmit one DTLS ApplicationData record for `data`.
+    /// Each record gets its own DTLS sequence number / nonce / AAD and is sent
+    /// as a single UDP datagram.
+    async fn send_record(&self, crypto: &SessionCrypto, data: &[u8]) -> Result<()> {
+        let (cipher, iv) = if self.inner.is_client {
+            (&crypto.client_write_cipher, &crypto.keys.client_write_iv)
+        } else {
+            (&crypto.server_write_cipher, &crypto.keys.server_write_iv)
+        };
+
+        let epoch = self.inner.write_epoch.load(Ordering::SeqCst);
+        let seq = self.inner.write_seq.fetch_add(1, Ordering::SeqCst);
+        let full_seq = ((epoch as u64) << 48) | seq;
+
+        // Pre-calculate sizes
+        let header_len = 13;
+        let explicit_nonce_len = 8;
+        let tag_len = 16;
+        let total_len = header_len + explicit_nonce_len + data.len() + tag_len;
+
+        let mut buf = BytesMut::with_capacity(total_len);
+
+        // 1. Header
+        buf.put_u8(ContentType::ApplicationData as u8);
+        buf.put_u8(ProtocolVersion::DTLS_1_2.major);
+        buf.put_u8(ProtocolVersion::DTLS_1_2.minor);
+        buf.put_u16(epoch);
+        buf.put_uint(seq, 6);
+        let ciphertext_len = explicit_nonce_len + data.len() + tag_len;
+        buf.put_u16(ciphertext_len as u16);
+
+        // 2. Explicit Nonce (full_seq)
+        buf.put_u64(full_seq);
+
+        // 3. Payload
+        buf.put_slice(data);
+
+        // 4. Encrypt in place
+        let payload_offset = header_len + explicit_nonce_len;
+        let payload_len = data.len();
+
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes[0..4].copy_from_slice(iv);
+        nonce_bytes[4..12].copy_from_slice(&full_seq.to_be_bytes());
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        // AAD
+        let mut aad = [0u8; 13];
+        aad[0..8].copy_from_slice(&full_seq.to_be_bytes());
+        aad[8] = ContentType::ApplicationData as u8;
+        aad[9] = ProtocolVersion::DTLS_1_2.major;
+        aad[10] = ProtocolVersion::DTLS_1_2.minor;
+        aad[11..13].copy_from_slice(&(data.len() as u16).to_be_bytes());
+
+        let tag = cipher
+            .encrypt_in_place_detached(
+                nonce,
+                &aad,
+                &mut buf[payload_offset..payload_offset + payload_len],
+            )
+            .map_err(|e| dtls_err!("Encryption failed: {}", e))?;
+
+        // 5. Append Tag
+        buf.put_slice(&tag);
+
+        self.inner
+            .conn
+            .send(&buf)
+            .await
+            .map(|_| ())
+            .map_err(|e| dtls_err!("Send failed: {}", e))
+    }
+
+    pub fn export_keying_material(&self, label: &str, len: usize) -> Result<Vec<u8>> {
+        let state = self.inner.state.lock();
+        if let DtlsState::Connected(crypto, _) = &*state {
+            // RFC 5764: seed = client_random || server_random (in that order).
+            let seed = [
+                crypto.keys.client_random.as_slice(),
+                crypto.keys.server_random.as_slice(),
+            ]
+            .concat();
+            prf_sha256(&crypto.keys.master_secret, label.as_bytes(), &seed, len)
+        } else {
+            Err(crate::errors::RtcError::InvalidState(
+                "DTLS not connected".into(),
+            ))
+        }
+    }
+}
+
+impl Drop for DtlsTransport {
+    fn drop(&mut self) {
+        self.close_tx.notify_one();
+    }
+}
+
+impl DtlsInner {
+    /// Sends a new handshake flight and keeps it for retransmission.
+    ///
+    /// The flight is stored before sending and a failed send is only logged,
+    /// the same as a failed retransmit. By the time a flight is sent the
+    /// handshake state has already moved past the message that triggered it
+    /// (e.g. `server_random` is set, so a repeated ClientHello is treated as a
+    /// retransmission): bailing out with nothing stored would leave every
+    /// later retransmit - ours and the peer's - with nothing to resend,
+    /// stalling the handshake until it times out.
+    async fn send_flight(&self, ctx: &mut HandshakeContext, records: Vec<Vec<u8>>) {
+        if let Err(e) = self.conn.send_dtls_record_batch(&records).await {
+            // IceConn::send returns RtcError; the transient/unreachable cases
+            // (macOS err65 included) are only distinguishable textually
+            let text = e.to_string();
+            if text.contains("unreachable")
+                || text.contains("No selected socket")
+                || text.contains("Remote address not set")
+            {
+                debug!("Failed to send DTLS flight, will retransmit: {}", e);
+            } else {
+                warn!("Failed to send DTLS flight, will retransmit: {}", e);
+            }
+        }
+        ctx.last_flight_records = Some(records);
+    }
+
+    async fn handle_retransmit(&self, ctx: &HandshakeContext, _is_client: bool) {
+        if *self.state.lock() != DtlsState::Handshaking {
+            return;
+        }
+        if let Some(records) = &ctx.last_flight_records
+            && let Err(e) = self.conn.send_dtls_record_batch(records).await
+        {
+            let msg = e.to_string();
+            if msg.contains("No selected socket") || msg.contains("Remote address not set") {
+                debug!("Retransmission skipped — ICE socket unavailable");
+            } else {
+                // all remaining failures (incl. unreachable/err65) are
+                // retransmit-tolerant: log and keep the handshake alive
+                debug!("Retransmission failed: {}", e);
+            }
+        }
+    }
+
+    async fn handle_incoming_packet(
+        &self,
+        packet: Bytes,
+        ctx: &mut HandshakeContext,
+        incoming_data_tx: &mpsc::UnboundedSender<Bytes>,
+        certificate: &Certificate,
+        is_client: bool,
+    ) -> Result<()> {
+        let mut data = packet;
+
+        while !data.is_empty() {
+            match DtlsRecord::decode(&mut data) {
+                Ok(None) => break,
+                Ok(Some(record)) => {
+                    let payload = match self.try_decrypt_record(&record, ctx, is_client) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            warn!("{}", e);
+                            break;
+                        }
+                    };
+
+                    self.handle_decrypted_record(
+                        record.content_type,
+                        record.epoch,
+                        payload,
+                        ctx,
+                        incoming_data_tx,
+                        certificate,
+                        is_client,
+                    )
+                    .await?;
+                }
+                Err(e) => {
+                    warn!("Failed to decode DTLS record: {}", e);
+                    data = Bytes::new();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn try_decrypt_record(
+        &self,
+        record: &DtlsRecord,
+        ctx: &HandshakeContext,
+        is_client: bool,
+    ) -> Result<Bytes> {
+        if record.epoch == 0 {
+            return Ok(record.payload.clone());
+        }
+
+        // Sequence number for AAD is epoch (16) + seq (48)
+        let full_seq = ((record.epoch as u64) << 48) | record.sequence_number;
+
+        if let Some(crypto) = &ctx.session_crypto {
+            let (cipher, iv) = if is_client {
+                (&crypto.server_write_cipher, &crypto.keys.server_write_iv)
+            } else {
+                (&crypto.client_write_cipher, &crypto.keys.client_write_iv)
+            };
+
+            match decrypt_record_with_cipher(
+                record.content_type,
+                record.version,
+                full_seq,
+                &record.payload,
+                cipher,
+                iv,
+            ) {
+                Ok(p) => Ok(p),
+                Err(e) => {
+                    trace!(
+                        "Decryption failed details (crypto): seq={} epoch={} type={:?} ver={:?} len={}",
+                        record.sequence_number,
+                        record.epoch,
+                        record.content_type,
+                        record.version,
+                        record.payload.len()
+                    );
+                    Err(dtls_err!("Decryption failed: {}", e))
+                }
+            }
+        } else if let Some(keys) = &ctx.session_keys {
+            let (key, iv) = if is_client {
+                (&keys.server_write_key, &keys.server_write_iv)
+            } else {
+                (&keys.client_write_key, &keys.client_write_iv)
+            };
+
+            match decrypt_record(
+                record.content_type,
+                record.version,
+                full_seq,
+                &record.payload,
+                key,
+                iv,
+            ) {
+                Ok(p) => Ok(Bytes::from(p)),
+                Err(e) => {
+                    debug!(
+                        "Decryption failed details: seq={} epoch={} type={:?} ver={:?} len={}",
+                        record.sequence_number,
+                        record.epoch,
+                        record.content_type,
+                        record.version,
+                        record.payload.len()
+                    );
+                    Err(dtls_err!("Decryption failed: {}", e))
+                }
+            }
+        } else {
+            Err(dtls_err!("Received encrypted record but no keys available"))
+        }
+    }
+
+    async fn handle_decrypted_record(
+        &self,
+        content_type: ContentType,
+        epoch: u16,
+        payload: Bytes,
+        ctx: &mut HandshakeContext,
+        incoming_data_tx: &mpsc::UnboundedSender<Bytes>,
+        certificate: &Certificate,
+        is_client: bool,
+    ) -> Result<()> {
+        match content_type {
+            ContentType::ChangeCipherSpec => {
+                trace!(
+                    "Received ChangeCipherSpec, advancing read_epoch {} -> {}",
+                    ctx.read_epoch,
+                    ctx.read_epoch.saturating_add(1)
+                );
+                ctx.read_epoch = ctx.read_epoch.saturating_add(1);
+            }
+            ContentType::ApplicationData => {
+                let _ = incoming_data_tx.send(payload);
+            }
+            ContentType::Handshake => {
+                self.process_handshake_payload(payload, epoch, ctx, certificate, is_client)
+                    .await?;
+            }
+            ContentType::Alert => {
+                trace!("Received Alert: {:?}", payload);
+                if payload.len() >= 2 {
+                    let description = payload[1];
+                    if description == 0 {
+                        // CloseNotify
+                        *self.state.lock() = DtlsState::Closed;
+                        let _ = self.state_tx.send(DtlsState::Closed);
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn process_handshake_payload(
+        &self,
+        mut body: Bytes,
+        epoch: u16,
+        ctx: &mut HandshakeContext,
+        certificate: &Certificate,
+        is_client: bool,
+    ) -> Result<()> {
+        while !body.is_empty() {
+            let msg_buf = body.clone();
+            match HandshakeMessage::decode(&mut body) {
+                Ok(None) => break,
+                Ok(Some(msg)) => {
+                    let consumed = msg_buf.len() - body.len();
+                    let raw_msg = msg_buf.slice(0..consumed);
+
+                    if msg.message_seq < ctx.recv_message_seq {
+                        // If we just processed a HelloVerifyRequest, the server may
+                        // restart its message_seq at a value lower than what we expect
+                        // (RFC 6347 §4.2.1 says restart at 0, but recv_message_seq may
+                        // already be at 1 from the HVR). Sync to the server's counter.
+                        if ctx.post_hvr && is_client {
+                            debug!(
+                                "post-HVR: syncing recv_message_seq from {} to {} (server restart)",
+                                ctx.recv_message_seq, msg.message_seq
+                            );
+                            ctx.recv_message_seq = msg.message_seq;
+                            ctx.post_hvr = false;
+                            // Fall through to process this message normally
+                        } else {
+                            // Duplicate
+                            // Special case: ClientHello on Server (to trigger retransmit)
+                            if msg.msg_type == HandshakeType::ClientHello && !is_client {
+                                self.handle_handshake_message(
+                                    msg,
+                                    &raw_msg,
+                                    ctx,
+                                    certificate,
+                                    is_client,
+                                )
+                                .await?;
+                            } else if msg.msg_type == HandshakeType::Finished
+                                && !is_client
+                                && epoch > 0
+                                && msg.fragment_offset == 0
+                                && ctx.final_flight_resends < MAX_FINAL_FLIGHT_RESENDS
+                                && matches!(*self.state.lock(), DtlsState::Connected(..))
+                            {
+                                // RFC 6347 §4.2.4: the client retransmitted its
+                                // last flight, so it lost ours (CCS + Finished).
+                                // Resend it once per client flight (a flight has
+                                // one Finished, and only its first fragment
+                                // counts), at most MAX_FINAL_FLIGHT_RESENDS
+                                // times. Only the server sends the last flight
+                                // (no session resumption), so a client never
+                                // answers a repeated server Finished.
+                                ctx.final_flight_resends += 1;
+                                debug!(
+                                    label = self.conn.label.as_deref().unwrap_or("-"),
+                                    "Finished retransmission received — resending final flight"
+                                );
+                                if let Some(records) = &ctx.last_flight_records
+                                    && let Err(e) = self.conn.send_dtls_record_batch(records).await
+                                {
+                                    debug!("Failed to retransmit final flight: {}", e);
+                                }
+                            }
+                            continue;
+                        }
+                    }
+
+                    if msg.message_seq > ctx.recv_message_seq {
+                        // If we just processed a HelloVerifyRequest, the server may
+                        // restart its message_seq at a value different from what we
+                        // expect (RFC 6347 says 0, but some implementations use 1).
+                        // Sync our counter to the server's actual starting point.
+                        if ctx.post_hvr && is_client {
+                            debug!(
+                                "post-HVR: syncing recv_message_seq from {} to {} (server restart)",
+                                ctx.recv_message_seq, msg.message_seq
+                            );
+                            ctx.recv_message_seq = msg.message_seq;
+                            ctx.post_hvr = false;
+                        } else if msg.total_length == msg.fragment_length
+                            && ctx.pending_messages.len() < MAX_PENDING_HANDSHAKE_MESSAGES
+                        {
+                            // RFC 6347 §4.2.4: buffer complete out-of-order
+                            // messages instead of dropping them, so a reordered
+                            // flight doesn't stall the handshake until the peer
+                            // retransmits. Bounded to keep memory flat against
+                            // rogue peers.
+                            debug!(
+                                got = msg.message_seq,
+                                expected = ctx.recv_message_seq,
+                                "Buffering out-of-order handshake message"
+                            );
+                            ctx.pending_messages.insert(msg.message_seq, (msg, raw_msg));
+                            continue;
+                        } else {
+                            debug!(
+                                got = msg.message_seq,
+                                expected = ctx.recv_message_seq,
+                                "Ignoring out-of-order handshake message"
+                            );
+                            // Ignore out-of-order for now
+                            continue;
+                        }
+                    }
+
+                    // Clear post_hvr once we've accepted the first post-HVR message
+                    // (handles the case where msg_seq == recv_message_seq exactly)
+                    if ctx.post_hvr {
+                        ctx.post_hvr = false;
+                    }
+
+                    // Expected message - handle fragmentation (RFC 6347
+                    // §4.2.3): fragments may arrive in any order, so buffer
+                    // them by offset instead of discarding earlier progress.
+                    let (processing_msg, processing_raw) =
+                        if msg.total_length != msg.fragment_length {
+                            match ctx.incomplete_fragments.push(
+                                msg.message_seq,
+                                msg.total_length as usize,
+                                msg.fragment_offset,
+                                &msg.body,
+                            ) {
+                                Ok(Some(body)) => {
+                                    let full_msg = HandshakeMessage {
+                                        msg_type: msg.msg_type,
+                                        total_length: msg.total_length,
+                                        message_seq: msg.message_seq,
+                                        fragment_offset: 0,
+                                        fragment_length: msg.total_length,
+                                        body: Bytes::from(body),
+                                    };
+
+                                    let mut full_raw = BytesMut::new();
+                                    full_msg.encode(&mut full_raw);
+                                    (full_msg, full_raw.freeze())
+                                }
+                                Ok(None) => continue,
+                                Err(e) => {
+                                    warn!("Failed to reassemble handshake message: {}", e);
+                                    ctx.incomplete_fragments = HandshakeReassembly::default();
+                                    continue;
+                                }
+                            }
+                        } else {
+                            // Not fragmented
+                            (msg, raw_msg)
+                        };
+
+                    ctx.recv_message_seq += 1;
+
+                    if processing_msg.msg_type != HandshakeType::Finished
+                        && processing_msg.msg_type != HandshakeType::HelloRequest
+                        && processing_msg.msg_type != HandshakeType::HelloVerifyRequest
+                    {
+                        ctx.handshake_messages
+                            .extend_from_slice(&processing_raw[..]);
+                    }
+
+                    self.handle_handshake_message(
+                        processing_msg,
+                        &processing_raw,
+                        ctx,
+                        certificate,
+                        is_client,
+                    )
+                    .await?;
+
+                    // Drain buffered out-of-order messages that are now next
+                    // in sequence (RFC 6347 §4.2.4 reordering tolerance).
+                    while let Some((pending_msg, pending_raw)) =
+                        ctx.pending_messages.remove(&ctx.recv_message_seq)
+                    {
+                        debug!(
+                            message_seq = pending_msg.message_seq,
+                            "Processing buffered out-of-order handshake message"
+                        );
+                        if pending_msg.msg_type != HandshakeType::Finished
+                            && pending_msg.msg_type != HandshakeType::HelloRequest
+                            && pending_msg.msg_type != HandshakeType::HelloVerifyRequest
+                        {
+                            ctx.handshake_messages.extend_from_slice(&pending_raw[..]);
+                        }
+                        self.handle_handshake_message(
+                            pending_msg,
+                            &pending_raw,
+                            ctx,
+                            certificate,
+                            is_client,
+                        )
+                        .await?;
+                        ctx.recv_message_seq += 1;
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to decode handshake message: {}", e);
+                    // If decoding fails, we probably can't continue parsing this record
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_handshake_message(
+        &self,
+        msg: HandshakeMessage,
+        raw_msg: &[u8],
+        ctx: &mut HandshakeContext,
+        certificate: &Certificate,
+        is_client: bool,
+    ) -> Result<()> {
+        match msg.msg_type {
+            HandshakeType::ClientHello => {
+                self.handle_client_hello(msg, ctx, certificate, is_client)
+                    .await?;
+            }
+            HandshakeType::ClientKeyExchange => {
+                self.handle_client_key_exchange(msg, ctx, is_client)?;
+            }
+            HandshakeType::Finished => {
+                self.handle_finished(msg, raw_msg, ctx, is_client).await?;
+            }
+            HandshakeType::HelloVerifyRequest => {
+                self.handle_hello_verify_request(msg, ctx, is_client)
+                    .await?;
+            }
+            HandshakeType::ServerHello => {
+                self.handle_server_hello(msg, ctx, is_client)?;
+            }
+            HandshakeType::Certificate => {
+                self.handle_certificate(msg, ctx).await?;
+            }
+            HandshakeType::ServerKeyExchange => {
+                self.handle_server_key_exchange(msg, ctx, is_client)?;
+            }
+            HandshakeType::ServerHelloDone => {
+                self.handle_server_hello_done(ctx, is_client).await?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn handle_certificate(
+        &self,
+        msg: HandshakeMessage,
+        ctx: &mut HandshakeContext,
+    ) -> Result<()> {
+        let mut body = msg.body.clone();
+        let certificate = CertificateMessage::decode(&mut body)?;
+        let Some(leaf_certificate) = certificate.certificates.first() else {
+            *self.state.lock() = DtlsState::Failed;
+            let _ = self.state_tx.send(DtlsState::Failed);
+            return Err(dtls_err!(
+                "DTLS certificate message did not contain a leaf certificate"
+            ));
+        };
+
+        // Compare the certificate hash to SDP before accepting any key material from it.
+        let actual_fingerprint = fingerprint_from_der(leaf_certificate);
+        if let Some(expected_fingerprint) = &ctx.expected_remote_fingerprint
+            && &actual_fingerprint != expected_fingerprint
+        {
+            *self.state.lock() = DtlsState::Failed;
+            let _ = self.state_tx.send(DtlsState::Failed);
+            return Err(dtls_err!(
+                "DTLS fingerprint mismatch: expected {}, got {}",
+                expected_fingerprint,
+                actual_fingerprint
+            ));
+        }
+
+        if let Err(e) = certificate_public_key(leaf_certificate) {
+            *self.state.lock() = DtlsState::Failed;
+            let _ = self.state_tx.send(DtlsState::Failed);
+            return Err(e);
+        }
+        ctx.peer_certificate = Some(leaf_certificate.clone());
+
+        Ok(())
+    }
+    /// Send a plaintext fatal `handshake_failure` alert (epoch 0 — sent
+    /// before any keys exist). Best effort: the caller transitions to the
+    /// Failed state regardless of delivery.
+    async fn send_handshake_failure_alert(&self, ctx: &HandshakeContext) {
+        // Alert payload: [level=fatal(2), description=handshake_failure(40)]
+        let alert = vec![2u8, 40u8];
+        let record = DtlsRecord {
+            content_type: ContentType::Alert,
+            version: ProtocolVersion::DTLS_1_2,
+            epoch: 0,
+            sequence_number: ctx.sequence_number,
+            payload: Bytes::from(alert),
+        };
+        let mut buf = BytesMut::new();
+        record.encode(&mut buf);
+        if let Err(e) = self.conn.send(&buf).await {
+            debug!("Failed to send handshake_failure alert: {}", e);
+        }
+    }
+
+    async fn handle_client_hello(
+        &self,
+        msg: HandshakeMessage,
+        ctx: &mut HandshakeContext,
+        certificate: &Certificate,
+        is_client: bool,
+    ) -> Result<()> {
+        if is_client {
+            return Ok(());
+        }
+
+        if ctx.server_random.is_some() {
+            debug!(
+                label = self.conn.label.as_deref().unwrap_or("-"),
+                message_seq = ctx.message_seq,
+                "ClientHello retransmission received — resending server flight"
+            );
+            if let Some(records) = &ctx.last_flight_records
+                && let Err(e) = self.conn.send_dtls_record_batch(records).await
+            {
+                // retransmit-tolerant: all failures (incl. unreachable/err65)
+                debug!("Failed to retransmit flight: {}", e);
+            }
+            return Ok(());
+        }
+
+        let mut body = msg.body.clone();
+        let client_hello = match ClientHello::decode(&mut body) {
+            Ok(ch) => ch,
+            Err(e) => {
+                warn!("Failed to decode ClientHello: {}", e);
+                return Ok(());
+            }
+        };
+
+        debug!(
+            label = self.conn.label.as_deref().unwrap_or("-"),
+            offered_cipher_suites = ?client_hello.cipher_suites,
+            client_version = ?client_hello.version,
+            extensions_len = client_hello.extensions.len(),
+            "ClientHello decoded"
+        );
+
+        trace!(
+            "ClientHello Version: {:?} ({}, {})",
+            client_hello.version, client_hello.version.major, client_hello.version.minor
+        );
+        ctx.client_random = Some(client_hello.random.to_bytes());
+        // Parse ClientHello extensions to trace
+        let mut srtp_profiles = Vec::new();
+        let mut ext_buf = Bytes::from(client_hello.extensions.clone());
+        while ext_buf.len() >= 4 {
+            let ext_type = ext_buf.get_u16();
+            let ext_len = ext_buf.get_u16() as usize;
+            if ext_buf.len() < ext_len {
+                break;
+            }
+            let _ext_data = ext_buf.split_to(ext_len);
+            if ext_type == 13 {
+                // signature_algorithms
+            } else if ext_type == 10 {
+                // supported_groups
+            } else if ext_type == 14 {
+                // use_srtp
+                if _ext_data.len() >= 2 {
+                    let len = u16::from_be_bytes([_ext_data[0], _ext_data[1]]) as usize;
+                    let mut idx = 2;
+                    while idx < 2 + len && idx + 1 < _ext_data.len() {
+                        let profile = u16::from_be_bytes([_ext_data[idx], _ext_data[idx + 1]]);
+                        srtp_profiles.push(profile);
+                        idx += 2;
+                    }
+                }
+            } else if ext_type == 23 {
+                // extended_master_secret
+                ctx.ems_negotiated = true;
+            }
+        }
+        let random = Random::new();
+        ctx.server_random = Some(random.to_bytes());
+
+        let mut extensions = Vec::new();
+        // Supported Point Formats (uncompressed)
+        extensions.extend_from_slice(&[0x00, 0x0b]); // Type
+        extensions.extend_from_slice(&[0x00, 0x02]); // Length
+        extensions.extend_from_slice(&[0x01]); // List Length
+        extensions.extend_from_slice(&[0x00]); // uncompressed
+
+        // Renegotiation Info (empty)
+        extensions.extend_from_slice(&[0xff, 0x01]); // Type
+        extensions.extend_from_slice(&[0x00, 0x01]); // Length
+        extensions.extend_from_slice(&[0x00]); // Body (len 0)
+
+        // Extended Master Secret
+        if ctx.ems_negotiated {
+            extensions.extend_from_slice(&[0x00, 0x17]); // Type 23
+            extensions.extend_from_slice(&[0x00, 0x00]); // Length 0
+        }
+
+        // Use SRTP
+        if !srtp_profiles.is_empty() {
+            // Prefer SRTP_AES128_CM_HMAC_SHA1_80 (0x0001) if available
+            // otherwise pick the first one
+            let selected_profile = if srtp_profiles.contains(&0x0001) {
+                0x0001
+            } else {
+                srtp_profiles[0]
+            };
+
+            ctx.srtp_profile = Some(selected_profile);
+            extensions.extend_from_slice(&[0x00, 0x0e]); // Type 14
+            extensions.extend_from_slice(&[0x00, 0x05]); // Length
+            extensions.extend_from_slice(&[0x00, 0x02]); // List Length
+            extensions.extend_from_slice(&selected_profile.to_be_bytes());
+            extensions.extend_from_slice(&[0x00]); // MKI Length
+        }
+
+        // Generate new Session ID to force full handshake
+        let mut session_id = vec![0u8; 32];
+        crate::platform::rng::fill(&mut session_id[..]);
+
+        // Negotiate the cipher suite instead of blindly echoing a fixed one.
+        // This stack implements exactly TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        // (P-256 ECDHE + ECDSA auth + AES-128-GCM record layer), so the client
+        // must have offered it. Replying with an unoffered suite makes the
+        // peer silently drop our flight and retransmit ClientHello forever —
+        // an invisible handshake stall. Fail loudly (alert + warn) instead.
+        let cipher_suite = match negotiate_cipher_suite(&client_hello.cipher_suites) {
+            Some(suite) => suite,
+            None => {
+                warn!(
+                    offered_cipher_suites = ?client_hello.cipher_suites,
+                    supported_cipher_suite = SUPPORTED_CIPHER_SUITE,
+                    "ClientHello offers no supported cipher suite; aborting handshake with fatal handshake_failure alert"
+                );
+                self.send_handshake_failure_alert(ctx).await;
+                *self.state.lock() = DtlsState::Failed;
+                let _ = self.state_tx.send(DtlsState::Failed);
+                bail!("ClientHello offers no supported cipher suite (need 0xC02B)");
+            }
+        };
+
+        let server_hello = ServerHello {
+            version: ProtocolVersion::DTLS_1_2,
+            random,
+            session_id, // Always new session ID
+            cipher_suite,
+            compression_method: 0,
+            extensions,
+        };
+        let mut body = BytesMut::new();
+        server_hello.encode(&mut body);
+
+        let handshake_msg = HandshakeMessage {
+            msg_type: HandshakeType::ServerHello,
+            message_seq: ctx.message_seq,
+            fragment_offset: 0,
+            fragment_length: body.len() as u32,
+            total_length: body.len() as u32,
+            body: body.freeze(),
+        };
+
+        let mut buf = BytesMut::new();
+        handshake_msg.encode(&mut buf);
+        ctx.handshake_messages.extend_from_slice(&buf);
+
+        let mut flight_records: Vec<Vec<u8>> = Vec::new();
+
+        flight_records.push(self.build_handshake_record(
+            handshake_msg,
+            ctx.epoch,
+            &mut ctx.sequence_number,
+            None,
+            is_client,
+        )?);
+        ctx.message_seq += 1;
+
+        // Send Certificate
+        let cert_msg = CertificateMessage {
+            certificates: certificate.certificate.clone(),
+        };
+
+        let mut body = BytesMut::new();
+        cert_msg.encode(&mut body);
+
+        let handshake_msg = HandshakeMessage {
+            msg_type: HandshakeType::Certificate,
+            message_seq: ctx.message_seq,
+            fragment_offset: 0,
+            fragment_length: body.len() as u32,
+            total_length: body.len() as u32,
+            body: body.freeze(),
+        };
+
+        let mut buf = BytesMut::new();
+        handshake_msg.encode(&mut buf);
+        ctx.handshake_messages.extend_from_slice(&buf);
+
+        flight_records.push(self.build_handshake_record(
+            handshake_msg,
+            ctx.epoch,
+            &mut ctx.sequence_number,
+            None,
+            is_client,
+        )?);
+        ctx.message_seq += 1;
+
+        // Send ServerKeyExchange
+        let mut params = Vec::new();
+        if let (Some(cr), Some(sr)) = (&ctx.client_random, &ctx.server_random) {
+            params.extend_from_slice(cr);
+            params.extend_from_slice(sr);
+        }
+        params.push(3); // curve_type: named_curve
+        params.extend_from_slice(&23u16.to_be_bytes()); // named_curve: secp256r1
+        params.push(ctx.local_public_key_bytes.len() as u8);
+        params.extend_from_slice(&ctx.local_public_key_bytes);
+
+        let signing_key =
+            crypto::crypto().signing_key_from_pkcs8_der(&certificate.private_key_pkcs8)?;
+        let signature_bytes = signing_key.sign(&params)?;
+        // Self-verification (sign/verify round-trip through the backend)
+        if let Err(e) = signing_key
+            .verifying_key()
+            .and_then(|vk| vk.verify(&params, &signature_bytes))
+        {
+            warn!("SELF-VERIFICATION FAILED: {}", e);
+        }
+
+        let server_key_exchange = ServerKeyExchange {
+            curve_type: 3,   // named_curve
+            named_curve: 23, // secp256r1
+            public_key: ctx.local_public_key_bytes.clone(),
+            signature: signature_bytes,
+        };
+
+        let mut body = BytesMut::new();
+        server_key_exchange.encode(&mut body);
+
+        let handshake_msg = HandshakeMessage {
+            msg_type: HandshakeType::ServerKeyExchange,
+            total_length: body.len() as u32,
+            message_seq: ctx.message_seq,
+            fragment_offset: 0,
+            fragment_length: body.len() as u32,
+            body: body.freeze(),
+        };
+
+        let mut buf = BytesMut::new();
+        handshake_msg.encode(&mut buf);
+        ctx.handshake_messages.extend_from_slice(&buf);
+
+        flight_records.push(self.build_handshake_record(
+            handshake_msg,
+            ctx.epoch,
+            &mut ctx.sequence_number,
+            None,
+            is_client,
+        )?);
+        ctx.message_seq += 1;
+
+        // Send ServerHelloDone
+        let done_msg = ServerHelloDone {};
+        let mut body = BytesMut::new();
+        done_msg.encode(&mut body);
+
+        let handshake_msg = HandshakeMessage {
+            msg_type: HandshakeType::ServerHelloDone,
+            total_length: body.len() as u32,
+            message_seq: ctx.message_seq,
+            fragment_offset: 0,
+            fragment_length: body.len() as u32,
+            body: body.freeze(),
+        };
+
+        let mut buf = BytesMut::new();
+        handshake_msg.encode(&mut buf);
+        ctx.handshake_messages.extend_from_slice(&buf);
+
+        flight_records.push(self.build_handshake_record(
+            handshake_msg,
+            ctx.epoch,
+            &mut ctx.sequence_number,
+            None,
+            is_client,
+        )?);
+        ctx.message_seq += 1;
+
+        self.send_flight(ctx, flight_records).await;
+
+        Ok(())
+    }
+
+    fn handle_client_key_exchange(
+        &self,
+        msg: HandshakeMessage,
+        ctx: &mut HandshakeContext,
+        is_client: bool,
+    ) -> Result<()> {
+        if is_client {
+            return Ok(());
+        }
+
+        if ctx.session_keys.is_some() {
+            trace!("Session keys already derived, skipping ClientKeyExchange processing");
+            return Ok(());
+        }
+
+        trace!("Received ClientKeyExchange");
+        let mut body = msg.body.clone();
+        let client_key_exchange = match ClientKeyExchange::decode(&mut body) {
+            Ok(cke) => cke,
+            Err(_) => {
+                warn!("Failed to decode ClientKeyExchange");
+                return Ok(());
+            }
+        };
+
+        ctx.peer_public_key = Some(client_key_exchange.public_key);
+
+        // Compute shared secret
+        let peer_key = if let Some(pk) = &ctx.peer_public_key {
+            pk
+        } else {
+            return Ok(());
+        };
+
+        let secret = if let Some(s) = ctx.local_secret.as_ref() {
+            s
+        } else {
+            warn!("Local secret not available (already consumed?)");
+            return Ok(());
+        };
+
+        let shared_secret = match secret.shared_secret(peer_key) {
+            Ok(s) => s,
+            Err(_) => {
+                warn!("Failed to compute ECDH shared secret");
+                return Ok(());
+            }
+        };
+        trace!("Shared secret computed (Server)");
+
+        let (cr, sr) = match (&ctx.client_random, &ctx.server_random) {
+            (Some(cr), Some(sr)) => (cr, sr),
+            _ => return Ok(()),
+        };
+
+        let pre_master_secret = &shared_secret;
+        let mut seed = Vec::new();
+        seed.extend_from_slice(cr);
+        seed.extend_from_slice(sr);
+
+        let master_secret_res = if ctx.ems_negotiated {
+            let mut hasher = Sha256::new();
+            hasher.update(&ctx.handshake_messages);
+            let session_hash = hasher.finalize();
+            prf_sha256(
+                pre_master_secret,
+                b"extended master secret",
+                &session_hash,
+                48,
+            )
+        } else {
+            prf_sha256(pre_master_secret, b"master secret", &seed, 48)
+        };
+
+        let master_secret = match master_secret_res {
+            Ok(ms) => ms,
+            Err(_) => return Ok(()),
+        };
+
+        let keys = match expand_keys(&master_secret, cr, sr) {
+            Ok(k) => k,
+            Err(_) => return Ok(()),
+        };
+
+        trace!("Session keys derived (Server)");
+        ctx.session_crypto = Some(create_session_crypto(keys.clone())?);
+        ctx.session_keys = Some(keys);
+
+        Ok(())
+    }
+
+    async fn handle_finished(
+        &self,
+        msg: HandshakeMessage,
+        raw_msg: &[u8],
+        ctx: &mut HandshakeContext,
+        is_client: bool,
+    ) -> Result<()> {
+        let mut body = msg.body.clone();
+        let finished = match Finished::decode(&mut body) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("Failed to decode Finished message: {}", e);
+                return Ok(());
+            }
+        };
+
+        if !is_client {
+            // Verify Client's Finished
+            if let Some(keys) = &ctx.session_keys {
+                let expected_verify_data = calculate_verify_data(
+                    &keys.master_secret,
+                    b"client finished",
+                    &ctx.handshake_messages,
+                )?;
+
+                if finished.verify_data != expected_verify_data {
+                    warn!(
+                        "Finished verification failed. Expected {:?}, got {:?}",
+                        expected_verify_data, finished.verify_data
+                    );
+                    *self.state.lock() = DtlsState::Failed;
+                    return Err(dtls_err!("Finished verification failed"));
+                } else {
+                    trace!("Client Finished verified");
+                }
+            }
+
+            // Add Client's Finished to transcript
+            ctx.handshake_messages.extend_from_slice(raw_msg);
+
+            let mut flight_records: Vec<Vec<u8>> = Vec::new();
+
+            // Send ChangeCipherSpec
+            let record = DtlsRecord {
+                content_type: ContentType::ChangeCipherSpec,
+                version: ProtocolVersion::DTLS_1_2,
+                epoch: ctx.epoch,
+                sequence_number: ctx.sequence_number,
+                payload: Bytes::from_static(&[1]),
+            };
+
+            let mut buf = BytesMut::new();
+            record.encode(&mut buf);
+            flight_records.push(buf.to_vec());
+
+            ctx.epoch += 1;
+            ctx.sequence_number = 0;
+
+            // Send Finished
+            let verify_data = if let Some(keys) = &ctx.session_keys {
+                calculate_verify_data(
+                    &keys.master_secret,
+                    b"server finished",
+                    &ctx.handshake_messages,
+                )?
+            } else {
+                vec![0u8; 12]
+            };
+
+            let finished = Finished { verify_data };
+
+            let mut body = BytesMut::new();
+            finished.encode(&mut body);
+
+            let handshake_msg = HandshakeMessage {
+                msg_type: HandshakeType::Finished,
+                total_length: body.len() as u32,
+                message_seq: ctx.message_seq,
+                fragment_offset: 0,
+                fragment_length: body.len() as u32,
+                body: body.freeze(),
+            };
+
+            let mut buf = BytesMut::new();
+            handshake_msg.encode(&mut buf);
+            ctx.handshake_messages.extend_from_slice(&buf);
+
+            flight_records.push(self.build_handshake_record(
+                handshake_msg,
+                ctx.epoch,
+                &mut ctx.sequence_number,
+                ctx.session_keys.as_ref(),
+                is_client,
+            )?);
+            self.send_flight(ctx, flight_records).await;
+            // message_seq += 1; // End of handshake
+
+            if let Some(keys) = &ctx.session_keys {
+                let crypto = create_session_crypto(keys.clone())?;
+                let state = DtlsState::Connected(Arc::new(crypto), ctx.srtp_profile);
+                *self.state.lock() = state.clone();
+                self.write_epoch.store(ctx.epoch, Ordering::SeqCst);
+                self.write_seq.store(ctx.sequence_number, Ordering::SeqCst);
+                let _ = self.state_tx.send(state);
+                debug!(
+                    label = self.conn.label.as_deref().unwrap_or("-"),
+                    "DTLS handshake complete (server role) (remote={})",
+                    (*self.conn.remote_addr.read())
+                );
+                // Clear ephemeral secret as handshake is complete
+                ctx.local_secret = None;
+            } else {
+                *self.state.lock() = DtlsState::Failed;
+                let _ = self.state_tx.send(DtlsState::Failed);
+                return Err(dtls_err!("Session keys not derived"));
+            }
+        } else {
+            // Client logic: Verify Finished
+            if let Some(keys) = &ctx.session_keys {
+                let expected_verify_data = calculate_verify_data(
+                    &keys.master_secret,
+                    b"server finished",
+                    &ctx.handshake_messages,
+                )?;
+
+                if finished.verify_data != expected_verify_data {
+                    warn!(
+                        "Finished verification failed. Expected {:?}, got {:?}",
+                        expected_verify_data, finished.verify_data
+                    );
+                    *self.state.lock() = DtlsState::Failed;
+                    return Err(dtls_err!("Finished verification failed"));
+                } else {
+                    if let Some(keys) = &ctx.session_keys {
+                        let crypto = create_session_crypto(keys.clone())?;
+
+                        let state = DtlsState::Connected(Arc::new(crypto), ctx.srtp_profile);
+                        *self.state.lock() = state.clone();
+                        self.write_epoch.store(ctx.epoch, Ordering::SeqCst);
+                        self.write_seq.store(ctx.sequence_number, Ordering::SeqCst);
+                        let _ = self.state_tx.send(state);
+                        debug!(
+                            label = self.conn.label.as_deref().unwrap_or("-"),
+                            "DTLS handshake complete (client role) (remote={})",
+                            (*self.conn.remote_addr.read())
+                        );
+                        ctx.local_secret = None;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_hello_verify_request(
+        &self,
+        msg: HandshakeMessage,
+        ctx: &mut HandshakeContext,
+        is_client: bool,
+    ) -> Result<()> {
+        trace!("Received HelloVerifyRequest");
+        let mut body = msg.body.clone();
+        if let Ok(verify_req) = HelloVerifyRequest::decode(&mut body) {
+            trace!("Resending ClientHello with cookie");
+
+            // Reset handshake messages
+            ctx.handshake_messages.clear();
+
+            // Reuse previous random
+            let random = if let Some(bytes) = &ctx.client_random {
+                let gmt = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+                let mut rb = [0u8; 28];
+                rb.copy_from_slice(&bytes[4..32]);
+                Random {
+                    gmt_unix_time: gmt,
+                    random_bytes: rb,
+                }
+            } else {
+                Random::new()
+            };
+            // client_random is already set, no need to update
+
+            let extensions = get_client_hello_extensions();
+
+            let client_hello = ClientHello {
+                version: ProtocolVersion::DTLS_1_2,
+                random,
+                session_id: vec![],
+                cookie: verify_req.cookie,
+                cipher_suites: get_client_hello_cipher_suites(),
+                compression_methods: vec![0],
+                extensions,
+            };
+
+            let mut body = BytesMut::new();
+            client_hello.encode(&mut body);
+
+            let handshake_msg = HandshakeMessage {
+                msg_type: HandshakeType::ClientHello,
+                total_length: body.len() as u32,
+                message_seq: ctx.message_seq,
+                fragment_offset: 0,
+                fragment_length: body.len() as u32,
+                body: body.freeze(),
+            };
+
+            let mut buf = BytesMut::new();
+            handshake_msg.encode(&mut buf);
+            ctx.handshake_messages.extend_from_slice(&buf);
+
+            let buf = self.build_handshake_record(
+                handshake_msg,
+                ctx.epoch,
+                &mut ctx.sequence_number,
+                None,
+                is_client,
+            )?;
+            self.send_flight(ctx, vec![buf]).await;
+            ctx.message_seq += 1;
+            // After sending a new ClientHello in response to HelloVerifyRequest,
+            // the server will restart its own handshake message_seq counter.
+            // Different implementations restart from different values (0 per RFC 6347
+            // §4.2.1, or 1 continuing from the HVR), so we sync dynamically on the
+            // first message we receive from the server after this point.
+            ctx.post_hvr = true;
+        }
+        Ok(())
+    }
+
+    fn handle_server_hello(
+        &self,
+        msg: HandshakeMessage,
+        ctx: &mut HandshakeContext,
+        is_client: bool,
+    ) -> Result<()> {
+        if !is_client {
+            return Ok(());
+        }
+
+        trace!("Received ServerHello");
+        let mut body = msg.body.clone();
+        let server_hello = match ServerHello::decode(&mut body) {
+            Ok(h) => h,
+            Err(e) => {
+                warn!("Failed to decode ServerHello: {}", e);
+                return Ok(());
+            }
+        };
+
+        // The record layer implements exactly
+        // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256; a ServerHello negotiating
+        // anything else (misconfigured or rogue server, tampered flight) can
+        // never work with this stack. Fail the handshake here instead of
+        // breaking opaquely at key derivation / record crypto later.
+        if server_hello.cipher_suite != SUPPORTED_CIPHER_SUITE {
+            warn!(
+                negotiated = format!("{:#06x}", server_hello.cipher_suite),
+                "ServerHello negotiated an unsupported cipher suite; aborting handshake"
+            );
+            *self.state.lock() = DtlsState::Failed;
+            let _ = self.state_tx.send(DtlsState::Failed);
+            bail!(
+                "ServerHello negotiated unsupported cipher suite {:#06x} (expected {:#06x})",
+                server_hello.cipher_suite,
+                SUPPORTED_CIPHER_SUITE
+            );
+        }
+
+        ctx.server_random = Some(server_hello.random.to_bytes());
+        trace!("Server extensions len: {}", server_hello.extensions.len());
+
+        if server_hello.extensions.is_empty() {
+            return Ok(());
+        }
+
+        trace!("Server extensions: {:?}", server_hello.extensions);
+        let mut ext_buf = Bytes::from(server_hello.extensions.clone());
+        while ext_buf.len() >= 4 {
+            let ext_type = ext_buf.get_u16();
+            let ext_len = ext_buf.get_u16() as usize;
+            if ext_buf.len() < ext_len {
+                break;
+            }
+            let ext_data = ext_buf.split_to(ext_len);
+            if ext_type == 23 {
+                ctx.ems_negotiated = true;
+            } else if ext_type == 14 {
+                // use_srtp
+                if ext_data.len() >= 5 {
+                    // Length of list (2 bytes)
+                    // Profile (2 bytes)
+                    // MKI (1 byte)
+                    let profile = u16::from_be_bytes([ext_data[2], ext_data[3]]);
+                    ctx.srtp_profile = Some(profile);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_server_key_exchange(
+        &self,
+        msg: HandshakeMessage,
+        ctx: &mut HandshakeContext,
+        is_client: bool,
+    ) -> Result<()> {
+        if is_client {
+            let mut body = msg.body.clone();
+            if let Ok(server_key_exchange) = ServerKeyExchange::decode(&mut body) {
+                let Some(peer_certificate) = ctx.peer_certificate.as_deref() else {
+                    *self.state.lock() = DtlsState::Failed;
+                    let _ = self.state_tx.send(DtlsState::Failed);
+                    return Err(dtls_err!(
+                        "Received ServerKeyExchange before a verifiable DTLS certificate"
+                    ));
+                };
+                let (Some(client_random), Some(server_random)) =
+                    (&ctx.client_random, &ctx.server_random)
+                else {
+                    *self.state.lock() = DtlsState::Failed;
+                    let _ = self.state_tx.send(DtlsState::Failed);
+                    return Err(dtls_err!(
+                        "Missing DTLS random values for ServerKeyExchange verification"
+                    ));
+                };
+
+                if let Err(e) = verify_server_key_exchange_signature(
+                    peer_certificate,
+                    client_random,
+                    server_random,
+                    &server_key_exchange,
+                ) {
+                    *self.state.lock() = DtlsState::Failed;
+                    let _ = self.state_tx.send(DtlsState::Failed);
+                    return Err(e);
+                }
+                ctx.peer_public_key = Some(server_key_exchange.public_key);
+                ctx.server_key_exchange_verified = true;
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_server_hello_done(
+        &self,
+        ctx: &mut HandshakeContext,
+        is_client: bool,
+    ) -> Result<()> {
+        if ctx.session_keys.is_some() {
+            return Ok(());
+        }
+
+        if is_client && !ctx.server_key_exchange_verified {
+            *self.state.lock() = DtlsState::Failed;
+            let _ = self.state_tx.send(DtlsState::Failed);
+            return Err(dtls_err!(
+                "DTLS server identity was not verified before ServerHelloDone"
+            ));
+        }
+
+        // Send ClientKeyExchange
+        let client_key_exchange = ClientKeyExchange {
+            identity_hint: vec![],
+            public_key: ctx.local_public_key_bytes.clone(),
+        };
+
+        let mut body = BytesMut::new();
+        client_key_exchange.encode(&mut body);
+
+        let handshake_msg = HandshakeMessage {
+            msg_type: HandshakeType::ClientKeyExchange,
+            total_length: body.len() as u32,
+            message_seq: ctx.message_seq,
+            fragment_offset: 0,
+            fragment_length: body.len() as u32,
+            body: body.freeze(),
+        };
+
+        let mut buf = BytesMut::new();
+        handshake_msg.encode(&mut buf);
+        ctx.handshake_messages.extend_from_slice(&buf);
+
+        // Build (but don't send yet) the ClientKeyExchange record: it is sent
+        // as part of the client's CCS+Finished flight and kept in
+        // `last_flight_records`, so a lost CKE is recovered by retransmission
+        // instead of stalling the handshake forever.
+        let client_key_exchange_record = self.build_handshake_record(
+            handshake_msg,
+            ctx.epoch,
+            &mut ctx.sequence_number,
+            None,
+            is_client,
+        )?;
+        ctx.message_seq += 1;
+
+        // Compute shared secret
+        let peer_key = if let Some(pk) = &ctx.peer_public_key {
+            pk
+        } else {
+            return Ok(());
+        };
+
+        let secret = if let Some(s) = ctx.local_secret.as_ref() {
+            s
+        } else {
+            warn!("Local secret not available (already consumed?)");
+            return Ok(());
+        };
+
+        let shared_secret = match secret.shared_secret(peer_key) {
+            Ok(s) => s,
+            Err(_) => {
+                warn!("Failed to compute ECDH shared secret");
+                return Ok(());
+            }
+        };
+
+        let (cr, sr) = match (&ctx.client_random, &ctx.server_random) {
+            (Some(cr), Some(sr)) => (cr, sr),
+            _ => return Ok(()),
+        };
+
+        let pre_master_secret = &shared_secret;
+        let mut seed = Vec::new();
+        seed.extend_from_slice(cr);
+        seed.extend_from_slice(sr);
+
+        let master_secret_res = if ctx.ems_negotiated {
+            let mut hasher = Sha256::new();
+            hasher.update(&ctx.handshake_messages);
+            let session_hash = hasher.finalize();
+            prf_sha256(
+                pre_master_secret,
+                b"extended master secret",
+                &session_hash,
+                48,
+            )
+        } else {
+            prf_sha256(pre_master_secret, b"master secret", &seed, 48)
+        };
+
+        let master_secret = match master_secret_res {
+            Ok(ms) => ms,
+            Err(_) => return Ok(()),
+        };
+
+        let keys = match expand_keys(&master_secret, cr, sr) {
+            Ok(k) => k,
+            Err(_) => return Ok(()),
+        };
+        ctx.session_crypto = Some(create_session_crypto(keys.clone())?);
+        ctx.session_keys = Some(keys);
+
+        let mut flight_records: Vec<Vec<u8>> = Vec::new();
+
+        // ClientKeyExchange first (plaintext), then CCS, then Finished — the
+        // whole flight is retransmitted together.
+        flight_records.push(client_key_exchange_record);
+
+        // Send ChangeCipherSpec
+        let record = DtlsRecord {
+            content_type: ContentType::ChangeCipherSpec,
+            version: ProtocolVersion::DTLS_1_2,
+            epoch: ctx.epoch,
+            sequence_number: ctx.sequence_number,
+            payload: Bytes::from_static(&[1]),
+        };
+
+        let mut buf = BytesMut::new();
+        record.encode(&mut buf);
+        flight_records.push(buf.to_vec());
+
+        ctx.epoch += 1;
+        ctx.sequence_number = 0;
+
+        // Send Finished
+        let verify_data =
+            calculate_verify_data(&master_secret, b"client finished", &ctx.handshake_messages)?;
+
+        let finished = Finished { verify_data };
+
+        let mut body = BytesMut::new();
+        finished.encode(&mut body);
+
+        let handshake_msg = HandshakeMessage {
+            msg_type: HandshakeType::Finished,
+            total_length: body.len() as u32,
+            message_seq: ctx.message_seq,
+            fragment_offset: 0,
+            fragment_length: body.len() as u32,
+            body: body.freeze(),
+        };
+
+        let mut buf = BytesMut::new();
+        handshake_msg.encode(&mut buf);
+        ctx.handshake_messages.extend_from_slice(&buf);
+
+        flight_records.push(self.build_handshake_record(
+            handshake_msg,
+            ctx.epoch,
+            &mut ctx.sequence_number,
+            ctx.session_keys.as_ref(),
+            is_client,
+        )?);
+        self.send_flight(ctx, flight_records).await;
+        ctx.message_seq += 1;
+
+        Ok(())
+    }
+    async fn handshake(
+        &self,
+        certificate: Certificate,
+        is_client: bool,
+        incoming_data_tx: mpsc::UnboundedSender<Bytes>,
+        mut handshake_rx: mpsc::UnboundedReceiver<Bytes>,
+        close_rx: Arc<Notify>,
+    ) -> Result<()> {
+        *self.state.lock() = DtlsState::Handshaking;
+        let _ = self.state_tx.send(DtlsState::Handshaking);
+
+        let mut ctx = HandshakeContext::new(self.expected_remote_fingerprint.clone())?;
+
+        // Retransmission state
+        let mut retransmit_interval = crate::platform::task::interval_after(
+            core::time::Duration::from_secs(1),
+            core::time::Duration::from_secs(1),
+        );
+        retransmit_interval
+            .set_missed_tick_behavior(crate::platform::task::MissedTickBehavior::Skip);
+
+        // Watch the ICE socket so we can detect peer disappearance immediately
+        // rather than spinning on retransmits forever.
+        let socket_rx = self.conn.socket_rx.clone();
+
+        // Handshake deadline — prevents the task from living forever if the peer
+        // never responds.  Once `Connected` the deadline is disabled.
+        let handshake_deadline = crate::platform::time::Instant::now() + DTLS_HANDSHAKE_TIMEOUT;
+
+        if is_client {
+            // Send ClientHello
+            let random = Random::new();
+            ctx.client_random = Some(random.to_bytes());
+
+            let extensions = get_client_hello_extensions();
+
+            let client_hello = ClientHello {
+                version: ProtocolVersion::DTLS_1_2,
+                random,
+                session_id: vec![],
+                cookie: vec![],
+                cipher_suites: get_client_hello_cipher_suites(), // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+                compression_methods: vec![0],                    // Null
+                extensions,
+            };
+
+            let mut body = BytesMut::new();
+            client_hello.encode(&mut body);
+
+            let handshake_msg = HandshakeMessage {
+                msg_type: HandshakeType::ClientHello,
+                total_length: body.len() as u32,
+                message_seq: ctx.message_seq,
+                fragment_offset: 0,
+                fragment_length: body.len() as u32,
+                body: body.freeze(),
+            };
+
+            let mut buf = BytesMut::new();
+            handshake_msg.encode(&mut buf);
+            ctx.handshake_messages.extend_from_slice(&buf);
+
+            let buf = self.build_handshake_record(
+                handshake_msg,
+                ctx.epoch,
+                &mut ctx.sequence_number,
+                None,
+                is_client,
+            )?;
+            let len = buf.len();
+            self.send_flight(&mut ctx, vec![buf]).await;
+            trace!("ClientHello sent ({} bytes)", len);
+            ctx.message_seq += 1;
+        }
+
+        loop {
+            // Definitive ICE-socket check at the top of every iteration.
+            //
+            // We cannot rely solely on `socket_rx.changed()` inside the select!
+            // because polling `changed()` marks the value as seen — if another
+            // branch wins the select! race, the Some→None transition is silently
+            // consumed and never re-delivered.  Using `borrow()` (which does NOT
+            // update the seen version) here as the authoritative check guarantees
+            // we never miss the transition regardless of select! racing.
+            if socket_rx.borrow().is_none() {
+                let is_handshaking = matches!(*self.state.lock(), DtlsState::Handshaking);
+                if is_handshaking {
+                    warn!("ICE socket closed during DTLS handshake — aborting");
+                    *self.state.lock() = DtlsState::Failed;
+                    let _ = self.state_tx.send(DtlsState::Failed);
+                    return Err(dtls_err!("ICE socket closed during DTLS handshake"));
+                } else {
+                    debug!("ICE socket closed after DTLS connected — closing transport");
+                    *self.state.lock() = DtlsState::Closed;
+                    let _ = self.state_tx.send(DtlsState::Closed);
+                    return Ok(());
+                }
+            }
+
+            // Seam select4 takes Unpin futures; pin each arm per iteration.
+            // The conditional timeout arm becomes Either(sleep, pending):
+            // it only races while the handshake is still in progress.
+            let mut s_close = core::pin::pin!(close_rx.notified());
+            let s_timeout = if matches!(*self.state.lock(), DtlsState::Handshaking) {
+                crate::platform::select::Either::A(core::pin::pin!(crate::platform::task::sleep(
+                    handshake_deadline.duration_since(crate::platform::time::Instant::now())
+                )))
+            } else {
+                crate::platform::select::Either::B(core::future::pending::<()>())
+            };
+            let mut s_tick = core::pin::pin!(retransmit_interval.tick());
+            let mut s_recv = core::pin::pin!(handshake_rx.recv());
+            match crate::platform::select::select4(
+                s_close.as_mut(),
+                s_timeout,
+                s_tick.as_mut(),
+                s_recv.as_mut(),
+            )
+            .await
+            {
+                crate::platform::select::Which4::A(_) => {
+                    // Send CloseNotify
+                    if let Some(keys) = &ctx.session_keys {
+                        let alert = vec![1, 0]; // Level: Warning (1), Description: CloseNotify (0)
+                        let (key, iv) = if is_client {
+                            (&keys.client_write_key, &keys.client_write_iv)
+                        } else {
+                            (&keys.server_write_key, &keys.server_write_iv)
+                        };
+                        let full_seq = ((ctx.epoch as u64) << 48) | ctx.sequence_number;
+                        if let Ok(encrypted) = encrypt_record(
+                            ContentType::Alert,
+                            ProtocolVersion::DTLS_1_2,
+                            full_seq,
+                            &alert,
+                            key,
+                            iv,
+                        ) {
+                            let record = DtlsRecord {
+                                content_type: ContentType::Alert,
+                                version: ProtocolVersion::DTLS_1_2,
+                                epoch: ctx.epoch,
+                                sequence_number: ctx.sequence_number,
+                                payload: Bytes::from(encrypted),
+                            };
+                            let mut buf = BytesMut::new();
+                            record.encode(&mut buf);
+                            let _ = self.conn.send(&buf).await;
+                        }
+                    }
+                    return Ok(());
+                }
+                // Handshake timeout — abort if the peer never responds.
+                crate::platform::select::Which4::B(_) => {
+                    debug!(
+                        label = self.conn.label.as_deref().unwrap_or("-"),
+                        "DTLS handshake timed out after {}s — aborting (remote={})",
+                        DTLS_HANDSHAKE_TIMEOUT.as_secs(),
+                        (*self.conn.remote_addr.read())
+                    );
+                    *self.state.lock() = DtlsState::Failed;
+                    let _ = self.state_tx.send(DtlsState::Failed);
+                    return Err(dtls_err!(
+                        "DTLS handshake timed out after {}s",
+                        DTLS_HANDSHAKE_TIMEOUT.as_secs()
+                    ));
+                }
+                crate::platform::select::Which4::C(_) => {
+                    self.handle_retransmit(&ctx, is_client).await;
+                }
+                crate::platform::select::Which4::D(packet) => {
+                    let Some(packet) = packet else {
+                        debug!("DTLS handshake feeder closed — exiting loop");
+                        return Ok(());
+                    };
+                    if let Err(e) = self
+                        .handle_incoming_packet(
+                            packet,
+                            &mut ctx,
+                            &incoming_data_tx,
+                            &certificate,
+                            is_client,
+                        )
+                        .await
+                    {
+                        warn!("DTLS handshake loop error in handle_incoming_packet: {}", e);
+                        // Bad records can be ignored, but once verification has
+                        // marked the transport as failed we should stop retrying.
+                        if *self.state.lock() == DtlsState::Failed {
+                            return Err(e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn build_handshake_record(
+        &self,
+        msg: HandshakeMessage,
+        epoch: u16,
+        sequence_number: &mut u64,
+        session_keys: Option<&SessionKeys>,
+        is_client: bool,
+    ) -> Result<Vec<u8>> {
+        let mut buf = BytesMut::new();
+        msg.encode(&mut buf);
+        let payload = buf.freeze();
+        let mut record_payload = payload;
+
+        if epoch > 0
+            && let Some(keys) = session_keys
+        {
+            let (key, iv) = if is_client {
+                (&keys.client_write_key, &keys.client_write_iv)
+            } else {
+                (&keys.server_write_key, &keys.server_write_iv)
+            };
+
+            let full_seq = ((epoch as u64) << 48) | *sequence_number;
+
+            record_payload = Bytes::from(encrypt_record(
+                ContentType::Handshake,
+                ProtocolVersion::DTLS_1_2,
+                full_seq,
+                &record_payload,
+                key,
+                iv,
+            )?);
+        }
+
+        let record = DtlsRecord {
+            content_type: ContentType::Handshake,
+            version: ProtocolVersion::DTLS_1_2,
+            epoch,
+            sequence_number: *sequence_number,
+            payload: record_payload,
+        };
+        *sequence_number += 1;
+
+        let mut buf = BytesMut::new();
+        record.encode(&mut buf);
+        Ok(buf.to_vec())
+    }
+}
+
+impl Clone for DtlsTransport {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            close_tx: self.close_tx.clone(),
+        }
+    }
+}
+
+use crate::transports::PacketReceiver;
+use core::net::SocketAddr;
+
+#[async_trait::async_trait]
+impl PacketReceiver for DtlsTransport {
+    async fn receive(&self, packet: Bytes, _addr: SocketAddr, _marshal_buf: &mut Vec<u8>) {
+        if self.inner.handshake_rx_feeder.send(packet).is_err() {
+            warn!("DTLS handshake channel closed, dropping inbound packet");
+        }
+    }
+}
+
+fn prf_sha256(secret: &[u8], label: &[u8], seed: &[u8], output_length: usize) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut real_seed = Vec::new();
+    real_seed.extend_from_slice(label);
+    real_seed.extend_from_slice(seed);
+
+    let mut a = real_seed.clone();
+    let mac_prototype = <Hmac<Sha256> as hmac::digest::KeyInit>::new_from_slice(secret)
+        .map_err(|_| dtls_err!("Invalid key length"))?;
+
+    while output.len() < output_length {
+        let mut mac = mac_prototype.clone();
+        mac.update(&a);
+        a = mac.finalize().into_bytes().to_vec();
+
+        let mut mac = mac_prototype.clone();
+        mac.update(&a);
+        mac.update(&real_seed);
+        let block = mac.finalize().into_bytes();
+
+        let len = core::cmp::min(block.len(), output_length - output.len());
+        output.extend_from_slice(&block[..len]);
+    }
+
+    Ok(output)
+}
+
+fn expand_keys(
+    master_secret: &[u8],
+    client_random: &[u8],
+    server_random: &[u8],
+) -> Result<SessionKeys> {
+    let mut keys = SessionKeys {
+        client_write_key: vec![0u8; 16],
+        server_write_key: vec![0u8; 16],
+        client_write_iv: vec![0u8; 4],
+        server_write_iv: vec![0u8; 4],
+        master_secret: master_secret.to_vec(),
+        client_random: client_random.to_vec(),
+        server_random: server_random.to_vec(),
+    };
+
+    let key_block = prf_sha256(
+        master_secret,
+        b"key expansion",
+        [server_random, client_random].concat().as_slice(),
+        40,
+    )?;
+
+    keys.client_write_key.copy_from_slice(&key_block[0..16]);
+    keys.server_write_key.copy_from_slice(&key_block[16..32]);
+    keys.client_write_iv.copy_from_slice(&key_block[32..36]);
+    keys.server_write_iv.copy_from_slice(&key_block[36..40]);
+
+    Ok(keys)
+}
+
+fn create_session_crypto(keys: SessionKeys) -> Result<SessionCrypto> {
+    let client_write_cipher = Aes128Gcm::new_from_slice(&keys.client_write_key)
+        .map_err(|_| dtls_err!("Invalid key length"))?;
+    let server_write_cipher = Aes128Gcm::new_from_slice(&keys.server_write_key)
+        .map_err(|_| dtls_err!("Invalid key length"))?;
+    Ok(SessionCrypto {
+        keys,
+        client_write_cipher,
+        server_write_cipher,
+    })
+}
+
+fn calculate_verify_data(
+    master_secret: &[u8],
+    label: &[u8],
+    handshake_messages: &[u8],
+) -> Result<Vec<u8>> {
+    let mut hasher = Sha256::new();
+    hasher.update(handshake_messages);
+    let hash = hasher.finalize();
+    let verify_data = prf_sha256(master_secret, label, &hash, 12)?;
+    Ok(verify_data)
+}
+
+fn make_aad(
+    seq: u64,
+    content_type: ContentType,
+    version: ProtocolVersion,
+    length: usize,
+) -> [u8; 13] {
+    let mut aad = [0u8; 13];
+    aad[0..8].copy_from_slice(&seq.to_be_bytes());
+    aad[8] = content_type as u8;
+    aad[9] = version.major;
+    aad[10] = version.minor;
+    aad[11..13].copy_from_slice(&(length as u16).to_be_bytes());
+    aad
+}
+
+fn decrypt_record_with_cipher(
+    content_type: ContentType,
+    version: ProtocolVersion,
+    seq: u64,
+    payload: &Bytes,
+    cipher: &Aes128Gcm,
+    iv: &[u8],
+) -> Result<Bytes> {
+    if payload.len() < 8 + 16 {
+        return Err(dtls_err!("Record too short"));
+    }
+
+    let explicit_nonce = &payload[0..8];
+    let ciphertext_len = payload.len() - 8 - 16;
+    let ciphertext = &payload[8..8 + ciphertext_len];
+    let tag_bytes = &payload[8 + ciphertext_len..];
+
+    let mut nonce_bytes = [0u8; 12];
+    nonce_bytes[0..4].copy_from_slice(iv);
+    nonce_bytes[4..12].copy_from_slice(explicit_nonce);
+
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let tag = Tag::from_slice(tag_bytes);
+
+    let aad = make_aad(seq, content_type, version, ciphertext_len);
+
+    let mut buf = BytesMut::with_capacity(ciphertext_len);
+    buf.put_slice(ciphertext);
+
+    cipher
+        .decrypt_in_place_detached(nonce, &aad, &mut buf, tag)
+        .map_err(|e| dtls_err!("Decryption failed: {}", e))?;
+
+    Ok(buf.freeze())
+}
+
+fn decrypt_record(
+    content_type: ContentType,
+    version: ProtocolVersion,
+    seq: u64,
+    payload: &Bytes,
+    key: &[u8],
+    iv: &[u8],
+) -> Result<Vec<u8>> {
+    if payload.len() < 8 {
+        return Err(dtls_err!("Record too short for explicit nonce"));
+    }
+
+    let explicit_nonce = &payload[0..8];
+    let ciphertext = &payload[8..];
+
+    if ciphertext.len() < 16 {
+        return Err(dtls_err!("Ciphertext too short for tag"));
+    }
+
+    let mut nonce_bytes = [0u8; 12];
+    nonce_bytes[0..4].copy_from_slice(iv);
+    nonce_bytes[4..12].copy_from_slice(explicit_nonce);
+
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let cipher = Aes128Gcm::new_from_slice(key).map_err(|_| dtls_err!("Invalid key length"))?;
+
+    let plaintext_len = ciphertext.len() - 16;
+    let aad = make_aad(seq, content_type, version, plaintext_len);
+
+    let decrypted_payload = cipher
+        .decrypt(
+            nonce,
+            Payload {
+                msg: ciphertext,
+                aad: &aad,
+            },
+        )
+        .map_err(|e| dtls_err!("Decryption failed: {}", e))?;
+
+    Ok(decrypted_payload)
+}
+
+fn encrypt_record(
+    content_type: ContentType,
+    version: ProtocolVersion,
+    seq: u64,
+    payload: &[u8],
+    key: &[u8],
+    iv: &[u8],
+) -> Result<Vec<u8>> {
+    let mut nonce_bytes = [0u8; 12];
+    nonce_bytes[0..4].copy_from_slice(iv);
+    nonce_bytes[4..12].copy_from_slice(&seq.to_be_bytes());
+
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let cipher = Aes128Gcm::new_from_slice(key).map_err(|_| dtls_err!("Invalid key length"))?;
+
+    let aad = make_aad(seq, content_type, version, payload.len());
+
+    let mut result = Vec::with_capacity(8 + payload.len() + 16);
+    result.extend_from_slice(&nonce_bytes[4..12]);
+    result.extend_from_slice(payload);
+
+    let tag = cipher
+        .encrypt_in_place_detached(nonce, &aad, &mut result[8..])
+        .map_err(|e| dtls_err!("Encryption failed: {}", e))?;
+
+    result.extend_from_slice(&tag);
+
+    Ok(result)
+}
+
+/// Sanity cap for one DTLS handshake message (RFC 6347 allows up to 2^24-1,
+/// but every real message is a few KB; anything larger is garbage).
+const MAX_HANDSHAKE_MESSAGE_LEN: usize = 65_536;
+
+/// Upper bound on buffered out-of-order handshake messages — a rogue peer
+/// must not be able to grow memory unbounded.
+const MAX_PENDING_HANDSHAKE_MESSAGES: usize = 16;
+
+/// Upper bound on final-flight resends: a replayed client Finished must not
+/// trigger resends forever, but a client still retransmitting through a long
+/// outage is answered.
+const MAX_FINAL_FLIGHT_RESENDS: u8 = 12;
+
+/// The only cipher suite this DTLS stack implements:
+/// TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 (P-256 ECDHE, ECDSA auth,
+/// AES-128-GCM record layer).
+const SUPPORTED_CIPHER_SUITE: u16 = 0xC02B;
+
+/// Pick the suite to echo in the ServerHello: this stack implements exactly
+/// one suite, so negotiation succeeds only when the client offered it.
+fn negotiate_cipher_suite(offered: &[u16]) -> Option<u16> {
+    if offered.contains(&SUPPORTED_CIPHER_SUITE) {
+        Some(SUPPORTED_CIPHER_SUITE)
+    } else {
+        None
+    }
+}
+
+/// Byte-accurate reassembly for one fragmented DTLS handshake message
+/// (RFC 6347 §4.2.3). Fragments are copied into a fixed-size buffer at their
+/// declared `fragment_offset`, so arrival order does not matter: a reordered
+/// first fragment no longer discards already-buffered bytes, and duplicate
+/// fragments are idempotent. The message is complete once every byte of the
+/// declared `total_length` is covered.
+#[derive(Default)]
+struct HandshakeReassembly {
+    message_seq: u16,
+    total_length: usize,
+    buf: Vec<u8>,
+    have: Vec<bool>,
+    have_count: usize,
+}
+
+impl HandshakeReassembly {
+    /// Buffer one fragment of `message_seq`. Returns the fully reassembled
+    /// message body when the last missing byte arrives, otherwise `None`.
+    /// A different `message_seq`/`total_length` restarts the reassembly.
+    fn push(
+        &mut self,
+        message_seq: u16,
+        total_length: usize,
+        fragment_offset: u32,
+        body: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        if total_length == 0 || total_length > MAX_HANDSHAKE_MESSAGE_LEN {
+            bail!("handshake message total_length {total_length} out of range");
+        }
+        if fragment_offset as usize + body.len() > total_length {
+            bail!(
+                "handshake fragment offset {} + len {} exceeds total_length {}",
+                fragment_offset,
+                body.len(),
+                total_length
+            );
+        }
+        if self.buf.is_empty() || self.message_seq != message_seq {
+            // No state yet, or a different message: start a fresh reassembly.
+            *self = Self {
+                message_seq,
+                total_length,
+                buf: vec![0u8; total_length],
+                have: vec![false; total_length],
+                have_count: 0,
+            };
+        } else if self.total_length != total_length {
+            // The same message_seq must carry a stable total_length (the
+            // header length field is fixed per message, RFC 6347 §4.2.2); a
+            // change is garbage or an attempt to churn allocations — reject
+            // instead of silently reallocating.
+            bail!(
+                "handshake message_seq {message_seq} changed total_length {} -> {}",
+                self.total_length,
+                total_length
+            );
+        }
+
+        let start = fragment_offset as usize;
+        for (i, byte) in body.iter().enumerate() {
+            let idx = start + i;
+            if !self.have[idx] {
+                self.have[idx] = true;
+                self.buf[idx] = *byte;
+                self.have_count += 1;
+            }
+        }
+
+        if self.have_count < self.total_length {
+            debug!(
+                message_seq,
+                fragment_offset,
+                fragment_len = body.len(),
+                total_length,
+                have = self.have_count,
+                "Handshake message incomplete; fragment buffered"
+            );
+            return Ok(None);
+        }
+
+        let body = core::mem::take(&mut self.buf);
+        debug!(
+            message_seq,
+            total_length, "Handshake message reassembled from fragments"
+        );
+        *self = Self::default();
+        Ok(Some(body))
+    }
+}
+
+struct HandshakeContext {
+    sequence_number: u64,
+    /// Outbound DTLS record epoch (write epoch).
+    epoch: u16,
+    /// Inbound DTLS record epoch (read epoch); advanced on peer ChangeCipherSpec only.
+    read_epoch: u16,
+    message_seq: u16,
+    recv_message_seq: u16,
+    /// Set after processing a HelloVerifyRequest so that the next server
+    /// message is accepted at whatever message_seq the server chooses.
+    /// RFC 6347 §4.2.1 says the server should restart at 0, but some
+    /// implementations (e.g. webrtc-dtls) continue from the HVR seq + 1.
+    post_hvr: bool,
+    last_flight_records: Option<Vec<Vec<u8>>>,
+    /// Final-flight resends so far, capped at [`MAX_FINAL_FLIGHT_RESENDS`].
+    final_flight_resends: u8,
+    incomplete_fragments: HandshakeReassembly,
+    /// Complete handshake messages received ahead of their turn
+    /// (message_seq > expected), buffered per RFC 6347 §4.2.4 so reordered
+    /// flights don't stall the handshake until retransmission. Bounded by
+    /// [`MAX_PENDING_HANDSHAKE_MESSAGES`].
+    pending_messages: BTreeMap<u16, (HandshakeMessage, Bytes)>,
+    local_secret: Option<Box<dyn EcdhSecret>>,
+    local_public_key_bytes: Vec<u8>,
+    peer_public_key: Option<Vec<u8>>,
+    peer_certificate: Option<Vec<u8>>,
+    client_random: Option<Vec<u8>>,
+    server_random: Option<Vec<u8>>,
+    session_keys: Option<SessionKeys>,
+    session_crypto: Option<SessionCrypto>,
+    handshake_messages: Vec<u8>,
+    ems_negotiated: bool,
+    srtp_profile: Option<u16>,
+    expected_remote_fingerprint: Option<String>,
+    server_key_exchange_verified: bool,
+}
+
+impl HandshakeContext {
+    fn new(expected_remote_fingerprint: Option<String>) -> Result<Self> {
+        // Generate ephemeral key for ECDHE
+        let (local_public_key_bytes, local_secret) = crypto::crypto().ecdh_generate()?;
+
+        Ok(Self {
+            sequence_number: 0,
+            epoch: 0,
+            read_epoch: 0,
+            message_seq: 0,
+            recv_message_seq: 0,
+            post_hvr: false,
+            last_flight_records: None,
+            final_flight_resends: 0,
+            incomplete_fragments: HandshakeReassembly::default(),
+            pending_messages: BTreeMap::new(),
+            local_secret: Some(local_secret),
+            local_public_key_bytes,
+            peer_public_key: None,
+            peer_certificate: None,
+            client_random: None,
+            server_random: None,
+            session_keys: None,
+            session_crypto: None,
+            handshake_messages: Vec::new(),
+            ems_negotiated: false,
+            srtp_profile: None,
+            expected_remote_fingerprint,
+            server_key_exchange_verified: false,
+        })
+    }
+}

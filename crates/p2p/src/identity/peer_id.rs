@@ -49,7 +49,6 @@ impl PeerId {
         PublicKey::from_bytes(self.to_bytes())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn to_libp2p_string(self) -> String {
         if let Ok(peer_id) = libp2p_identity::PeerId::try_from(self) {
             peer_id.to_string()

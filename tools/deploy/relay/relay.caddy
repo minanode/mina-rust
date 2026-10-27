@@ -1,0 +1,30 @@
+# The relay's signalling over HTTPS, imported by the Caddyfile.
+#
+#   RELAY_DOMAIN     the relay's name (default relay.minaweb.org); a port
+#                    after it, as in relay.example.org:8443, serves there
+#   RELAY_HTTP_PORT  the node's HTTP port on this host, for the health
+#                    checks (default 3000)
+#   RELAY_SIGNAL_PORT  the node's signalling-only listener on this host,
+#                    relay.env's WEBRTC_SIGNAL_PORT (default 3001); set it to
+#                    RELAY_HTTP_PORT for a node started without one
+
+{$RELAY_DOMAIN:relay.minaweb.org} {
+	# Only the signalling and the health checks. The signalling goes to the
+	# node's signalling-only listener (--webrtc-signal-port), which serves
+	# nothing else; the node's HTTP port has its whole API (state, peers,
+	# operator routes), for the operator alone over SSH, so only the health
+	# checks go there. The node answers CORS itself, for any origin.
+	@signal path /mina/webrtc/signal /mina/webrtc/signal/*
+	handle @signal {
+		reverse_proxy 127.0.0.1:{$RELAY_SIGNAL_PORT:3001}
+	}
+	@health path /healthz /readyz
+	handle @health {
+		reverse_proxy 127.0.0.1:{$RELAY_HTTP_PORT:3000}
+	}
+	handle {
+		respond "Mina devnet relay: WebRTC signalling for web nodes" 404
+	}
+	# No access log: a signalling URL carries the visitor's WebRTC offer,
+	# its addresses among them.
+}

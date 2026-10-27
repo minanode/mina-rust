@@ -14,6 +14,11 @@ pub use snark::Snark;
 mod snark_cmp;
 pub use snark_cmp::SnarkCmp;
 
+pub mod proof_cache;
+
+mod snark_proofs;
+pub use snark_proofs::{ProofUnavailable, SnarkProofs};
+
 use mina_p2p_messages::v2::NonZeroCurvePoint;
 
 pub fn tie_breaker_hash(job_id: &SnarkJobId, snarker: &NonZeroCurvePoint) -> [u8; 32] {

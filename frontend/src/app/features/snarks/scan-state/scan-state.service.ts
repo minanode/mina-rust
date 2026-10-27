@@ -32,7 +32,9 @@ export class ScanStateService {
   ) {}
 
   getScanState(heightOrHash?: string | number): Observable<ScanStateBlock> {
-    const url = `${this.rust.URL}/scan-state/summary/${heightOrHash ?? ''}`;
+    // The node serves the best tip at `/scan-state/summary`, without a slash.
+    const block = heightOrHash == null ? '' : `/${heightOrHash}`;
+    const url = `${this.rust.URL}/scan-state/summary${block}`;
 
     return this.http.get<any>(url).pipe(
       switchMap((response: any[]) => {

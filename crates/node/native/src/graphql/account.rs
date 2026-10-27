@@ -6,7 +6,14 @@ use ledger::{
     scan_state::currency::{Balance, Magnitude, Slot},
     Account, AccountId, FpExt, Timing,
 };
-use mina_node::rpc::{AccountQuery, RpcRequest};
+use mina_node::{
+    account::AccountPublicKey,
+    rpc::{
+        AccountQuery, DelegatorsQuery, PooledCommandsQuery, RpcLightAccount, RpcLightError,
+        RpcPooledUserCommandsResponse, RpcPooledZkappCommandsResponse, RpcRequest,
+        MAX_LAST_EPOCH_DELEGATORS,
+    },
+};
 use mina_node_common::rpc::RpcSender;
 use mina_p2p_messages::{
     string::{TokenSymbol, ZkAppUri},
@@ -17,7 +24,9 @@ use mina_p2p_messages::{
 };
 use mina_signer::CompressedPubKey;
 
-use super::{Context, ConversionError};
+use super::{
+    membership::GraphQLMerklePathElement, scalars::FieldElemScalar, Context, ConversionError,
+};
 
 pub(crate) type AccountLoader =
     Loader<AccountId, Result<GraphQLAccount, Arc<ConversionError>>, AccountBatcher>;
@@ -53,6 +62,10 @@ pub(crate) fn create_account_loader(rpc_sender: RpcSender) -> AccountLoader {
 #[derive(Debug, Clone)]
 pub(crate) struct GraphQLAccount {
     inner: Account,
+    // A command can name an account that is absent from the best ledger.
+    is_partial: bool,
+    // OCaml shows `stakingActive` true for every account of a delegator list.
+    listed_as_delegator: bool,
     public_key: String,
     token_id: String,
     token: String,
@@ -72,9 +85,78 @@ pub(crate) struct GraphQLAccount {
     action_state: Option<Vec<String>>,
     proved_state: Option<bool>,
     zkapp_uri: Option<String>,
+    // The account's index, leaf hash and path in the best tip's staged
+    // ledger, from one snapshot, read once for all three fields.
+    staged_path: Arc<tokio::sync::OnceCell<Result<Arc<RpcLightAccount>, RpcLightError>>>,
 }
 
 impl GraphQLAccount {
+    /// The account OCaml shows for a public key that has none in the ledger
+    /// (`Partial_account.of_pk`): a partial MINA account with that key and
+    /// null ledger fields, where a field must name an account, such as a
+    /// command's receiver.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L1236-L1272>
+    pub(crate) fn empty_for(public_key: CompressedPubKey) -> Result<Self, ConversionError> {
+        let mut account: Self = Account::create_with(
+            AccountId::new_with_default_token(public_key),
+            Balance::zero(),
+        )
+        .try_into()?;
+        account.is_partial = true;
+        account.delegate_key = None;
+        Ok(account)
+    }
+
+    /// Loads the MINA account of a public key, or [`Self::empty_for`] it when
+    /// the ledger has none, as OCaml's `AccountObj.get_best_ledger_account_pk`.
+    pub(crate) async fn load_or_empty(
+        context: &Context,
+        public_key: CompressedPubKey,
+    ) -> Result<Self, ConversionError> {
+        let id = AccountId::new_with_default_token(public_key.clone());
+        match context.load_account(id).await {
+            Some(account) => Ok(account),
+            None => Self::empty_for(public_key),
+        }
+    }
+
+    /// An account of a delegator list, which OCaml marks as actively
+    /// staking whatever its key.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L1556-L1614>
+    fn delegator(account: Account) -> Result<Self, ConversionError> {
+        let mut account = Self::try_from(account)?;
+        account.listed_as_delegator = true;
+        Ok(account)
+    }
+
+    /// The account's index, leaf hash and Merkle path in the best tip's
+    /// staged ledger, all from the same ledger snapshot, so the path proves
+    /// the leaf. Read through the light request limit, batched with the
+    /// other accounts of the request. Null, as in OCaml's `Mina_lib.best_tip`
+    /// reads, for a partial account, while the node bootstraps, or if the
+    /// account is not there; an error if the node is busy.
+    async fn staged_path(&self, context: &Context) -> FieldResult<Option<&RpcLightAccount>> {
+        if self.is_partial {
+            return Ok(None);
+        }
+        let read = self
+            .staged_path
+            .get_or_init(|| context.load_light_path(self.inner.id()))
+            .await;
+        match read {
+            Ok(path) => Ok(Some(path)),
+            Err(
+                RpcLightError::NotSynced
+                | RpcLightError::AccountNotFound(_)
+                | RpcLightError::LedgerUnavailable { .. }
+                | RpcLightError::BlockNotInBestChain(_),
+            ) => Ok(None),
+            Err(error) => Err(juniper::FieldError::from(error.to_string())),
+        }
+    }
+
     fn min_balance(&self, global_slot: Option<u32>) -> Option<Balance> {
         global_slot.map(|slot| match self.inner.timing {
             Timing::Untimed => Balance::zero(),
@@ -95,7 +177,7 @@ impl GraphQLAccount {
     }
 }
 
-#[graphql_object(context = Context)]
+#[graphql_object(context = Context, name = "Account")]
 #[graphql(description = "A Mina account")]
 impl GraphQLAccount {
     fn public_key(&self) -> &str {
@@ -110,12 +192,16 @@ impl GraphQLAccount {
         &self.token
     }
 
-    fn token_symbol(&self) -> &str {
-        &self.token_symbol
+    fn token_symbol(&self) -> Option<&str> {
+        (!self.is_partial).then_some(self.token_symbol.as_str())
     }
 
     async fn balance(&self, context: &Context) -> GraphQLBalance {
-        let best_tip = context.get_or_fetch_best_tip().await;
+        let best_tip = if self.is_partial {
+            None
+        } else {
+            context.get_or_fetch_best_tip().await
+        };
         let global_slot = best_tip.as_ref().map(|bt| bt.global_slot());
 
         GraphQLBalance {
@@ -136,12 +222,62 @@ impl GraphQLAccount {
         }
     }
 
-    fn nonce(&self) -> &str {
-        &self.nonce
+    fn nonce(&self) -> Option<&str> {
+        (!self.is_partial).then_some(self.nonce.as_str())
     }
 
-    fn receipt_chain_hash(&self) -> &str {
-        &self.receipt_chain_hash
+    /// Like `nonce`, but counting the account's commands in the transaction
+    /// pool: one more than the highest nonce among the pooled commands it
+    /// pays the fee of, or the account's nonce when it has none there.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_lib/mina_lib.ml#L782-L805>
+    async fn inferred_nonce(&self, context: &Context) -> Option<String> {
+        // Fee payers pay in MINA, so only MINA accounts have pooled commands.
+        if !self.inner.token_id.is_default() {
+            return self.nonce().map(str::to_owned);
+        }
+        let public_key = || Some(AccountPublicKey::from(self.inner.public_key.clone()));
+        // The pool filters both lists by fee payer.
+        let user_commands: RpcPooledUserCommandsResponse = context
+            .rpc_sender
+            .oneshot_request(RpcRequest::PooledUserCommands(PooledCommandsQuery {
+                public_key: public_key(),
+                hashes: None,
+                ids: None,
+            }))
+            .await
+            .unwrap_or_default();
+        let zkapp_commands: RpcPooledZkappCommandsResponse = context
+            .rpc_sender
+            .oneshot_request(RpcRequest::PooledZkappCommands(PooledCommandsQuery {
+                public_key: public_key(),
+                hashes: None,
+                ids: None,
+            }))
+            .await
+            .unwrap_or_default();
+        let pooled = user_commands
+            .iter()
+            .map(|cmd| cmd.payload.common.nonce.as_u32())
+            .chain(
+                zkapp_commands
+                    .iter()
+                    .map(|cmd| cmd.fee_payer.body.nonce.as_u32()),
+            )
+            .max();
+        match pooled {
+            Some(nonce) => Some(nonce.saturating_add(1).to_string()),
+            None => self.nonce().map(str::to_owned),
+        }
+    }
+
+    /// The public key this account delegates to
+    fn delegate(&self) -> Option<String> {
+        self.delegate_key.as_ref().map(|key| key.into_address())
+    }
+
+    fn receipt_chain_hash(&self) -> Option<&str> {
+        (!self.is_partial).then_some(self.receipt_chain_hash.as_str())
     }
 
     async fn delegate_account(
@@ -160,35 +296,122 @@ impl GraphQLAccount {
         }
     }
 
+    /// The account this account delegates to in the staking ledger of the
+    /// best tip's epoch, as it is in the best tip's ledger: null when the
+    /// account is not in that staking ledger, delegates to nobody there, or
+    /// the node has no best tip yet. The staking ledger can name a delegate
+    /// other than `delegate`, which is the best tip's.
+    ///
+    /// OCaml looks the account up in `Consensus.Hooks.get_epoch_ledger` of
+    /// the best tip, its staking epoch snapshot or, in the first `k` blocks of
+    /// an epoch, its next epoch snapshot: either way the ledger whose hash is
+    /// the best tip's `stakingEpochData.ledger.hash`.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L1489-L1534>
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L2488-L2516>
+    async fn epoch_delegate_account(
+        &self,
+        context: &Context,
+    ) -> FieldResult<Option<Box<GraphQLAccount>>> {
+        let staking: Vec<Account> = context
+            .rpc_sender
+            .oneshot_request(RpcRequest::LedgerAccountsGet(
+                AccountQuery::StakingEpochIds(vec![self.inner.id()]),
+            ))
+            .await
+            .unwrap_or_default();
+        let Some(delegate) = staking.into_iter().next().and_then(|a| a.delegate) else {
+            return Ok(None);
+        };
+        Ok(Some(Box::new(
+            GraphQLAccount::load_or_empty(context, delegate).await?,
+        )))
+    }
+
     pub async fn delegators(&self, context: &Context) -> FieldResult<Vec<GraphQLAccount>> {
         if let Some(best_tip) = context.get_or_fetch_best_tip().await {
             let staking_ledger_hash = best_tip.staking_epoch_ledger_hash();
 
             let id = self.inner.id();
             let delegators = context
-                .fetch_delegators(staking_ledger_hash.clone(), id.clone())
+                .fetch_delegators(
+                    DelegatorsQuery::Ledger(staking_ledger_hash.clone()),
+                    id.clone(),
+                )
                 .await
                 .unwrap_or_default();
 
             Ok(delegators
                 .into_iter()
-                .map(GraphQLAccount::try_from)
+                .map(GraphQLAccount::delegator)
                 .collect::<Result<Vec<_>, _>>()?)
         } else {
             Ok(vec![])
         }
     }
 
-    fn voting_for(&self) -> &str {
-        &self.voting_for
+    /// The accounts that delegated to this account in the staking ledger of
+    /// the epoch before the frontier root's, as OCaml's daemon keeps them: for
+    /// its own block producer key only, so empty for any other key, and null
+    /// until the root has crossed an epoch while the node ran (or when the
+    /// node did not see that ledger). The accounts are as they were in that
+    /// ledger, in ledger order (OCaml's are in hash table order). Private mode
+    /// returns the full list as OCaml; public mode returns at most eight
+    /// entries to bound nested ledger lookups within the public request cost.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L1586-L1614>
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_lib/mina_lib.ml#L1102-L1127>
+    async fn last_epoch_delegators(
+        &self,
+        context: &Context,
+    ) -> FieldResult<Option<Vec<GraphQLAccount>>> {
+        let limit = context.public_graphql.then_some(MAX_LAST_EPOCH_DELEGATORS);
+        let Some(delegators) = context
+            .fetch_delegators(DelegatorsQuery::LastEpoch { limit }, self.inner.id())
+            .await
+        else {
+            return Ok(None);
+        };
+        Ok(Some(
+            delegators
+                .into_iter()
+                .take(limit.unwrap_or(usize::MAX))
+                .map(GraphQLAccount::delegator)
+                .collect::<Result<Vec<_>, _>>()?,
+        ))
+    }
+
+    /// Whether this node produces blocks with this account's key: a MINA
+    /// account whose key is the node's block producer key. True for every
+    /// account of a delegator list, as OCaml.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L1295-L1315>
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L1621-L1627>
+    async fn staking_active(&self, context: &Context) -> bool {
+        if self.listed_as_delegator {
+            return true;
+        }
+        if !self.inner.token_id.is_default() {
+            // Non-default token accounts cannot stake.
+            return false;
+        }
+        let producer = context
+            .get_or_fetch_status()
+            .await
+            .and_then(|status| status.block_producer);
+        producer.is_some_and(|key| key == AccountPublicKey::from(self.inner.public_key.clone()))
+    }
+
+    fn voting_for(&self) -> Option<&str> {
+        (!self.is_partial).then_some(self.voting_for.as_str())
     }
 
     fn timing(&self) -> &GraphQLTiming {
         &self.timing
     }
 
-    fn permissions(&self) -> &GraphQLPermissions {
-        &self.permissions
+    fn permissions(&self) -> Option<&GraphQLPermissions> {
+        (!self.is_partial).then_some(&self.permissions)
     }
 
     fn zkapp_state(&self) -> &Option<Vec<String>> {
@@ -207,6 +430,45 @@ impl GraphQLAccount {
         &self.proved_state
     }
 
+    /// The index of this account in the ledger, or null if this account
+    /// does not yet have a known position in the best tip ledger
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L1638-L1644>
+    async fn index(&self, context: &Context) -> FieldResult<Option<i32>> {
+        Ok(self
+            .staged_path(context)
+            .await?
+            .and_then(|path| i32::try_from(path.index).ok()))
+    }
+
+    /// The base58Check-encoded hash of this account to bootstrap the
+    /// merklePath
+    ///
+    /// The hash of the account as the same ledger read as `merklePath` has
+    /// it, which may be newer than this object's other fields.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L1703-L1711>
+    async fn leaf_hash(&self, context: &Context) -> FieldResult<Option<FieldElemScalar>> {
+        Ok(self
+            .staged_path(context)
+            .await?
+            .map(|path| FieldElemScalar(path.leaf_hash.to_decimal())))
+    }
+
+    /// Merkle path is a list of path elements that are either the left or
+    /// right hashes up to the root
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L1712-L1727>
+    async fn merkle_path(
+        &self,
+        context: &Context,
+    ) -> FieldResult<Option<Vec<GraphQLMerklePathElement>>> {
+        Ok(self
+            .staged_path(context)
+            .await?
+            .map(|path| path.merkle_path.iter().map(Into::into).collect()))
+    }
+
     fn zkapp_uri(&self) -> &Option<String> {
         &self.zkapp_uri
     }
@@ -217,13 +479,15 @@ pub struct GraphQLDelegateAccount {
     pub public_key: String,
 }
 
+/// Slots are strings, as OCaml's `Globalslot` and `GlobalSlotSpan` scalars.
 #[derive(GraphQLObject, Debug, Clone)]
+#[graphql(name = "AccountTiming")]
 pub struct GraphQLTiming {
     // pub is_timed: bool,
     pub initial_minimum_balance: Option<String>,
-    pub cliff_time: Option<i32>,
+    pub cliff_time: Option<String>,
     pub cliff_amount: Option<String>,
-    pub vesting_period: Option<i32>,
+    pub vesting_period: Option<String>,
     pub vesting_increment: Option<String>,
 }
 
@@ -241,9 +505,9 @@ impl From<MinaBaseAccountUpdateUpdateTimingInfoStableV1> for GraphQLTiming {
     fn from(value: MinaBaseAccountUpdateUpdateTimingInfoStableV1) -> Self {
         Self {
             initial_minimum_balance: Some(value.initial_minimum_balance.0.as_u64().to_string()),
-            cliff_time: Some(value.cliff_time.as_u32() as i32),
+            cliff_time: Some(value.cliff_time.as_u32().to_string()),
             cliff_amount: Some(value.cliff_amount.as_u64().to_string()),
-            vesting_period: Some(value.vesting_period.as_u32() as i32),
+            vesting_period: Some(value.vesting_period.as_u32().to_string()),
             vesting_increment: Some(value.vesting_increment.0.as_u64().to_string()),
         }
     }
@@ -293,12 +557,17 @@ pub struct GraphQLBalance {
 //     pub zkapp_uri: String,
 // }
 
+/// Serves both OCaml's `AccountVerificationKeyWithHash` (`verificationKey`,
+/// `hash`) and the account update's `VerificationKeyWithHash` (`data`,
+/// `hash`).
 #[derive(GraphQLObject, Debug, Clone)]
 pub struct GraphQLVerificationKey {
     // pub max_proofs_verified: String,
     // pub actual_wrap_domain_size: String,
     // pub wrap_index: String,
     pub verification_key: String,
+    /// The same as `verificationKey`, under the account update's name
+    pub data: String,
     pub hash: String,
 }
 
@@ -349,9 +618,9 @@ impl From<ledger::Timing> for GraphQLTiming {
                 vesting_increment,
             } => Self {
                 initial_minimum_balance: Some(initial_minimum_balance.as_u64().to_string()),
-                cliff_time: Some(cliff_time.as_u32() as i32),
+                cliff_time: Some(cliff_time.as_u32().to_string()),
                 cliff_amount: Some(cliff_amount.as_u64().to_string()),
-                vesting_period: Some(vesting_period.as_u32() as i32),
+                vesting_period: Some(vesting_period.as_u32().to_string()),
                 vesting_increment: Some(vesting_increment.as_u64().to_string()),
             },
         }
@@ -371,7 +640,8 @@ impl TryFrom<ledger::Account> for GraphQLAccount {
                     let ser = MinaBaseVerificationKeyWireStableV1::from(vk.vk()).to_base64()?;
 
                     Ok(GraphQLVerificationKey {
-                        verification_key: ser,
+                        verification_key: ser.clone(),
+                        data: ser,
                         hash: vk.hash().to_decimal(),
                     }) as Result<GraphQLVerificationKey, Self::Error>
                 })
@@ -380,6 +650,8 @@ impl TryFrom<ledger::Account> for GraphQLAccount {
 
         Ok(Self {
             inner: value.clone(),
+            is_partial: false,
+            listed_as_delegator: false,
             public_key: value.public_key.into_address(),
             token_id: TokenIdKeyHash::from(value.token_id.clone()).to_string(),
             token: TokenIdKeyHash::from(value.token_id).to_string(),
@@ -412,6 +684,7 @@ impl TryFrom<ledger::Account> for GraphQLAccount {
             zkapp_uri: value
                 .zkapp
                 .map(|zkapp| ZkAppUri::from(&zkapp.zkapp_uri).to_string()),
+            staged_path: Default::default(),
         })
     }
 }

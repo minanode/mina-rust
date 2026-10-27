@@ -15,7 +15,7 @@ use anyhow::Context;
 use ledger::proofs::provers::BlockProver;
 use mina_core::{consensus::ConsensusConstants, constants::constraint_constants};
 use mina_node::{
-    account::AccountSecretKey,
+    account::{AccountPublicKey, AccountSecretKey},
     daemon_json::Daemon,
     p2p::{
         channels::ChannelId, connection::outgoing::P2pConnectionOutgoingInitOpts,
@@ -23,12 +23,15 @@ use mina_node::{
     },
     service::Recorder,
     snark::{get_srs, BlockVerifier, TransactionVerifier, VerifierSRS},
-    transition_frontier::{archive::archive_config::ArchiveConfig, genesis::GenesisConfig},
+    transition_frontier::{
+        archive::archive_config::ArchiveConfig, genesis::GenesisConfig,
+        persist::TransitionFrontierPersistConfig,
+    },
     BlockProducerConfig, GlobalConfig, LedgerConfig, P2pConfig, SnarkConfig, SnarkerConfig,
-    SnarkerStrategy, TransitionFrontierConfig,
+    SnarkerSetting, SnarkerStrategy, TransitionFrontierConfig,
 };
 use mina_node_common::{archive::config::ArchiveStorageOptions, p2p::TaskSpawner};
-use mina_p2p_messages::v2::{self, NonZeroCurvePoint};
+use mina_p2p_messages::v2::NonZeroCurvePoint;
 use rand::Rng;
 
 use crate::NodeServiceBuilder;
@@ -57,7 +60,10 @@ pub struct NodeBuilder {
     /// If `Some`, enables archive mode. If `None`, no archiving.
     archive: Option<ArchiveConfig>,
     /// If `Some`, enables SNARK worker. If `None`, no SNARK work.
-    snarker: Option<SnarkerConfig>,
+    snarker: Option<SnarkerSetting>,
+    /// How the SNARK worker selects jobs, also one started later (P5.4).
+    snarker_strategy: SnarkerStrategy,
+    block_first_lead: Option<Duration>,
     /// Service builder for I/O components.
     service: NodeServiceBuilder,
     /// If `Some`, uses provided SRS. If `None`, `get_srs()` in `build()`.
@@ -74,6 +80,20 @@ pub struct NodeBuilder {
     chain_id_override: Option<mina_core::ChainId>,
     /// If `true`, skips SNARK proof verification (for interop testing).
     skip_proof_verification: bool,
+    /// The frontier store (R20), off by default.
+    persist: TransitionFrontierPersistConfig,
+    /// The full genesis config whose ledgers are loaded only if the node
+    /// bootstraps (I5d2).
+    genesis_ledgers_deferred: Option<Arc<GenesisConfig>>,
+    /// The operator may start, stop and re-price the SNARK worker while the
+    /// node runs (P5.4).
+    worker_control: bool,
+    /// The included-work log the last run kept (P5.4).
+    included_work: Option<mina_node::external_snark_worker::IncludedWorkLog>,
+    /// Why the saved worker setting was not used (P5.4).
+    worker_setting_warning: Option<String>,
+    /// The block production history the last run kept (F-producer).
+    block_production: Option<mina_node::stats::block_producer::BlockProductionHistory>,
 }
 
 impl NodeBuilder {
@@ -94,6 +114,7 @@ impl NodeBuilder {
             custom_initial_time: None,
             genesis_config,
             p2p: P2pConfig {
+                catchup_rpc: Default::default(),
                 libp2p_port: None,
                 listen_port: None,
                 // Must be replaced with builder api.
@@ -115,6 +136,8 @@ impl NodeBuilder {
             block_producer: None,
             archive: None,
             snarker: None,
+            snarker_strategy: SnarkerStrategy::default(),
+            block_first_lead: Some(Duration::from_secs(420)),
             service: NodeServiceBuilder::new(rng_seed),
             verifier_srs: None,
             block_verifier_index: None,
@@ -123,7 +146,25 @@ impl NodeBuilder {
             daemon_conf,
             chain_id_override: None,
             skip_proof_verification: false,
+            persist: Default::default(),
+            genesis_ledgers_deferred: None,
+            worker_control: false,
+            included_work: None,
+            worker_setting_warning: None,
+            block_production: None,
         }
+    }
+
+    pub fn catchup_rpc(
+        &mut self,
+        enabled: bool,
+        peers: impl IntoIterator<Item = mina_node::p2p::PeerId>,
+    ) -> &mut Self {
+        self.p2p.catchup_rpc = mina_node::p2p::P2pCatchupRpcConfig {
+            enabled,
+            peers: peers.into_iter().collect(),
+        };
+        self
     }
 
     /// Override chain ID for P2P networking (interop testing).
@@ -149,6 +190,14 @@ impl NodeBuilder {
         self.p2p.identity_pub_key = key.public_key();
         self.p2p_sec_key = Some(key);
         self
+    }
+
+    /// Keep the default identity in the work directory. Call after explicit
+    /// key options: they take precedence and do not read or write a key file.
+    pub fn p2p_identity(&mut self, work_dir: &Path) -> anyhow::Result<&mut Self> {
+        let key = crate::identity::resolve(work_dir, self.p2p_sec_key.clone())?;
+        tracing::info!(peer_id = %key.public_key().peer_id().to_libp2p_string(), "P2P identity");
+        Ok(self.p2p_sec_key(key))
     }
 
     pub fn p2p_libp2p_port(&mut self, port: u16) -> &mut Self {
@@ -178,6 +227,17 @@ impl NodeBuilder {
 
     pub fn external_addrs(&mut self, v: impl Iterator<Item = IpAddr>) -> &mut Self {
         self.p2p.external_addrs.extend(v);
+        self
+    }
+
+    /// ICE servers, UDP ports and NAT addresses of the node's WebRTC
+    /// connections (W1). Call it before `p2p_custom_task_spawner`.
+    pub fn p2p_webrtc_config(&mut self, config: mina_node::p2p::webrtc::WebrtcConfig) -> &mut Self {
+        assert!(
+            !self.p2p_is_started,
+            "p2p_webrtc_config must come before the p2p service starts"
+        );
+        self.service.p2p_webrtc_config(config);
         self
     }
 
@@ -240,6 +300,7 @@ impl NodeBuilder {
             pub_key: key.public_key().into(),
             custom_coinbase_receiver: None,
             proposed_protocol_version: None,
+            block_inject_delay_ms: mina_node::block_producer::default_block_inject_delay_ms(),
         };
         self.block_producer = Some(config);
         self.service.block_producer_init(key, provers);
@@ -262,6 +323,53 @@ impl NodeBuilder {
         Ok(self.block_producer(key, provers))
     }
 
+    /// Turns the frontier store on (R20): the node writes each chain's store
+    /// to `<base_dir>/<chain id>/frontier`, checkpointing its root every
+    /// `checkpoint_interval_secs`. `reset` deletes the store when it is
+    /// opened. A restart doesn't load it yet (I5d1 and I5d2).
+    pub fn frontier_store(
+        &mut self,
+        base_dir: std::path::PathBuf,
+        reset: bool,
+        checkpoint_interval_secs: u64,
+        restore: bool,
+    ) -> &mut Self {
+        self.persist = TransitionFrontierPersistConfig {
+            enabled: true,
+            checkpoint_interval_secs,
+            restore,
+            ..Default::default()
+        };
+        let build = mina_node::BuildEnv::get();
+        let node_commit = format!("{} {}", build.version, build.git.commit_hash);
+        self.service
+            .frontier_store_init(base_dir, reset, node_commit);
+        self
+    }
+
+    pub fn frontier_store_load_timeout(&mut self, seconds: u64) -> &mut Self {
+        self.persist.load_timeout_secs = seconds;
+        self
+    }
+
+    /// Keeps the genesis of the daemon JSON config in `cache` after its
+    /// full load, for the next start (I5d2).
+    pub fn genesis_cache(
+        &mut self,
+        cache: mina_node::transition_frontier::genesis::GenesisCache,
+    ) -> &mut Self {
+        self.service.genesis_cache_init(cache);
+        self
+    }
+
+    /// The genesis config was kept by the genesis cache (I5d2): `full` is the
+    /// config it was kept of, whose ledgers are loaded only if the node
+    /// bootstraps (the restore from the frontier store replaces them).
+    pub fn genesis_ledgers_deferred(&mut self, full: Arc<GenesisConfig>) -> &mut Self {
+        self.genesis_ledgers_deferred = Some(full);
+        self
+    }
+
     pub fn archive(&mut self, options: ArchiveStorageOptions, work_dir: String) -> &mut Self {
         self.archive = Some(ArchiveConfig::new(work_dir.clone()));
         self.service.archive_init(options, work_dir.clone());
@@ -282,31 +390,100 @@ impl NodeBuilder {
         Ok(self)
     }
 
+    pub fn block_inject_delay_ms(&mut self, delay_ms: u64) -> anyhow::Result<&mut Self> {
+        let bp = self.block_producer.as_mut().ok_or_else(|| {
+            anyhow::anyhow!(
+                "can't set block_inject_delay_ms when block producer is not initialized."
+            )
+        })?;
+        bp.block_inject_delay_ms =
+            mina_node::block_producer::effective_block_inject_delay_ms(delay_ms);
+        Ok(self)
+    }
+
     pub fn custom_block_producer_config(
         &mut self,
         config: BlockProducerConfig,
     ) -> anyhow::Result<&mut Self> {
+        let mut config = config;
+        config.block_inject_delay_ms = mina_node::block_producer::effective_block_inject_delay_ms(
+            config.block_inject_delay_ms,
+        );
         *self.block_producer.as_mut().ok_or_else(|| {
             anyhow::anyhow!("block producer not initialized! Call `block_producer` function first.")
         })? = config;
         Ok(self)
     }
 
-    pub fn snarker(
-        &mut self,
-        sec_key: AccountSecretKey,
-        fee: u64,
-        strategy: SnarkerStrategy,
-    ) -> &mut Self {
-        let config = SnarkerConfig {
-            public_key: sec_key.public_key(),
-            fee: v2::CurrencyFeeStableV1(v2::UnsignedExtendedUInt64Int64ForVersionTagsStableV1(
-                fee.into(),
-            )),
-            strategy,
-            auto_commit: true,
-        };
-        self.snarker = Some(config);
+    /// Run the SNARK worker. `public_key` receives the fees, `fee` is in
+    /// nanomina. As with OCaml's `--run-snark-worker`, no private key is needed.
+    pub fn snarker(&mut self, public_key: AccountPublicKey, fee: u64) -> &mut Self {
+        self.snarker = Some(SnarkerSetting { public_key, fee });
+        self
+    }
+
+    /// How the SNARK worker selects jobs (`--snarker-strategy`): one started
+    /// with the node, and one the operator starts later (P5.4). OCaml's
+    /// default, random, if not set.
+    pub fn snarker_strategy(&mut self, strategy: SnarkerStrategy) -> &mut Self {
+        self.snarker_strategy = strategy;
+        self
+    }
+
+    /// Lead before a known won slot for the native worker. `None` disables it.
+    pub fn block_first_lead(&mut self, lead: Option<Duration>) -> &mut Self {
+        self.block_first_lead = lead;
+        self
+    }
+
+    /// Lets the operator start, stop and re-price the SNARK worker while the
+    /// node runs (P5.4, `--allow-worker-control`). It changes where fees go:
+    /// never with a public HTTP API.
+    pub fn worker_control(&mut self, allowed: bool) -> &mut Self {
+        self.worker_control = allowed;
+        self
+    }
+
+    /// The SNARK worker setting saved in the work directory could not be
+    /// used: the dashboard shows `warning` (P5.4).
+    pub fn snark_worker_setting_warning(&mut self, warning: String) -> &mut Self {
+        self.worker_setting_warning = Some(warning);
+        self
+    }
+
+    /// Keeps the SNARK worker's setting and the log of our included work in
+    /// `dir`, the work directory (P5.4), and takes up the log the last run
+    /// kept. An unreadable log is started afresh, with a warning.
+    pub fn snark_worker_files(&mut self, dir: std::path::PathBuf) -> &mut Self {
+        let mut files = mina_node_common::snark_worker_files::SnarkWorkerFiles::new(dir);
+        match files.load_included_work() {
+            Ok(log) => self.included_work = log,
+            Err(error) => mina_core::warn!(
+                mina_core::log::system_time();
+                kind = "SnarkWorkerIncludedWorkUnreadable",
+                summary = "the included-work log could not be read: a new one is started",
+                error = error.to_string(),
+            ),
+        }
+        self.service.snark_worker_files_init(files);
+        self
+    }
+
+    /// Keeps the block producer's history in `dir`, the work directory, and
+    /// takes up what the last run kept (F-producer). An unreadable file is
+    /// started afresh, with a warning.
+    pub fn block_production_history(&mut self, dir: std::path::PathBuf) -> &mut Self {
+        let file = mina_node_common::block_production_file::BlockProductionFile::new(dir);
+        match file.load() {
+            Ok(history) => self.block_production = history,
+            Err(error) => mina_core::warn!(
+                mina_core::log::system_time();
+                kind = "BlockProductionHistoryUnreadable",
+                summary = "the block production history could not be read: a new one is started",
+                error = error.to_string(),
+            ),
+        }
+        self.service.block_production_file_init(file);
         self
     }
 
@@ -336,13 +513,34 @@ impl NodeBuilder {
         self
     }
 
-    pub fn http_server(&mut self, port: u16) -> &mut Self {
-        self.http_port = Some(port);
-        self.service.http_server_init(port);
+    /// Starts the HTTP server on an already-bound operator listener.
+    /// `tx_submission` allows `POST /send-payment` and the GraphQL mutations
+    /// that submit transactions; it should be off on public relays.
+    pub fn http_server(
+        &mut self,
+        listener: std::net::TcpListener,
+        metrics_listener: Option<std::net::TcpListener>,
+        metrics_store_root: Option<std::path::PathBuf>,
+        options: crate::http_server::HttpServerOptions,
+    ) -> std::io::Result<&mut Self> {
+        self.http_port = Some(listener.local_addr()?.port());
+        self.service
+            .http_server_init(listener, metrics_listener, metrics_store_root, options)?;
+        Ok(self)
+    }
+
+    /// Starts a separate signaling-only listener, already bound by the CLI.
+    #[cfg(feature = "p2p-webrtc")]
+    pub fn webrtc_signal_server(&mut self, listener: std::net::TcpListener) -> &mut Self {
+        self.service.webrtc_signal_server_init(listener);
         self
     }
 
     pub fn build(mut self) -> anyhow::Result<Node> {
+        self.genesis_config.initialize_runtime()?;
+        if let Some(daemon) = self.genesis_config.runtime_config()?.daemon {
+            self.daemon_conf = daemon;
+        }
         let p2p_sec_key = self.p2p_sec_key.clone().unwrap_or_else(P2pSecretKey::rand);
         self.p2p_sec_key(p2p_sec_key.clone());
         if self.p2p.initial_peers.is_empty() && !self.p2p_is_seed {
@@ -386,12 +584,21 @@ impl NodeBuilder {
         let node_config = mina_node::Config {
             global: GlobalConfig {
                 build: mina_node::BuildEnv::get().into(),
-                snarker: self.snarker,
+                snarker: self.snarker.map(|setting| {
+                    let mut config =
+                        SnarkerConfig::with_setting(&setting, None, self.snarker_strategy);
+                    config.block_first_lead =
+                        self.block_producer.as_ref().and(self.block_first_lead);
+                    config
+                }),
                 consensus_constants: consensus_consts.clone(),
                 testing_run: false,
                 client_port: self.http_port,
                 chain_id_override: self.chain_id_override,
                 skip_proof_verification: self.skip_proof_verification,
+                worker_control: self.worker_control,
+                snarker_strategy: self.snarker_strategy,
+                block_first_lead: self.block_producer.as_ref().and(self.block_first_lead),
             },
             p2p: self.p2p,
             ledger: LedgerConfig {},
@@ -401,7 +608,11 @@ impl NodeBuilder {
                 work_verifier_index,
                 work_verifier_srs: srs,
             },
-            transition_frontier: TransitionFrontierConfig::new(self.genesis_config),
+            transition_frontier: TransitionFrontierConfig {
+                persist: self.persist,
+                genesis_ledgers_deferred: self.genesis_ledgers_deferred,
+                ..TransitionFrontierConfig::new(self.genesis_config)
+            },
             block_producer: self.block_producer,
             archive: self.archive,
             tx_pool: ledger::transaction_pool::Config {
@@ -420,8 +631,20 @@ impl NodeBuilder {
             service.p2p_init(p2p_sec_key);
         }
 
-        let service = service.build()?;
-        let state = mina_node::State::new(node_config, &consensus_consts, initial_time);
+        let mut service = service.build()?;
+        if let (Some(history), Some(stats)) = (self.block_production, service.stats()) {
+            stats.block_producer().restore(history);
+            stats
+                .block_producer()
+                .resolve_restored_schedules(initial_time);
+        }
+        let mut state = mina_node::State::new(node_config, &consensus_consts, initial_time);
+        if let Some(log) = self.included_work {
+            state.external_snark_worker.restore_included_work(log);
+        }
+        if let Some(warning) = self.worker_setting_warning {
+            state.external_snark_worker.set_setting_warning(warning);
+        }
 
         Ok(Node::new(self.rng_seed, state, service, None))
     }

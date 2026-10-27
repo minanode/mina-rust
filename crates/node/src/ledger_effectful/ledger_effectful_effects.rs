@@ -49,6 +49,15 @@ pub fn ledger_effectful_effects<S>(
                 LedgerReadInitCallback::RpcLedgerAccountDelegatorsGetPending { callback, args } => {
                     store.dispatch_callback(callback, args);
                 }
+                LedgerReadInitCallback::RpcLedgerExportPending { callback, args } => {
+                    store.dispatch_callback(callback, args);
+                }
+                LedgerReadInitCallback::RpcHardForkConfigPending { callback, args } => {
+                    store.dispatch_callback(callback, args);
+                }
+                LedgerReadInitCallback::RpcLightAccountPending { callback, args } => {
+                    store.dispatch_callback(callback, args);
+                }
                 LedgerReadInitCallback::None => {}
             }
         }

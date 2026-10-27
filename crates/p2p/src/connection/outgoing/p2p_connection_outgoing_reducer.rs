@@ -36,10 +36,27 @@ impl P2pConnectionOutgoingState {
         let p2p_state = state_context.get_substate_mut()?;
 
         match action {
+            P2pConnectionOutgoingAction::Recover { opts } => {
+                p2p_state.dial_backoff.on_recovery(time);
+                // The Recover enabling condition checked the floor, candidate,
+                // quarantine and cap; Init's ordinary backoff is bypassed here.
+                Self::reducer(
+                    state_context,
+                    meta.with_action(P2pConnectionOutgoingAction::Init {
+                        opts,
+                        rpc_id: None,
+                        on_success: None,
+                    }),
+                )
+            }
             P2pConnectionOutgoingAction::RandomInit => {
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
                 let p2p_state: &P2pState = state.substate()?;
-                let peers = p2p_state.disconnected_peers().collect::<Vec<_>>();
+                let peers = p2p_state
+                    .dial_candidates(time)
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>();
                 dispatcher.push(P2pConnectionOutgoingEffectfulAction::RandomInit { peers });
                 Ok(())
             }
@@ -61,6 +78,7 @@ impl P2pConnectionOutgoingState {
                             identify: None,
                         });
 
+                peer_state.dial_opts = Some(opts.clone()).filter(|o| o.can_connect_directly());
                 peer_state.status =
                     P2pPeerStatus::Connecting(P2pConnectionState::Outgoing(Self::Init {
                         time,
@@ -68,6 +86,7 @@ impl P2pConnectionOutgoingState {
                         rpc_id,
                         on_success,
                     }));
+                p2p_state.record_libp2p_dial(&opts, time);
 
                 let dispatcher = state_context.into_dispatcher();
 
@@ -101,6 +120,7 @@ impl P2pConnectionOutgoingState {
                     .get_mut(opts.peer_id())
                     .ok_or("Missing peer state for: `P2pConnectionOutgoingAction::Reconnect`")?;
 
+                peer_state.dial_opts = Some(opts.clone()).filter(|o| o.can_connect_directly());
                 peer_state.status =
                     P2pPeerStatus::Connecting(P2pConnectionState::Outgoing(Self::Init {
                         time,
@@ -108,6 +128,7 @@ impl P2pConnectionOutgoingState {
                         rpc_id,
                         on_success: None,
                     }));
+                p2p_state.record_libp2p_dial(&opts, time);
 
                 let dispatcher = state_context.into_dispatcher();
 
@@ -511,6 +532,10 @@ impl P2pConnectionOutgoingState {
                     error: error.clone(),
                     rpc_id,
                 };
+                if p2p_state.is_libp2p_peer(&peer_id) {
+                    p2p_state.record_libp2p_dial_end(peer_id, false, time);
+                    p2p_state.forget_stale_dial_opts(&peer_id, time);
+                }
 
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
                 let p2p_state: &P2pState = state.substate()?;

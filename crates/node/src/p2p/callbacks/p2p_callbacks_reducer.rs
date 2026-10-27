@@ -1,5 +1,9 @@
+use binprot::BinProtWrite;
 use mina_core::{
-    block::{prevalidate::BlockPrevalidationError, BlockWithHash},
+    block::{
+        prevalidate::{validate_delta_block_chain, BlockPrevalidationError},
+        BlockWithHash,
+    },
     bug_condition, log,
     transaction::TransactionWithHash,
 };
@@ -15,7 +19,7 @@ use mina_p2p::{
 use mina_p2p_messages::{
     bigint::InvalidBigInt,
     gossip::GossipNetMessageV2,
-    v2::{MinaLedgerSyncLedgerAnswerStableV2, StateHash},
+    v2::{self, MinaLedgerSyncLedgerAnswerStableV2, StateHash},
 };
 use redux::{ActionMeta, ActionWithMeta, Dispatcher};
 
@@ -24,6 +28,7 @@ use crate::{
     snark_pool::candidate::SnarkPoolCandidateAction,
     transaction_pool::candidate::TransactionPoolCandidateAction,
     transition_frontier::{
+        body_reference::validate_body_reference,
         candidate::{allow_block_too_late, TransitionFrontierCandidateAction},
         sync::{
             ledger::{
@@ -46,12 +51,50 @@ use crate::{
 
 use super::P2pCallbacksAction;
 
-fn get_rpc_request<'a>(state: &'a State, peer_id: &PeerId) -> Option<&'a P2pRpcRequest> {
+fn get_rpc_request<'a>(state: &'a State, peer_id: &PeerId, id: u64) -> Option<&'a P2pRpcRequest> {
     state
         .p2p
         .get_ready_peer(peer_id)
         .and_then(|s| s.channels.rpc.local_responded_request())
+        .filter(|(rpc_id, _)| *rpc_id == id)
         .map(|(_, req)| req)
+}
+
+fn bounded_completed_snarks<'a>(
+    works: impl IntoIterator<Item = &'a mina_core::snark::Snark>,
+) -> mina_p2p_messages::rpc::CompletedSnarks {
+    bounded_completed_snarks_with_byte_limit(
+        works,
+        mina_p2p_messages::rpc::MAX_COMPLETED_SNARKS_BYTES,
+    )
+}
+
+fn bounded_completed_snarks_with_byte_limit<'a>(
+    works: impl IntoIterator<Item = &'a mina_core::snark::Snark>,
+    byte_limit: usize,
+) -> mina_p2p_messages::rpc::CompletedSnarks {
+    let mut result = mina_p2p_messages::list::List::new();
+    // Include room for the RPC envelope and list length.
+    let mut bytes = 64usize;
+    for work in works
+        .into_iter()
+        .take(mina_p2p_messages::rpc::MAX_COMPLETED_SNARKS)
+    {
+        // A pool work's proofs come back from the proof cache (PC1).
+        let Ok(encoded) = work.to_wire() else {
+            continue;
+        };
+        let mut work_bytes = Vec::new();
+        if encoded.binprot_write(&mut work_bytes).is_err() {
+            break;
+        }
+        if bytes.saturating_add(work_bytes.len()) > byte_limit {
+            break;
+        }
+        bytes += work_bytes.len();
+        result.push_back(encoded);
+    }
+    mina_p2p_messages::rpc::CompletedSnarks(result)
 }
 
 impl crate::State {
@@ -70,6 +113,10 @@ impl crate::State {
                 if state.p2p.get_peer(&peer_id).is_some_and(|p| p.is_libp2p) {
                     // for webrtc peers, we don't need to send this rpc, as we
                     // will receive current best tip in best tip channel anyways.
+                    // For a libp2p peer it is sent only within the peer's best
+                    // tip budget, which outlives the connection, so a peer that
+                    // keeps reconnecting is not asked more often. If the budget
+                    // refuses it now, it is sent later, on `CheckTimeouts`.
                     dispatcher.push(P2pChannelsRpcAction::RequestSend {
                         peer_id,
                         id: 0,
@@ -78,23 +125,20 @@ impl crate::State {
                     });
                 }
 
+                dispatcher.push(TransitionFrontierCandidateAction::ChainProofPeersQuery);
                 dispatcher.push(TransitionFrontierSyncLedgerSnarkedAction::PeersQuery);
                 dispatcher.push(TransitionFrontierSyncLedgerStagedAction::PartsPeerFetchInit);
                 dispatcher.push(TransitionFrontierSyncAction::BlocksPeersQuery);
             }
             P2pCallbacksAction::P2pChannelsRpcTimeout { peer_id, id } => {
+                // The request timed out once. The peer is kept, as it may
+                // only be slow, but what we asked of it is retried elsewhere.
+                // A second timeout of the same request disconnects it (the
+                // RPC channel's reducer).
                 let peer_id = *peer_id;
                 let rpc_id = *id;
-                let Some(peer) = state.p2p.get_ready_peer(&peer_id) else {
-                    bug_condition!("get_ready_peer({:?}) returned None", peer_id);
-                    return;
-                };
 
-                let Some(rpc_kind) = peer.channels.rpc.pending_local_rpc_kind() else {
-                    bug_condition!("peer: {:?} pending_local_rpc_kind() returned None", peer_id);
-                    return;
-                };
-
+                dispatcher.push(TransitionFrontierCandidateAction::ChainProofPeersQuery);
                 dispatcher.push(
                     TransitionFrontierSyncLedgerSnarkedAction::PeerQueryNumAccountsError {
                         peer_id,
@@ -121,20 +165,40 @@ impl crate::State {
                     rpc_id,
                     error: PeerBlockFetchError::Timeout,
                 });
-                dispatcher.push(P2pDisconnectionAction::Init {
-                    peer_id,
-                    reason: P2pDisconnectionReason::TransitionFrontierRpcTimeout(rpc_kind),
-                });
             }
             P2pCallbacksAction::P2pChannelsRpcResponseReceived {
                 peer_id,
                 id,
                 response,
             } => {
-                let request = || get_rpc_request(state, peer_id);
-                State::handle_rpc_channels_response(
-                    dispatcher, meta, *id, *peer_id, request, response,
+                // The peer's RPC slot is free: a chain proof we need takes it
+                // before ledger and block queries do, so that a new best tip
+                // doesn't wait for them to finish. Actions run depth first,
+                // and an answer's follow-ups ask the next query of a free
+                // peer at once (a ledger answer's `ChildHashesAccepted`
+                // dispatches `PeersQuery`), so the chain proof query goes
+                // before them. After a best tip answer, which may carry the
+                // proof itself, it goes after.
+                let is_best_tip_answer = matches!(
+                    response.as_deref(),
+                    Some(P2pRpcResponse::BestTipWithProof(_))
                 );
+                if !is_best_tip_answer {
+                    dispatcher.push(TransitionFrontierCandidateAction::ChainProofPeersQuery);
+                }
+                let request = get_rpc_request(state, peer_id, *id);
+                State::handle_rpc_channels_response(
+                    dispatcher,
+                    meta,
+                    *id,
+                    *peer_id,
+                    request,
+                    response,
+                    state.verification.fetch_arrival(),
+                );
+                if is_best_tip_answer {
+                    dispatcher.push(TransitionFrontierCandidateAction::ChainProofPeersQuery);
+                }
                 dispatcher.push(TransitionFrontierSyncLedgerSnarkedAction::PeersQuery);
                 dispatcher.push(TransitionFrontierSyncLedgerStagedAction::PartsPeerFetchInit);
                 dispatcher.push(TransitionFrontierSyncAction::BlocksPeersQuery);
@@ -320,12 +384,24 @@ impl crate::State {
                         match BlockWithHash::try_new(new_best_tip.clone()) {
                             Ok(block) => {
                                 let allow_block_too_late = allow_block_too_late(state, &block);
-                                match state.prevalidate_block(&block, allow_block_too_late) {
+                                let result = state.prevalidate_block(&block, allow_block_too_late);
+                                dispatcher.push(
+                                    crate::verification::VerificationUpdate::headers(
+                                        &block,
+                                        crate::verification::Arrival::Gossip,
+                                        &result,
+                                    )
+                                    .action(),
+                                );
+                                match result {
                                     Ok(()) => PreValidationResult::Continue,
+                                    // A body proof read failing here is
+                                    // this node's fault, not the sender's.
                                     Err(error)
                                         if matches!(
                                             error,
                                             BlockPrevalidationError::ReceivedTooEarly { .. }
+                                                | BlockPrevalidationError::BodyProofUnavailable { .. }
                                         ) =>
                                     {
                                         PreValidationResult::Ignore {
@@ -388,10 +464,58 @@ impl crate::State {
         peer_id: PeerId,
         id: u64,
     ) {
+        // Startup restore keeps best_chain at genesis until its commit. Treat
+        // that frontier as unavailable, just as OCaml does while bootstrapping.
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_networking/rpcs.ml#L1135-L1151>
+        let best_chain = if state.transition_frontier.persist_holds_sync() {
+            &[][..]
+        } else {
+            state.transition_frontier.best_chain.as_slice()
+        };
         match request {
+            P2pRpcRequest::Catchup(request) => {
+                use mina_p2p::channels::rpc::CatchupRequest;
+                let history = &state.transition_frontier.root_history;
+                let historical_count = match &request {
+                    CatchupRequest::TransitionChain(hashes) => hashes
+                        .iter()
+                        .filter(|hash| {
+                            history
+                                .get(&v2::StateHash::from(v2::DataHashLibStateHashStableV1(
+                                    (*hash).clone(),
+                                )))
+                                .is_some()
+                        })
+                        .count(),
+                    CatchupRequest::TransitionChainProof(hash) => usize::from(
+                        history
+                            .get(&v2::StateHash::from(v2::DataHashLibStateHashStableV1(
+                                hash.clone(),
+                            )))
+                            .is_some(),
+                    ),
+                    _ => 0,
+                };
+                if !best_chain.is_empty() && historical_count > 0 {
+                    mina_core::debug!(meta.time(); kind = "P2pCatchupRootHistoryHit",
+                        peer_id = peer_id.to_string(), rpc_id = id, historical_count = historical_count);
+                }
+                let response = super::super::catchup::respond(
+                    best_chain,
+                    &state.transition_frontier.root_history,
+                    request,
+                );
+                dispatcher.push(P2pChannelsRpcAction::ResponseSend {
+                    peer_id,
+                    id,
+                    response: Some(Box::new(P2pRpcResponse::Catchup(Box::new(response)))),
+                });
+            }
             P2pRpcRequest::BestTipWithProof => {
-                let best_chain = &state.transition_frontier.best_chain;
                 let response = None.or_else(|| {
+                    if !state.transition_frontier.can_prove_best_tip() {
+                        return None;
+                    }
                     let best_tip = best_chain.last()?;
                     let mut chain_iter = best_chain.iter();
                     let root_block = chain_iter.next()?;
@@ -417,7 +541,6 @@ impl crate::State {
                 });
             }
             P2pRpcRequest::Block(hash) => {
-                let best_chain = &state.transition_frontier.best_chain;
                 let response = best_chain
                     .iter()
                     .rev()
@@ -453,10 +576,34 @@ impl crate::State {
                     response,
                 });
             }
+            P2pRpcRequest::CompletedSnarks => {
+                // OCaml rpcs.ml:815-834 takes the first 32 completed jobs in
+                // work-selector order, or None without a frontier/pool.
+                // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_networking/rpcs.ml#L815-L834>
+                let response = state
+                    .transition_frontier
+                    .best_tip()
+                    .and_then(|_| state.snark_pool.completed_snarks_for_rpc())
+                    .map(|works| P2pRpcResponse::CompletedSnarks(bounded_completed_snarks(works)));
+                if let Some(P2pRpcResponse::CompletedSnarks(works)) = response.as_ref() {
+                    mina_core::info!(meta.time(); kind = "P2pCompletedSnarksServed",
+                        peer_id = display(peer_id), count = works.0.len());
+                }
+                dispatcher.push(P2pChannelsRpcAction::ResponseSend {
+                    peer_id,
+                    id,
+                    response: response.map(Box::new),
+                });
+            }
             P2pRpcRequest::Snark(job_id) => {
                 let job = state.snark_pool.get(&job_id);
                 let response = job
                     .and_then(|job| job.snark.as_ref())
+                    .filter(|snark| {
+                        state.transition_frontier.best_tip().is_some_and(|tip| {
+                            state.snark_pool.work_is_checked(&snark.work, tip.hash())
+                        })
+                    })
                     .map(|snark| snark.work.clone())
                     .map(P2pRpcResponse::Snark)
                     .map(Box::new);
@@ -485,21 +632,86 @@ impl crate::State {
         }
     }
 
-    fn handle_rpc_channels_response<'a>(
+    fn handle_rpc_channels_response(
         dispatcher: &mut Dispatcher<Action, State>,
         meta: ActionMeta,
         id: u64,
         peer_id: PeerId,
-        request: impl FnOnce() -> Option<&'a P2pRpcRequest>,
+        request: Option<&P2pRpcRequest>,
         response: &Option<Box<P2pRpcResponse>>,
+        arrival: crate::verification::Arrival,
     ) {
+        // Non-ledger callbacks can follow a best-tip update that already
+        // reused the RPC slot. Preserve their existing response handling;
+        // ledger answers require the matching recorded request and id.
+        if matches!(
+            response.as_deref(),
+            Some(P2pRpcResponse::LedgerQuery(..) | P2pRpcResponse::LedgerQueryError(..))
+        ) && !matches!(request, Some(P2pRpcRequest::LedgerQuery(..)))
+        {
+            return;
+        }
+        if let Some(P2pRpcRequest::LedgerQuery(_, query)) = request {
+            use v2::MinaLedgerSyncLedgerQueryStableV1 as Query;
+            // The transport has already answered. Match the constructor to
+            // the recorded query before marking any ledger attempt Success;
+            // a wrong-kind answer has no remaining transport timeout.
+            // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/syncable_ledger/syncable_ledger.ml#L724-L832>
+            let matches_query = match response.as_deref() {
+                None | Some(P2pRpcResponse::LedgerQueryError(..)) => true,
+                Some(P2pRpcResponse::LedgerQuery(answer)) => matches!(
+                    (query, answer),
+                    (
+                        Query::NumAccounts,
+                        MinaLedgerSyncLedgerAnswerStableV2::NumAccounts(..)
+                    ) | (
+                        Query::WhatChildHashes(..),
+                        MinaLedgerSyncLedgerAnswerStableV2::ChildHashesAre(..)
+                    ) | (
+                        Query::WhatContents(..),
+                        MinaLedgerSyncLedgerAnswerStableV2::ContentsAre(..)
+                    )
+                ),
+                _ => false,
+            };
+            if !matches_query {
+                let error = PeerLedgerQueryError::InvalidResponse;
+                dispatcher.push(match query {
+                    Query::NumAccounts => {
+                        TransitionFrontierSyncLedgerSnarkedAction::PeerQueryNumAccountsError {
+                            peer_id,
+                            rpc_id: id,
+                            error,
+                        }
+                    }
+                    _ => TransitionFrontierSyncLedgerSnarkedAction::PeerQueryAddressError {
+                        peer_id,
+                        rpc_id: id,
+                        error,
+                    },
+                });
+                return;
+            }
+        }
         match response.as_deref() {
-            None => {
-                match request() {
+            None | Some(P2pRpcResponse::LedgerQueryError(..)) => {
+                let ledger_error = if matches!(
+                    response.as_deref(),
+                    Some(P2pRpcResponse::LedgerQueryError(..))
+                ) {
+                    PeerLedgerQueryError::LedgerUnavailable
+                } else {
+                    PeerLedgerQueryError::DataUnavailable
+                };
+                match request {
                     Some(P2pRpcRequest::Transaction(hash)) => {
                         let hash = hash.clone();
                         dispatcher
                             .push(TransactionPoolCandidateAction::FetchError { peer_id, hash });
+                        return;
+                    }
+                    Some(P2pRpcRequest::CompletedSnarks) => {
+                        mina_core::debug!(meta.time(); kind = "SnarkPoolCompletedSnarksUnavailable", peer_id = display(peer_id));
                         return;
                     }
                     Some(P2pRpcRequest::Snark(job_id)) => {
@@ -515,14 +727,14 @@ impl crate::State {
                     TransitionFrontierSyncLedgerSnarkedAction::PeerQueryNumAccountsError {
                         peer_id,
                         rpc_id: id,
-                        error: PeerLedgerQueryError::DataUnavailable,
+                        error: ledger_error.clone(),
                     },
                 );
                 dispatcher.push(
                     TransitionFrontierSyncLedgerSnarkedAction::PeerQueryAddressError {
                         peer_id,
                         rpc_id: id,
-                        error: PeerLedgerQueryError::DataUnavailable,
+                        error: ledger_error,
                     },
                 );
                 dispatcher.push(
@@ -584,17 +796,28 @@ impl crate::State {
                 });
             }
             Some(P2pRpcResponse::LedgerQuery(answer)) => match answer {
-                MinaLedgerSyncLedgerAnswerStableV2::ChildHashesAre(left, right) => {
-                    dispatcher.push(
-                        TransitionFrontierSyncLedgerSnarkedAction::PeerQueryAddressSuccess {
-                            peer_id,
-                            rpc_id: id,
-                            response: PeerLedgerQueryResponse::ChildHashes(
-                                left.clone(),
-                                right.clone(),
-                            ),
-                        },
-                    );
+                MinaLedgerSyncLedgerAnswerStableV2::ChildHashesAre(hashes) => {
+                    // The hashes of a full subtree level, at most as deep as
+                    // asked for: checked against the parent when received.
+                    if hashes.len() >= 2 && hashes.len().is_power_of_two() {
+                        dispatcher.push(
+                            TransitionFrontierSyncLedgerSnarkedAction::PeerQueryAddressSuccess {
+                                peer_id,
+                                rpc_id: id,
+                                response: PeerLedgerQueryResponse::ChildHashes(
+                                    hashes.iter().cloned().collect(),
+                                ),
+                            },
+                        );
+                    } else {
+                        dispatcher.push(
+                            TransitionFrontierSyncLedgerSnarkedAction::PeerQueryAddressError {
+                                peer_id,
+                                rpc_id: id,
+                                error: PeerLedgerQueryError::DataUnavailable,
+                            },
+                        );
+                    }
                 }
                 MinaLedgerSyncLedgerAnswerStableV2::ContentsAre(accounts) => {
                     dispatcher.push(
@@ -634,6 +857,29 @@ impl crate::State {
                     mina_core::error!(meta.time(); "P2pRpcResponse::Block: invalid block");
                     return;
                 };
+                // The hash we asked for covers the protocol state alone. As
+                // OCaml's catch-up does, check the rest of the header and the
+                // body here, so that another peer is asked for the block
+                // instead of it failing to apply and its hash being
+                // blacklisted.
+                // OCaml: <https://github.com/MinaProtocol/mina/blob/8250f62a9bb6450f6c9fdc9a3af72da62c2f5e39/src/lib/ledger_catchup/super_catchup.ml#L135-L143>
+                let result = validate_delta_block_chain(block.header())
+                    .and_then(|()| validate_body_reference(block.block.as_ref()));
+                dispatcher.push(
+                    crate::verification::VerificationUpdate::headers(&block, arrival, &result)
+                        .action(),
+                );
+                if let Err(error) = result {
+                    mina_core::warn!(meta.time();
+                        kind = "P2pRpcResponseBlockInvalid",
+                        summary = format!("block {} from {peer_id}: {error:?}", block.hash()));
+                    dispatcher.push(TransitionFrontierSyncAction::BlocksPeerQueryError {
+                        peer_id,
+                        rpc_id: id,
+                        error: PeerBlockFetchError::from_block_check(error),
+                    });
+                    return;
+                }
                 dispatcher.push(TransitionFrontierSyncAction::BlocksPeerQuerySuccess {
                     peer_id,
                     rpc_id: id,
@@ -651,13 +897,24 @@ impl crate::State {
                     }
                 }
             }
-            Some(P2pRpcResponse::Snark(snark)) => {
-                dispatcher.push(SnarkPoolCandidateAction::WorkFetchSuccess {
+            Some(P2pRpcResponse::CompletedSnarks(works)) => {
+                dispatcher.push(crate::SnarkPoolAction::CompletedSnarksReceived {
                     peer_id,
-                    work: snark.clone(),
+                    works: works.clone(),
                 });
             }
-            Some(P2pRpcResponse::InitialPeers(_)) => {}
+            Some(P2pRpcResponse::Snark(snark)) => {
+                dispatcher.push(crate::SnarkPoolAction::WorkCheck {
+                    sender: peer_id,
+                    work: snark.clone(),
+                    is_sender_local: false,
+                    stage: crate::snark_pool::AdmissionStage::Received(
+                        crate::snark_pool::WorkSource::Rpc,
+                    ),
+                    retry: false,
+                });
+            }
+            Some(P2pRpcResponse::InitialPeers(_) | P2pRpcResponse::Catchup(_)) => {}
         }
     }
 }
@@ -666,4 +923,41 @@ enum PreValidationResult {
     Continue,
     Reject { reason: String },
     Ignore { reason: String },
+}
+
+#[cfg(test)]
+mod d4f_tests {
+    use super::*;
+    use mina_p2p_messages::{rpc::GetCompletedSnarksV1, rpc_kernel::PayloadBinprotReader};
+
+    #[test]
+    fn completed_snarks_response_matches_ocaml_fixture_and_caps_extra_work() {
+        let fixture =
+            include_bytes!("../../../../p2p-messages/tests/files/mesa/get_completed_snarks_v1.bin");
+        let wire_works = GetCompletedSnarksV1::response_payload(&mut fixture.as_slice())
+            .unwrap()
+            .unwrap();
+        let works: Vec<mina_core::snark::Snark> =
+            wire_works.0.into_iter().map(Into::into).collect();
+        assert_eq!(works.len(), 32);
+
+        let bounded = bounded_completed_snarks(works.iter());
+        let bytes = mina_p2p::channels::rpc::response_bytes(Some(bounded));
+        assert_eq!(bytes, fixture);
+        assert!(bytes.len() <= mina_p2p_messages::rpc::MAX_COMPLETED_SNARKS_BYTES);
+
+        let mut extra = works;
+        extra.push(extra[0].clone());
+        let bounded = bounded_completed_snarks(extra.iter());
+        assert_eq!(bounded.0.len(), 32);
+
+        let first: mina_p2p_messages::v2::TransactionSnarkWorkTStableV2 =
+            extra[0].to_wire().unwrap();
+        let mut first_bytes = Vec::new();
+        first.binprot_write(&mut first_bytes).unwrap();
+        let byte_limit = 64 + first_bytes.len();
+        let bounded = bounded_completed_snarks_with_byte_limit(extra.iter(), byte_limit);
+        assert_eq!(bounded.0.len(), 1);
+        assert!(mina_p2p::channels::rpc::response_bytes(Some(bounded)).len() <= byte_limit);
+    }
 }

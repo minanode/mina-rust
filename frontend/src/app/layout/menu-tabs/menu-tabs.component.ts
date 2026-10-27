@@ -16,7 +16,7 @@ import {
   ThemeSwitcherService,
   ThemeType,
 } from '@mina-rust/shared';
-import { getAvailableFeatures } from '@shared/constants/config';
+import { CONFIG, getAvailableFeatures } from '@shared/constants/config';
 import { MENU_ITEMS, MenuItem } from '@app/layout/menu/menu.component';
 import { filter, map, merge, skip, take, tap } from 'rxjs';
 import { UntilDestroy, untilDestroyed } from '@ngneat/until-destroy';
@@ -29,6 +29,7 @@ import { Overlay, OverlayRef } from '@angular/cdk/overlay';
 import { ComponentPortal, TemplatePortal } from '@angular/cdk/portal';
 import { MinaNetwork } from '@shared/types/core/mina/mina.type';
 import { EnvBuildModalComponent } from '@app/layout/env-build-modal/env-build-modal.component';
+import { docsUrl, docsUrlForPath } from '@shared/constants/docs';
 
 @UntilDestroy()
 @Component({
@@ -45,11 +46,15 @@ export class MenuTabsComponent extends StoreDispatcher implements OnInit {
   activeNode: MinaNode;
   network?: MinaNetwork;
   chainId?: string;
+  hasBlockProducer?: boolean;
   envBuild: AppEnvBuild;
   isOpenMore: boolean;
   currentTheme: ThemeType;
   readonly trackMenus = (_: number, item: MenuItem): string => item.name;
   readonly ThemeType = ThemeType;
+  readonly docsUrl: string = docsUrl();
+  /** The docs page matching this page, when there is one. */
+  pageDocsUrl?: string;
 
   @ViewChild('dropdown') private dropdown: TemplateRef<void>;
 
@@ -80,7 +85,9 @@ export class MenuTabsComponent extends StoreDispatcher implements OnInit {
         untilDestroyed(this),
       )
       .subscribe((url: string) => {
-        this.activeRoute = removeParamsFromURL(url).split('/')[1];
+        const path = removeParamsFromURL(url);
+        this.activeRoute = path.split('/')[1];
+        this.pageDocsUrl = docsUrlForPath(path);
         this.detect();
       });
   }
@@ -110,8 +117,12 @@ export class MenuTabsComponent extends StoreDispatcher implements OnInit {
     const features = getAvailableFeatures(
       this.activeNode || ({ features: {} } as any),
     );
-    return MENU_ITEMS.filter((opt: MenuItem) =>
-      features.find(f => f === opt.name.toLowerCase().split(' ').join('-')),
+    return MENU_ITEMS.filter(
+      (opt: MenuItem) =>
+        features.some(f => f === opt.name.toLowerCase().split(' ').join('-')) &&
+        (opt.name !== 'Block Production' || this.hasBlockProducer !== false) &&
+        (!this.activeNode?.isWebNode ||
+          !['Blocks', 'Accounts'].includes(opt.name)),
     );
   }
 
@@ -125,7 +136,9 @@ export class MenuTabsComponent extends StoreDispatcher implements OnInit {
   private listenToNetwork(): void {
     this.select(
       AppSelectors.activeNodeDetails,
-      ({ chainId, network }) => {
+      ({ chainId, network, hasBlockProducer }) => {
+        this.hasBlockProducer = hasBlockProducer;
+        this.menuItems = this.allowedMenuItems;
         this.chainId = chainId;
         this.network = network as MinaNetwork;
         this.detect();
@@ -184,7 +197,13 @@ export class MenuTabsComponent extends StoreDispatcher implements OnInit {
 
     const portal = new ComponentPortal(EnvBuildModalComponent);
     const component = this.overlayRef.attach<EnvBuildModalComponent>(portal);
-    component.instance.envBuild = this.envBuild;
+    component.instance.source = this.activeNode
+      ? this.activeNode.isWebNode
+        ? `${this.activeNode.name}, running in this browser tab (WASM)`
+        : `${this.activeNode.name}, a native node at ${this.activeNode.url}`
+      : 'No node selected';
+    component.instance.nodeBuild = this.envBuild;
+    component.instance.frontendCommit = CONFIG.frontendCommit || 'not stamped';
     component.instance.detect();
 
     merge(component.instance.close, this.overlayRef.backdropClick())

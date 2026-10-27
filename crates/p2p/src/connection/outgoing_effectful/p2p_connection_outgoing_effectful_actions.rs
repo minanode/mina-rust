@@ -19,7 +19,7 @@ pub enum P2pConnectionOutgoingEffectfulAction {
         peers: Vec<P2pConnectionOutgoingInitOpts>,
     },
     /// Initialize connection to a new peer.
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     Init {
         opts: P2pConnectionOutgoingInitOpts,
         rpc_id: Option<RpcId>,

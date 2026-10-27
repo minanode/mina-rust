@@ -31,9 +31,14 @@ impl redux::EnablingCondition<crate::State> for LedgerReadAction {
     fn is_enabled(&self, state: &crate::State, _time: redux::Timestamp) -> bool {
         match self {
             LedgerReadAction::FindTodos => state.ledger.read.is_total_cost_under_limit(),
-            LedgerReadAction::Init { .. } => state.ledger.read.is_total_cost_under_limit(),
-            LedgerReadAction::Pending { id, .. } => {
-                state.ledger.read.is_total_cost_under_limit()
+            // Keep RPC requests in Init and peer requests pending. FindTodos
+            // retries them after restore or the deferred genesis load finishes.
+            LedgerReadAction::Init { request, .. } => {
+                state.transition_frontier.genesis_ledgers_ready()
+                    && state.ledger.read.can_admit(request)
+            }
+            LedgerReadAction::Pending { id, request } => {
+                state.ledger.read.can_admit(request)
                     && !state.ledger.read.contains(*id)
                     && state.ledger.read.next_req_id() == *id
             }

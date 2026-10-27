@@ -52,6 +52,12 @@ impl TransitionFrontierSyncLedgerStagedState {
                 let mut peers =
                     p2p.ready_rpc_peers_iter()
                         .fold(Vec::new(), |mut list, (peer_id, state)| {
+                            if fetch_attempts
+                                .get(peer_id)
+                                .is_some_and(|attempt| !attempt.retry_ready(meta.time()))
+                            {
+                                return list;
+                            }
                             let mut order = 0u8;
                             // TODO(binier): maybe take into account fetch attempt time.
                             order = order.saturating_add(if fetch_attempts.contains_key(peer_id) {

@@ -1,0 +1,199 @@
+{
+  "kind": "ForBlock",
+  "id": 36,
+  "time": 1792556467223097445,
+  "block_level": 564635,
+  "block_hash": "3NLdTaFbvvNmeF4fRYGL8XjBFxEhJiP7AXPCjLpiRGAegABjiKvK",
+  "cpu_idle": 174244860250,
+  "cpu_busy": 1649645861,
+  "stats": {
+    "SnarkBlockVerifyError": {
+      "under_1_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_10_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_50_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_100_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_500_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_1_ms": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_5_ms": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_50_ms": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "above_50_ms": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      }
+    },
+    "SnarkBlockVerifySuccess": {
+      "under_1_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_10_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_50_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_100_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_500_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_1_ms": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_5_ms": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_50_ms": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "above_50_ms": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      }
+    },
+    "SnarkWorkVerifyError": {
+      "under_1_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_10_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_50_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_100_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_500_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_1_ms": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_5_ms": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_50_ms": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "above_50_ms": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      }
+    },
+    "SnarkWorkVerifySuccess": {
+      "under_1_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_10_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_50_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_100_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_500_us": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_1_ms": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_5_ms": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "under_50_ms": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      },
+      "above_50_ms": {
+        "total_calls": 0,
+        "total_duration": 0,
+        "max_duration": 0
+      }
+    }
+  }
+}

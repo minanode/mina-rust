@@ -9,12 +9,16 @@ export interface NodesOverviewLedgerEpochStep {
   state: NodesOverviewLedgerStepState | any;
   snarked: NodesOverviewSnarkedLedgerStep;
   totalTime: number;
+  /** Loaded from saved state at a restart, not fetched (F-dash3). */
+  fromStore?: boolean;
 }
 
 export interface NodesOverviewRootStagedLedgerStep {
   state: NodesOverviewLedgerStepState;
   staged: NodesOverviewStagedLedgerStep;
   totalTime: number;
+  /** Loaded from saved state at a restart, not fetched (F-dash3). */
+  fromStore?: boolean;
 }
 
 export enum NodesOverviewLedgerStepState {

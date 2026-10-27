@@ -1,0 +1,199 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1d2330;
+  --muted: #5f6b7d;
+  --bg: #fbfbfd;
+  --panel: #ffffff;
+  --line: #e3e6ec;
+  --ok: #157f3b;
+  --bad: #b42318;
+  --accent: #3b5bdb;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e6e9ef;
+    --muted: #9aa4b5;
+    --bg: #12151b;
+    --panel: #1a1e26;
+    --line: #2a303b;
+    --ok: #4ade80;
+    --bad: #f87171;
+    --accent: #8ea2ff;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+main {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 2rem 1.25rem 3rem;
+}
+
+h1 {
+  font-size: 1.7rem;
+  margin: 0 0 0.5rem;
+}
+
+h2 {
+  font-size: 1.05rem;
+  margin: 2rem 0 0.75rem;
+}
+
+.lede {
+  color: var(--muted);
+  line-height: 1.5;
+  max-width: 70ch;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: end;
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+select, input, button {
+  font: inherit;
+  padding: 0.45rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--fg);
+}
+
+input[type="number"] {
+  width: 5rem;
+}
+
+button {
+  cursor: pointer;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.steps {
+  margin: 0;
+  padding-left: 1.25rem;
+  line-height: 1.8;
+}
+
+.steps .time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+td.num, th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+td.hash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+}
+
+.ok {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.bad {
+  color: var(--bad);
+  font-weight: 600;
+}
+
+.fork {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-left: 0.4rem;
+}
+
+.pending {
+  color: var(--muted);
+}
+
+code {
+  font-size: 0.85em;
+}
+
+.tip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 2rem;
+  padding: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.tip > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.tip strong {
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
+[hidden] {
+  display: none !important;
+}

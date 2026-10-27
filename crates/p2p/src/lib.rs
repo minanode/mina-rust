@@ -107,6 +107,11 @@ pub trait P2pStateTrait:
     + SubstateAccess<P2pNetworkPubsubState>
     + SubstateAccess<P2pConfig>
 {
+    /// Ledger-aware eligibility at the final gossip send boundary. A pure p2p
+    /// state has no ledger authority and must not authorize SNARK publications.
+    fn snark_work_is_eligible(&self, _work: &mina_core::snark::Snark) -> bool {
+        false
+    }
 }
 
 pub trait P2pActionTrait<State>:

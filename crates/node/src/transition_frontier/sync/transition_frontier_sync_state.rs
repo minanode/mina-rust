@@ -93,6 +93,52 @@ pub struct TransitionFrontierSyncLedgerPending {
     pub ledger: TransitionFrontierSyncLedgerState,
 }
 
+impl TransitionFrontierSyncLedgerPending {
+    /// Updates the root ledger's target after a best tip update that keeps
+    /// both epoch ledgers, and has set [`Self::root_block`] to the new best
+    /// tip's root. `old_root_block` is the root before it.
+    pub fn update_root_ledger_target(&mut self, time: Timestamp, old_root_block: ArcBlockWithHash) {
+        let root_block = &self.root_block;
+
+        if root_block.hash() == old_root_block.hash() {
+            // The root hasn't moved, as for a sibling of the previous best
+            // tip, so neither has the target. If the staged ledger target was
+            // kept on an earlier root (below), resetting it here would fetch
+            // the staged ledger parts again and discard their reconstruction.
+            return;
+        }
+
+        if let Some(i) = self
+            .root_block_updates
+            .iter()
+            .position(|block| block.hash() == root_block.hash())
+        {
+            // Back to a root we moved past while keeping the staged ledger
+            // target: the blocks from it on are no longer updates.
+            self.root_block_updates.truncate(i);
+            return;
+        }
+
+        if self
+            .ledger
+            .staged()
+            .is_some_and(|staged| staged.is_parts_fetched())
+            && root_block.pred_hash() == old_root_block.hash()
+        {
+            // Optimization. Prevent changing staging ledger target,
+            // if the new root block is the extension of the old one.
+            // Since in such case, we can reuse the old reconstructed
+            // staged ledger to reconstruct the new one.
+            self.root_block_updates.push(old_root_block);
+            return;
+        }
+
+        self.root_block_updates = Default::default();
+        self.ledger
+            .update_target(time, SyncLedgerTarget::root(root_block));
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct TransitionFrontierRootSnarkedLedgerUpdates(
     BTreeMap<LedgerHash, TransitionFrontierRootSnarkedLedgerUpdate>,
@@ -154,8 +200,16 @@ pub enum PeerRpcState {
     },
 }
 
-#[derive(Serialize, Deserialize, Display, Debug, Clone)]
+/// A sync's phase. [`TransitionFrontierSyncState::sync_phase`] is one of
+/// `Bootstrap`, `Catchup` and `Synced`; the phase the node reports
+/// ([`super::reported_sync_phase`], F-dash3) may also be `Connecting` or
+/// `Listening`, as OCaml's sync status is before a peer is heard from.
+#[derive(Serialize, Deserialize, Display, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncPhase {
+    /// No ready peer.
+    Connecting,
+    /// Ready peers, but no usable best tip yet (including stale genesis hints).
+    Listening,
     Bootstrap,
     Catchup,
     Synced,
@@ -284,8 +338,10 @@ impl TransitionFrontierSyncState {
             .count()
     }
 
-    pub fn blocks_fetch_retry_iter(&self) -> impl '_ + Iterator<Item = StateHash> {
-        self.blocks_iter().filter_map(|s| s.retry_hash()).cloned()
+    pub fn blocks_fetch_retry_iter(&self, now: Timestamp) -> impl '_ + Iterator<Item = StateHash> {
+        self.blocks_iter()
+            .filter_map(move |s| s.retry_hash(now))
+            .cloned()
     }
 
     pub fn blocks_fetch_next(&self) -> Option<StateHash> {
@@ -444,7 +500,7 @@ impl TransitionFrontierSyncBlockState {
         }
     }
 
-    pub fn retry_hash(&self) -> Option<&StateHash> {
+    pub fn retry_hash(&self, now: Timestamp) -> Option<&StateHash> {
         let Self::FetchPending {
             block_hash,
             attempts,
@@ -453,8 +509,9 @@ impl TransitionFrontierSyncBlockState {
         else {
             return None;
         };
-        Some(block_hash)
-            .filter(|_| !attempts.is_empty() && attempts.iter().all(|(_, s)| s.is_error()))
+        Some(block_hash).filter(|_| {
+            !attempts.is_empty() && attempts.values().all(|s| s.is_failed_or_stale(now))
+        })
     }
 
     pub fn fetch_pending_from_peer_rpc_id(&self, peer_id: &PeerId) -> Option<P2pRpcId> {
@@ -504,6 +561,16 @@ impl TransitionFrontierSyncBlockState {
 }
 
 impl PeerRpcState {
+    /// Retry even if the transport or a follow-up lost the attempt's outcome.
+    pub fn is_failed_or_stale(&self, now: Timestamp) -> bool {
+        match self {
+            Self::Error { .. } => true,
+            Self::Init { time } | Self::Pending { time, .. } | Self::Success { time, .. } => now
+                .checked_sub(*time)
+                .is_some_and(|elapsed| elapsed >= super::ledger::snarked::LEDGER_QUERY_STALE_AFTER),
+        }
+    }
+
     pub fn is_fetch_init(&self) -> bool {
         matches!(self, Self::Init { .. })
     }

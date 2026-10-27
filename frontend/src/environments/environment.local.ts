@@ -6,14 +6,14 @@ import { MinaEnv } from '@shared/types/core/environment/mina-env.type';
 
 export const environment: Readonly<MinaEnv> = {
   production: false,
-  identifier: 'Local FE',
+  identifier: 'minanode',
   canAddNodes: true,
   globalConfig: {
     features: {
       dashboard: [],
       nodes: ['overview', 'live', 'bootstrap'],
       state: ['actions'],
-      snarks: ['scan-state', 'work-pool'],
+      snarks: ['worker', 'scan-state', 'work-pool'],
       mempool: [],
       'block-production': ['won-slots'],
     },

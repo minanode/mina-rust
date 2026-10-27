@@ -50,7 +50,10 @@ export interface BlockProductionWonSlotTimes {
 export type BlockProductionWonSlotsDiscardReason =
   | 'BestTipStakingLedgerDifferent'
   | 'BestTipGlobalSlotHigher'
-  | 'BestTipSuperior';
+  | 'BestTipSuperior'
+  | 'ProofGenerationFailed'
+  | 'ProofVerificationFailed'
+  | 'WonSlotExpired';
 
 export enum BlockProductionWonSlotsStatus {
   Scheduled = 'Scheduled',

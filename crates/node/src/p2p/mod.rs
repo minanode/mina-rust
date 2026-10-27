@@ -1,3 +1,5 @@
+mod catchup;
+
 pub use mina_p2p::*;
 use mina_p2p::{
     channels::P2pChannelsEffectfulAction,

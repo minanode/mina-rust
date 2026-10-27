@@ -20,19 +20,15 @@ mina wallet address --from /path/to/encrypted/key
 
 - `--from <PATH>` - Path to encrypted key file
 
-**Optional:**
+**Environment:**
 
-- `[PASSWORD]` - Password to decrypt the key. Can be provided as an argument or
-  via the `MINA_PRIVKEY_PASS` environment variable (recommended for security)
+- `MINA_PRIVKEY_PASS` - Password to decrypt the key. The password is read only
+  from this variable. A password given as an argument is refused.
 
 ## Example
 
 ```bash
-# Get address from encrypted key
-mina wallet address --from ./keys/my-wallet
-
-# Using environment variable for password
-export MINA_PRIVKEY_PASS="my-secret-password"
+read -rs -p "Key password: " MINA_PRIVKEY_PASS && export MINA_PRIVKEY_PASS
 mina wallet address --from ./keys/my-wallet
 ```
 

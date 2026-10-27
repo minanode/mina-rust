@@ -13,6 +13,7 @@ bitflags = { workspace = true }
 jsonpath-rust = { workspace = true }
 ledger = { workspace = true }
 mina-core = { workspace = true }
+mina-curves = { workspace = true }
 mina-node = { workspace = true, features = ["replay"] }
 mina-p2p-messages = { workspace = true }
 mina-signer = { workspace = true }
@@ -22,6 +23,7 @@ rayon = { workspace = true }
 rsa = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 sha3 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time", "macros"] }
@@ -51,4 +53,11 @@ google-cloud-auth = { workspace = true }
 # won't compile without this on
 default = ["p2p-webrtc"]
 p2p-webrtc = ["mina-node/p2p-webrtc"]
+p2p-webrtc-rustrtc = ["mina-node/p2p-webrtc-rustrtc"]
+p2p-webrtc-rs = ["mina-node/p2p-webrtc-rs"]
+p2p-webrtc-rustrtc-lib = ["mina-node/p2p-webrtc-rustrtc-lib"]
+p2p-webrtc-ready-events = ["mina-node/p2p-webrtc-ready-events"]
 p2p-libp2p = ["mina-node/p2p-libp2p"]
+
+[dev-dependencies]
+tempfile = { workspace = true }

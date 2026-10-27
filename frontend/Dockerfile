@@ -30,6 +30,8 @@
 # OPTIONAL ENVIRONMENT VARIABLES:
 # MINA_WEBNODE_SEED_URLS - Comma separated list of HTTP(S) urls to fetch bootnodes from
 # MINA_WEBNODE_BOOTNODES - Comma separated list of multiaddrs to use as bootnodes
+# MINA_WEBNODE_NETWORK - Network for the web node to join: devnet (default) or mainnet
+# MINA_WEBNODE_GENESIS_URL - URL of a prebuilt genesis config, needed for mainnet
 #
 # USAGE:
 # # Build frontend image using the recommended Makefile command (from project root)

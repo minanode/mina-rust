@@ -1,0 +1,390 @@
+<a class="back" routerLink="/blocks" queryParamsHandling="preserve">
+  ← Recent blocks
+</a>
+@let tx = tx$ | async;
+@if (vm$ | async; as vm) {
+  @if (vm.loading) {
+    <p class="empty" role="status">Loading block…</p>
+  }
+  @if (vm.error) {
+    <div class="notice error" role="alert">{{ vm.error }}</div>
+    <p class="secondary">
+      Only blocks retained in this node’s transition frontier are available. An
+      older block or a block removed by a reorganization may no longer be found.
+    </p>
+  }
+  @if (vm.data; as block) {
+    <div class="page-heading">
+      <div>
+        <h1>
+          Block {{ block.protocolState.consensusState.blockHeight | number }}
+        </h1>
+        <p class="secondary">Applied best-chain block · All amounts in MINA</p>
+      </div>
+    </div>
+    @if (tx) {
+      @if (find(block, tx); as found) {
+        <div class="notice linked" role="status" data-tx-notice>
+          {{ found.kind }}
+          <mina-chain-value [value]="tx" [full]="true" />
+          is included in this block (height
+          {{ block.protocolState.consensusState.blockHeight | number }}),
+          {{
+            found.command.failureReason === null ? 'applied.' : 'but it failed.'
+          }}
+          It is highlighted below.
+          <a
+            [routerLink]="['/blocks', block.stateHash]"
+            [queryParams]="{ tx: null }"
+            queryParamsHandling="merge"
+          >
+            Clear
+          </a>
+        </div>
+      } @else {
+        <div class="notice error" role="alert" data-tx-notice>
+          Transaction {{ tx }} is not in this block.
+        </div>
+      }
+    }
+    <section class="panel" aria-label="Local verification receipt">
+      <h2>Local verification receipt</h2>
+      <mina-verification-receipt
+        [stateHash]="block.stateHash"
+        [detail]="true"
+      />
+    </section>
+    <section class="panel" aria-label="Block header">
+      <dl class="hashes">
+        <dt>State hash</dt>
+        <dd><mina-chain-value [value]="block.stateHash" [full]="true" /></dd>
+        <dt>Parent</dt>
+        <dd>
+          <mina-chain-value
+            [value]="block.protocolState.previousStateHash"
+            kind="block"
+            [full]="true"
+          />
+        </dd>
+        <dt>Snarked ledger</dt>
+        <dd>
+          <mina-chain-value
+            [value]="block.protocolState.blockchainState.snarkedLedgerHash"
+            [full]="true"
+          />
+        </dd>
+        <dt>Staged ledger</dt>
+        <dd>
+          <mina-chain-value
+            [value]="block.protocolState.blockchainState.stagedLedgerHash"
+            [full]="true"
+          />
+        </dd>
+      </dl>
+      <div class="facts">
+        <div>
+          <span>Height</span>
+          <strong>
+            {{ block.protocolState.consensusState.blockHeight | number }}
+          </strong>
+        </div>
+        <div>
+          <span>Slot since hard fork</span>
+          <strong data-slot>
+            {{ forkSlot(block.protocolState.consensusState) | number }}
+          </strong>
+        </div>
+        <div>
+          <span>Epoch / slot in epoch</span>
+          <strong>
+            {{ block.protocolState.consensusState.epoch | number }} /
+            {{ block.protocolState.consensusState.slot | number }}
+          </strong>
+        </div>
+        <div>
+          <span>Slot since genesis, across forks</span>
+          <strong data-slot-since-genesis>
+            {{ block.protocolState.consensusState.slotSinceGenesis | number }}
+          </strong>
+        </div>
+        <div>
+          <span>Block time (UTC)</span>
+          <strong>
+            {{
+              +block.protocolState.blockchainState.utcDate
+                | date: 'yyyy-MM-dd HH:mm:ss' : 'UTC'
+            }}
+          </strong>
+        </div>
+        <div>
+          <span>Timestamp (Unix ms)</span>
+          <strong>{{ block.protocolState.blockchainState.date }}</strong>
+        </div>
+        <div>
+          <span>Producer / creator</span>
+          <mina-chain-value [value]="block.creator" kind="account" />
+        </div>
+      </div>
+    </section>
+    <div class="summary compact">
+      <div>
+        <span class="secondary">Total commands</span>
+        <strong data-command-count>{{ block.commandTransactionCount }}</strong>
+      </div>
+      <div>
+        <span class="secondary">Payments / delegations</span>
+        <strong>
+          {{ counts(block).payments }} / {{ counts(block).delegations }}
+        </strong>
+      </div>
+      <div>
+        <span class="secondary">zkApp commands</span>
+        <strong>{{ counts(block).zkapps }}</strong>
+      </div>
+      <div>
+        <span class="secondary">SNARK works</span>
+        <strong>{{ counts(block).works }}</strong>
+      </div>
+      <div>
+        <span class="secondary">Total command fees (MINA)</span>
+        <strong data-total-fees>{{ fees(block) }}</strong>
+      </div>
+    </div>
+    <section>
+      <h2>
+        Payments and delegations
+        <span class="secondary">
+          {{ block.transactions.userCommands.length }}
+        </span>
+      </h2>
+      @if (block.transactions.userCommands.length) {
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Transaction hash</th>
+                <th>Type</th>
+                <th>From</th>
+                <th>To</th>
+                <th class="numeric">Amount</th>
+                <th class="numeric">Fee</th>
+                <th class="numeric">Nonce</th>
+                <th>Memo</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (command of block.transactions.userCommands; track $index) {
+                <tr
+                  [attr.data-command-hash]="command.hash"
+                  [attr.id]="'tx-' + command.hash"
+                  [class.linked]="command.hash === tx"
+                >
+                  <td data-tx-hash>
+                    <span class="tx">
+                      <mina-chain-value [value]="command.hash" />
+                      <a
+                        class="permalink"
+                        [routerLink]="['/blocks', block.stateHash]"
+                        [queryParams]="{ tx: command.hash }"
+                        queryParamsHandling="merge"
+                        title="Link to this transaction in this block"
+                        aria-label="Link to this transaction in this block"
+                        data-tx-link
+                      >
+                        <span class="mina-icon f-14" aria-hidden="true">
+                          link
+                        </span>
+                      </a>
+                    </span>
+                  </td>
+                  <td>{{ command.isDelegation ? 'Delegation' : 'Payment' }}</td>
+                  <td>
+                    <mina-chain-value [value]="command.from" kind="account" />
+                  </td>
+                  <td>
+                    <mina-chain-value [value]="command.to" kind="account" />
+                  </td>
+                  <td class="numeric" data-amount>
+                    {{ command.isDelegation ? '—' : mina(command.amount) }}
+                  </td>
+                  <td class="numeric" data-fee>{{ mina(command.fee) }}</td>
+                  <td class="numeric" data-nonce>{{ command.nonce }}</td>
+                  <td class="memo" [title]="command.memo">
+                    {{ memo(command.memo) }}
+                  </td>
+                  <td data-command-status>
+                    {{ command.failureReason === null ? 'Applied' : 'Failed' }}
+                    @if (command.failureReason !== null) {
+                      <small>{{ command.failureReason }}</small>
+                    }
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      } @else {
+        <p class="empty-section">No payments or delegations in this block.</p>
+      }
+    </section>
+    <section>
+      <h2>
+        zkApp commands
+        <span class="secondary">
+          {{ block.transactions.zkappCommands.length }}
+        </span>
+      </h2>
+      @if (block.transactions.zkappCommands.length) {
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Command hash</th>
+                <th>Fee payer</th>
+                <th class="numeric">Fee</th>
+                <th class="numeric">Account updates</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (command of block.transactions.zkappCommands; track $index) {
+                <tr
+                  [attr.data-zkapp-hash]="command.hash"
+                  [attr.id]="'tx-' + command.hash"
+                  [class.linked]="command.hash === tx"
+                >
+                  <td>
+                    <span class="tx">
+                      <mina-chain-value [value]="command.hash" />
+                      <a
+                        class="permalink"
+                        [routerLink]="['/blocks', block.stateHash]"
+                        [queryParams]="{ tx: command.hash }"
+                        queryParamsHandling="merge"
+                        title="Link to this transaction in this block"
+                        aria-label="Link to this transaction in this block"
+                      >
+                        <span class="mina-icon f-14" aria-hidden="true">
+                          link
+                        </span>
+                      </a>
+                    </span>
+                  </td>
+                  <td>
+                    <mina-chain-value
+                      [value]="command.zkappCommand.feePayer.body.publicKey"
+                      kind="account"
+                    />
+                  </td>
+                  <td class="numeric">
+                    {{ mina(command.zkappCommand.feePayer.body.fee) }}
+                  </td>
+                  <td class="numeric" data-update-count>
+                    {{ command.zkappCommand.accountUpdates.length }}
+                  </td>
+                  <td [title]="failures(command)">
+                    {{ command.failureReason === null ? 'Applied' : 'Failed' }}
+                    @if (command.failureReason !== null) {
+                      <small>{{ failures(command) }}</small>
+                    }
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      } @else {
+        <p class="empty-section">No zkApp commands in this block.</p>
+      }
+    </section>
+    <section class="panel">
+      <h2>Coinbase and fee transfers</h2>
+      <div class="facts">
+        <div>
+          <span>Coinbase receiver</span>
+          @if (block.transactions.coinbaseReceiverAccount; as receiver) {
+            <mina-chain-value [value]="receiver.publicKey" kind="account" />
+          } @else {
+            <span class="secondary">No coinbase</span>
+          }
+        </div>
+        <div>
+          <span>Coinbase amount</span>
+          <strong data-coinbase>{{ mina(block.transactions.coinbase) }}</strong>
+        </div>
+      </div>
+      @if (block.transactions.feeTransfer.length) {
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Recipient</th>
+                <th class="numeric">Fee (MINA)</th>
+                <th>Paid from</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (transfer of block.transactions.feeTransfer; track $index) {
+                <tr data-fee-transfer>
+                  <td>
+                    <mina-chain-value
+                      [value]="transfer.recipient"
+                      kind="account"
+                    />
+                  </td>
+                  <td class="numeric" data-fee>{{ mina(transfer.fee) }}</td>
+                  <td>
+                    {{
+                      transfer.type === 'Fee_transfer_via_coinbase'
+                        ? 'Coinbase'
+                        : 'Transaction fees'
+                    }}
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      } @else {
+        <p class="empty-section">No fee transfers in this block.</p>
+      }
+    </section>
+    <section>
+      <h2>
+        SNARK works
+        <span class="secondary">{{ block.snarkJobs.length }}</span>
+      </h2>
+      @if (block.snarkJobs.length) {
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Prover</th>
+                <th class="numeric">Fee (MINA)</th>
+                <th class="numeric">Number of jobs</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (work of block.snarkJobs; track $index) {
+                <tr>
+                  <td>
+                    <mina-chain-value [value]="work.prover" kind="account" />
+                  </td>
+                  <td class="numeric">{{ mina(work.fee) }}</td>
+                  <td class="numeric secondary">Unavailable</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+        <p class="footnote">
+          Each row is a completed work bundle. Job IDs and the number of jobs
+          per bundle are not exposed by this node.
+        </p>
+      } @else {
+        <p class="empty-section">No SNARK works in this block.</p>
+      }
+    </section>
+  }
+}

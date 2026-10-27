@@ -7,6 +7,7 @@ use super::{
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum LedgerEvent {
+    Verification(crate::verification::VerificationUpdate),
     Write(LedgerWriteResponse),
     Read(LedgerReadId, LedgerReadResponse),
 }
@@ -16,6 +17,7 @@ impl std::fmt::Display for LedgerEvent {
         write!(f, "Ledger, ")?;
 
         match self {
+            Self::Verification(_) => write!(f, "Verification"),
             Self::Write(resp) => {
                 write!(f, "Write, {:?}", resp.kind())?;
                 match resp {
@@ -42,6 +44,9 @@ impl std::fmt::Display for LedgerEvent {
                     }
                     LedgerWriteResponse::Commit { best_tip_hash, .. } => {
                         write!(f, ", {best_tip_hash}")
+                    }
+                    LedgerWriteResponse::PersistCheckpoint { root, result } => {
+                        write!(f, ", {root}, {}", res_kind_str(result))
                     }
                 }
             }

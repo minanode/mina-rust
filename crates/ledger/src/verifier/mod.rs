@@ -4,9 +4,7 @@ use crate::{
         self, field::FieldWitness, verification, verifiers::TransactionVerifier, VerifierIndex,
     },
     scan_state::{
-        scan_state::transaction_snark::{
-            LedgerProof, LedgerProofWithSokMessage, SokMessage, TransactionSnark,
-        },
+        scan_state::transaction_snark::{LedgerProof, SokMessage, TransactionSnark},
         transaction_logic::{valid, verifiable, zkapp_statement::ZkappStatement, WithStatus},
     },
     staged_ledger::staged_ledger::SkipVerification,
@@ -32,17 +30,34 @@ pub static VERIFIER_INDEX: Lazy<Arc<VerifierIndex<Fq>>> = Lazy::new(|| {
 });
 
 /// Returns the Structured Reference String (SRS) for proof verification.
-/// Lazily created and cached globally. Immutable version for verifiers.
+/// Lazily created and cached for the whole process, shared by every thread:
+/// it is immutable, and creating one takes about 2 s, which the per-thread
+/// cache this replaced (`cache!`) made the ledger thread pay at its first
+/// verified block, after the node's own had been made (I5d4).
 ///
 /// TODO: Use directly from proof-systems (<https://github.com/o1-labs/mina-rust/issues/1749>)
 pub fn get_srs<F: FieldWitness>() -> Arc<SRS<F::OtherCurve>> {
-    cache! {
-        Arc<SRS<F::OtherCurve>>,
-        {
-            let srs = SRS::<F::OtherCurve>::create(<F as proofs::field::FieldWitness>::Scalar::SRS_DEPTH);
-            Arc::new(srs)
-        }
+    use std::any::{Any, TypeId};
+
+    type Cached = Vec<(TypeId, Box<dyn Any + Send + Sync>)>;
+    // Held while an SRS is created, so that it is created once.
+    static CACHE: Mutex<Cached> = Mutex::new(Vec::new());
+
+    let type_id = TypeId::of::<F>();
+    let mut cache = CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((_, srs)) = cache.iter().find(|(id, _)| *id == type_id) {
+        return srs
+            .downcast_ref::<Arc<SRS<F::OtherCurve>>>()
+            .expect("cached by its field's type id")
+            .clone();
     }
+    let srs = Arc::new(SRS::<F::OtherCurve>::create(
+        <F as proofs::field::FieldWitness>::Scalar::SRS_DEPTH,
+    ));
+    cache.push((type_id, Box::new(srs.clone())));
+    srs
 }
 
 /// Returns the SRS on the other curve (Mutex-wrapped version for prover).
@@ -63,15 +78,19 @@ fn verify(ts: Vec<(LedgerProof, SokMessage)>) -> Result<(), String> {
     let srs = get_srs::<Fp>();
 
     if ts.iter().all(|(proof, msg)| {
-        let LedgerProof(TransactionSnark { statement, .. }) = proof;
+        let LedgerProof(TransactionSnark { statement, .. }, _) = proof;
         statement.sok_digest == msg.digest()
     }) {
         let verifier_index = VERIFIER_INDEX.as_ref();
 
-        let proofs = ts.iter().map(|(proof, _)| {
-            let LedgerProof(TransactionSnark { statement, proof }) = proof;
-            (statement, &**proof)
-        });
+        let decoded = ts
+            .iter()
+            .map(|(p, _)| p.0.proof.get().map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let proofs = ts
+            .iter()
+            .zip(&decoded)
+            .map(|((p, _), proof)| (&p.0.statement, &**proof));
 
         if !crate::proofs::verification::verify_transaction(proofs, verifier_index, &srs) {
             return Err("Transaction_snark.verify: verification failed".into());
@@ -88,7 +107,7 @@ fn verify_digest_only(ts: Vec<(LedgerProof, SokMessage)>) -> Result<(), String> 
     use crate::scan_state::scan_state::transaction_snark::SokDigest;
 
     if ts.iter().all(|(proof, msg)| {
-        let LedgerProof(TransactionSnark { statement, .. }) = proof;
+        let LedgerProof(TransactionSnark { statement, .. }, _) = proof;
         statement.sok_digest == SokDigest::default() || statement.sok_digest == msg.digest()
     }) {
         Ok(())
@@ -128,10 +147,7 @@ pub enum VerifierError {
 }
 
 impl Verifier {
-    pub fn verify(
-        &self,
-        _proofs: &[Arc<LedgerProofWithSokMessage>],
-    ) -> Result<Result<(), ()>, String> {
+    pub fn verify(&self, _proofs: &[Arc<LedgerProof>]) -> Result<Result<(), ()>, String> {
         // Implement verification later
         //
         // <https://github.com/MinaProtocol/mina/blob/05c2f73d0f6e4f1341286843814ce02dcb3919e0/src/lib/pickles/pickles.ml#L1122>
@@ -156,7 +172,12 @@ impl Verifier {
         cmds: Vec<WithStatus<verifiable::UserCommand>>,
         skip_verification: Option<SkipVerification>,
     ) -> Vec<VerifyCommandsResult> {
-        let cs: Vec<_> = cmds.into_iter().map(common::check).collect();
+        // Each command's keys and signatures, independent of the others: in
+        // parallel, in order (I5d4).
+        let cs: Vec<_> = {
+            use rayon::prelude::*;
+            cmds.into_par_iter().map(common::check).collect()
+        };
 
         let mut to_verify = cs
             .iter()
@@ -183,6 +204,16 @@ impl Verifier {
                 CheckResult::Valid(c) => Ok(c),
                 CheckResult::ValidAssuming((c, xs)) => {
                     if all_verified {
+                        // Verified pool commands can outlive the scan state.
+                        if let valid::UserCommand::ZkAppCommand(command) = &c {
+                            command.zkapp_command.account_updates.fold((), |(), update| {
+                                if let crate::scan_state::transaction_logic::zkapp_command::Control::Proof(proof) = &update.authorization {
+                                    if let Err(error) = proof.cache() {
+                                        mina_core::log::inner::warn!("proof cache: {error}");
+                                    }
+                                }
+                            });
+                        }
                         Ok(c)
                     } else {
                         Err(VerifierError::ValidAssuming(xs))
@@ -206,3 +237,23 @@ impl Verifier {
 }
 
 pub mod common;
+pub mod snark_work;
+
+#[cfg(test)]
+mod srs_tests {
+    use super::*;
+
+    /// One SRS per field for the whole process (I5d4): a thread that
+    /// verifies after another one has made it doesn't make its own.
+    #[test]
+    fn the_srs_is_made_once_and_shared_by_all_threads() {
+        let here = get_srs::<Fp>();
+        let there = std::thread::spawn(get_srs::<Fp>).join().unwrap();
+        assert!(Arc::ptr_eq(&here, &there));
+        assert!(Arc::ptr_eq(&here, &get_srs::<Fp>()));
+        let other = std::thread::spawn(get_srs::<Fq>).join().unwrap();
+        assert!(Arc::ptr_eq(&other, &get_srs::<Fq>()));
+        assert_ne!(here.g.len(), 0);
+        assert_ne!(other.g.len(), 0);
+    }
+}

@@ -23,4 +23,8 @@ pub enum SnarkWorkVerifyError {
     VerificationFailed,
     #[error("validator thread crashed")]
     ValidatorThreadCrashed,
+    /// A proof's sok digest isn't the digest of the work's fee and prover:
+    /// the work is someone else's, re-advertised.
+    #[error("sok digest does not match the work's fee and prover")]
+    SokDigestMismatch,
 }

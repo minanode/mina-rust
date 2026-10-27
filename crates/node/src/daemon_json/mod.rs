@@ -1,7 +1,15 @@
-use mina_core::constants::ForkConstants;
 use serde::{Deserialize, Serialize};
 
 mod json_daemon;
+mod json_proof;
+pub use json_proof::{Proof, TransactionCapacity};
+mod json_export;
+pub use json_export::{ledger_hash_of_accounts, to_mina_string, write_accounts, ExportedAccount};
+mod json_fork;
+pub use json_fork::{
+    fork_config_parts, ForkEpochData, ForkEpochLedger, ForkGenesis, ForkLedger, ForkProof,
+    ForkRuntimeConfig, HardForkLedgerSummaries, HardForkLedgerSummary, HardForkManifest,
+};
 mod json_genesis;
 mod json_ledger;
 pub use json_daemon::Daemon;
@@ -15,12 +23,7 @@ pub use json_ledger::{
 /// file. It does not describe its full structure, as it's not
 /// necessary for our purpose here. We only need to extract
 /// certain information from it.
-/// In practice, this format is never really used to convey
-/// the network's configuration, as the standard practice is to
-/// compile that into the OCaml node's binary.
-/// In theory, though, the underlying JSON file could contain
-/// more information that the following format describes. If
-/// that happens, the format can be extended to accommodate.
+/// The runtime fields override the compiled network profile, as in OCaml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonJson {
     pub daemon: Option<Daemon>,
@@ -42,11 +45,6 @@ pub struct EpochData {
     pub hash: Option<String>,
     pub s3_data_hash: Option<String>,
     pub seed: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Proof {
-    pub fork: Option<ForkConstants>,
 }
 
 impl EpochData {
@@ -76,10 +74,10 @@ mod test {
 
     #[test]
     fn test_daemon_json_read() {
-        let test_filename = "testing/data/daemon.json";
-        println!(
-            "Reading from: {}",
-            std::env::current_dir().unwrap().display()
+        // Moved from `node/testing` to `tools/testing` in e58ef99d.
+        let test_filename = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tools/testing/data/daemon.json"
         );
         let test_file = std::fs::File::open(test_filename).unwrap();
         let daemon_json: DaemonJson = serde_json::from_reader(test_file).unwrap();

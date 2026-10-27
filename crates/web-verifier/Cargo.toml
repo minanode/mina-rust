@@ -1,0 +1,32 @@
+[package]
+name = "mina-web-verifier"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Verify Mina blockchain SNARK proofs of blocks, natively or in the browser"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ark-ec = { workspace = true }
+ark-ff = { workspace = true }
+ark-poly = { workspace = true }
+base64 = { workspace = true }
+binprot = { workspace = true }
+hex = { workspace = true }
+kimchi = { workspace = true }
+ledger = { workspace = true }
+mina-core = { workspace = true }
+mina-curves = { workspace = true }
+mina-p2p-messages = { workspace = true }
+poly-commitment = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+console_error_panic_hook = { workspace = true }
+js-sys = { workspace = true }
+rayon = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }

@@ -19,8 +19,12 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Getting Started',
       items: [
+        'node-runners/mesa-quickstart',
+        'node-runners/public-graphql',
+        'node-runners/snark-worker',
         'node-operators/getting-started',
         'node-operators/join-devnet',
+        'node-operators/devnet-relay-and-web-node',
       ],
     },
     {
@@ -39,6 +43,8 @@ const sidebars: SidebarsConfig = {
         'node-operators/archive-node',
         'node-operators/network-configuration',
         'node-operators/node-management',
+        'node-runners/operator-cli',
+        'node-runners/bug-reports',
       ],
     },
     {
@@ -81,6 +87,7 @@ const sidebars: SidebarsConfig = {
       label: 'Introduction',
       items: [
         'developers/getting-started',
+        'developers/reproduce-results',
         'developers/updating-ocaml-node',
       ],
     },

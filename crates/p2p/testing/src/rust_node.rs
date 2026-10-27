@@ -27,6 +27,7 @@ pub struct RustNodeConfig {
     pub timeouts: P2pTimeouts,
     pub limits: P2pLimits,
     pub discovery: bool,
+    pub catchup_rpc: mina_p2p::P2pCatchupRpcConfig,
     pub override_fn: Option<Effects<State, ClusterService, Action>>,
     pub override_reducer: Option<Reducer<State, Action>>,
 }

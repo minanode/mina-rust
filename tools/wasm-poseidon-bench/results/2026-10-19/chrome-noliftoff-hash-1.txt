@@ -1,0 +1,11 @@
+ 21:44:39 up 3 days, 22:35,  4 users,  load average: 18.68, 20.05, 16.56
+== plain.wasm (Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.8059.84 Safari/537.36)
+check: 0 mismatches (228 ms)
+ark Poseidon permutation                     103219.8 ns/op  (min 91083.6, max 136656.3, n=1615)
+ark hash_with_kimchi, 2 fields                92632.2 ns/op  (min 90806.0, max 94143.6, n=1588)
+ark hash_with_kimchi, 10 fields              463043.5 ns/op  (min 454347.8, max 510869.6, n=322)
+fp9 Poseidon permutation                      44068.3 ns/op  (min 43271.7, max 48051.2, n=3515)
+fp9 hash, 2 fields, lazy, no cond. sub.       36421.6 ns/op  (min 35381.7, max 37367.1, n=4231)
+fp9 hash, 2 fields, arkworks Fp in and out      36812.2 ns/op  (min 34961.8, max 39156.2, n=4053)
+fp9 hash, 10 fields, arkworks Fp in and out     181104.3 ns/op  (min 177546.0, max 189570.6, n=815)
+fp9 hash, 10 fields, lazy, no cond. sub.     173974.5 ns/op  (min 170862.8, max 178925.0, n=707)

@@ -189,10 +189,12 @@ impl SnarkPoolCandidatesState {
                 let dispatcher = state_context.into_dispatcher();
 
                 for snark in batch {
-                    dispatcher.push(SnarkPoolAction::WorkAdd {
-                        snark: snark.clone(),
+                    dispatcher.push(SnarkPoolAction::WorkCheck {
+                        work: snark.clone(),
                         sender: *peer_id,
                         is_sender_local: false,
+                        stage: crate::snark_pool::AdmissionStage::Verified,
+                        retry: false,
                     });
                 }
             }

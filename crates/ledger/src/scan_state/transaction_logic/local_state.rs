@@ -8,7 +8,10 @@ use super::{
 use crate::{
     proofs::{
         field::{field, Boolean, ToBoolean},
-        numbers::nat::CheckedNat,
+        numbers::{
+            currency::{CheckedAmount, CheckedSigned},
+            nat::CheckedNat,
+        },
         to_field_elements::ToFieldElements,
         witness::Witness,
     },
@@ -221,6 +224,10 @@ impl StackFrame {
         v
     }
 
+    /// The frame's values as `Stack_frame.unhash` makes them exist: a record,
+    /// whose fields OCaml evaluates last first (calls, caller_caller, caller).
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark/transaction_snark.ml#L1139-L1167>
     pub fn exists_elt(&self, w: &mut Witness<Fp>) -> StackFrameChecked {
         // We decompose this way because of OCaml evaluation order
         let calls = WithHash {
@@ -229,6 +236,32 @@ impl StackFrame {
         };
         let caller_caller = w.exists(self.caller_caller.clone());
         let caller = w.exists(self.caller.clone());
+
+        let frame = StackFrameCheckedFrame {
+            caller,
+            caller_caller,
+            calls,
+            is_default: false,
+        };
+
+        StackFrameChecked::of_frame(frame)
+    }
+
+    /// The frame's values as `Call_stack.exists_elt` makes them exist when a
+    /// frame is popped off the call stack: `let calls = .. and caller = .. and
+    /// caller_caller = ..`, which OCaml evaluates in order, unlike the record
+    /// of `Stack_frame.unhash` above. The two orders differ only for a frame
+    /// whose caller and caller's caller differ: one nested in a token owner's
+    /// calls.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark/transaction_snark.ml#L1227-L1247>
+    pub fn exists_popped_elt(&self, w: &mut Witness<Fp>) -> StackFrameChecked {
+        let calls = WithHash {
+            data: self.calls.clone(),
+            hash: w.exists(self.calls.hash()),
+        };
+        let caller = w.exists(self.caller.clone());
+        let caller_caller = w.exists(self.caller_caller.clone());
 
         let frame = StackFrameCheckedFrame {
             caller,
@@ -481,14 +514,36 @@ impl LocalState {
             && will_succeed == &other.will_succeed
     }
 
-    pub fn checked_equal_prime(&self, other: &Self, w: &mut Witness<Fp>) -> [Boolean; 11] {
+    /// The variables of this local state's signed amounts, for
+    /// [`Self::checked_equal_prime`].
+    pub fn signed_amounts_var(&self) -> LocalStateSignedAmountsVar {
+        LocalStateSignedAmountsVar {
+            excess: self.excess.to_checked(),
+            supply_increase: self.supply_increase.to_checked(),
+        }
+    }
+
+    /// `Local_state.Checked.equal'`: one boolean per field, in the order the
+    /// OCaml fold builds its list. `amounts` and `other_amounts` are the
+    /// variables of `self`'s and `other`'s signed amounts
+    /// ([`Self::signed_amounts_var`]): a value they have already computed is
+    /// not pushed again.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_state/local_state.ml#L172-L185>
+    pub fn checked_equal_prime(
+        &self,
+        amounts: &LocalStateSignedAmountsVar,
+        other: &Self,
+        other_amounts: &LocalStateSignedAmountsVar,
+        w: &mut Witness<Fp>,
+    ) -> [Boolean; 11] {
         let Self {
             stack_frame,
             call_stack,
             transaction_commitment,
             full_transaction_commitment,
-            excess,
-            supply_increase,
+            excess: _,
+            supply_increase: _,
             ledger,
             success,
             account_update_index,
@@ -518,12 +573,10 @@ impl LocalState {
                 other.full_transaction_commitment,
                 w,
             ),
-            excess
-                .to_checked::<Fp>()
-                .equal(&other.excess.to_checked(), w),
-            supply_increase
-                .to_checked::<Fp>()
-                .equal(&other.supply_increase.to_checked(), w),
+            amounts.excess.equal(&other_amounts.excess, w),
+            amounts
+                .supply_increase
+                .equal(&other_amounts.supply_increase, w),
             field::equal(*ledger, other.ledger, w),
             success.to_boolean().equal(&other.success.to_boolean(), w),
             account_update_index
@@ -537,6 +590,19 @@ impl LocalState {
         alls.reverse();
         alls
     }
+}
+
+/// The two signed amounts of a local state, `excess` and `supply_increase`, as
+/// circuit variables. An OCaml signed amount variable computes its field value
+/// once and caches it (`Currency.Amount.Signed.Checked.value`), so a circuit
+/// that compares the same local state twice pushes each value once only if it
+/// compares the same variables both times, as the blockchain step does since
+/// Mesa.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/currency/currency.ml#L550-L560>
+pub struct LocalStateSignedAmountsVar {
+    pub excess: CheckedSigned<Fp, CheckedAmount<Fp>>,
+    pub supply_increase: CheckedSigned<Fp, CheckedAmount<Fp>>,
 }
 
 fn step_all<A, L>(

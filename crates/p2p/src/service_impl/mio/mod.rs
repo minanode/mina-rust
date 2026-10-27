@@ -491,7 +491,7 @@ where
                         // TODO: upper bound? resize to `limit` or try to allocate some extra space too?
                         self.recv_buf.resize(limit, 0);
 
-                        mina_core::warn!(
+                        mina_core::debug!(
                             mina_core::log::system_time();
                             summary = format!("Increasing buffer size to {}kb", limit / 1024)
                         );

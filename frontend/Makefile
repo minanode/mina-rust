@@ -3,6 +3,14 @@
 # These are threaded from the outside env into build-webnode[-production]
 MINA_WEBNODE_SEED_URLS ?=
 MINA_WEBNODE_BOOTNODES ?=
+MINA_WEBNODE_NETWORK ?=
+MINA_WEBNODE_GENESIS_URL ?=
+
+# For the webnode and native builds: controls that act on the chain, empty for
+# a view-only build (the default), or a comma-separated list of producer and
+# send, or all. And the commit stamped into the page footer.
+MINA_FRONTEND_CONTROLS ?=
+MINA_FRONTEND_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null)
 
 .PHONY: help
 help: ## Display this help message
@@ -32,6 +40,10 @@ build-webnode: ## Build the frontend with webnode configuration
 	npx ng build \
 	  --define MINA_WEBNODE_SEED_URLS="\"$(MINA_WEBNODE_SEED_URLS)\"" \
 	  --define MINA_WEBNODE_BOOTNODES="\"$(MINA_WEBNODE_BOOTNODES)\"" \
+	  --define MINA_WEBNODE_NETWORK="\"$(MINA_WEBNODE_NETWORK)\"" \
+	  --define MINA_WEBNODE_GENESIS_URL="\"$(MINA_WEBNODE_GENESIS_URL)\"" \
+	  --define MINA_FRONTEND_CONTROLS="\"$(MINA_FRONTEND_CONTROLS)\"" \
+	  --define MINA_FRONTEND_COMMIT="\"$(MINA_FRONTEND_COMMIT)\"" \
 	  --configuration webnode-local
 	cp dist/frontend/browser/assets/environments/webnode.js \
 		dist/frontend/browser/assets/environments/env.js
@@ -41,9 +53,20 @@ build-webnode-production: ## Build the frontend with webnode configuration and o
 	npx ng build \
 	  --define MINA_WEBNODE_SEED_URLS="\"$(MINA_WEBNODE_SEED_URLS)\"" \
 	  --define MINA_WEBNODE_BOOTNODES="\"$(MINA_WEBNODE_BOOTNODES)\"" \
+	  --define MINA_WEBNODE_NETWORK="\"$(MINA_WEBNODE_NETWORK)\"" \
+	  --define MINA_WEBNODE_GENESIS_URL="\"$(MINA_WEBNODE_GENESIS_URL)\"" \
+	  --define MINA_FRONTEND_CONTROLS="\"$(MINA_FRONTEND_CONTROLS)\"" \
+	  --define MINA_FRONTEND_COMMIT="\"$(MINA_FRONTEND_COMMIT)\"" \
 	  --configuration webnode-production
 	cp dist/frontend/browser/assets/environments/webnode.js \
 		dist/frontend/browser/assets/environments/env.js
+
+.PHONY: build-native
+build-native: ## Build the read-only dashboard for a native node
+	npx ng build \
+	  --define MINA_FRONTEND_CONTROLS="\"$(MINA_FRONTEND_CONTROLS)\"" \
+	  --define MINA_FRONTEND_COMMIT="\"$(MINA_FRONTEND_COMMIT)\"" \
+	  --configuration native
 
 .PHONY: check-prettify
 check-prettify: ## Check if files are formatted with Prettier

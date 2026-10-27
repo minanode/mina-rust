@@ -35,6 +35,9 @@ export class StateActionsToolbarComponent
   earliestSlot: number;
   currentSort: TableSort<StateActionGroup>;
   formGroup: FormGroup;
+  get minRetainedSlot(): number {
+    return Math.max(0, (this.earliestSlot ?? 0) - 63);
+  }
 
   constructor(
     private fb: FormBuilder,
@@ -62,6 +65,12 @@ export class StateActionsToolbarComponent
   }
 
   getSlot(slot: number): void {
+    if (!Number.isSafeInteger(slot) || slot < 0) {
+      return;
+    }
+    if (this.earliestSlot !== undefined) {
+      slot = Math.min(this.earliestSlot, Math.max(this.minRetainedSlot, slot));
+    }
     this.dispatch(StateActionsGetActions, { slot });
     this.router.navigate([Routes.STATE, Routes.ACTIONS, slot], {
       queryParamsHandling: 'merge',

@@ -4,9 +4,18 @@
   background-color: mina-rust.$base-background;
 }
 
+// One scroll area, so the cards and the panels below them stay reachable
+// on short and narrow screens.
+.body {
+  min-height: 0;
+}
+
+// Fills the height left by the panels; the panels' own 12px margins set the
+// gutters, so the cards line up with them.
 .comps {
-  gap: 8px;
-  padding-right: 8px;
+  flex: 1 0 auto;
+  gap: 12px;
+  padding: 0 12px;
 }
 
 mina-dashboard-network {

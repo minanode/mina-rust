@@ -32,7 +32,10 @@ pub struct GraphQLWorkDescription {
     pub supply_change: GraphQLSupplyChange,
     /// Increase in total supply
     pub supply_increase: String,
-    /// Unique identifier for a snark work
+    /// Unique identifier for a snark work: OCaml's
+    /// `Transaction_snark.Statement.hash` of the statement.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L610-L613>
     pub work_id: i32,
 }
 
@@ -77,7 +80,7 @@ impl TryFrom<AvailableJobMessage> for GraphQLWorkDescription {
         match value {
             ParallelScanAvailableJob::Base(base) => GraphQLWorkDescription::try_from(base),
             ParallelScanAvailableJob::Merge { left, .. } => {
-                GraphQLWorkDescription::try_from(left.0 .0)
+                GraphQLWorkDescription::try_from(left.0)
             }
         }
     }
@@ -129,7 +132,7 @@ impl TryFrom<TransactionSnarkScanStateTransactionWithWitnessStableV2> for GraphQ
             fee_excess: GraphQLFeeExcesses::try_from(value.statement.fee_excess.clone())?,
             supply_change: GraphQLSupplyChange::try_from(value.statement.supply_increase.clone())?,
             supply_increase: value.statement.supply_increase.magnitude.to_string(),
-            work_id: 0,
+            work_id: super::work_id::work_id(&value.statement.0),
         })
     }
 }
@@ -146,7 +149,7 @@ impl TryFrom<TransactionSnarkStableV2> for GraphQLWorkDescription {
             fee_excess: GraphQLFeeExcesses::try_from(value.statement.fee_excess.clone())?,
             supply_change: GraphQLSupplyChange::try_from(value.statement.supply_increase.clone())?,
             supply_increase: value.statement.supply_increase.magnitude.to_string(),
-            work_id: 0,
+            work_id: super::work_id::work_id_with_sok(&value.statement),
         })
     }
 }

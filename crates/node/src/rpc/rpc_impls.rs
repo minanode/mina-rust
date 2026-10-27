@@ -40,3 +40,26 @@ impl From<ExternalSnarkWorkerState> for RpcSnarkWorkerStatus {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::external_snark_worker::ExternalSnarkWorkerError;
+
+    #[test]
+    fn worker_prover_load_error_is_visible_in_status() {
+        let reason = "could not make the transaction provers: cannot load circuit file 4.0.2devnet/step_transaction_gates.json: test circuit blob missing";
+        let status: RpcSnarkWorkerStatus = ExternalSnarkWorkerState::Error(
+            ExternalSnarkWorkerError::Error(reason.to_owned()),
+            false,
+        )
+        .into();
+        match status {
+            RpcSnarkWorkerStatus::Error { error, permanent } => {
+                assert!(!permanent);
+                assert!(error.to_string().contains(reason));
+            }
+            other => panic!("expected error status, got {other:?}"),
+        }
+    }
+}

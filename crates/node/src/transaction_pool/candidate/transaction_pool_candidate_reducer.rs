@@ -3,7 +3,7 @@
 use crate::{
     p2p::{
         channels::rpc::{P2pChannelsRpcAction, P2pRpcId, P2pRpcRequest},
-        PeerId,
+        BroadcastMessageId, P2pNetworkPubsubAction, PeerId,
     },
     p2p_ready, TransactionPoolAction,
 };
@@ -18,11 +18,35 @@ impl TransactionPoolCandidatesState {
         mut state_context: crate::Substate<Self>,
         action: TransactionPoolCandidateActionWithMetaRef<'_>,
     ) {
+        let (action, meta) = action.split();
+
+        // While bootstrapping there is no ledger to judge gossip against:
+        // drop it now, rather than queue it until the sync ends (OCaml
+        // refuses it too, without penalty).
+        if let TransactionPoolCandidateAction::Libp2pTransactionsReceived { message_id, .. } =
+            action
+        {
+            if state_context
+                .unsafe_get_state()
+                .transition_frontier
+                .is_bootstrapping(meta.time())
+            {
+                state_context
+                    .into_dispatcher()
+                    .push(P2pNetworkPubsubAction::IgnoreMessage {
+                        message_id: Some(BroadcastMessageId::MessageId {
+                            message_id: *message_id,
+                        }),
+                        reason: "bootstrapping".to_owned(),
+                    });
+                return;
+            }
+        }
+
         let Ok(state) = state_context.get_substate_mut() else {
             // TODO: log or propagate
             return;
         };
-        let (action, meta) = action.split();
 
         match action {
             TransactionPoolCandidateAction::InfoReceived { peer_id, info } => {

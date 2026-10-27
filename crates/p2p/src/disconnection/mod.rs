@@ -44,3 +44,49 @@ pub enum P2pDisconnectionReason {
     #[error("invalid pubsub message")]
     InvalidMessage,
 }
+
+impl P2pDisconnectionReason {
+    /// Reasons that indicate invalid peer data or a protocol violation.
+    pub fn is_misbehaviour(&self) -> bool {
+        matches!(
+            self,
+            Self::P2pChannelMsgUnexpected(_)
+                | Self::TransitionFrontierSyncLedgerSnarkedNumAccountsRejected
+                | Self::SnarkPoolVerifyError
+                | Self::Unsupported
+                | Self::InvalidMessage
+        ) || matches!(
+            self,
+            Self::Libp2pIncomingRejected(
+                RejectionReason::PeerIdAndPublicKeyMismatch | RejectionReason::TargetPeerIdNotMe
+            )
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disconnection_levels_follow_peer_misbehaviour() {
+        assert!(P2pDisconnectionReason::SnarkPoolVerifyError.is_misbehaviour());
+        assert!(P2pDisconnectionReason::InvalidMessage.is_misbehaviour());
+        assert!(P2pDisconnectionReason::Unsupported.is_misbehaviour());
+        assert!(P2pDisconnectionReason::Libp2pIncomingRejected(
+            RejectionReason::PeerIdAndPublicKeyMismatch
+        )
+        .is_misbehaviour());
+        assert!(!P2pDisconnectionReason::FreeUpSpace.is_misbehaviour());
+        assert!(!P2pDisconnectionReason::DuplicateConnection.is_misbehaviour());
+        assert!(!P2pDisconnectionReason::P2pChannelClosed(ChannelId::Rpc).is_misbehaviour());
+        assert!(
+            !P2pDisconnectionReason::Libp2pIncomingRejected(RejectionReason::PeerCapacityFull)
+                .is_misbehaviour()
+        );
+        assert!(
+            !P2pDisconnectionReason::Libp2pIncomingRejected(RejectionReason::AlreadyConnected)
+                .is_misbehaviour()
+        );
+    }
+}

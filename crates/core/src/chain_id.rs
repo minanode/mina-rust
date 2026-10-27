@@ -223,23 +223,30 @@ impl ChainId {
     ///
     /// # Example
     ///
-    /// ```rust
-    /// use mina_core::ChainId;
-    /// use mina_p2p_messages::v2::UnsignedExtendedUInt32StableV1;
+    /// The Mesa devnet chain id. The genesis state hash is the one OCaml
+    /// hashes into the chain id: the genesis state with zero total
+    /// currencies.
     ///
-    /// # // Use actual devnet values for the example
-    /// # let constraint_digests = mina_core::network::devnet::CONSTRAINT_SYSTEM_DIGESTS;
-    /// # let genesis_hash: mina_p2p_messages::v2::StateHash =
-    /// #     "3NL93SipJfAMNDBRfQ8Uo8LPovC74mnJZfZYB5SK7mTtkL72dsPx".parse().unwrap();
-    /// # let protocol_constants = mina_core::constants::PROTOCOL_CONSTANTS.clone();
+    /// ```rust
+    /// use mina_core::{constants::PROTOCOL_CONSTANTS, ChainId, DEVNET_CHAIN_ID};
+    /// use mina_p2p_messages::v2::{StateHash, UnsignedExtendedUInt32StableV1};
+    /// use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+    ///
+    /// let constraint_digests = mina_core::network::devnet::CONSTRAINT_SYSTEM_DIGESTS;
+    /// let genesis_hash: StateHash =
+    ///     "3NL4SkiA4eULVQWPGe4LVBn4Goixk3icTD2886iT4y23HRrTPrwN".parse().unwrap();
+    /// let mut protocol_constants = PROTOCOL_CONSTANTS.clone();
+    /// protocol_constants.genesis_state_timestamp =
+    ///     OffsetDateTime::parse("2026-08-19T18:00:00Z", &Rfc3339).unwrap().into();
     /// let chain_id = ChainId::compute(
     ///     &constraint_digests,
     ///     &genesis_hash,
     ///     &protocol_constants,
-    ///     1,  // transaction version
-    ///     1,  // network version
+    ///     4, // transaction version
+    ///     0, // network version
     ///     &UnsignedExtendedUInt32StableV1::from(3000),
     /// );
+    /// assert_eq!(chain_id, DEVNET_CHAIN_ID);
     /// ```
     pub fn compute(
         constraint_system_digests: &[Md5],
@@ -473,7 +480,11 @@ impl Debug for ChainId {
 ///
 /// # Hex Representation
 ///
-/// `29936104443aaf264a7f0192ac64b1c7173198c1ed404c1bcff5e562e05eb7f6`
+/// `ebfce0d570bc22eb041e1a7b0a46bbc3ed5d0a1030ef2ab5e36eef908b93eba8`
+///
+/// This is the Mesa (4.0.x) devnet chain id, as `mina internal chain-id`
+/// prints it with the 4.0.2 devnet profile and config. The Berkeley devnet one
+/// was `29936104443aaf264a7f0192ac64b1c7173198c1ed404c1bcff5e562e05eb7f6`.
 ///
 /// # Usage
 ///
@@ -484,8 +495,8 @@ impl Debug for ChainId {
 /// let psk = DEVNET_CHAIN_ID.preshared_key();
 /// ```
 pub const DEVNET_CHAIN_ID: ChainId = ChainId([
-    0x29, 0x93, 0x61, 0x04, 0x44, 0x3a, 0xaf, 0x26, 0x4a, 0x7f, 0x01, 0x92, 0xac, 0x64, 0xb1, 0xc7,
-    0x17, 0x31, 0x98, 0xc1, 0xed, 0x40, 0x4c, 0x1b, 0xcf, 0xf5, 0xe5, 0x62, 0xe0, 0x5e, 0xb7, 0xf6,
+    0xeb, 0xfc, 0xe0, 0xd5, 0x70, 0xbc, 0x22, 0xeb, 0x04, 0x1e, 0x1a, 0x7b, 0x0a, 0x46, 0xbb, 0xc3,
+    0xed, 0x5d, 0x0a, 0x10, 0x30, 0xef, 0x2a, 0xb5, 0xe3, 0x6e, 0xef, 0x90, 0x8b, 0x93, 0xeb, 0xa8,
 ]);
 
 /// Chain ID for the Mina production network (Mainnet).
@@ -506,7 +517,7 @@ pub const DEVNET_CHAIN_ID: ChainId = ChainId([
 ///
 /// # Hex Representation
 ///
-/// `a7351abc7ddf2ea92d1b38cc8e636c271c1dfd2c081c637f62ebc2af34eb7cc1`
+/// `0718f61ab88f9d0fa643ff4dc3a3d5998dd6d51a6008b2b0339b0dbb26133886`
 ///
 /// # Usage
 ///
@@ -517,8 +528,8 @@ pub const DEVNET_CHAIN_ID: ChainId = ChainId([
 /// let psk = MAINNET_CHAIN_ID.preshared_key();
 /// ```
 pub const MAINNET_CHAIN_ID: ChainId = ChainId([
-    0xa7, 0x35, 0x1a, 0xbc, 0x7d, 0xdf, 0x2e, 0xa9, 0x2d, 0x1b, 0x38, 0xcc, 0x8e, 0x63, 0x6c, 0x27,
-    0x1c, 0x1d, 0xfd, 0x2c, 0x08, 0x1c, 0x63, 0x7f, 0x62, 0xeb, 0xc2, 0xaf, 0x34, 0xeb, 0x7c, 0xc1,
+    0x07, 0x18, 0xf6, 0x1a, 0xb8, 0x8f, 0x9d, 0x0f, 0xa6, 0x43, 0xff, 0x4d, 0xc3, 0xa3, 0xd5, 0x99,
+    0x8d, 0xd6, 0xd5, 0x1a, 0x60, 0x08, 0xb2, 0xb0, 0x33, 0x9b, 0x0d, 0xbb, 0x26, 0x13, 0x38, 0x86,
 ]);
 
 #[cfg(test)]
@@ -530,14 +541,18 @@ mod test {
 
     #[test]
     fn test_devnet_chain_id() {
-        // First block after fork: https://devnet.minaexplorer.com/block/3NL93SipJfAMNDBRfQ8Uo8LPovC74mnJZfZYB5SK7mTtkL72dsPx
-        let genesis_state_hash = "3NL93SipJfAMNDBRfQ8Uo8LPovC74mnJZfZYB5SK7mTtkL72dsPx"
+        // The chain id hashes the Mesa genesis state with zero total
+        // currencies, not the real Mesa genesis block
+        // 3NLT7n4LiVo6U4LXr9BjCEp9712fP61uXkRC6hnRnB682A8f4HrJ. Read from the
+        // chain id input of `mina internal chain-id` with the 4.0.2 devnet
+        // profile and config (`scripts/ocaml-chain-id-trace.sh devnet`).
+        let genesis_state_hash = "3NL4SkiA4eULVQWPGe4LVBn4Goixk3icTD2886iT4y23HRrTPrwN"
             .parse()
             .unwrap();
 
         let mut protocol_constants = PROTOCOL_CONSTANTS.clone();
         protocol_constants.genesis_state_timestamp =
-            OffsetDateTime::parse("2024-04-09T21:00:00Z", &Rfc3339)
+            OffsetDateTime::parse("2026-08-19T18:00:00Z", &Rfc3339)
                 .unwrap()
                 .into();
 
@@ -555,14 +570,16 @@ mod test {
 
     #[test]
     fn test_mainnet_chain_id() {
-        // First block after fork: https://www.minaexplorer.com/block/3NK4BpDSekaqsG6tx8Nse2zJchRft2JpnbvMiog55WCr5xJZaKeP
-        let genesis_state_hash = "3NK4BpDSekaqsG6tx8Nse2zJchRft2JpnbvMiog55WCr5xJZaKeP"
+        // The chain id hashes the Mesa genesis state with zero total
+        // currencies, not the real Mesa genesis block
+        // 3NLntCRR9RvjtzP24Q1dRvdhmpjiPvfKGaJmAZuJgYoqGpevqDR7.
+        let genesis_state_hash = "3NLuZAmwT1EZ6M67SZn7PtNyfvThgevbd7EJmJJxq1yMG4itvkRH"
             .parse()
             .unwrap();
 
         let mut protocol_constants = PROTOCOL_CONSTANTS.clone();
         protocol_constants.genesis_state_timestamp =
-            OffsetDateTime::parse("2024-06-05T00:00:00Z", &Rfc3339)
+            OffsetDateTime::parse("2026-09-03T18:00:00Z", &Rfc3339)
                 .unwrap()
                 .into();
 
@@ -582,7 +599,7 @@ mod test {
     fn test_devnet_chain_id_as_hex() {
         assert_eq!(
             DEVNET_CHAIN_ID.to_hex(),
-            "29936104443aaf264a7f0192ac64b1c7173198c1ed404c1bcff5e562e05eb7f6"
+            "ebfce0d570bc22eb041e1a7b0a46bbc3ed5d0a1030ef2ab5e36eef908b93eba8"
         );
     }
 
@@ -590,7 +607,7 @@ mod test {
     fn test_mainnet_chain_id_as_hex() {
         assert_eq!(
             MAINNET_CHAIN_ID.to_hex(),
-            "a7351abc7ddf2ea92d1b38cc8e636c271c1dfd2c081c637f62ebc2af34eb7cc1"
+            "0718f61ab88f9d0fa643ff4dc3a3d5998dd6d51a6008b2b0339b0dbb26133886"
         );
     }
 }

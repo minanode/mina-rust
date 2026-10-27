@@ -1,0 +1,47 @@
+{
+ "data": {
+  "account": {
+   "balance": {
+    "blockHeight": "564495",
+    "liquid": "6500000000",
+    "locked": "0",
+    "total": "6500000000"
+   },
+   "delegate": "B62qkAhMYM7NWh2M5MABFwpNoqgzoweHr3bv6srWM43bwQMh2pVG82U",
+   "nonce": "0",
+   "permissions": {
+    "access": "None",
+    "editActionState": "Signature",
+    "editState": "Signature",
+    "incrementNonce": "Signature",
+    "receive": "None",
+    "send": "Signature",
+    "setDelegate": "Signature",
+    "setPermissions": "Signature",
+    "setTiming": "Signature",
+    "setTokenSymbol": "Signature",
+    "setVerificationKey": {
+     "auth": "Signature",
+     "txnVersion": "4"
+    },
+    "setVotingFor": "Signature",
+    "setZkappUri": "Signature"
+   },
+   "provedState": null,
+   "publicKey": "B62qkAhMYM7NWh2M5MABFwpNoqgzoweHr3bv6srWM43bwQMh2pVG82U",
+   "receiptChainHash": "2mzbV7WevxLuchs2dAMY4vQBS6XttnCUF8Hvks4XNBQ5qiSGGBQe",
+   "timing": {
+    "cliffAmount": null,
+    "cliffTime": null,
+    "initialMinimumBalance": null,
+    "vestingIncrement": null,
+    "vestingPeriod": null
+   },
+   "tokenId": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+   "tokenSymbol": "",
+   "votingFor": "2mzWc7ZF8hRKvLyoLpKLZ3TSm8XSjfxZq67dphJpnjhYmU5Vja5Q",
+   "zkappState": null,
+   "zkappUri": null
+  }
+ }
+}

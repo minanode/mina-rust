@@ -117,9 +117,17 @@ title="website/docs/developers/scripts/graphql-api/queries/curl/sync-status.sh"
 
 ### Interactive Exploration
 
-The node provides an interactive GraphQL explorer:
+Point any GraphQL client at `http://localhost:3000/graphql`: a desktop app, a
+library or curl. The node dashboard's GraphQL page (`/graphql-endpoint`) shows
+the endpoint and a curl example. A web explorer served over https can't reach a
+node served over plain http (the browser blocks mixed content), so use one that
+runs on your computer.
 
-- **GraphiQL**: http://localhost:3000/graphiql
+The node doesn't serve GraphiQL by default: its page loads scripts from a CDN,
+which would then run on the node's own address, where they could change the
+SNARK worker. A developer build can add it at `/graphiql` with
+`cargo build --release -p mina-cli --features mina-node-native/graphiql`; even
+then the node doesn't serve it while `--allow-worker-control` is on.
 
 ## API Endpoints
 
@@ -208,9 +216,10 @@ title="website/docs/developers/scripts/graphql-api/queries/curl/version.sh"
 
 #### Blockchain Data
 
-##### `bestChain(maxLength: Int!)`
+##### `bestChain(maxLength: Int)`
 
-Get the best chain blocks up to specified length.
+Get the blocks of the best chain, oldest first: the `maxLength` closest to the
+best tip, or the whole chain from the transition frontier's root without it.
 
 <Tabs>
 <TabItem value="graphql" label="GraphQL Query" default>
@@ -302,9 +311,10 @@ title="website/docs/developers/scripts/graphql-api/queries/curl/genesis-constant
 
 #### Account Information
 
-##### `account(publicKey: String!, token: String)`
+##### `account(publicKey: PublicKey!, token: TokenId)`
 
-Get account information by public key.
+Get account information by public key, for the MINA token unless `token` is
+given. It is `null` for an account that is not in the ledger.
 
 <Tabs>
 <TabItem value="graphql" label="GraphQL Query" default>
@@ -327,7 +337,7 @@ title="website/docs/developers/scripts/graphql-api/queries/curl/account.sh"
 
 #### Transaction Pool
 
-##### `pooledUserCommands(publicKey: String, hashes: [String], ids: [String])`
+##### `pooledUserCommands(publicKey: PublicKey, hashes: [String!], ids: [ID!])`
 
 Get pending user commands (payments/delegations) from the transaction pool.
 
@@ -350,7 +360,7 @@ title="website/docs/developers/scripts/graphql-api/queries/curl/pooled-user-comm
 </TabItem>
 </Tabs>
 
-##### `pooledZkappCommands(publicKey: String, hashes: [String], ids: [String])`
+##### `pooledZkappCommands(publicKey: PublicKey, hashes: [String!], ids: [ID!])`
 
 Get pending zkApp commands from the transaction pool.
 
@@ -375,7 +385,7 @@ title="website/docs/developers/scripts/graphql-api/queries/curl/pooled-zkapp-com
 
 #### Transaction Status
 
-##### `transactionStatus(payment: String, zkappTransaction: String)`
+##### `transactionStatus(payment: ID, zkappTransaction: ID)`
 
 Get the status of a specific transaction.
 
@@ -720,7 +730,7 @@ This command dynamically queries the GraphQL server and displays:
 To query a remote node, use the `--node` flag:
 
 ```bash
-mina internal graphql list --node http://remote-node:3000/graphql
+mina internal graphql list --node http://remote-node:3000
 ```
 
 #### Inspect Endpoint Schema
@@ -819,7 +829,8 @@ The `run` command supports three input methods:
 You can combine any input method with:
 
 - `-v` or `--variables`: Pass variables as JSON string
-- `--node`: Specify a custom GraphQL endpoint URL
+- `--node`: The node's HTTP base URL (or `MINA_NODE_URL`; default
+  `http://localhost:3000`); requests go to `<URL>/graphql`
 
 These tools are particularly useful for:
 
@@ -835,13 +846,13 @@ o1Labs' devnet OCaml nodes to explore the GraphQL API:
 
 ```bash
 # List all endpoints on an OCaml node
-mina internal graphql list --node https://devnet-plain-1.gcp.o1test.net/graphql
+mina internal graphql list --node https://devnet-plain-1.gcp.o1test.net
 
 # Inspect a specific endpoint
-mina internal graphql inspect daemonStatus --node https://devnet-plain-1.gcp.o1test.net/graphql
+mina internal graphql inspect daemonStatus --node https://devnet-plain-1.gcp.o1test.net
 
 # Run a query against an OCaml node
-mina internal graphql run 'query { syncStatus }' --node https://devnet-plain-1.gcp.o1test.net/graphql
+mina internal graphql run 'query { syncStatus }' --node https://devnet-plain-1.gcp.o1test.net
 ```
 
 This is useful for:

@@ -741,7 +741,11 @@ impl Mutator<ZkAppCommand> for FuzzerCtx {
 
         if self.gen.rng.gen_bool(0.9) {
             if let Some(keypair) = self.find_keypair(&t.fee_payer.body.public_key) {
-                t.fee_payer.authorization = signer.sign(keypair, &full_txn_commitment, false);
+                t.fee_payer.authorization = signer.sign(
+                    keypair,
+                    &full_txn_commitment,
+                    mina_signer::NonceMode::Legacy,
+                );
             }
         }
 

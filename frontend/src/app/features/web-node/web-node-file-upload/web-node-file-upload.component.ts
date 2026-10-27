@@ -4,15 +4,27 @@ import {
   EventEmitter,
   Output,
 } from '@angular/core';
-import { WebNodeService } from '@core/services/web-node.service';
+import {
+  SnarkerSettings,
+  WebNodeService,
+} from '@core/services/web-node.service';
 import * as JSZip from 'jszip';
 import { ManualDetection, MinaRustSharedModule } from '@mina-rust/shared';
 import { animate, style, transition, trigger } from '@angular/animations';
-import { CONFIG } from '@shared/constants/config';
+import { CONFIG, nodeSupportsPage } from '@shared/constants/config';
+import { Store } from '@ngrx/store';
+import { Router } from '@angular/router';
+import { take } from 'rxjs';
+import { MinaState } from '@app/app.setup';
+import { AppActions } from '@app/app.actions';
+import { AppSelectors } from '@app/app.state';
+import { AppService } from '@app/app.service';
+import { MinaNode } from '@shared/types/core/environment/mina-env.type';
+import { BrandLogoComponent } from '@shared/components/brand-logo/brand-logo.component';
 
 @Component({
   selector: 'mina-web-node-file-upload',
-  imports: [MinaRustSharedModule],
+  imports: [MinaRustSharedModule, BrandLogoComponent],
   templateUrl: './web-node-file-upload.component.html',
   styleUrl: './web-node-file-upload.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -31,12 +43,54 @@ import { CONFIG } from '@shared/constants/config';
 })
 export class WebNodeFileUploadComponent extends ManualDetection {
   @Output() startWebNode: EventEmitter<void> = new EventEmitter<void>();
+  /** No key upload or producer start in a view-only build (R26g). */
+  readonly viewOnly: boolean = !CONFIG.controls?.producer;
+  readonly network: string = CONFIG.globalConfig?.webNodeNetwork ?? 'devnet';
+  /** P5.3: this build lets the web node sell SNARK work for a public key. */
+  readonly snarkerControl: boolean = !!CONFIG.controls?.snarker;
+  snarkerKeyError: string | null = null;
+  snarkerFeeError: string | null = null;
+  private snarkerKey: string | null = null;
+  private snarkerFee: string | undefined;
   validFiles: boolean = false;
   error: boolean = false;
   uploadedFileName: string;
+  /**
+   * A native node whose block explorer this page offers next to the web
+   * node (R27 #3): it opens at once, while the web node takes minutes.
+   */
+  readonly explorerNode: MinaNode | undefined;
 
-  constructor(private webnodeService: WebNodeService) {
+  constructor(
+    private webnodeService: WebNodeService,
+    private store: Store<MinaState>,
+    private router: Router,
+    appService: AppService,
+  ) {
     super();
+    this.explorerNode = appService
+      .nodes()
+      .find(node => !node.isWebNode && nodeSupportsPage(node, 'blocks'));
+  }
+
+  openExplorer(): void {
+    const node = this.explorerNode;
+    this.store.dispatch(AppActions.changeActiveNode({ node }));
+    // After the node change's own navigation, which this one replaces.
+    this.router.navigate(['/blocks'], { queryParams: { node: node.name } });
+  }
+
+  /** The web node starts only as the selected node. */
+  private selectWebNode(): void {
+    this.store
+      .select(AppSelectors.activeNode)
+      .pipe(take(1))
+      .subscribe(active => {
+        const web = CONFIG.configs.find(node => node.isWebNode);
+        if (web && !active?.isWebNode) {
+          this.store.dispatch(AppActions.changeActiveNode({ node: web }));
+        }
+      });
   }
 
   startAutoWebNode(): void {
@@ -49,6 +103,7 @@ export class WebNodeFileUploadComponent extends ManualDetection {
   }
 
   onStartDevelopWebnodeNonBP(): void {
+    this.selectWebNode();
     this.webnodeService.blockProducerConfig = { mode: 'observer' };
     delete CONFIG.globalConfig.features['block-production'];
     this.startWebNode.emit();
@@ -107,6 +162,54 @@ export class WebNodeFileUploadComponent extends ManualDetection {
       this.error = true;
     }
     return fileContents;
+  }
+
+  /**
+   * The SNARK worker's public key. A private key is cleared at once and
+   * never shown: a worker needs only the key that receives its fees.
+   */
+  onSnarkerKey(input: HTMLInputElement): void {
+    const key = input.value.trim();
+    this.snarkerKeyError = null;
+    this.snarkerKey = null;
+    if (key.startsWith('EK')) {
+      input.value = '';
+      this.snarkerKeyError =
+        'That looks like a private key, so it was cleared. A SNARK worker ' +
+        'takes only the public key (B62...) that receives its fees.';
+    } else if (key && !/^B62[1-9A-HJ-NP-Za-km-z]{52}$/.test(key)) {
+      this.snarkerKeyError = 'Enter a public key: B62 and 52 more characters.';
+    } else if (key) {
+      this.snarkerKey = key;
+    }
+    this.updateSnarker();
+  }
+
+  /** The fee per bundle in MINA; empty for the default, 0.1. */
+  onSnarkerFee(input: HTMLInputElement): void {
+    const fee = input.value.trim();
+    this.snarkerFeeError = null;
+    if (fee && !/^(\d+\.?\d{0,9}|\.\d{1,9})$/.test(fee)) {
+      this.snarkerFeeError = 'Enter the fee in MINA, like 0.1.';
+      this.snarkerFee = undefined;
+    } else {
+      this.snarkerFee = fee || undefined;
+    }
+    this.updateSnarker();
+  }
+
+  /** A worker key with a producer key: the node runs no worker (P5.3). */
+  get snarkerWithProducer(): boolean {
+    return !!this.snarkerKey && this.validFiles;
+  }
+
+  private updateSnarker(): void {
+    const settings: SnarkerSettings | null =
+      this.snarkerKey && !this.snarkerFeeError
+        ? { publicKey: this.snarkerKey, fee: this.snarkerFee }
+        : null;
+    this.webnodeService.snarkerConfig = settings;
+    this.detect();
   }
 
   clearFiles(): void {

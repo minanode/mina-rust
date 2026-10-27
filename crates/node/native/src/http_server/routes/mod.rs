@@ -9,6 +9,13 @@ use super::{openapi, AppState};
 
 pub mod discovery;
 pub mod graphql;
+mod graphql_body;
+mod graphql_limits;
+mod graphql_ocaml;
+mod graphql_public;
+pub mod ledger;
+pub mod light;
+pub mod report;
 pub mod scan_state;
 pub mod snark_pool;
 pub mod snarker;
@@ -32,12 +39,24 @@ pub fn openapi_router() -> OpenApiRouter<AppState> {
         .merge(snark_pool::routes())
         .merge(snarker::routes())
         .merge(transaction::routes())
-        .merge(discovery::routes());
+        .merge(discovery::routes())
+        // LN2 light-client reads: on the operator router, so they follow the
+        // HTTP bind address (127.0.0.1 unless the operator opts in).
+        .merge(light::routes())
+        // Operator-only: R34 public_router must never merge these routes.
+        .merge(ledger::routes())
+        .merge(report::routes());
 
     #[cfg(feature = "p2p-webrtc")]
     let router = router.merge(webrtc::routes());
 
     router
+}
+
+/// Minimal public surface. GraphQL is registered separately with its policy.
+/// Never merge the operator router here: new private routes stay private.
+pub(super) fn public_router() -> OpenApiRouter<AppState> {
+    status::public_routes()
 }
 
 /// Returns the OpenAPI specification for the HTTP API.

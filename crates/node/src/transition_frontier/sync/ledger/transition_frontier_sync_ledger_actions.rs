@@ -16,6 +16,7 @@ pub type TransitionFrontierSyncLedgerActionWithMetaRef<'a> =
 #[derive(derive_more::From, Serialize, Deserialize, Debug, Clone, ActionEvent)]
 pub enum TransitionFrontierSyncLedgerAction {
     Init,
+    LocalSnarkedSuccess,
     Snarked(TransitionFrontierSyncLedgerSnarkedAction),
     Staged(TransitionFrontierSyncLedgerStagedAction),
     Success,
@@ -29,6 +30,12 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncLedgerActi
                 .sync
                 .ledger()
                 .is_some_and(|s| matches!(s, TransitionFrontierSyncLedgerState::Init { .. })),
+            TransitionFrontierSyncLedgerAction::LocalSnarkedSuccess => {
+                state.transition_frontier.sync.ledger().is_some_and(|s| {
+                    matches!(s, TransitionFrontierSyncLedgerState::Init { .. })
+                        || s.snarked().is_some_and(|snarked| snarked.is_pending())
+                })
+            }
             TransitionFrontierSyncLedgerAction::Snarked(a) => a.is_enabled(state, time),
             TransitionFrontierSyncLedgerAction::Staged(a) => a.is_enabled(state, time),
             TransitionFrontierSyncLedgerAction::Success => {

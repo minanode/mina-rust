@@ -9,21 +9,17 @@ use mina_curves::pasta::Fp;
 use mina_p2p_messages::{
     binprot,
     v2::{
-        MinaStateProtocolStateValueStableV2,
-        TransactionSnarkScanStateLedgerProofWithSokMessageStableV2,
+        LedgerProofProdStableV2, MinaStateProtocolStateValueStableV2,
         TransactionSnarkScanStateTransactionWithWitnessStableV2,
     },
 };
-use mina_signer::CompressedPubKey;
 use sha2::Sha256;
 
 use crate::{
     scan_state::{
         parallel_scan::{base, merge, JobStatus},
         pending_coinbase,
-        scan_state::transaction_snark::{
-            LedgerProofWithSokMessage, SokMessage, Statement, TransactionWithWitness,
-        },
+        scan_state::transaction_snark::{Statement, TransactionWithWitness},
         transaction_logic::{
             apply_transaction_first_pass, apply_transaction_second_pass,
             local_state::LocalStateEnv,
@@ -40,7 +36,7 @@ use crate::{
     zkapps::non_snark::LedgerNonSnark,
 };
 
-use self::transaction_snark::{InitStack, LedgerProof, OneOrTwo, Registers};
+use self::transaction_snark::{LedgerProof, OneOrTwo, Registers};
 
 use super::{
     currency::{Fee, Slot},
@@ -61,17 +57,13 @@ pub use super::parallel_scan::{
     AvailableJob as ParallelScanAvailableJob, JobValue, JobValueWithIndex, SpacePartition,
 };
 
-// type LedgerProof = LedgerProofProdStableV2;
-// type LedgerProofWithSokMessage = TransactionSnarkScanStateLedgerProofWithSokMessageStableV2;
-// type TransactionWithWitness = TransactionSnarkScanStateTransactionWithWitnessStableV2;
-
 pub type AvailableJobMessage = super::parallel_scan::AvailableJob<
     TransactionSnarkScanStateTransactionWithWitnessStableV2,
-    TransactionSnarkScanStateLedgerProofWithSokMessageStableV2,
+    LedgerProofProdStableV2,
 >;
 pub type AvailableJob = super::parallel_scan::AvailableJob<
     Arc<transaction_snark::TransactionWithWitness>,
-    Arc<transaction_snark::LedgerProofWithSokMessage>,
+    Arc<transaction_snark::LedgerProof>,
 >;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -84,7 +76,7 @@ pub struct BorderBlockContinuedInTheNextTree(pub(super) bool);
 pub struct ScanState {
     pub scan_state: ParallelScan<
         Arc<transaction_snark::TransactionWithWitness>,
-        Arc<transaction_snark::LedgerProofWithSokMessage>,
+        Arc<transaction_snark::LedgerProof>,
     >,
     pub previous_incomplete_zkapp_updates: (
         Vec<Arc<transaction_snark::TransactionWithWitness>>,
@@ -93,8 +85,6 @@ pub struct ScanState {
 }
 
 pub mod transaction_snark {
-    use std::sync::Arc;
-
     use itertools::Itertools;
     use mina_curves::pasta::Fp;
     use mina_p2p_messages::{binprot, string::ByteString, v2::TransactionSnarkProofStableV2};
@@ -110,7 +100,7 @@ pub mod transaction_snark {
             currency::{Amount, Signed, Slot},
             fee_excess::FeeExcess,
             pending_coinbase,
-            transaction_logic::{local_state::LocalState, transaction_applied::TransactionApplied},
+            transaction_logic::{local_state::LocalState, Transaction, WithStatus},
         },
         sparse_ledger::SparseLedger,
         staged_ledger::hash::OCamlString,
@@ -548,14 +538,30 @@ pub mod transaction_snark {
 
         pub type Checked = Work;
 
-        impl TryFrom<&mina_core::snark::Snark> for Work {
-            type Error = InvalidBigInt;
+        /// Why a pool work could not become a [`Work`].
+        #[derive(Debug, thiserror::Error)]
+        pub enum FromSnarkError {
+            #[error("{0}")]
+            InvalidBigInt(InvalidBigInt),
+            #[error(transparent)]
+            ProofUnavailable(#[from] mina_core::snark::ProofUnavailable),
+        }
 
+        impl From<InvalidBigInt> for FromSnarkError {
+            fn from(e: InvalidBigInt) -> Self {
+                Self::InvalidBigInt(e)
+            }
+        }
+
+        impl TryFrom<&mina_core::snark::Snark> for Work {
+            type Error = FromSnarkError;
+
+            /// Reads the proofs from the proof cache if the pool cached them.
             fn try_from(value: &mina_core::snark::Snark) -> Result<Self, Self::Error> {
                 Ok(Self {
                     prover: (&value.snarker).try_into()?,
                     fee: (&value.fee).into(),
-                    proofs: (&*value.proofs).try_into()?,
+                    proofs: (&*value.proofs.get()?).try_into()?,
                 })
             }
         }
@@ -592,32 +598,80 @@ pub mod transaction_snark {
         Merge,
     }
 
+    /// A scan state job's hash ([`super::job_hash`]), computed once. Jobs don't
+    /// change after they are created, but the scan state hash covers all of
+    /// them and is computed for every block.
+    ///
+    /// It never tells jobs apart, and a clone starts empty, so a job cloned
+    /// and then changed can't keep a stale hash.
+    #[derive(Default)]
+    pub struct JobHashCache(std::sync::OnceLock<[u8; 32]>);
+
+    impl JobHashCache {
+        /// Initialize a job before caching it; true only for the initializer.
+        pub fn try_init(
+            &self,
+            hash: impl FnOnce() -> std::io::Result<[u8; 32]>,
+        ) -> std::io::Result<bool> {
+            if self.0.get().is_none() {
+                return Ok(self.0.set(hash()?).is_ok());
+            }
+            Ok(false)
+        }
+
+        pub fn get_or_init(&self, hash: impl FnOnce() -> [u8; 32]) -> [u8; 32] {
+            *self.0.get_or_init(hash)
+        }
+    }
+
+    impl Clone for JobHashCache {
+        fn clone(&self) -> Self {
+            Self::default()
+        }
+    }
+
+    impl PartialEq for JobHashCache {
+        fn eq(&self, _: &Self) -> bool {
+            true
+        }
+    }
+
+    impl std::fmt::Debug for JobHashCache {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("JobHashCache")
+        }
+    }
+
+    /// A base job. Mesa keeps the transaction and its status rather than the
+    /// applied transaction, and the pending coinbase stack it starts from.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L21-L46>
     #[derive(Debug, Clone, PartialEq)]
     pub struct TransactionWithWitness {
-        pub transaction_with_info: TransactionApplied,
+        pub transaction_with_status: WithStatus<Transaction>,
         pub state_hash: (Fp, Fp), // (StateHash, StateBodyHash)
-        // pub state_hash: (StateHash, MinaBaseStateBodyHashStableV1),
         pub statement: Statement<()>,
-        pub init_stack: InitStack,
+        pub init_stack: pending_coinbase::Stack,
         pub first_pass_ledger_witness: SparseLedger,
         pub second_pass_ledger_witness: SparseLedger,
         pub block_global_slot: Slot,
+        pub hash_cache: JobHashCache,
     }
 
     #[derive(Debug, Clone, PartialEq)]
     pub struct TransactionSnark<D> {
         pub statement: Statement<D>,
-        pub proof: Arc<TransactionSnarkProofStableV2>,
+        pub proof: mina_p2p_messages::ProofRef<TransactionSnarkProofStableV2>,
     }
 
     #[derive(Debug, Clone, PartialEq)]
-    pub struct LedgerProof(pub TransactionSnark<SokDigest>);
+    pub struct LedgerProof(pub TransactionSnark<SokDigest>, pub JobHashCache);
 
     impl LedgerProof {
         pub fn create(
             statement: Statement<()>,
             sok_digest: SokDigest,
-            proof: Arc<TransactionSnarkProofStableV2>,
+            proof: impl Into<mina_p2p_messages::ProofRef<TransactionSnarkProofStableV2>>,
         ) -> Self {
             let statement = Statement::<SokDigest> {
                 source: statement.source,
@@ -629,7 +683,13 @@ pub mod transaction_snark {
                 connecting_ledger_right: statement.connecting_ledger_right,
             };
 
-            Self(TransactionSnark { statement, proof })
+            Self(
+                TransactionSnark {
+                    statement,
+                    proof: proof.into(),
+                },
+                JobHashCache::default(),
+            )
         }
 
         pub fn statement(&self) -> Statement<()> {
@@ -687,12 +747,6 @@ pub mod transaction_snark {
 
             SokDigest(digest.into())
         }
-    }
-
-    #[derive(Debug, Clone, PartialEq)]
-    pub struct LedgerProofWithSokMessage {
-        pub proof: LedgerProof,
-        pub sok_message: SokMessage,
     }
 
     #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -842,10 +896,71 @@ fn sha256_digest(bytes: &[u8]) -> GenericArray<u8, U32> {
     sha.finalize()
 }
 
-impl ScanState {
-    pub fn hash(&self) -> AuxHash {
-        use binprot::BinProtWrite;
+/// SHA-256 of a job's bin_prot encoding, the per-job hash Mesa feeds into the
+/// staged ledger aux hash.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L142-L149>
+fn job_hash<T: binprot::BinProtWrite>(job: &T) -> GenericArray<u8, U32> {
+    let mut bytes = Vec::with_capacity(32 * 1024);
+    job.binprot_write(&mut bytes).unwrap();
+    sha256_digest(&bytes)
+}
 
+fn transaction_job_hash(job: &TransactionWithWitness) -> [u8; 32] {
+    job.hash_cache.get_or_init(|| {
+        let hash = job_hash(job).into();
+        cache_transaction_proofs(job);
+        hash
+    })
+}
+
+fn try_job_hash<T: binprot::BinProtWrite>(job: &T) -> std::io::Result<[u8; 32]> {
+    let mut bytes = Vec::with_capacity(32 * 1024);
+    job.binprot_write(&mut bytes)?;
+    Ok(sha256_digest(&bytes).into())
+}
+
+fn cache_transaction_proofs(job: &TransactionWithWitness) {
+    use super::transaction_logic::{zkapp_command::Control, Transaction, UserCommand};
+    if let Transaction::Command(UserCommand::ZkAppCommand(cmd)) = &job.transaction_with_status.data
+    {
+        cmd.account_updates.fold((), |(), update| {
+            if let Control::Proof(proof) = &update.authorization {
+                if let Err(error) = proof.cache() {
+                    mina_core::log::inner::warn!("proof cache: {error}");
+                }
+            }
+        });
+    }
+}
+
+impl ScanState {
+    /// Hashing uses leaner trees, but completed jobs in the original trees
+    /// can still retain proofs. Prepare those jobs' hashes too, then release
+    /// their proofs. An initialized job has already gone through caching.
+    fn cache_retained_proofs(&self) {
+        self.scan_state.for_each_retained_job(
+            |job| match job.hash_cache.try_init(|| try_job_hash(job.as_ref())) {
+                Ok(true) => cache_transaction_proofs(job),
+                Ok(false) => {}
+                Err(error) => mina_core::log::inner::warn!("retained base proof cache: {error}"),
+            },
+            |job| {
+                let cache = || -> std::io::Result<()> {
+                    if job.1.try_init(|| try_job_hash(job.as_ref()))? {
+                        job.0.proof.cache()?;
+                    }
+                    Ok(())
+                };
+                if let Err(error) = cache() {
+                    mina_core::log::inner::warn!("retained merge proof cache: {error}");
+                }
+            },
+        );
+    }
+
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L238-L266>
+    pub fn hash(&self) -> AuxHash {
         let Self {
             scan_state,
             previous_incomplete_zkapp_updates,
@@ -853,25 +968,15 @@ impl ScanState {
 
         let state_hash = scan_state.hash(
             |buffer, proof| {
-                // #[cfg(test)]
-                // {
-                //     let a: mina_p2p_messages::v2::TransactionSnarkScanStateLedgerProofWithSokMessageStableV2 = proof.as_ref().into();
-                //     let b: LedgerProofWithSokMessage = (&a).into();
-                //     assert_eq!(&b, proof.as_ref());
-                // }
-
-                proof.binprot_write(buffer).unwrap();
+                buffer.extend_from_slice(&proof.1.get_or_init(|| {
+                    let hash = job_hash(proof.as_ref()).into();
+                    if let Err(error) = proof.0.proof.cache() {
+                        mina_core::log::inner::warn!("proof cache: {error}");
+                    }
+                    hash
+                }));
             },
-            |buffer, transaction| {
-                // #[cfg(test)]
-                // {
-                //     let a: mina_p2p_messages::v2::TransactionSnarkScanStateTransactionWithWitnessStableV2 = transaction.as_ref().into();
-                //     let b: TransactionWithWitness = (&a).into();
-                //     assert_eq!(&b, transaction.as_ref());
-                // }
-
-                transaction.binprot_write(buffer).unwrap();
-            },
+            |buffer, transaction| buffer.extend_from_slice(&transaction_job_hash(transaction)),
         );
 
         let (
@@ -880,9 +985,9 @@ impl ScanState {
         ) = previous_incomplete_zkapp_updates;
 
         let incomplete_updates = previous_incomplete_zkapp_updates.iter().fold(
-            Vec::with_capacity(1024 * 32),
+            Vec::with_capacity(32 * previous_incomplete_zkapp_updates.len()),
             |mut accum, tx| {
-                tx.binprot_write(&mut accum).unwrap();
+                accum.extend_from_slice(&transaction_job_hash(tx));
                 accum
             },
         );
@@ -900,23 +1005,25 @@ impl ScanState {
         bytes.extend_from_slice(&continue_in_next_tree);
         let digest = sha256_digest(&bytes);
 
+        self.cache_retained_proofs();
         AuxHash(digest.into())
     }
 }
 
-/// <https://github.com/MinaProtocol/mina/blob/e5183ca1dde1c085b4c5d37d1d9987e24c294c32/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L175>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L316-L399>
 fn create_expected_statement<F>(
     constraint_constants: &ConstraintConstants,
     get_state: F,
     connecting_merkle_root: Fp,
     TransactionWithWitness {
-        transaction_with_info,
+        transaction_with_status,
         state_hash,
         statement,
-        init_stack,
+        init_stack: pending_coinbase_before,
         first_pass_ledger_witness,
         second_pass_ledger_witness,
         block_global_slot,
+        hash_cache: _,
     }: &TransactionWithWitness,
 ) -> Result<Statement<()>, String>
 where
@@ -926,9 +1033,7 @@ where
     let source_first_pass_merkle_root = first_pass_ledger_witness.clone().merkle_root();
     let source_second_pass_merkle_root = second_pass_ledger_witness.clone().merkle_root();
 
-    let WithStatus {
-        data: transaction, ..
-    } = transaction_with_info.transaction();
+    let transaction = &transaction_with_status.data;
 
     let protocol_state = get_state(state_hash.0);
     let state_view = protocol_state_view(&protocol_state).map_err(|e| format!("{:?}", e))?;
@@ -949,7 +1054,7 @@ where
             *block_global_slot,
             &state_view,
             &mut first_pass_ledger_witness,
-            &transaction,
+            transaction,
         )?;
 
         let mut second_pass_ledger_witness = second_pass_ledger_witness.copy_content();
@@ -970,16 +1075,6 @@ where
             target_second_pass_merkle_root,
             supply_increase,
         )
-    };
-
-    let pending_coinbase_before = match init_stack {
-        transaction_snark::InitStack::Base(source) => source,
-        transaction_snark::InitStack::Merge => {
-            return Err(
-                "Invalid init stack in Pending coinbase stack state . Expected Base found Merge"
-                    .to_string(),
-            );
-        }
     };
 
     let pending_coinbase_after = {
@@ -1017,51 +1112,6 @@ where
     })
 }
 
-fn completed_work_to_scanable_work(
-    job: AvailableJob,
-    (fee, current_proof, prover): (Fee, LedgerProof, CompressedPubKey),
-) -> Result<Arc<LedgerProofWithSokMessage>, String> {
-    use super::parallel_scan::AvailableJob::{Base, Merge};
-
-    let sok_digest = current_proof.0.statement.sok_digest;
-
-    let proof = &current_proof.0.proof;
-
-    match job {
-        Base(t) => {
-            let TransactionWithWitness { statement, .. } = t.as_ref();
-            let ledger_proof = LedgerProof::create(statement.clone(), sok_digest, proof.clone());
-            let sok_message = SokMessage::create(fee, prover);
-
-            Ok(Arc::new(LedgerProofWithSokMessage {
-                proof: ledger_proof,
-                sok_message,
-            }))
-        }
-        Merge {
-            left: proof1,
-            right: proof2,
-        } => {
-            let s1 = proof1.proof.statement();
-            let s2 = proof2.proof.statement();
-
-            let statement = s1.merge(&s2)?;
-
-            let ledger_proof = LedgerProof::create(statement, sok_digest, proof.clone());
-            let sok_message = SokMessage::create(fee, prover);
-
-            Ok(Arc::new(LedgerProofWithSokMessage {
-                proof: ledger_proof,
-                sok_message,
-            }))
-        }
-    }
-}
-
-fn total_proofs(works: &[transaction_snark::work::Work]) -> usize {
-    works.iter().map(|work| work.proofs.len()).sum()
-}
-
 pub enum StatementCheck<F: Fn(Fp) -> MinaStateProtocolStateValueStableV2> {
     Partial,
     Full(F),
@@ -1077,9 +1127,9 @@ impl ScanState {
     where
         F: Fn(Fp) -> MinaStateProtocolStateValueStableV2,
     {
-        struct Acc(Option<(Statement<()>, Vec<Arc<LedgerProofWithSokMessage>>)>);
+        struct Acc(Option<(Statement<()>, Vec<Arc<LedgerProof>>)>);
 
-        let merge_acc = |mut proofs: Vec<Arc<LedgerProofWithSokMessage>>,
+        let merge_acc = |mut proofs: Vec<Arc<LedgerProof>>,
                          acc: Acc,
                          s2: &Statement<()>|
          -> Result<Acc, String> {
@@ -1116,7 +1166,7 @@ impl ScanState {
         };
 
         let fold_step_a = |(acc_statement, acc_pc): (Acc, Option<Statement<()>>),
-                           job: &merge::Job<Arc<LedgerProofWithSokMessage>>|
+                           job: &merge::Job<Arc<LedgerProof>>|
          -> Result<(Acc, Option<Statement<()>>), String> {
             use merge::{
                 Job::{Empty, Full, Part},
@@ -1126,18 +1176,14 @@ impl ScanState {
 
             match job {
                 Part(ref ledger) => {
-                    let LedgerProofWithSokMessage { proof, .. } = ledger.as_ref();
-                    let statement = proof.statement();
+                    let statement = ledger.statement();
                     let acc_stmt = merge_acc(vec![ledger.clone()], acc_statement, &statement)?;
                     Ok((acc_stmt, acc_pc))
                 }
                 Empty | Full(Record { state: Done, .. }) => Ok((acc_statement, acc_pc)),
                 Full(Record { left, right, .. }) => {
-                    let LedgerProofWithSokMessage { proof: proof1, .. } = left.as_ref();
-                    let LedgerProofWithSokMessage { proof: proof2, .. } = right.as_ref();
-
-                    let stmt1 = proof1.statement();
-                    let stmt2 = proof2.statement();
+                    let stmt1 = left.statement();
+                    let stmt2 = right.statement();
                     let merged_statement = stmt1.merge(&stmt2)?;
 
                     let acc_stmt = merge_acc(
@@ -1246,12 +1292,7 @@ impl ScanState {
                 let TransactionWithWitness { statement, .. } = t.as_ref();
                 Some(statement.clone())
             }
-            Merge { left, right } => {
-                let LedgerProofWithSokMessage { proof: p1, .. } = left.as_ref();
-                let LedgerProofWithSokMessage { proof: p2, .. } = right.as_ref();
-
-                p1.statement().merge(&p2.statement()).ok()
-            }
+            Merge { left, right } => left.statement().merge(&right.statement()).ok(),
         }
     }
 
@@ -1277,7 +1318,7 @@ impl ScanState {
     fn extract_txn_and_global_slot(
         txn_with_witness: &TransactionWithWitness,
     ) -> (WithStatus<Transaction>, Fp, Slot) {
-        let txn = txn_with_witness.transaction_with_info.transaction();
+        let txn = txn_with_witness.transaction_with_status.clone();
 
         let state_hash = txn_with_witness.state_hash.0;
         let global_slot = txn_with_witness.block_global_slot;
@@ -1287,7 +1328,7 @@ impl ScanState {
     fn latest_ledger_proof_impl(
         &self,
     ) -> Option<(
-        &LedgerProofWithSokMessage,
+        &LedgerProof,
         Vec<TransactionsOrdered<Arc<TransactionWithWitness>>>,
     )> {
         let (proof, txns_with_witnesses) = self.scan_state.last_emitted_value()?;
@@ -1330,7 +1371,7 @@ impl ScanState {
     pub fn latest_ledger_proof(
         &self,
     ) -> Option<(
-        &LedgerProofWithSokMessage,
+        &LedgerProof,
         Vec<TransactionsOrdered<(WithStatus<Transaction>, Fp, Slot)>>,
     )> {
         self.latest_ledger_proof_impl().map(|(p, txns)| {
@@ -1346,7 +1387,7 @@ impl ScanState {
     fn incomplete_txns_from_recent_proof_tree(
         &self,
     ) -> Option<(
-        LedgerProofWithSokMessage,
+        LedgerProof,
         (
             Vec<Arc<TransactionWithWitness>>,
             BorderBlockContinuedInTheNextTree,
@@ -1727,13 +1768,11 @@ impl ScanState {
                     Unapplied(txns) => Unapplied(
                         txns.into_iter()
                             .filter(|txn| {
-                                use crate::scan_state::transaction_logic::transaction_applied::{
-                                    CommandApplied::ZkappCommand, Varying::Command,
-                                };
+                                use crate::scan_state::transaction_logic::UserCommand::ZkAppCommand;
 
                                 matches!(
-                                    &txn.transaction_with_info.varying,
-                                    Command(ZkappCommand(_))
+                                    &txn.transaction_with_status.data,
+                                    Transaction::Command(ZkAppCommand(_))
                                 )
                             })
                             .collect(),
@@ -2016,7 +2055,7 @@ impl ScanState {
 
         match job {
             Base(d) => Extracted::First {
-                transaction_with_info: Box::new(d.transaction_with_info.to_owned()),
+                transaction_with_status: Box::new(d.transaction_with_status.to_owned()),
                 statement: Box::new(d.statement.to_owned()),
                 state_hash: Box::new(d.state_hash),
                 first_pass_ledger_witness: d.first_pass_ledger_witness.to_owned(),
@@ -2025,9 +2064,7 @@ impl ScanState {
                 block_global_slot: d.block_global_slot,
             },
             Merge { left, right } => {
-                let LedgerProofWithSokMessage { proof: p1, .. } = left.as_ref();
-                let LedgerProofWithSokMessage { proof: p2, .. } = right.as_ref();
-                Extracted::Second(Box::new((p1.clone(), p2.clone())))
+                Extracted::Second(Box::new((left.as_ref().clone(), right.as_ref().clone())))
             }
         }
     }
@@ -2108,7 +2145,7 @@ impl ScanState {
     {
         let single_spec = |job: AvailableJob| match Self::extract_from_job(job) {
             Extracted::First {
-                transaction_with_info,
+                transaction_with_status,
                 statement,
                 state_hash,
                 first_pass_ledger_witness,
@@ -2120,17 +2157,14 @@ impl ScanState {
                     let WithStatus {
                         data: transaction,
                         status,
-                    } = transaction_with_info.transaction();
+                    } = *transaction_with_status;
 
                     let protocol_state_body = {
                         let state = get_state(&state_hash.0);
                         state.body.clone()
                     };
 
-                    let init_stack = match *init_stack {
-                        InitStack::Base(x) => x,
-                        InitStack::Merge => return Err("init_stack was Merge".to_string()),
-                    };
+                    let init_stack = *init_stack;
 
                     TransactionWitness {
                         transaction,
@@ -2165,7 +2199,7 @@ impl ScanState {
     {
         let single_spec = |job: AvailableJob| match Self::extract_from_job(job) {
             Extracted::First {
-                transaction_with_info,
+                transaction_with_status,
                 statement,
                 state_hash,
                 first_pass_ledger_witness,
@@ -2177,17 +2211,14 @@ impl ScanState {
                     let WithStatus {
                         data: transaction,
                         status,
-                    } = transaction_with_info.transaction();
+                    } = *transaction_with_status;
 
                     let protocol_state_body = {
                         let state = get_state(&state_hash.0)?;
                         state.body.clone()
                     };
 
-                    let init_stack = match *init_stack {
-                        InitStack::Base(x) => x,
-                        InitStack::Merge => return None,
-                    };
+                    let init_stack = *init_stack;
 
                     TransactionWitness {
                         transaction,
@@ -2227,85 +2258,51 @@ impl ScanState {
         )>,
         String,
     > {
-        {
-            use crate::scan_state::transaction_logic::transaction_applied::Varying::*;
+        // Mesa puts each proof of the completed work into the tree as it is.
+        //
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L1406-L1417>
+        let work_list: Vec<Arc<LedgerProof>> = work
+            .into_iter()
+            .flat_map(|work| work.proofs.into_map(Arc::new).into_iter())
+            .collect();
 
-            println!("{} transactions added to scan state:", transactions.len());
-            println!(
-                "- num_fee_transfer={:?}",
-                transactions
-                    .iter()
-                    .filter(|tx| matches!(tx.transaction_with_info.varying, FeeTransfer(_)))
-                    .count()
-            );
-
-            println!(
-                "- num_coinbase={:?}",
-                transactions
-                    .iter()
-                    .filter(|tx| matches!(tx.transaction_with_info.varying, Coinbase(_)))
-                    .count()
-            );
-
-            println!(
-                "- num_user_command={:?}",
-                transactions
-                    .iter()
-                    .filter(|tx| matches!(tx.transaction_with_info.varying, Command(_)))
-                    .count()
-            );
+        // Hash while decoded, then release the shared proof for all holders.
+        // A re-applied block may already hold cached proofs: fail before
+        // changing the tree if their bytes can no longer be read.
+        for proof in &work_list {
+            proof
+                .1
+                .try_init(|| try_job_hash(proof.as_ref()))
+                .map_err(|e| e.to_string())?;
+            proof.0.proof.cache().map_err(|e| e.to_string())?;
         }
-
-        let fill_in_transaction_snark_work = |works: Vec<transaction_snark::work::Work>| -> Result<
-            Vec<Arc<LedgerProofWithSokMessage>>,
-            String,
-        > {
-            let next_jobs = self
-                .scan_state
-                .jobs_for_next_update()
-                .into_iter()
-                .flatten()
-                .take(total_proofs(&works));
-
-            let works = works.into_iter().flat_map(
-                |transaction_snark::work::Work {
-                     fee,
-                     proofs,
-                     prover,
-                 }| {
-                    proofs
-                        .into_map(|proof| (fee, proof, prover.clone()))
-                        .into_iter()
-                },
-            );
-
-            next_jobs
-                .zip(works)
-                .map(|(job, work)| completed_work_to_scanable_work(job, work))
-                .collect()
-        };
+        for transaction in &transactions {
+            transaction
+                .hash_cache
+                .try_init(|| try_job_hash(transaction.as_ref()))
+                .map_err(|e| e.to_string())?;
+            cache_transaction_proofs(transaction);
+        }
 
         // get incomplete transactions from previous proof which will be completed in
         // the new proof, if there's one
         let old_proof_and_incomplete_zkapp_updates = self.incomplete_txns_from_recent_proof_tree();
-        let work_list = fill_in_transaction_snark_work(work)?;
 
         let proof_opt = self
             .scan_state
             .update(transactions, work_list, |base| {
                 // TODO: This is for logs only, make it cleaner
-                match base.transaction_with_info.varying {
-                    super::transaction_logic::transaction_applied::Varying::Command(_) => 0,
-                    super::transaction_logic::transaction_applied::Varying::FeeTransfer(_) => 1,
-                    super::transaction_logic::transaction_applied::Varying::Coinbase(_) => 2,
+                match base.transaction_with_status.data {
+                    Transaction::Command(_) => 0,
+                    Transaction::FeeTransfer(_) => 1,
+                    Transaction::Coinbase(_) => 2,
                 }
             })
             .unwrap();
 
         match proof_opt {
             None => Ok(None),
-            Some((pwsm, _txns_with_witnesses)) => {
-                let LedgerProofWithSokMessage { proof, .. } = pwsm.as_ref();
+            Some((proof, _txns_with_witnesses)) => {
                 let curr_stmt = proof.statement();
 
                 let (prev_stmt, incomplete_zkapp_updates_from_old_proof) =
@@ -2314,8 +2311,7 @@ impl ScanState {
                             curr_stmt.clone(),
                             (vec![], BorderBlockContinuedInTheNextTree(false)),
                         ),
-                        Some((proof_with_sok, incomplete_zkapp_updates_from_old_proof)) => {
-                            let proof = &proof_with_sok.proof;
+                        Some((proof, incomplete_zkapp_updates_from_old_proof)) => {
                             (proof.statement(), incomplete_zkapp_updates_from_old_proof)
                         }
                     };
@@ -2337,9 +2333,9 @@ impl ScanState {
                         // value_exn is safe here
                         // [latest_ledger_proof] generates ordered transactions
                         // appropriately*)
-                        let (proof_with_sok, txns) = self.latest_ledger_proof().unwrap();
+                        let (proof, txns) = self.latest_ledger_proof().unwrap();
 
-                        Ok(Some((proof_with_sok.proof.clone(), txns)))
+                        Ok(Some((proof.clone(), txns)))
                     }
                     Err(e) => Err(format!(
                         "The new final statement does not connect to the previous \
@@ -2357,6 +2353,25 @@ impl ScanState {
             .fold(HashSet::with_capacity(256), |accum, txns| {
                 txns.fold(accum, |mut accum, txn| {
                     accum.insert(txn.state_hash.0);
+                    accum
+                })
+            })
+    }
+
+    /// The accounts the staged transactions reference
+    /// (`Transaction::accounts_referenced`, as if each applied): every
+    /// account that applying them to the snarked ledger sets, as rebuilding
+    /// the staged ledger over it does (`get_staged_ledger_sync`), and maybe
+    /// a few it doesn't (a failed command's). I5d5 makes a restored staged
+    /// ledger mask hold its own copy of each, as a rebuilt one does. Root
+    /// commits use the same set to protect pending work during reclamation.
+    /// This includes incomplete second passes from the last emitted tree.
+    pub fn staged_accounts_referenced(&self) -> HashSet<crate::AccountId> {
+        self.staged_transactions()
+            .into_iter()
+            .fold(HashSet::with_capacity(4096), |accum, txns| {
+                txns.fold(accum, |mut accum, txn| {
+                    accum.extend(txn.transaction_with_status.data.accounts_referenced());
                     accum
                 })
             })
@@ -2386,12 +2401,12 @@ where
 
 pub enum Extracted {
     First {
-        transaction_with_info: Box<TransactionApplied>,
+        transaction_with_status: Box<WithStatus<Transaction>>,
         statement: Box<Statement<()>>,
         state_hash: Box<(Fp, Fp)>,
         first_pass_ledger_witness: SparseLedger,
         second_pass_ledger_witness: SparseLedger,
-        init_stack: Box<InitStack>,
+        init_stack: Box<pending_coinbase::Stack>,
         block_global_slot: Slot,
     },
     Second(Box<(LedgerProof, LedgerProof)>),
@@ -2459,7 +2474,7 @@ impl TransactionsOrdered<Arc<TransactionWithWitness>> {
                 txs.into_iter().fold(
                     (first_pass_txns, second_pass_txns, target_first_pass_ledger),
                     |(mut first_pass_txns, mut second_pass_txns, _old_root), txn_with_witness| {
-                        let txn = txn_with_witness.transaction_with_info.transaction();
+                        let txn = &txn_with_witness.transaction_with_status;
                         let target_first_pass_ledger =
                             txn_with_witness.statement.target.first_pass_ledger;
 
@@ -2578,11 +2593,11 @@ impl From<&OneOrTwo<AvailableJobMessage>> for SnarkJobId {
 
         let source = match first {
             AvailableJobMessage::Base(base) => &base.statement.0.source,
-            AvailableJobMessage::Merge { left, .. } => &left.0 .0.statement.source,
+            AvailableJobMessage::Merge { left, .. } => &left.0.statement.source,
         };
         let target = match second {
             AvailableJobMessage::Base(base) => &base.statement.0.target,
-            AvailableJobMessage::Merge { right, .. } => &right.0 .0.statement.target,
+            AvailableJobMessage::Merge { right, .. } => &right.0.statement.target,
         };
 
         (source, target).into()
@@ -2599,5 +2614,125 @@ impl From<&OneOrTwo<Statement<()>>> for SnarkJobId {
             OneOrTwo::Two((stmt1, stmt2)) => ((&stmt1.source).into(), (&stmt2.target).into()),
         };
         (&source, &target).into()
+    }
+}
+
+#[cfg(test)]
+mod long_run_tests {
+    use super::transaction_snark::OneOrTwo;
+
+    #[test]
+    fn reclamation_references_include_emitted_tree_second_passes() {
+        use super::{
+            transaction_snark::{LedgerProof, TransactionWithWitness},
+            ScanState,
+        };
+        use mina_p2p_messages::{binprot::BinProtRead, v2};
+        use std::sync::Arc;
+
+        let job = |bytes: &[u8]| {
+            let (statement, witness) = <(
+                v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement,
+                v2::TransactionWitnessStableV2,
+            )>::binprot_read(&mut &*bytes)
+            .unwrap();
+            Arc::new(TransactionWithWitness {
+                transaction_with_status: super::WithStatus {
+                    data: (&witness.transaction).try_into().unwrap(),
+                    status: (&witness.status).into(),
+                },
+                statement: (&statement).try_into().unwrap(),
+                state_hash: (
+                    mina_curves::pasta::Fp::from(0),
+                    mina_curves::pasta::Fp::from(0),
+                ),
+                init_stack: (&witness.init_stack).try_into().unwrap(),
+                first_pass_ledger_witness: (&witness.first_pass_ledger).try_into().unwrap(),
+                second_pass_ledger_witness: (&witness.second_pass_ledger).try_into().unwrap(),
+                block_global_slot: (&witness.block_global_slot).into(),
+                hash_cache: Default::default(),
+            })
+        };
+        let bytes = include_bytes!("../verifier/fixtures/mainnet-551267-1.bin");
+        let work = v2::TransactionSnarkWorkTStableV2::binprot_read(&mut bytes.as_slice()).unwrap();
+        let wire = match &work.proofs {
+            v2::TransactionSnarkWorkTStableV2Proofs::One(p) => p,
+            v2::TransactionSnarkWorkTStableV2Proofs::Two((p, _)) => p,
+        };
+        let proof = Arc::new(LedgerProof::try_from(wire).unwrap());
+        let mut scan = ScanState::empty(mina_core::constants::constraint_constants());
+        let coinbase = job(include_bytes!(
+            "../proofs/data/mesa_mainnet_coinbase_base_job.bin"
+        ));
+        scan.scan_state.acc = Some((proof.clone(), vec![coinbase.clone()]));
+        assert!(
+            scan.staged_accounts_referenced().is_empty(),
+            "fully emitted first pass"
+        );
+
+        let zkapp = job(include_bytes!(
+            "../proofs/data/mesa_mainnet_zkapp_signed_base_job.bin"
+        ));
+        let mut expected: std::collections::HashSet<_> = zkapp
+            .transaction_with_status
+            .data
+            .accounts_referenced()
+            .into_iter()
+            .collect();
+        assert!(!expected.is_empty());
+        scan.scan_state.acc = Some((proof, vec![zkapp]));
+        // Complete the same block's first pass in the next tree. Its own
+        // transaction does not mention the emitted zkApp's accounts.
+        let next_accounts = coinbase.transaction_with_status.data.accounts_referenced();
+        assert!(expected.iter().any(|id| !next_accounts.contains(id)));
+        expected.extend(next_accounts);
+        scan.scan_state
+            .update(vec![coinbase], vec![], |_| 0)
+            .unwrap();
+        assert_eq!(
+            scan.staged_accounts_referenced(),
+            expected,
+            "the last emitted tree still has second-pass work"
+        );
+    }
+
+    #[test]
+    fn pc2_completed_merge_jobs_omitted_from_aux_hash_are_cached() {
+        use super::{transaction_snark::LedgerProof, ScanState};
+        use crate::scan_state::parallel_scan::{merge, JobStatus, SequenceNumber, Value};
+        use mina_p2p_messages::{binprot::BinProtRead, v2};
+        use std::sync::Arc;
+
+        let bytes = include_bytes!("../verifier/fixtures/mainnet-551267-1.bin");
+        let work = v2::TransactionSnarkWorkTStableV2::binprot_read(&mut bytes.as_slice()).unwrap();
+        let wire = match &work.proofs {
+            v2::TransactionSnarkWorkTStableV2Proofs::One(p) => p,
+            v2::TransactionSnarkWorkTStableV2Proofs::Two((p, _)) => p,
+        };
+        let proof = Arc::new(LedgerProof::try_from(wire).unwrap());
+        let mut scan = ScanState::empty(mina_core::constants::constraint_constants());
+        let Value::Node(root) = &mut scan.scan_state.trees[0].values[0] else {
+            panic!("root is a merge node")
+        };
+        root.job = merge::Job::Full(merge::Record {
+            left: proof.clone(),
+            right: proof.clone(),
+            seq_no: SequenceNumber::new(1),
+            state: JobStatus::Done,
+        });
+        assert!(!proof.0.proof.is_cached());
+        // ParallelScan::hash omits Done merge nodes via with_leaner_trees.
+        // Retention, rather than aux-hash visitation, must release this proof.
+        scan.hash();
+        assert!(proof.0.proof.is_cached());
+        assert!(wire.0.proof.decoded().is_none());
+        scan.hash();
+    }
+
+    #[test]
+    fn mismatched_work_bundle_lengths_return_error() {
+        // OCaml one_or_two.ml zip rejects both unequal-cardinality cases.
+        assert!(OneOrTwo::zip(OneOrTwo::One(1), OneOrTwo::Two((2, 3))).is_err());
+        assert!(OneOrTwo::zip(OneOrTwo::Two((1, 2)), OneOrTwo::One(3)).is_err());
     }
 }

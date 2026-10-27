@@ -17,16 +17,23 @@ pub(super) type OnSuccess = Callback<(
     TransactionPoolMessageSource,
 )>;
 
+// define this alias, or `build.rs` cannot parse the enum
+pub(super) type OnError = Callback<(
+    SnarkUserCommandVerifyId,
+    Vec<String>,
+    TransactionPoolMessageSource,
+)>;
+
 #[derive(Serialize, Deserialize, Debug, Clone, ActionEvent)]
 #[action_event(level = trace, fields(display(req_id), display(error)))]
 pub enum SnarkUserCommandVerifyAction {
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     Init {
         req_id: SnarkUserCommandVerifyId,
         commands: Vec<WithStatus<verifiable::UserCommand>>,
         from_source: TransactionPoolMessageSource,
         on_success: OnSuccess,
-        on_error: Callback<(SnarkUserCommandVerifyId, Vec<String>)>,
+        on_error: OnError,
     },
     Pending {
         req_id: SnarkUserCommandVerifyId,
@@ -35,7 +42,7 @@ pub enum SnarkUserCommandVerifyAction {
         req_id: SnarkUserCommandVerifyId,
         error: SnarkUserCommandVerifyError,
     },
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     Success {
         req_id: SnarkUserCommandVerifyId,
         commands: Vec<valid::UserCommand>,

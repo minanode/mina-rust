@@ -2,6 +2,10 @@ use mina_curves::pasta::Fp;
 use poseidon::hash::params::*;
 use std::str::FromStr;
 
+// In WASM these states come from the fast path of `poseidon_block_cipher`.
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
+
 // Helper function to create Fp from decimal string
 fn fp_from_str(s: &str) -> Fp {
     Fp::from_str(s).expect("Failed to parse field element")

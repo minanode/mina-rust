@@ -24,6 +24,8 @@ import { Overlay, OverlayRef } from '@angular/cdk/overlay';
 import { ComponentPortal } from '@angular/cdk/portal';
 import { EnvBuildModalComponent } from '@app/layout/env-build-modal/env-build-modal.component';
 import { RouterLink } from '@angular/router';
+import { docsUrl } from '@shared/constants/docs';
+import { BrandLogoComponent } from '@shared/components/brand-logo/brand-logo.component';
 
 export interface MenuItem {
   name: string;
@@ -33,6 +35,8 @@ export interface MenuItem {
 
 export const MENU_ITEMS: MenuItem[] = [
   { name: 'Dashboard', icon: 'dashboard' },
+  { name: 'Blocks', icon: 'view_in_ar' },
+  { name: 'Accounts', icon: 'account_balance_wallet' },
   { name: 'Block Production', icon: 'library_add' },
   { name: 'Nodes', icon: 'margin' },
   { name: 'Resources', icon: 'analytics' },
@@ -52,7 +56,7 @@ export const MENU_ITEMS: MenuItem[] = [
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'flex-column flex-between h-100 pb-5' },
   standalone: true,
-  imports: [MinaRustEagerSharedModule, RouterLink],
+  imports: [MinaRustEagerSharedModule, RouterLink, BrandLogoComponent],
 })
 export class MenuComponent extends ManualDetection implements OnInit {
   protected readonly TooltipPosition = TooltipPosition;
@@ -66,7 +70,10 @@ export class MenuComponent extends ManualDetection implements OnInit {
   activeRoute: string;
   network?: MinaNetwork;
   chainId?: string;
+  hasBlockProducer?: boolean;
   envBuild: AppEnvBuild;
+  readonly frontendCommit: string = CONFIG.frontendCommit ?? '';
+  readonly docsUrl: string = docsUrl();
 
   private overlayRef: OverlayRef;
 
@@ -131,7 +138,9 @@ export class MenuComponent extends ManualDetection implements OnInit {
     this.store
       .select(AppSelectors.activeNodeDetails)
       .pipe(filter(Boolean), untilDestroyed(this))
-      .subscribe(({ chainId, network }) => {
+      .subscribe(({ chainId, network, hasBlockProducer }) => {
+        this.hasBlockProducer = hasBlockProducer;
+        this.menuItems = this.allowedMenuItems;
         this.chainId = chainId;
         this.network = network as MinaNetwork;
         this.detect();
@@ -139,21 +148,61 @@ export class MenuComponent extends ManualDetection implements OnInit {
   }
 
   private listenToEnvBuild(): void {
+    // Undefined too: after a node change the last node's build is cleared,
+    // never shown as the new node's (R27 #2).
     this.store
       .select(AppSelectors.envBuild)
-      .pipe(filter(Boolean), untilDestroyed(this))
+      .pipe(untilDestroyed(this))
       .subscribe((env: AppEnvBuild | undefined) => {
         this.envBuild = env;
         this.detect();
       });
   }
 
+  /** The commit this page (the UI) was built from. */
+  get buildLabel(): string {
+    return this.frontendCommit.slice(0, 7) || '–';
+  }
+
+  get nodeCommit(): string {
+    return this.envBuild?.git?.commit_hash?.slice(0, 7) ?? '';
+  }
+
+  /** What serves this page's data: the browser node or a native node. */
+  get sourceKind(): string {
+    return this.activeNode?.isWebNode ? 'Web node' : 'Native node';
+  }
+
+  get sourceDescription(): string {
+    if (!this.activeNode) {
+      return 'No node selected';
+    }
+    return this.activeNode.isWebNode
+      ? `${this.activeNode.name}, running in this browser tab (WASM)`
+      : `${this.activeNode.name}, a native node at ${this.activeNode.url}`;
+  }
+
+  get buildTitle(): string {
+    const node = this.envBuild
+      ? `${this.envBuild.version ?? 'version unknown'}, commit ${this.envBuild.git?.commit_hash ?? 'unknown'}`
+      : 'build not known yet';
+    return (
+      `Data from: ${this.sourceDescription}\n` +
+      `Node build: ${node}\n` +
+      `Page (UI) commit: ${this.frontendCommit || 'not stamped'}`
+    );
+  }
+
   private get allowedMenuItems(): MenuItem[] {
     const features = getAvailableFeatures(
       this.activeNode || ({ features: {} } as any),
     );
-    return MENU_ITEMS.filter((opt: MenuItem) =>
-      features.find(f => f === opt.name.toLowerCase().split(' ').join('-')),
+    return MENU_ITEMS.filter(
+      (opt: MenuItem) =>
+        features.some(f => f === opt.name.toLowerCase().split(' ').join('-')) &&
+        (opt.name !== 'Block Production' || this.hasBlockProducer !== false) &&
+        (!this.activeNode?.isWebNode ||
+          !['Blocks', 'Accounts'].includes(opt.name)),
     );
   }
 
@@ -184,7 +233,7 @@ export class MenuComponent extends ManualDetection implements OnInit {
       width: '99%',
       height: '99%',
       maxWidth: 600,
-      maxHeight: 460,
+      maxHeight: 600,
       positionStrategy: this.overlay
         .position()
         .global()
@@ -194,7 +243,9 @@ export class MenuComponent extends ManualDetection implements OnInit {
 
     const portal = new ComponentPortal(EnvBuildModalComponent);
     const component = this.overlayRef.attach<EnvBuildModalComponent>(portal);
-    component.instance.envBuild = this.envBuild;
+    component.instance.source = this.sourceDescription;
+    component.instance.nodeBuild = this.envBuild;
+    component.instance.frontendCommit = this.frontendCommit || 'not stamped';
     component.instance.detect();
 
     merge(component.instance.close, this.overlayRef.backdropClick())

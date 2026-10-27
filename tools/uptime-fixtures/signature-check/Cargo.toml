@@ -1,0 +1,13 @@
+[package]
+name = "uptime-fixture-signature-check"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+blake2 = "0.10"
+mina-hasher = { git = "https://github.com/o1-labs/proof-systems", rev = "ab84160fa2c22290a8506a7742ac1378879fc386" }
+mina-signer = { git = "https://github.com/o1-labs/proof-systems", rev = "ab84160fa2c22290a8506a7742ac1378879fc386" }
+serde_json = "1"

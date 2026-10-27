@@ -230,11 +230,15 @@ impl Default for Ports {
 
 /// Declares a shared storage for ports.
 ///
-/// ```
+/// Compiled without starting a cluster or reserving ports.
+///
+/// ```no_run
+/// use p2p_testing::{cluster::ClusterBuilder, ports_store};
+///
 /// ports_store!(GLOBAL_PORTS);
 ///
 /// #[tokio::test]
-/// fn test1() {
+/// async fn test1() {
 ///     let cluster = ClusterBuilder::default()
 ///         .ports(GLOBAL_PORTS.take(20).await.expect("enough ports"))
 ///         .start()
@@ -354,6 +358,7 @@ impl Cluster {
             .map(|p| self.init_opts(p))
             .collect::<Result<_>>()?;
         let config = P2pConfig {
+            catchup_rpc: config.catchup_rpc,
             libp2p_port: Some(libp2p_port),
             listen_port: Some(listen_port),
             identity_pub_key: secret_key.public_key(),

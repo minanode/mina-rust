@@ -9,6 +9,7 @@
 /// Diff creation logs:
 /// <https://github.com/MinaProtocol/mina/pull/4463>
 ///
+mod application_state;
 pub mod diff;
 pub mod diff_creation_log;
 pub mod hash;

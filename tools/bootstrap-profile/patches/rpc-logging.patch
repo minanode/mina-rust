@@ -1,0 +1,159 @@
+From 0a208c263c0a2f03104d1cad44218eccde1d10ab Mon Sep 17 00:00:00 2001
+From: Gareth Davies
+Date: Mon, 19 Oct 2026 21:59:40 +0000
+Subject: [PATCH] Log outgoing RPCs and sync errors with peers (R4 prototype)
+
+Log each RPC request sent, response received and timeout at info level
+with the peer, the request id and the RPC kind, and add the peer and the
+error to the snarked ledger, staged parts and block fetch error logs.
+Also log the tree level and size of each ledger sync answer.
+
+This is the instrumentation behind the R4 bootstrap breakdown. It adds
+about 30,000 log lines to a bootstrap, so it should go behind a flag
+(I13) before being merged.
+---
+ ...ransition_frontier_sync_ledger_snarked_actions.rs | 12 ++++++++++++
+ ...transition_frontier_sync_ledger_staged_actions.rs |  4 ++++
+ .../sync/transition_frontier_sync_actions.rs         |  1 +
+ .../p2p/src/channels/rpc/p2p_channels_rpc_actions.rs |  7 +++++++
+ 4 files changed, 24 insertions(+)
+
+diff --git a/crates/node/src/transition_frontier/sync/ledger/snarked/transition_frontier_sync_ledger_snarked_actions.rs b/crates/node/src/transition_frontier/sync/ledger/snarked/transition_frontier_sync_ledger_snarked_actions.rs
+index f6fbbb1d..341b81cf 100644
+--- a/crates/node/src/transition_frontier/sync/ledger/snarked/transition_frontier_sync_ledger_snarked_actions.rs
++++ b/crates/node/src/transition_frontier/sync/ledger/snarked/transition_frontier_sync_ledger_snarked_actions.rs
+@@ -46,6 +46,7 @@ pub enum TransitionFrontierSyncLedgerSnarkedAction {
+     PeerQueryNumAccountsRetry {
+         peer_id: PeerId,
+     },
++    #[action_event(level = warn, fields(display(peer_id), rpc_id, debug(error)))]
+     PeerQueryNumAccountsError {
+         peer_id: PeerId,
+         rpc_id: P2pRpcId,
+@@ -66,6 +67,7 @@ pub enum TransitionFrontierSyncLedgerSnarkedAction {
+         contents_hash: LedgerHash,
+         sender: PeerId,
+     },
++    #[action_event(level = warn, fields(display(sender), num_accounts))]
+     NumAccountsRejected {
+         num_accounts: u64,
+         sender: PeerId,
+@@ -92,6 +94,7 @@ pub enum TransitionFrontierSyncLedgerSnarkedAction {
+         address: LedgerAddress,
+         peer_id: PeerId,
+     },
++    #[action_event(level = warn, fields(display(peer_id), rpc_id, debug(error)))]
+     PeerQueryAddressError {
+         peer_id: PeerId,
+         rpc_id: P2pRpcId,
+@@ -104,22 +107,30 @@ pub enum TransitionFrontierSyncLedgerSnarkedAction {
+     },
+     /// `hashes` are the descendants of `address` some levels below it, left
+     /// to right.
++    #[action_event(level = info, fields(display(sender), at = address.length(), n = hashes.len()))]
+     ChildHashesReceived {
+         address: LedgerAddress,
+         hashes: Vec<LedgerHash>,
+         sender: PeerId,
+     },
++    #[action_event(level = info, fields(
++        display(sender),
++        at = address.length(),
++        changed = hashes.iter().zip(previous_hashes).filter(|(a, b)| a != b).count(),
++    ))]
+     ChildHashesAccepted {
+         address: LedgerAddress,
+         hashes: Vec<LedgerHash>,
+         previous_hashes: Vec<LedgerHash>,
+         sender: PeerId,
+     },
++    #[action_event(level = warn, fields(display(sender), debug(address)))]
+     ChildHashesRejected {
+         address: LedgerAddress,
+         hashes: Vec<LedgerHash>,
+         sender: PeerId,
+     },
++    #[action_event(level = info, fields(display(sender), at = address.length(), n = accounts.len()))]
+     ChildAccountsReceived {
+         address: LedgerAddress,
+         accounts: Vec<MinaBaseAccountBinableArgStableV2>,
+@@ -130,6 +141,7 @@ pub enum TransitionFrontierSyncLedgerSnarkedAction {
+         count: u64,
+         sender: PeerId,
+     },
++    #[action_event(level = warn, fields(display(sender), debug(address)))]
+     ChildAccountsRejected {
+         address: LedgerAddress,
+         sender: PeerId,
+diff --git a/crates/node/src/transition_frontier/sync/ledger/staged/transition_frontier_sync_ledger_staged_actions.rs b/crates/node/src/transition_frontier/sync/ledger/staged/transition_frontier_sync_ledger_staged_actions.rs
+index 227f9d14..8ada7efc 100644
+--- a/crates/node/src/transition_frontier/sync/ledger/staged/transition_frontier_sync_ledger_staged_actions.rs
++++ b/crates/node/src/transition_frontier/sync/ledger/staged/transition_frontier_sync_ledger_staged_actions.rs
+@@ -27,20 +27,24 @@ pub type TransitionFrontierSyncLedgerStagedActionWithMetaRef<'a> =
+ pub enum TransitionFrontierSyncLedgerStagedAction {
+     PartsFetchPending,
+     PartsPeerFetchInit,
++    #[action_event(level = info, fields(display(peer_id), rpc_id))]
+     PartsPeerFetchPending {
+         peer_id: PeerId,
+         rpc_id: P2pRpcId,
+     },
++    #[action_event(level = warn, fields(display(peer_id), rpc_id, debug(error)))]
+     PartsPeerFetchError {
+         peer_id: PeerId,
+         rpc_id: P2pRpcId,
+         error: PeerStagedLedgerPartsFetchError,
+     },
++    #[action_event(level = info, fields(display(peer_id), rpc_id))]
+     PartsPeerFetchSuccess {
+         peer_id: PeerId,
+         rpc_id: P2pRpcId,
+         parts: Arc<StagedLedgerAuxAndPendingCoinbases>,
+     },
++    #[action_event(level = warn, fields(display(sender)))]
+     PartsPeerInvalid {
+         sender: PeerId,
+         parts: Arc<StagedLedgerAuxAndPendingCoinbases>,
+diff --git a/crates/node/src/transition_frontier/sync/transition_frontier_sync_actions.rs b/crates/node/src/transition_frontier/sync/transition_frontier_sync_actions.rs
+index 3c0229a9..3faaf39d 100644
+--- a/crates/node/src/transition_frontier/sync/transition_frontier_sync_actions.rs
++++ b/crates/node/src/transition_frontier/sync/transition_frontier_sync_actions.rs
+@@ -82,6 +82,7 @@ pub enum TransitionFrontierSyncAction {
+         peer_id: PeerId,
+         rpc_id: P2pRpcId,
+     },
++    #[action_event(level = warn, fields(display(peer_id), rpc_id, debug(error)))]
+     BlocksPeerQueryError {
+         peer_id: PeerId,
+         rpc_id: P2pRpcId,
+diff --git a/crates/p2p/src/channels/rpc/p2p_channels_rpc_actions.rs b/crates/p2p/src/channels/rpc/p2p_channels_rpc_actions.rs
+index 3127291f..9c0bf3fb 100644
+--- a/crates/p2p/src/channels/rpc/p2p_channels_rpc_actions.rs
++++ b/crates/p2p/src/channels/rpc/p2p_channels_rpc_actions.rs
+@@ -22,16 +22,23 @@ pub enum P2pChannelsRpcAction {
+     Ready {
+         peer_id: PeerId,
+     },
++    #[action_event(level = info, fields(display(peer_id), id, rpc = debug(request.kind())))]
+     RequestSend {
+         peer_id: PeerId,
+         id: P2pRpcId,
+         request: Box<P2pRpcRequest>,
+         on_init: Option<redux::Callback<(PeerId, P2pRpcId, P2pRpcRequest)>>,
+     },
++    #[action_event(level = warn, fields(display(peer_id), id))]
+     Timeout {
+         peer_id: PeerId,
+         id: P2pRpcId,
+     },
++    #[action_event(level = info, fields(
++        display(peer_id),
++        id,
++        rpc = debug(response.as_ref().map(|r| r.kind())),
++    ))]
+     ResponseReceived {
+         peer_id: PeerId,
+         id: P2pRpcId,
+-- 
+2.43.0
+

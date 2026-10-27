@@ -2,14 +2,14 @@ use std::{sync::Arc, time::Duration};
 
 use ledger::proofs::provers::BlockProver;
 use mina_node::{
-    account::AccountSecretKey,
+    account::{AccountPublicKey, AccountSecretKey},
     core::{consensus::ConsensusConstants, constants::constraint_constants},
     p2p::{
         channels::ChannelId, connection::outgoing::P2pConnectionOutgoingInitOpts,
         identity::SecretKey as P2pSecretKey, P2pLimits, P2pMeshsubConfig, P2pTimeouts,
     },
     snark::{get_srs, BlockVerifier, TransactionVerifier, VerifierSRS},
-    transition_frontier::genesis::GenesisConfig,
+    transition_frontier::{genesis::GenesisConfig, persist::TransitionFrontierPersistConfig},
     BlockProducerConfig, GlobalConfig, LedgerConfig, P2pConfig, SnarkConfig, SnarkerConfig,
     SnarkerStrategy, TransitionFrontierConfig,
 };
@@ -34,6 +34,7 @@ pub struct NodeBuilder {
     verifier_srs: Option<Arc<VerifierSRS>>,
     block_verifier_index: Option<BlockVerifier>,
     work_verifier_index: Option<TransactionVerifier>,
+    persist: TransitionFrontierPersistConfig,
 }
 
 impl NodeBuilder {
@@ -54,6 +55,7 @@ impl NodeBuilder {
             verifier_srs: None,
             block_verifier_index: None,
             work_verifier_index: None,
+            persist: Default::default(),
         }
     }
 
@@ -105,6 +107,17 @@ impl NodeBuilder {
     //     Ok(self)
     // }
 
+    /// ICE servers of the node's WebRTC connections (W1). Call it before
+    /// `p2p_custom_task_spawner`.
+    pub fn p2p_webrtc_config(&mut self, config: mina_node::p2p::webrtc::WebrtcConfig) -> &mut Self {
+        assert!(
+            !self.p2p_is_started,
+            "p2p_webrtc_config must come before the p2p service starts"
+        );
+        self.service.p2p_webrtc_config(config);
+        self
+    }
+
     /// Override default p2p task spawner.
     pub fn p2p_custom_task_spawner(
         &mut self,
@@ -126,9 +139,43 @@ impl NodeBuilder {
             pub_key: key.public_key().into(),
             custom_coinbase_receiver: None,
             proposed_protocol_version: None,
+            block_inject_delay_ms: mina_node::block_producer::default_block_inject_delay_ms(),
         };
         self.block_producer = Some(config);
         self.service.block_producer_init(key, provers);
+        self
+    }
+
+    /// Set up the isolated prover, an instance of this module with its own
+    /// memory (I34c), so that nothing is ever proved in the node's memory:
+    /// for a block producer with `producer`'s key, whose proofs it checks
+    /// with `producer`'s verifier, or for the SNARK worker if `work` (P5.3;
+    /// see [`Self::snarker`]). Not both: a block producer's prover refuses the
+    /// SNARK worker (`isolated::ProverRole`), so that no block proof waits
+    /// behind SNARK work. The first instance starts loading its circuits at
+    /// once.
+    pub fn isolated_prover(
+        &mut self,
+        producer: Option<(AccountSecretKey, BlockVerifier)>,
+        work: bool,
+        network: String,
+    ) -> &mut Self {
+        // The node's own verifier SRS, the one `build` uses.
+        let srs = self.verifier_srs.clone().unwrap_or_else(get_srs);
+        let producer = producer.map(|(key, verifier)| {
+            self.block_producer = Some(BlockProducerConfig {
+                pub_key: key.public_key().into(),
+                custom_coinbase_receiver: None,
+                proposed_protocol_version: None,
+                block_inject_delay_ms: mina_node::block_producer::default_block_inject_delay_ms(),
+            });
+            let checker = mina_node_common::block_producer::isolated::BlockProofChecker {
+                verifier,
+                srs: srs.clone(),
+            };
+            (key, checker)
+        });
+        crate::block_prover::start(&mut self.service, producer, work, network);
         self
     }
 
@@ -156,19 +203,33 @@ impl NodeBuilder {
         Ok(self)
     }
 
+    /// Run the SNARK worker. `public_key` receives the fees, `fee` is in
+    /// nanomina. As with OCaml's `--run-snark-worker`, no private key is needed.
+    /// The web node's worker proves in its isolated prover
+    /// ([`Self::isolated_prover`] with `work`), which proves no blocks.
+    /// `block_first_lead`: the longest a job may take, for a worker whose
+    /// prover competes with the block producer's, so that it takes none
+    /// when one of our blocks is due within that time
+    /// (`SnarkerConfig::block_first_lead`); `None` in the web node.
+    /// The isolated prover has no zkApp step circuits, so the worker takes
+    /// no zkApp command job (`SnarkerConfig::skip_zkapp_jobs`).
     pub fn snarker(
         &mut self,
-        sec_key: AccountSecretKey,
+        public_key: AccountPublicKey,
         fee: u64,
         strategy: SnarkerStrategy,
+        block_first_lead: Option<Duration>,
     ) -> &mut Self {
         let config = SnarkerConfig {
-            public_key: sec_key.public_key(),
+            public_key,
             fee: v2::CurrencyFeeStableV1(v2::UnsignedExtendedUInt64Int64ForVersionTagsStableV1(
                 fee.into(),
             )),
             strategy,
             auto_commit: true,
+            block_first_lead,
+            // The isolated prover loads no zkApp step circuits (P5.3).
+            skip_zkapp_jobs: true,
         };
         self.snarker = Some(config);
         self
@@ -190,12 +251,45 @@ impl NodeBuilder {
         self
     }
 
+    /// Turns the frontier store on (I5e): the node keeps its verified
+    /// ledgers and blocks in this browser's Origin Private File System and
+    /// restores from them at its next start, with the checks a native node
+    /// with `--frontier-store` runs. `reset` deletes the store when it is
+    /// opened. Without OPFS the node runs without a store.
+    pub fn frontier_store(
+        &mut self,
+        config: TransitionFrontierPersistConfig,
+        reset: bool,
+    ) -> &mut Self {
+        let build = mina_node::BuildEnv::get();
+        let node_commit = format!("{} {}", build.version, build.git.commit_hash);
+        let client = crate::frontier_store::start_file_server();
+        self.service.frontier_store_init_with(
+            move |chain_id| crate::frontier_store::backend(&client, chain_id),
+            reset,
+            node_commit,
+            // No signals in the browser: a closed tab counts as a crash.
+            Default::default(),
+        );
+        self.persist = TransitionFrontierPersistConfig {
+            enabled: true,
+            ..config
+        };
+        self
+    }
+
     pub fn gather_stats(&mut self) -> &mut Self {
         self.service.gather_stats();
         self
     }
 
     pub fn build(self) -> anyhow::Result<Node> {
+        self.genesis_config.initialize_runtime()?;
+        let daemon = self
+            .genesis_config
+            .runtime_config()?
+            .daemon
+            .unwrap_or(mina_node::daemon_json::Daemon::DEFAULT);
         let p2p_sec_key = self.p2p_sec_key.unwrap_or_else(P2pSecretKey::rand);
         let initial_peers = if self.initial_peers.is_empty() && !self.p2p_is_seed {
             default_peers()
@@ -215,13 +309,19 @@ impl NodeBuilder {
             anyhow::anyhow!("transaction verifier index not set on the node builder!")
         })?;
 
-        let transition_frontier = TransitionFrontierConfig::new(self.genesis_config);
+        let mut transition_frontier = TransitionFrontierConfig::new(self.genesis_config);
+        transition_frontier.persist = self.persist;
 
         let protocol_constants = transition_frontier.genesis.protocol_constants()?;
         let consensus_consts =
             ConsensusConstants::create(constraint_constants(), &protocol_constants);
 
         // build config
+        let snarker_strategy = self
+            .snarker
+            .as_ref()
+            .map(|snarker| snarker.strategy)
+            .unwrap_or_default();
         let node_config = mina_node::Config {
             global: GlobalConfig {
                 build: mina_node::BuildEnv::get().into(),
@@ -231,8 +331,12 @@ impl NodeBuilder {
                 client_port: None,
                 chain_id_override: None,
                 skip_proof_verification: false,
+                worker_control: false,
+                snarker_strategy,
+                block_first_lead: None,
             },
             p2p: P2pConfig {
+                catchup_rpc: Default::default(),
                 libp2p_port: None,
                 listen_port: None,
                 identity_pub_key: p2p_sec_key.public_key(),
@@ -258,8 +362,8 @@ impl NodeBuilder {
             block_producer: self.block_producer,
             tx_pool: ledger::transaction_pool::Config {
                 trust_system: (),
-                pool_max_size: mina_node::daemon_json::Daemon::DEFAULT.tx_pool_max_size(),
-                slot_tx_end: mina_node::daemon_json::Daemon::DEFAULT.slot_tx_end(),
+                pool_max_size: daemon.tx_pool_max_size(),
+                slot_tx_end: daemon.slot_tx_end(),
             },
             archive: None,
         };

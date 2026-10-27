@@ -25,6 +25,9 @@ use super::{
 pub enum Command {
     Send { stream_id: StreamId, bytes: Vec<u8> },
     Open { outgoing_stream_id: u32 },
+    Close { stream_id: StreamId },
+    Reset { stream_id: StreamId },
+    StopHeartbeats { stream_id: StreamId },
 }
 
 pub struct Handler {
@@ -139,6 +142,19 @@ impl ConnectionHandler for Handler {
 
     fn on_behaviour_event(&mut self, event: Self::FromBehaviour) {
         match event {
+            Command::StopHeartbeats { stream_id } => {
+                if let Some(stream) = self.streams.get_mut(&stream_id) {
+                    stream.stop_heartbeats();
+                }
+            }
+            Command::Close { stream_id } => {
+                if let Some(stream) = self.streams.get_mut(&stream_id) {
+                    stream.close();
+                }
+            }
+            Command::Reset { stream_id } => {
+                self.streams.remove(&stream_id);
+            }
             Command::Open { outgoing_stream_id } => {
                 self.streams.insert(
                     StreamId::Outgoing(outgoing_stream_id),

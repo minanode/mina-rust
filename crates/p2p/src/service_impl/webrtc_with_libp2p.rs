@@ -5,7 +5,7 @@ use crate::{
     connection::{outgoing::P2pConnectionOutgoingInitOpts, P2pConnectionService},
     disconnection_effectful::P2pDisconnectionService,
     identity::{PublicKey, SecretKey},
-    webrtc::{ConnectionAuth, ConnectionAuthEncrypted},
+    webrtc::{ConnectionAuth, ConnectionAuthEncrypted, WebrtcConfig},
     P2pChannelEvent, P2pEvent, PeerId,
 };
 
@@ -29,12 +29,17 @@ pub trait P2pServiceWebrtcWithLibp2p: P2pServiceWebrtc {
 
     fn connections(&self) -> BTreeSet<PeerId>;
 
-    fn init<S: TaskSpawner>(sec_key: SecretKey, spawner: S, rng_seed: [u8; 32]) -> P2pServiceCtx {
+    fn init<S: TaskSpawner>(
+        sec_key: SecretKey,
+        spawner: S,
+        rng_seed: [u8; 32],
+        webrtc_config: WebrtcConfig,
+    ) -> P2pServiceCtx {
         P2pServiceCtx {
             sec_key: sec_key.clone(),
             #[cfg(feature = "p2p-libp2p")]
             mio: MioService::pending(sec_key.clone().try_into().expect("valid keypair")),
-            webrtc: <Self as P2pServiceWebrtc>::init(sec_key, spawner, rng_seed),
+            webrtc: <Self as P2pServiceWebrtc>::init(sec_key, spawner, rng_seed, webrtc_config),
         }
     }
 

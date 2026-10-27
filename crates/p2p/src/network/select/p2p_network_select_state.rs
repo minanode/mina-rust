@@ -61,13 +61,28 @@ impl P2pNetworkSelectState {
     }
 
     pub fn is_timed_out(&self, now: Timestamp, timeouts: &P2pTimeouts) -> bool {
+        self.is_timed_out_after(now, timeouts.select)
+    }
+
+    /// Whether a stream's negotiation has run out of time: a stream the peer
+    /// opened gets `select_incoming_stream`, one we opened gets `select`.
+    pub fn is_stream_timed_out(&self, now: Timestamp, timeouts: &P2pTimeouts) -> bool {
+        let timeout = if self.is_incoming() {
+            timeouts.select_incoming_stream
+        } else {
+            timeouts.select
+        };
+        self.is_timed_out_after(now, timeout)
+    }
+
+    fn is_timed_out_after(&self, now: Timestamp, timeout: Option<std::time::Duration>) -> bool {
         if self.negotiated.is_some() {
             return false;
         }
 
         if let Some(time) = self.time {
             now.checked_sub(time)
-                .and_then(|dur| timeouts.select.map(|to| dur >= to))
+                .and_then(|dur| timeout.map(|to| dur >= to))
                 .unwrap_or(false)
         } else {
             false

@@ -7,10 +7,6 @@ enum DashboardSplitsActionTypes {
   DASHBOARD_SPLITS_GET_SPLITS = 'DASHBOARD_SPLITS_GET_SPLITS',
   DASHBOARD_SPLITS_GET_SPLITS_SUCCESS = 'DASHBOARD_SPLITS_GET_SPLITS_SUCCESS',
   DASHBOARD_SPLITS_SET_ACTIVE_PEER = 'DASHBOARD_SPLITS_SET_ACTIVE_PEER',
-  DASHBOARD_SPLITS_SPLIT_NODES = 'DASHBOARD_SPLITS_SPLIT_NODES',
-  DASHBOARD_SPLITS_SPLIT_NODES_SUCCESS = 'DASHBOARD_SPLITS_SPLIT_NODES_SUCCESS',
-  DASHBOARD_SPLITS_MERGE_NODES = 'DASHBOARD_SPLITS_MERGE_NODES',
-  DASHBOARD_SPLITS_MERGE_NODES_SUCCESS = 'DASHBOARD_SPLITS_MERGE_NODES_SUCCESS',
   DASHBOARD_SPLITS_SORT_PEERS = 'DASHBOARD_SPLITS_SORT_PEERS',
   DASHBOARD_SPLITS_TOGGLE_SIDE_PANEL = 'DASHBOARD_SPLITS_TOGGLE_SIDE_PANEL',
 }
@@ -23,14 +19,6 @@ export const DASHBOARD_SPLITS_GET_SPLITS_SUCCESS =
   DashboardSplitsActionTypes.DASHBOARD_SPLITS_GET_SPLITS_SUCCESS;
 export const DASHBOARD_SPLITS_SET_ACTIVE_PEER =
   DashboardSplitsActionTypes.DASHBOARD_SPLITS_SET_ACTIVE_PEER;
-export const DASHBOARD_SPLITS_SPLIT_NODES =
-  DashboardSplitsActionTypes.DASHBOARD_SPLITS_SPLIT_NODES;
-export const DASHBOARD_SPLITS_SPLIT_NODES_SUCCESS =
-  DashboardSplitsActionTypes.DASHBOARD_SPLITS_SPLIT_NODES_SUCCESS;
-export const DASHBOARD_SPLITS_MERGE_NODES =
-  DashboardSplitsActionTypes.DASHBOARD_SPLITS_MERGE_NODES;
-export const DASHBOARD_SPLITS_MERGE_NODES_SUCCESS =
-  DashboardSplitsActionTypes.DASHBOARD_SPLITS_MERGE_NODES_SUCCESS;
 export const DASHBOARD_SPLITS_SORT_PEERS =
   DashboardSplitsActionTypes.DASHBOARD_SPLITS_SORT_PEERS;
 export const DASHBOARD_SPLITS_TOGGLE_SIDE_PANEL =
@@ -51,29 +39,13 @@ export class DashboardSplitsGetSplits implements DashboardSplitsAction {
 export class DashboardSplitsGetSplitsSuccess implements DashboardSplitsAction {
   readonly type = DASHBOARD_SPLITS_GET_SPLITS_SUCCESS;
 
-  constructor(public payload: DashboardSplits) {}
+  constructor(public payload: DashboardSplits & { node: string }) {}
 }
 
 export class DashboardSplitsSetActivePeer implements DashboardSplitsAction {
   readonly type = DASHBOARD_SPLITS_SET_ACTIVE_PEER;
 
   constructor(public payload: DashboardSplitsPeer) {}
-}
-
-export class DashboardSplitsSplitNodes implements DashboardSplitsAction {
-  readonly type = DASHBOARD_SPLITS_SPLIT_NODES;
-}
-
-export class DashboardSplitsMergeNodesSuccess implements DashboardSplitsAction {
-  readonly type = DASHBOARD_SPLITS_MERGE_NODES_SUCCESS;
-}
-
-export class DashboardSplitsMergeNodes implements DashboardSplitsAction {
-  readonly type = DASHBOARD_SPLITS_MERGE_NODES;
-}
-
-export class DashboardSplitsSplitNodesSuccess implements DashboardSplitsAction {
-  readonly type = DASHBOARD_SPLITS_SPLIT_NODES_SUCCESS;
 }
 
 export class DashboardSplitsSortPeers implements DashboardSplitsAction {
@@ -91,9 +63,5 @@ export type DashboardSplitsActions =
   | DashboardSplitsGetSplits
   | DashboardSplitsGetSplitsSuccess
   | DashboardSplitsSetActivePeer
-  | DashboardSplitsSplitNodes
-  | DashboardSplitsSplitNodesSuccess
-  | DashboardSplitsMergeNodes
-  | DashboardSplitsMergeNodesSuccess
   | DashboardSplitsSortPeers
   | DashboardSplitsToggleSidePanel;

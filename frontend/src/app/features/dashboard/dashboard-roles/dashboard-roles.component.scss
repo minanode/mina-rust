@@ -1,0 +1,144 @@
+// Laid out like the freshness strip above it: one bordered strip, labelled
+// values, 12px gutters. Two roles side by side; stacked on a phone.
+:host {
+  display: block;
+}
+
+.roles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin: 0 12px 12px;
+  border: 1px solid var(--base-divider);
+  border-radius: 8px;
+}
+
+.role {
+  min-width: 0;
+  padding: 12px 16px;
+
+  & + .role {
+    border-left: 1px solid var(--base-divider);
+  }
+}
+
+.role-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  h2 {
+    margin: 0;
+    font-size: inherit;
+    font-weight: 600;
+  }
+}
+
+.badge {
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 18px;
+
+  &.ok {
+    color: var(--success-primary);
+    background: var(--success-container);
+  }
+  &.aware {
+    color: var(--aware-primary);
+    background: var(--aware-container);
+  }
+  &.warn {
+    color: var(--warn-primary);
+    background: var(--warn-container);
+  }
+  &.off {
+    color: var(--base-secondary);
+    background: var(--base-container);
+  }
+}
+
+.more {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  color: var(--base-secondary);
+  text-decoration: none;
+
+  &:hover {
+    color: var(--base-primary);
+  }
+}
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 28px;
+  margin-top: 10px;
+
+  > div {
+    min-width: 0;
+  }
+
+  span,
+  strong,
+  small {
+    display: block;
+  }
+
+  > div > span {
+    color: var(--base-secondary);
+  }
+
+  strong {
+    margin-top: 5px;
+    font-size: 16px;
+
+    a {
+      color: inherit;
+    }
+  }
+
+  small {
+    color: var(--base-secondary);
+
+    &.ok {
+      color: var(--success-primary);
+    }
+    &.aware {
+      color: var(--aware-primary);
+    }
+    &.warn {
+      color: var(--warn-primary);
+    }
+  }
+
+  // The key's own value and copy button, at the size of a small value.
+  mina-chain-value {
+    font-size: 13px;
+    font-weight: 400;
+  }
+}
+
+.note {
+  margin: 8px 0 0;
+  color: var(--base-secondary);
+
+  &.warn {
+    color: var(--warn-primary);
+  }
+}
+
+@media (max-width: 767px) {
+  .roles {
+    grid-template-columns: 1fr;
+  }
+
+  .role + .role {
+    border-left: 0;
+    border-top: 1px solid var(--base-divider);
+  }
+
+  .facts {
+    gap: 10px 20px;
+  }
+}

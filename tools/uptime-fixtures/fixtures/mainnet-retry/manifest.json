@@ -1,0 +1,22 @@
+{
+  "network": "mainnet",
+  "simplified": false,
+  "binary_sha256": "68cd85f4bdb8c7c72082c7a3b996a3de29e7b1f307f0d535bb1e71a1a9756fcb",
+  "source_commit": "84b8d96954b218f372b93f65a071abf528e6bb61",
+  "private_chain": true,
+  "proof_level": "none",
+  "slot_ms": 2000,
+  "elapsed_seconds": 62.845,
+  "exit_code": 130,
+  "response_statuses": "503,503,200",
+  "send_commit": true,
+  "captured_at": "2026-10-22T00:01:07.589165+00:00",
+  "data_blake2b_256_hex": "8b6bd5cea2f9ee261c48095dabfb3e029e0c9f94546e05ee2bc3bd28a9221ef2",
+  "signature_field_decimal": "3740615109586862926820363699569188608001187210653059514877882483410479395125",
+  "signature_scalar_decimal": "15490797288361721232389217738323759692823596859955339592826221729184853773174",
+  "block_sha256": "b01c8f73278ac672045e2ce9c39637299a4d0103ec517025a2901975eb10834a",
+  "block_bytes": 12668,
+  "request_bytes": 17242,
+  "snark_work_present": false,
+  "origin": "Unmodified official OCaml daemon HTTP output; private proof-none chain, no peers or producer"
+}

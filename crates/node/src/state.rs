@@ -49,6 +49,7 @@ use crate::{
     transition_frontier::{
         candidate::TransitionFrontierCandidateAction,
         genesis::TransitionFrontierGenesisState,
+        persist::TransitionFrontierPersistState,
         sync::{
             ledger::{
                 snarked::TransitionFrontierSyncLedgerSnarkedState,
@@ -86,6 +87,14 @@ pub struct State {
     pub rpc: RpcState,
 
     pub watched_accounts: WatchedAccountsState,
+    #[serde(default)]
+    pub verification: crate::verification::VerificationState,
+    /// Non-cumulative OCaml block-production delay buckets: <=60, <=90,
+    /// <=120, <=150, <=180, <=210 seconds, and above 210 seconds.
+    #[serde(default)]
+    pub block_production_delay_buckets: [u64; 7],
+    #[serde(default)]
+    pub block_production_delay_sum_ms: u64,
 
     // TODO(binier): include action kind in `last_action`.
     last_action: ActionMeta,
@@ -122,6 +131,11 @@ impl_substate_access!(
     transition_frontier.genesis
 );
 impl_substate_access!(State, TransitionFrontierSyncState, transition_frontier.sync);
+impl_substate_access!(
+    State,
+    TransitionFrontierPersistState,
+    transition_frontier.persist
+);
 impl_substate_access!(State, SnarkPoolState, snark_pool);
 impl_substate_access!(State, SnarkPoolCandidatesState, snark_pool.candidates);
 impl_substate_access!(State, ExternalSnarkWorkers, external_snark_worker);
@@ -268,7 +282,13 @@ impl_p2p_state_access!(State, crate::p2p::P2pLimits);
 impl_p2p_state_access!(State, crate::p2p::P2pNetworkPubsubState);
 impl_p2p_state_access!(State, crate::p2p::P2pConfig);
 
-impl crate::p2p::P2pStateTrait for State {}
+impl crate::p2p::P2pStateTrait for State {
+    fn snark_work_is_eligible(&self, work: &mina_core::snark::Snark) -> bool {
+        self.transition_frontier
+            .best_tip()
+            .is_some_and(|tip| self.snark_pool.work_is_checked(work, tip.hash()))
+    }
+}
 
 pub type Substate<'a, S> = mina_core::Substate<'a, crate::Action, State, S>;
 
@@ -289,6 +309,9 @@ impl State {
             transaction_pool: TransactionPoolState::new(config.tx_pool, constants),
 
             watched_accounts: WatchedAccountsState::new(),
+            verification: Default::default(),
+            block_production_delay_buckets: [0; 7],
+            block_production_delay_sum_ms: 0,
 
             config: config.global,
             last_action: ActionMeta::zero_custom(now),
@@ -375,7 +398,7 @@ impl State {
 
     pub fn slot_time(&self, global_slot: u64) -> Option<(Timestamp, Timestamp)> {
         let genesis_timestamp = self.genesis_block()?.genesis_timestamp();
-        println!("genesis_timestamp: {}", u64::from(genesis_timestamp));
+        mina_core::debug!("genesis_timestamp: {}", u64::from(genesis_timestamp));
 
         let start_time = genesis_timestamp.checked_add(
             global_slot
@@ -391,11 +414,22 @@ impl State {
         Some((start_time, end_time))
     }
 
+    /// Whether to prove the genesis block now: we won a slot of the genesis
+    /// epoch that starts within two minutes, or has started and not ended.
+    ///
+    /// This used to ask whether the slot would be due for production two
+    /// minutes from now, which stops being true two minutes before the slot
+    /// ends: 60 s into a 180 s slot, but 30 s before a 90 s slot starts. A
+    /// producer whose first won slot was the current one, or started within
+    /// 30 s, then never proved the genesis block, so it never produced.
+    /// OCaml proves the genesis block one block window before a later won
+    /// slot, and at once for the current one.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/block_producer/block_producer.ml#L1159-L1230>
     pub fn producing_block_after_genesis(&self) -> bool {
-        #[allow(clippy::arithmetic_side_effects)]
-        let two_mins_in_future = self.time() + Duration::from_secs(2 * 60);
+        const GENESIS_PROOF_LEAD: Duration = Duration::from_secs(2 * 60);
         self.block_producer.with(false, |bp| {
-            bp.current.won_slot_should_produce(two_mins_in_future)
+            bp.current.won_slot_is_due(self.time(), GENESIS_PROOF_LEAD)
         }) && self.genesis_block().is_some_and(|b| {
             let slot = &b.consensus_state().curr_global_slot_since_hard_fork;
             let epoch = slot
@@ -405,6 +439,42 @@ impl State {
                 .expect("division by 0");
             self.current_epoch() <= Some(epoch)
         })
+    }
+
+    /// Whether the SNARK worker may take a new job now (P5.3). A worker whose
+    /// prover competes with the block producer's (`block_first_lead` is set)
+    /// takes none while a block or the genesis block is being produced, or
+    /// while a known won slot's block is due within the lead. That keeps work
+    /// away from the won slots the node knows
+    /// of, but cannot stop a job already running or foresee a won slot
+    /// learned late, so it is no guarantee for a prover that proves one
+    /// thing at a time: the web node never shares one between the worker and
+    /// the producer (`isolated::ProverRole`), and sets no lead. Any other
+    /// worker may.
+    pub fn snark_worker_may_take_job(&self) -> bool {
+        if !self.block_producer.is_enabled() {
+            return true;
+        }
+        let Some(lead) = self
+            .config
+            .snarker
+            .as_ref()
+            .and_then(|config| config.block_first_lead)
+        else {
+            return true;
+        };
+        let now = self.time();
+        let producing = self.block_producer.with(false, |bp| {
+            bp.current.is_producing() || bp.current.won_slot_is_due(now, lead)
+        });
+        use crate::transition_frontier::genesis::TransitionFrontierGenesisState as Genesis;
+        let genesis_proving = match &self.transition_frontier.genesis {
+            Genesis::ProvePending { .. } => true,
+            // When `ProveInit` is enabled: about to be proved.
+            Genesis::Produced { .. } => self.producing_block_after_genesis(),
+            _ => false,
+        };
+        !producing && !genesis_proving
     }
 
     pub fn prevalidate_block(
@@ -423,7 +493,12 @@ impl State {
             return Err(BlockPrevalidationError::GenesisNotReady);
         };
 
-        prevalidate_block(block, &genesis, cur_global_slot, allow_block_too_late)
+        prevalidate_block(block, &genesis, cur_global_slot, allow_block_too_late)?;
+        // OCaml checks the body when it applies the block, as `block_apply`
+        // does. Checking it here too rejects a received block whose body
+        // doesn't match its header before its proof is verified, and without
+        // marking its hash invalid (`is_forever_invalid`).
+        crate::transition_frontier::body_reference::validate_body_reference(block.block.as_ref())
     }
 
     pub fn should_log_node_id(&self) -> bool {
@@ -547,7 +622,7 @@ impl P2p {
             )),
             on_p2p_channels_snark_libp2p_received: Some(redux::callback!(
                 on_p2p_channels_snark_libp2p_received((peer_id: PeerId, snark: Box<Snark>)) -> crate::Action {
-                    SnarkPoolCandidateAction::WorkFetchSuccess { peer_id, work: *snark }
+                    SnarkPoolAction::WorkCheck { work: *snark, sender: peer_id, is_sender_local: false, stage: crate::snark_pool::AdmissionStage::Received(crate::snark_pool::WorkSource::Gossip), retry: false }
                 }
             )),
             on_p2p_channels_streaming_rpc_ready: Some(redux::callback!(

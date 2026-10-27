@@ -99,7 +99,9 @@ pub enum OcamlNodeExecutable {
     ///
     /// # Example
     /// ```
-    /// OcamlNodeExecutable::Installed("/usr/local/bin/mina".to_string())
+    /// use mina_node_testing::node::OcamlNodeExecutable;
+    ///
+    /// let executable = OcamlNodeExecutable::Installed("/usr/local/bin/mina".to_string());
     /// ```
     Installed(String),
 
@@ -110,7 +112,9 @@ pub enum OcamlNodeExecutable {
     ///
     /// # Example
     /// ```
-    /// OcamlNodeExecutable::Docker("minaprotocol/mina-daemon:3.0.0".to_string())
+    /// use mina_node_testing::node::OcamlNodeExecutable;
+    ///
+    /// let executable = OcamlNodeExecutable::Docker("minaprotocol/mina-daemon:3.0.0".to_string());
     /// ```
     Docker(String),
 

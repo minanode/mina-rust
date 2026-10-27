@@ -1,0 +1,265 @@
+/*
+ * minanode design tokens.
+ *
+ * Tailwind v4 theme variables plus the shadcn/ui semantic colour names, so the
+ * shadcn CLI, Tailwind utilities and design tools all read the same values.
+ *
+ * Themes: dark is the default (`class="dark"` on <html>). `.light`, or no class
+ * at all, gives the light theme. Either class can also scope a subtree, which
+ * the design-system page uses to show both themes side by side. Components
+ * take every theme difference from these variables and use no `dark:`
+ * utilities, so subtree scoping is reliable.
+ *
+ * Import after `@import "tailwindcss"` (globals.css does this for you).
+ */
+
+/* Primitives. The default Tailwind palette is removed so only brand colours
+   exist; `static` emits every value, which the design-system page reads. */
+@theme static {
+  --color-*: initial;
+
+  --color-white: #ffffff;
+  --color-black: #000000;
+
+  /* Brand teal. 500 is the logo colour, #12A594. */
+  --color-teal-50: #e8f8f5;
+  --color-teal-100: #c5eee7;
+  --color-teal-200: #93e0d3;
+  --color-teal-300: #5acdbb;
+  --color-teal-400: #2dbba6;
+  --color-teal-500: #12a594;
+  --color-teal-600: #0e8a7c;
+  --color-teal-700: #0b6f64;
+  --color-teal-800: #0a5a52;
+  --color-teal-900: #08423d;
+  --color-teal-950: #042a27;
+
+  /* Mint, the light end of the hero gradient (dark theme only). */
+  --color-mint-300: #5ee6c6;
+
+  /* Ink: cool neutrals with a slight green cast, from page to text. */
+  --color-ink-50: #f5f8f9;
+  --color-ink-100: #e6ecef;
+  --color-ink-200: #cdd6dc;
+  --color-ink-300: #a3b1bb;
+  --color-ink-400: #7d8d99;
+  --color-ink-500: #5b6b77;
+  --color-ink-600: #3e4c57;
+  --color-ink-700: #2a3742;
+  --color-ink-800: #1c2730;
+  --color-ink-850: #141c23;
+  --color-ink-900: #0e141a;
+  --color-ink-950: #0a0f14;
+
+  /* Signal colours for status and charts: a light step for dark surfaces and
+     a dark step for light surfaces. */
+  --color-sky-400: #5ab0f0;
+  --color-sky-700: #1b65a3;
+  --color-amber-400: #e8b04a;
+  --color-amber-700: #8c5310;
+  --color-red-400: #f26d6d;
+  --color-red-700: #c23b3b;
+  --color-violet-400: #a78bfa;
+  --color-violet-700: #6d4fd1;
+}
+
+/* Light theme (also the fallback with no class). */
+:root,
+.light {
+  color-scheme: light;
+
+  --background: var(--color-ink-50);
+  --foreground: var(--color-ink-950);
+  --card: var(--color-white);
+  --card-foreground: var(--color-ink-950);
+  --popover: var(--color-white);
+  --popover-foreground: var(--color-ink-950);
+  --primary: var(--color-teal-500);
+  --primary-foreground: var(--color-ink-950);
+  --secondary: var(--color-ink-100);
+  --secondary-foreground: var(--color-ink-900);
+  --muted: var(--color-ink-100);
+  --muted-foreground: var(--color-ink-500);
+  --accent: var(--color-ink-100);
+  --accent-foreground: var(--color-ink-950);
+  --destructive: var(--color-red-700);
+  --destructive-foreground: var(--color-white);
+  --border: var(--color-ink-200);
+  --input: var(--color-ink-300);
+  /* Form field borders: 3:1 against page and card (WCAG 1.4.11). */
+  --field: var(--color-ink-400);
+  --ring: var(--color-teal-700);
+
+  /* Brand roles beyond shadcn's set. */
+  --brand: var(--color-teal-500);
+  --brand-foreground: var(--color-ink-950);
+  --brand-text: var(--color-teal-700);
+  --brand-subtle: color-mix(in oklab, var(--color-teal-500) 10%, transparent);
+  --brand-border: color-mix(in oklab, var(--color-teal-600) 45%, transparent);
+  --gradient-from: var(--color-teal-800);
+  --gradient-to: var(--color-teal-700);
+  --glow: color-mix(in oklab, var(--color-teal-500) 10%, transparent);
+
+  /* Evidence status: working on main, shown on public devnet, isolated or
+     pending review, planned. */
+  --status-live: var(--color-teal-700);
+  --status-devnet: var(--color-sky-700);
+  --status-pending: var(--color-amber-700);
+  --status-planned: var(--color-ink-500);
+
+  --chart-1: var(--color-teal-600);
+  --chart-2: var(--color-sky-700);
+  --chart-3: var(--color-amber-700);
+  --chart-4: var(--color-violet-700);
+  --chart-5: var(--color-red-700);
+}
+
+/* Dark theme, "midnight verifier": the default. */
+.dark {
+  color-scheme: dark;
+
+  --background: var(--color-ink-950);
+  --foreground: var(--color-ink-50);
+  --card: var(--color-ink-900);
+  --card-foreground: var(--color-ink-50);
+  --popover: var(--color-ink-900);
+  --popover-foreground: var(--color-ink-50);
+  --primary: var(--color-teal-500);
+  --primary-foreground: var(--color-ink-950);
+  --secondary: var(--color-ink-850);
+  --secondary-foreground: var(--color-ink-50);
+  --muted: var(--color-ink-850);
+  --muted-foreground: var(--color-ink-300);
+  --accent: var(--color-ink-800);
+  --accent-foreground: var(--color-ink-50);
+  --destructive: var(--color-red-400);
+  --destructive-foreground: var(--color-ink-950);
+  --border: var(--color-ink-800);
+  --input: var(--color-ink-700);
+  --field: var(--color-ink-500);
+  --ring: var(--color-teal-400);
+
+  --brand: var(--color-teal-500);
+  --brand-foreground: var(--color-ink-950);
+  --brand-text: var(--color-teal-400);
+  --brand-subtle: color-mix(in oklab, var(--color-teal-500) 12%, transparent);
+  --brand-border: color-mix(in oklab, var(--color-teal-500) 40%, transparent);
+  --gradient-from: var(--color-teal-400);
+  --gradient-to: var(--color-mint-300);
+  --glow: color-mix(in oklab, var(--color-teal-500) 18%, transparent);
+
+  --status-live: var(--color-teal-400);
+  --status-devnet: var(--color-sky-400);
+  --status-pending: var(--color-amber-400);
+  --status-planned: var(--color-ink-300);
+
+  --chart-1: var(--color-teal-400);
+  --chart-2: var(--color-sky-400);
+  --chart-3: var(--color-amber-400);
+  --chart-4: var(--color-violet-400);
+  --chart-5: var(--color-red-400);
+}
+
+:root {
+  --radius: 0.75rem;
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+}
+
+/* Semantic colours and radii as Tailwind utilities (bg-card, text-brand-text,
+   rounded-lg and so on). */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-field: var(--field);
+  --color-ring: var(--ring);
+
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-text: var(--brand-text);
+  --color-brand-subtle: var(--brand-subtle);
+  --color-brand-border: var(--brand-border);
+  --color-gradient-from: var(--gradient-from);
+  --color-gradient-to: var(--gradient-to);
+  --color-glow: var(--glow);
+
+  --color-status-live: var(--status-live);
+  --color-status-devnet: var(--status-devnet);
+  --color-status-pending: var(--status-pending);
+  --color-status-planned: var(--status-planned);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+}
+
+/* Type, spacing, layout, effects and motion. */
+@theme {
+  --font-sans:
+    "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
+  --font-mono:
+    "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
+
+  /* Semantic type scale, used as text-display, text-title and so on. */
+  --text-display: clamp(2.375rem, 1.5rem + 3.9vw, 4.5rem);
+  --text-display--line-height: 1.04;
+  --text-display--letter-spacing: -0.035em;
+  --text-display--font-weight: 700;
+  --text-title: clamp(1.75rem, 1.45rem + 1.25vw, 2.5rem);
+  --text-title--line-height: 1.12;
+  --text-title--letter-spacing: -0.025em;
+  --text-title--font-weight: 650;
+  --text-heading: 1.25rem;
+  --text-heading--line-height: 1.35;
+  --text-heading--letter-spacing: -0.01em;
+  --text-heading--font-weight: 600;
+  --text-lead: clamp(1.0625rem, 1rem + 0.3vw, 1.25rem);
+  --text-lead--line-height: 1.6;
+  --text-metric: clamp(1.75rem, 1.5rem + 1vw, 2.25rem);
+  --text-metric--line-height: 1.1;
+  --text-metric--letter-spacing: -0.02em;
+  --text-metric--font-weight: 600;
+  --text-label: 0.75rem;
+  --text-label--line-height: 1rem;
+  --text-label--letter-spacing: 0.06em;
+  --text-label--font-weight: 500;
+
+  /* Layout. */
+  --spacing-section: clamp(4rem, 2.75rem + 5vw, 7.5rem);
+  --spacing-gutter: clamp(1.25rem, 0.75rem + 2vw, 2rem);
+  --container-page: 76rem;
+  --container-prose: 42rem;
+
+  /* Effects. */
+  --shadow-card: 0 1px 0 0 color-mix(in oklab, var(--color-white) 4%, transparent) inset;
+  --shadow-glow: 0 10px 36px -12px color-mix(in oklab, var(--color-teal-500) 60%, transparent);
+
+  /* Motion. */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}

@@ -57,6 +57,9 @@ rpc_read_test!(menu, "v1/rpc/menu", rpc::VersionedRpcMenuV1);
 //     rpc::GetStagedLedgerAuxAndPendingCoinbasesAtHashV2
 // );
 
+// `response/11.bin` answers `Child_hashes_are` with an array of hashes, the
+// Mesa layout (`Sync_ledger.Answer.Stable.V2` at 4.0.2); it was rewritten from
+// a pre-Mesa capture of the same two hashes (I26).
 rpc_read_test!(
     answer_sync_ledger_v2,
     "v2/rpc/answer-sync-ledger",

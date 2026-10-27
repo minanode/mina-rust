@@ -1,5 +1,6 @@
 .env.docker
 /target
+/dist/
 /tools/testing/res/
 circuit-blobs
 .DS_Store
@@ -18,7 +19,19 @@ website/static/api-docs/
 website/static/openapi/openapi.json
 
 crates/ledger/3.0.0mainnet
+crates/ledger/4.0.2mainnet
+crates/ledger/4.0.2devnet
 crates/ledger/berkeley-devnet
 mina-workdir
 .idea/
 .gemini/
+
+# Local-only workspace for the fork (upstream clones, scratch data, logs)
+repos/
+.work/
+logs/
+
+# Docker Compose settings and block producer secrets (docker-compose*.yml)
+/.env
+/producer.env
+/keys/

@@ -1,6 +1,6 @@
 /// Copy-pasted from https://github.com/MinaProtocol/mina/blob/cf2a732ae39f4e784707e1fc32832da805bb7d09/src/lib/crypto/kimchi_bindings/stubs/src/urs_utils.rs
 use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
-use ark_ff::{batch_inversion, One, UniformRand, Zero};
+use ark_ff::{One, UniformRand, Zero};
 use poly_commitment::{
     commitment::{b_poly_coefficients, CommitmentCurve},
     ipa::SRS,
@@ -38,29 +38,34 @@ where
     let mut scalars = vec![G::ScalarField::zero(); n];
     scalars.extend(&rs[..]);
 
-    let chal_invs = {
-        let mut cs = chals.to_vec();
-        batch_inversion(&mut cs);
-        cs
-    };
-
-    let termss: Vec<_> = chals
-        .par_iter()
-        .zip(chal_invs)
-        .chunks(rounds)
-        .zip(rs)
-        .map(|(chunk, r)| {
-            let chals: Vec<_> = chunk.iter().map(|(c, _)| **c).collect();
-            let mut s = b_poly_coefficients(&chals);
-            s.iter_mut().for_each(|c| *c *= &r);
-            s
+    // OCaml's batch accumulator check sums r^i * b_poly(challenges_i).
+    // Keep one partial sum per worker instead of all k full polynomials:
+    // for 128 proofs the old collection held 128 * SRS_DEPTH field elements.
+    // Field addition and multiplication are exact, so grouping the sum does
+    // not change the MSM inputs or verification result.
+    let workers = rayon::current_num_threads().min(k);
+    let group_size = k.div_ceil(workers);
+    let partials: Vec<_> = rs
+        .par_chunks(group_size)
+        .enumerate()
+        .map(|(group, weights)| {
+            let mut partial = vec![G::ScalarField::zero(); n];
+            for (offset, weight) in weights.iter().enumerate() {
+                let proof = group * group_size + offset;
+                let challenges = &chals[proof * rounds..(proof + 1) * rounds];
+                let terms = b_poly_coefficients(challenges);
+                assert_eq!(terms.len(), n);
+                for (sum, term) in partial.iter_mut().zip(terms) {
+                    *sum += term * weight;
+                }
+            }
+            partial
         })
         .collect();
 
-    for terms in termss {
-        assert_eq!(terms.len(), n);
-        for i in 0..n {
-            scalars[i] -= &terms[i];
+    for partial in partials {
+        for (scalar, sum) in scalars.iter_mut().zip(partial) {
+            *scalar -= sum;
         }
     }
 

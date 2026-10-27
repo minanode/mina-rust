@@ -141,6 +141,9 @@ rpc_test!(
     block,
     11520..11530
 );
+// Mesa wraps the existing address with child depth 1, preserving the two hashes.
+// The fixture uses raw bytes [0, 0, 4, 96]: ByteString JSON no longer decodes hex.
+// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/syncable_ledger/syncable_ledger.ml#L45-L53>
 rpc_test!(ledger_query, 11530..11540);
 rpc_test!(
     #[ignore]
@@ -237,7 +240,10 @@ async fn rust_to_many_rust_query() {
         "rpc should be ready"
     );
 
-    let (query, _response) = rpc_from_json!("initial_peers");
+    // These 20 peers share loopback. Exercise fan-in with a ledger query,
+    // within OCaml's ledger budget; initial-peer queries allow only five
+    // charged requests per IP in five minutes (covered by ocaml_rpc tests).
+    let (query, _response) = rpc_from_json!("ledger_query");
 
     // send respests
     println!("=================== sending requests #1 ===============");
@@ -439,23 +445,36 @@ async fn receive_all_requests<I>(cluster: &mut Cluster, receiver_sender_id: I)
 where
     I: IntoIterator<Item = (RustNodeId, RustNodeId, P2pRpcId)>,
 {
-    let any = try_wait_for_all_nodes_with_value(
-        cluster,
-        receiver_sender_id
-            .into_iter()
-            .map(|(receiver, sender, id)| (receiver, (cluster.rust_node(sender).peer_id(), id)))
-            .collect::<Vec<_>>(),
-        Duration::from_secs(10),
-        |event| {
+    let mut waiting = receiver_sender_id
+        .into_iter()
+        .map(|(receiver, sender, id)| (receiver, cluster.rust_node(sender).peer_id(), id))
+        .collect::<BTreeSet<_>>();
+    let any = cluster
+        .try_stream()
+        .take_during(Duration::from_secs(10))
+        .try_any_with_rust(|receiver, event, state| {
             if let RustNodeEvent::RpcChannelRequestReceived { peer_id, id, .. } = event {
-                Some((peer_id, id))
+                // Public catch-up uses receiver-local IDs across peers and
+                // streams. Check the original wire ID through its correlation
+                // map instead of assuming every sender's ID is globally unique.
+                let wire_id = state
+                    .network
+                    .scheduler
+                    .rpc_incoming_streams
+                    .get(&peer_id)
+                    .into_iter()
+                    .flat_map(|streams| streams.values())
+                    .find_map(|stream| stream.pending_incoming.get(&id))
+                    .expect("received request must retain its wire ID")
+                    .header
+                    .id;
+                waiting.remove(&(receiver, peer_id, wire_id)) && waiting.is_empty()
             } else {
-                None
+                false
             }
-        },
-    )
-    .await
-    .expect("no errors");
+        })
+        .await
+        .expect("no errors");
     assert!(any, "request should be received");
 }
 

@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "hash-tool"
 version.workspace = true
 edition.workspace = true

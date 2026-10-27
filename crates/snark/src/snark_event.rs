@@ -10,6 +10,13 @@ use crate::user_command_verify::SnarkUserCommandVerifyId;
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SnarkEvent {
     BlockVerify(SnarkBlockVerifyId, Result<(), SnarkBlockVerifyError>),
+    BlockVerifyMeasured {
+        req_id: SnarkBlockVerifyId,
+        result: Result<(), SnarkBlockVerifyError>,
+        elapsed_ms: f64,
+        skipped: bool,
+        verifier_key: String,
+    },
     WorkVerify(SnarkWorkVerifyId, Result<(), SnarkWorkVerifyError>),
     UserCommandVerify(
         SnarkUserCommandVerifyId,
@@ -30,6 +37,9 @@ impl std::fmt::Display for SnarkEvent {
         match self {
             Self::BlockVerify(id, res) => {
                 write!(f, "BlockVerify, {id}, {}", res_kind(res))
+            }
+            Self::BlockVerifyMeasured { req_id, result, .. } => {
+                write!(f, "BlockVerifyMeasured, {req_id}, {}", res_kind(result))
             }
             Self::WorkVerify(id, res) => {
                 write!(f, "WorkVerify, {id}, {}", res_kind(res))

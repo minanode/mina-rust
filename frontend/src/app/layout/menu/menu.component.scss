@@ -27,8 +27,7 @@
       }
     }
 
-    .mina-rust-node {
-      font-size: 12px;
+    .brand {
       white-space: nowrap;
     }
 
@@ -37,13 +36,6 @@
       //max-width: 100px;
       opacity: 1;
       transition: 200ms ease-out;
-
-      svg {
-        margin-right: 4px;
-        margin-left: -4px;
-        min-width: 25px;
-        min-height: 25px;
-      }
     }
 
     &:hover {
@@ -117,9 +109,17 @@
       }
     }
 
-    .item .item-content span:nth-child(2) {
+    .item .item-content span:nth-child(2),
+    .item.docs .item-content .external {
       opacity: 0;
     }
+  }
+
+  // External: a smaller arrow marks that Docs opens a new tab.
+  .item.docs .item-content .mina-icon.external {
+    font-size: 14px;
+    padding: 0 0 0 4px;
+    transition: opacity 200ms ease-out;
   }
 }
 
@@ -132,6 +132,10 @@
 
     .mina-icon {
       font-size: 24px !important;
+    }
+
+    .item.docs .mina-icon.external {
+      font-size: 18px !important;
     }
 
     .item {

@@ -1,15 +1,11 @@
 use crate::p2p::P2pNetworkPubsubAction;
-use ledger::scan_state::currency::{Amount, Signed};
 use mina_core::{
     block::ArcBlockWithHash,
     bug_condition,
-    consensus::{
-        global_sub_window, in_same_checkpoint_window, in_seed_update_range, relative_sub_window,
-        ConsensusConstants,
-    },
-    constants::constraint_constants,
+    consensus::{in_seed_update_range, ConsensusConstants},
 };
-use mina_p2p_messages::{list::List, v2};
+use mina_p2p_messages::v2;
+use mina_snark::block_verify::{SnarkBlockVerifyAction, SnarkBlockVerifyError, SnarkBlockVerifyId};
 use redux::{callback, Dispatcher, Timestamp};
 
 use crate::{
@@ -18,17 +14,55 @@ use crate::{
 };
 
 use super::{
-    calc_epoch_seed, next_epoch_first_slot, to_epoch_and_slot,
+    build_unproven_block, next_epoch_first_slot, to_epoch_and_slot,
     vrf_evaluator::{
         BlockProducerVrfEvaluatorAction, BlockProducerVrfEvaluatorState, InterruptReason,
     },
     BlockProducerAction, BlockProducerActionWithMetaRef, BlockProducerCurrentState,
-    BlockProducerEnabled, BlockProducerState, BlockWithoutProof,
+    BlockProducerEnabled, BlockProducerState,
 };
 
 impl BlockProducerState {
-    pub fn reducer(state_context: Substate<State>, action: BlockProducerActionWithMetaRef<'_>) {
-        BlockProducerEnabled::reducer(state_context, action);
+    pub fn reducer(
+        state: &mut State,
+        action: BlockProducerActionWithMetaRef<'_>,
+        dispatcher: &mut Dispatcher<Action, State>,
+    ) {
+        let refresh = match action.action() {
+            BlockProducerAction::BestTipUpdate { .. } => state
+                .block_producer
+                .with(false, |bp| bp.current.won_slot_should_search()),
+            BlockProducerAction::WonSlotSearch
+            | BlockProducerAction::WonSlot { .. }
+            | BlockProducerAction::WonSlotDiscard { .. }
+            | BlockProducerAction::WonSlotProduceInit
+            | BlockProducerAction::BlockInjected
+            | BlockProducerAction::BlockProveError { .. }
+            | BlockProducerAction::BlockProofRejected { .. } => true,
+            _ => false,
+        };
+        let proof_failed = matches!(
+            action.action(),
+            BlockProducerAction::BlockProveError { .. }
+                | BlockProducerAction::BlockProofRejected { .. }
+        );
+        BlockProducerEnabled::reducer(Substate::new(state, dispatcher), action);
+        // Retrying the same proof keeps its scheduled timing. Only a discard
+        // makes a new scheduling decision.
+        let refresh = refresh
+            && (!proof_failed
+                || state
+                    .block_producer
+                    .with(false, |bp| bp.current.won_slot_should_search()));
+        if refresh {
+            let cur_global_slot = state.cur_global_slot();
+            if let (Some(best_tip), Some(producer)) = (
+                state.transition_frontier.best_tip(),
+                state.block_producer.as_mut(),
+            ) {
+                producer.update_next_producer_timing(best_tip, cur_global_slot);
+            }
+        }
     }
 }
 
@@ -62,19 +96,20 @@ impl BlockProducerEnabled {
                 }
 
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
-                Self::dispatch_best_tip_update(dispatcher, state, best_tip);
+                Self::dispatch_best_tip_update(dispatcher, state, best_tip, meta.time());
             }
             BlockProducerAction::WonSlotSearch => {
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
                 if let Some(won_slot) = state.block_producer.with(None, |bp| {
                     let best_tip = state.transition_frontier.best_tip()?;
                     let cur_global_slot = state.cur_global_slot()?;
-                    bp.vrf_evaluator.next_won_slot(cur_global_slot, best_tip)
+                    bp.next_won_slot(cur_global_slot, best_tip)
                 }) {
                     dispatcher.push(BlockProducerAction::WonSlot { won_slot });
                 }
             }
             BlockProducerAction::WonSlot { won_slot } => {
+                state.proof_retried = false;
                 state.current = BlockProducerCurrentState::WonSlot {
                     time: meta.time(),
                     won_slot: won_slot.clone(),
@@ -87,6 +122,14 @@ impl BlockProducerEnabled {
             }
             BlockProducerAction::WonSlotDiscard { reason } => {
                 if let Some(won_slot) = state.current.won_slot() {
+                    mina_core::info!(meta.time();
+                        kind = "ProducerBlockDiscarded",
+                        slot = won_slot.global_slot.slot_number.as_u32(),
+                        state_hash = state.current.built_block_hash().map(ToString::to_string),
+                        reason = format!("{reason:?}"),
+                        best_tip_hash = best_chain.last().map(|tip| tip.hash().to_string()),
+                        after_injection = matches!(state.current, BlockProducerCurrentState::Injected { .. }),
+                    );
                     state.current = BlockProducerCurrentState::WonSlotDiscarded {
                         time: meta.time(),
                         won_slot: won_slot.clone(),
@@ -252,12 +295,60 @@ impl BlockProducerEnabled {
                         stake_proof_sparse_ledger,
                         block,
                         block_hash,
+                        verification_req_id: None,
                     };
                 } else {
                     bug_condition!("Invalid state for `BlockProducerAction::BlockProvePending` expected: `BlockProducerCurrentState::BlockUnprovenBuilt`, found: {:?}", current_state);
                 }
             }
-            BlockProducerAction::BlockProveSuccess { proof } => {
+            BlockProducerAction::BlockProofVerify { block_hash, proof } => {
+                let BlockProducerCurrentState::BlockProvePending { block, .. } = &state.current
+                else {
+                    return;
+                };
+                let block = block
+                    .clone()
+                    .with_hash_and_proof(block_hash.clone(), proof.clone());
+                // Use the same asynchronous verifier worker as incoming blocks. Keep
+                // the original unproven inputs until verification succeeds or we retry.
+                let dispatcher = state_context.into_dispatcher();
+                dispatcher.push(SnarkBlockVerifyAction::Init {
+                    block: block.into(),
+                    on_init: callback!(
+                        on_produced_block_verify_init((block_hash: v2::StateHash, req_id: SnarkBlockVerifyId)) -> crate::Action {
+                            BlockProducerAction::BlockProofVerifyPending { block_hash, req_id }
+                        }),
+                    on_success: callback!(
+                        on_produced_block_verify_success(block_hash: v2::StateHash) -> crate::Action {
+                            BlockProducerAction::BlockProveSuccess { block_hash }
+                        }),
+                    on_error: callback!(
+                        on_produced_block_verify_error((block_hash: v2::StateHash, _error: SnarkBlockVerifyError)) -> crate::Action {
+                            BlockProducerAction::BlockProofRejected { block_hash }
+                        }),
+                });
+            }
+            BlockProducerAction::BlockProofVerifyPending { req_id, .. } => {
+                if let BlockProducerCurrentState::BlockProvePending {
+                    verification_req_id,
+                    ..
+                } = &mut state.current
+                {
+                    *verification_req_id = Some(*req_id);
+                }
+            }
+            BlockProducerAction::BlockProveSuccess { .. } => {
+                let BlockProducerCurrentState::BlockProvePending {
+                    verification_req_id: Some(req_id),
+                    ..
+                } = &state.current
+                else {
+                    return;
+                };
+                let Some(job) = global_state.snark.block_verify.jobs.get(*req_id) else {
+                    return;
+                };
+                let proof = job.block().header_ref().protocol_state_proof.clone();
                 let current_state = std::mem::take(&mut state.current);
 
                 if let BlockProducerCurrentState::BlockProvePending {
@@ -282,6 +373,34 @@ impl BlockProducerEnabled {
 
                 let dispatcher = state_context.into_dispatcher();
                 dispatcher.push(BlockProducerEffectfulAction::BlockProveSuccess);
+            }
+            BlockProducerAction::BlockProofRejected { block_hash }
+            | BlockProducerAction::BlockProveError { block_hash } => {
+                let reason = if matches!(action, BlockProducerAction::BlockProveError { .. }) {
+                    super::BlockProducerWonSlotDiscardReason::ProofGenerationFailed
+                } else {
+                    super::BlockProducerWonSlotDiscardReason::ProofVerificationFailed
+                };
+                let won_slot = state.current.won_slot().cloned();
+                let retry = state.retry_failed_proof(block_hash, meta.time());
+                if !retry {
+                    if let Some(won_slot) = won_slot {
+                        state.current = BlockProducerCurrentState::WonSlotDiscarded {
+                            time: meta.time(),
+                            won_slot,
+                            reason,
+                        };
+                    }
+                }
+                mina_core::error!(meta.time();
+                    message = if retry { "Block proof failed; retrying once" } else { "Block proof failed; discarding slot" },
+                    block_hash = block_hash.to_string(), reason = format!("{reason:?}"));
+                let dispatcher = state_context.into_dispatcher();
+                if retry {
+                    dispatcher.push(BlockProducerAction::BlockProveInit);
+                } else {
+                    dispatcher.push(BlockProducerEffectfulAction::WonSlotDiscard { reason });
+                }
             }
             BlockProducerAction::BlockProduced => {
                 let current_state = std::mem::take(&mut state.current);
@@ -335,8 +454,7 @@ impl BlockProducerEnabled {
 
                 let previous_root_snarked_ledger_hash = state
                     .transition_frontier
-                    .root()
-                    .map(|b| b.snarked_ledger_hash().clone());
+                    .previous_root_snarked_ledger_hash();
 
                 dispatcher.push(TransitionFrontierSyncAction::BestTipUpdate {
                     previous_root_snarked_ledger_hash,
@@ -379,6 +497,47 @@ impl BlockProducerEnabled {
         }
     }
 
+    /// Reuse exactly the unproven block and its witnesses once; an expired or
+    /// twice-failed slot is removed so WonSlotSearch cannot select it again.
+    pub(super) fn retry_failed_proof(&mut self, hash: &v2::StateHash, time: Timestamp) -> bool {
+        if !matches!(&self.current, BlockProducerCurrentState::BlockProvePending { block_hash, .. } if block_hash == hash)
+        {
+            return false;
+        }
+        let BlockProducerCurrentState::BlockProvePending {
+            won_slot,
+            chain,
+            emitted_ledger_proof,
+            pending_coinbase_update,
+            pending_coinbase_witness,
+            stake_proof_sparse_ledger,
+            block,
+            block_hash,
+            ..
+        } = std::mem::take(&mut self.current)
+        else {
+            unreachable!()
+        };
+        if self.proof_retried || time >= won_slot.next_slot_time() {
+            self.vrf_evaluator.won_slots.remove(&won_slot.global_slot());
+            self.current = BlockProducerCurrentState::Idle { time };
+            return false;
+        }
+        self.proof_retried = true;
+        self.current = BlockProducerCurrentState::BlockUnprovenBuilt {
+            time,
+            won_slot,
+            chain,
+            emitted_ledger_proof,
+            pending_coinbase_update,
+            pending_coinbase_witness,
+            stake_proof_sparse_ledger,
+            block,
+            block_hash,
+        };
+        true
+    }
+
     fn reduce_block_unproved_build(
         &mut self,
         consensus_constants: &ConsensusConstants,
@@ -402,283 +561,23 @@ impl BlockProducerEnabled {
             bug_condition!("Invalid state for `BlockProducerAction::BlockUnprovenBuild` expected: `BlockProducerCurrentState::StagedLedgerDiffCreateSuccess`, found: {:?}", current_state);
             return;
         };
-        let Some(pred_block) = chain.last() else {
-            bug_condition!("Invalid state for `BlockProducerAction::BlockUnprovenBuild`: did not find predecessor block");
-            return;
-        };
 
-        let pred_consensus_state = &pred_block.header().protocol_state.body.consensus_state;
-        let pred_blockchain_state = &pred_block.header().protocol_state.body.blockchain_state;
-
-        let genesis_ledger_hash = &pred_blockchain_state.genesis_ledger_hash;
-
-        let block_timestamp = won_slot.timestamp();
-        let pred_global_slot = pred_consensus_state
-            .curr_global_slot_since_hard_fork
-            .clone();
-        let curr_global_slot_since_hard_fork = won_slot.global_slot.clone();
-        let global_slot_since_genesis =
-            won_slot.global_slot_since_genesis(pred_block.global_slot_diff());
-        let (pred_epoch, _) = to_epoch_and_slot(&pred_global_slot);
-        let (next_epoch, next_slot) = to_epoch_and_slot(&curr_global_slot_since_hard_fork);
-        let has_ancestor_in_same_checkpoint_window =
-            in_same_checkpoint_window(&pred_global_slot, &curr_global_slot_since_hard_fork);
-
-        let block_stake_winner = won_slot.delegator.0.clone();
-        let vrf_truncated_output: v2::ConsensusVrfOutputTruncatedStableV1 =
-            (*won_slot.vrf_output).clone().into();
-        let vrf_hash = won_slot.vrf_output.hash();
-        let block_creator = self.config.pub_key.clone();
-        let coinbase_receiver = self.config.coinbase_receiver().clone();
-        let proposed_protocol_version_opt = self.config.proposed_protocol_version.clone();
-
-        let ledger_proof_statement = ledger_proof_statement_from_emitted_proof(
+        let (block, block_hash) = match build_unproven_block(
+            consensus_constants,
+            &self.config,
+            &won_slot,
+            &chain,
+            &diff,
+            &diff_hash,
+            &staged_ledger_hash,
             emitted_ledger_proof.as_deref(),
-            &pred_blockchain_state.ledger_proof_statement,
-        );
-
-        let supply_increase = emitted_ledger_proof.as_ref().map_or(Signed::zero(), |v| {
-            Signed::from(&v.statement.supply_increase)
-        });
-
-        let total_currency = {
-            let (amount, overflowed) = Amount::from(pred_consensus_state.total_currency.clone())
-                .add_signed_flagged(supply_increase);
-            if overflowed {
-                todo!("total_currency overflowed");
-            }
-            amount
-        };
-
-        let (staking_epoch_data, next_epoch_data, epoch_count) = {
-            let next_staking_ledger = if pred_block.snarked_ledger_hash() == genesis_ledger_hash {
-                pred_consensus_state.next_epoch_data.ledger.clone()
-            } else {
-                v2::MinaBaseEpochLedgerValueStableV1 {
-                    hash: pred_block.snarked_ledger_hash().clone(),
-                    total_currency: (&total_currency).into(),
-                }
-            };
-            let (staking_data, next_data, epoch_count) = if next_epoch > pred_epoch {
-                let staking_data =
-                    next_to_staking_epoch_data(&pred_consensus_state.next_epoch_data);
-                let next_data =
-                    v2::ConsensusProofOfStakeDataEpochDataNextValueVersionedValueStableV1 {
-                        seed: pred_consensus_state.next_epoch_data.seed.clone(),
-                        ledger: next_staking_ledger,
-                        start_checkpoint: pred_block.hash().clone(),
-                        // comment from Mina repo: (* TODO: We need to make sure issue #2328 is properly addressed. *)
-                        lock_checkpoint: v2::StateHash::zero(),
-                        epoch_length: v2::UnsignedExtendedUInt32StableV1(1.into()),
-                    };
-                let epoch_count = v2::UnsignedExtendedUInt32StableV1(
-                    (pred_consensus_state
-                        .epoch_count
-                        .as_u32()
-                        .checked_add(1)
-                        .expect("overflow"))
-                    .into(),
-                );
-                (staking_data, next_data, epoch_count)
-            } else {
-                assert_eq!(pred_epoch, next_epoch);
-                let mut next_data = pred_consensus_state.next_epoch_data.clone();
-                next_data.epoch_length = v2::UnsignedExtendedUInt32StableV1(
-                    (next_data
-                        .epoch_length
-                        .as_u32()
-                        .checked_add(1)
-                        .expect("overflow"))
-                    .into(),
-                );
-                (
-                    pred_consensus_state.staking_epoch_data.clone(),
-                    next_data,
-                    pred_consensus_state.epoch_count,
-                )
-            };
-
-            let next_data = if in_seed_update_range(next_slot, pred_block.constants()) {
-                v2::ConsensusProofOfStakeDataEpochDataNextValueVersionedValueStableV1 {
-                    seed: calc_epoch_seed(&next_data.seed, vrf_hash),
-                    lock_checkpoint: pred_block.hash().clone(),
-                    ..next_data
-                }
-            } else {
-                next_data
-            };
-
-            (staking_data, next_data, epoch_count)
-        };
-
-        let (min_window_density, sub_window_densities) = {
-            // TODO(binier): when should this be false?
-            // <https://github.com/MinaProtocol/mina/blob/4aac38814556b9641ffbdfaef19b38ab7980011b/src/lib/consensus/proof_of_stake.ml#L2864>
-            let incr_window = true;
-            let pred_sub_window_densities = &pred_consensus_state.sub_window_densities;
-
-            let pred_global_sub_window =
-                global_sub_window(&pred_global_slot, pred_block.constants());
-            let next_global_sub_window =
-                global_sub_window(&curr_global_slot_since_hard_fork, pred_block.constants());
-
-            let pred_relative_sub_window = relative_sub_window(pred_global_sub_window);
-            let next_relative_sub_window = relative_sub_window(next_global_sub_window);
-
-            let is_same_global_sub_window = pred_global_sub_window == next_global_sub_window;
-            let are_windows_overlapping = pred_global_sub_window
-                .checked_add(constraint_constants().sub_windows_per_window as u32)
-                .expect("overflow")
-                >= next_global_sub_window;
-
-            let current_sub_window_densities = pred_sub_window_densities
-                .iter()
-                .enumerate()
-                .map(|(i, density)| (i as u32, density.as_u32()))
-                .map(|(i, density)| {
-                    let gt_pred_sub_window = i > pred_relative_sub_window;
-                    let lt_next_sub_window = i < next_relative_sub_window;
-                    let within_range = if pred_relative_sub_window < next_relative_sub_window {
-                        gt_pred_sub_window && lt_next_sub_window
-                    } else {
-                        gt_pred_sub_window || lt_next_sub_window
-                    };
-                    if is_same_global_sub_window || (are_windows_overlapping && !within_range) {
-                        density
-                    } else {
-                        0
-                    }
-                })
-                .collect::<Vec<_>>();
-
-            let grace_period_end = consensus_constants.grace_period_end;
-            let min_window_density = if is_same_global_sub_window
-                || curr_global_slot_since_hard_fork.slot_number.as_u32() < grace_period_end
-            {
-                pred_consensus_state.min_window_density
-            } else {
-                let cur_density = current_sub_window_densities.iter().sum();
-                let min_density = pred_consensus_state
-                    .min_window_density
-                    .as_u32()
-                    .min(cur_density);
-                v2::UnsignedExtendedUInt32StableV1(min_density.into())
-            };
-
-            let next_sub_window_densities = current_sub_window_densities
-                .into_iter()
-                .enumerate()
-                .map(|(i, density)| (i as u32, density))
-                .map(|(i, density)| {
-                    let is_next_sub_window = i == next_relative_sub_window;
-                    if is_next_sub_window {
-                        let density = if is_same_global_sub_window {
-                            density
-                        } else {
-                            0
-                        };
-                        if incr_window {
-                            density.saturating_add(1)
-                        } else {
-                            density
-                        }
-                    } else {
-                        density
-                    }
-                })
-                .map(|v| v2::UnsignedExtendedUInt32StableV1(v.into()))
-                .collect();
-
-            (min_window_density, next_sub_window_densities)
-        };
-
-        let supercharge_coinbase = can_apply_supercharged_coinbase(
-            &block_stake_winner,
             &stake_proof_sparse_ledger,
-            &global_slot_since_genesis,
-        );
-        let consensus_state = v2::ConsensusProofOfStakeDataConsensusStateValueStableV2 {
-            blockchain_length: v2::UnsignedExtendedUInt32StableV1(
-                (pred_block.height().checked_add(1).expect("overflow")).into(),
-            ),
-            epoch_count,
-            min_window_density,
-            sub_window_densities,
-            last_vrf_output: vrf_truncated_output,
-            total_currency: (&total_currency).into(),
-            curr_global_slot_since_hard_fork,
-            global_slot_since_genesis,
-            staking_epoch_data,
-            next_epoch_data,
-            has_ancestor_in_same_checkpoint_window,
-            block_stake_winner,
-            block_creator,
-            coinbase_receiver,
-            supercharge_coinbase,
-        };
-
-        let protocol_state = v2::MinaStateProtocolStateValueStableV2 {
-            previous_state_hash: pred_block.hash().clone(),
-            body: v2::MinaStateProtocolStateBodyValueStableV2 {
-                genesis_state_hash: if pred_block.is_genesis() {
-                    pred_block.hash().clone()
-                } else {
-                    pred_block
-                        .header()
-                        .protocol_state
-                        .body
-                        .genesis_state_hash
-                        .clone()
-                },
-                constants: pred_block.header().protocol_state.body.constants.clone(),
-                blockchain_state: v2::MinaStateBlockchainStateValueStableV2 {
-                    staged_ledger_hash: staged_ledger_hash.clone(),
-                    genesis_ledger_hash: genesis_ledger_hash.clone(),
-                    ledger_proof_statement,
-                    timestamp: block_timestamp,
-                    body_reference: diff_hash.clone(),
-                },
-                consensus_state,
-            },
-        };
-
-        let chain_proof_len = pred_block.constants().delta.as_u32() as usize;
-        let delta_block_chain_proof = match chain_proof_len {
-            0 => (pred_block.hash().clone(), List::new()),
-            chain_proof_len => {
-                // TODO(binier): test
-                let mut iter = chain
-                    .iter()
-                    .rev()
-                    .take(chain_proof_len.saturating_add(1))
-                    .rev();
-                if let Some(first_block) = iter.next() {
-                    let first_hash = first_block.hash().clone();
-                    let body_hashes = iter
-                        .filter_map(|b| b.header().protocol_state.body.try_hash().ok()) // TODO: Handle error ?
-                        .map(v2::StateBodyHash::from)
-                        .collect();
-                    (first_hash, body_hashes)
-                } else {
-                    // TODO: test this as well
-                    // If the chain is empty, return the same as when chain_proof_len is 0
-                    (pred_block.hash().clone(), List::new())
-                }
+        ) {
+            Ok(built) => built,
+            Err(error) => {
+                mina_core::log::inner::error!("Unproven block build failed: {error}");
+                return;
             }
-        };
-
-        let block = BlockWithoutProof {
-            protocol_state,
-            delta_block_chain_proof,
-            current_protocol_version: pred_block.header().current_protocol_version.clone(),
-            proposed_protocol_version_opt,
-            body: v2::StagedLedgerDiffBodyStableV1 {
-                staged_ledger_diff: diff.clone(),
-            },
-        };
-        let Ok(block_hash) = block.protocol_state.try_hash() else {
-            mina_core::log::inner::error!("Invalid protocol state");
-            return;
         };
 
         self.current = BlockProducerCurrentState::BlockUnprovenBuilt {
@@ -698,6 +597,7 @@ impl BlockProducerEnabled {
         dispatcher: &mut Dispatcher<Action, State>,
         state: &State,
         best_tip: &ArcBlockWithHash,
+        time: Timestamp,
     ) {
         let global_slot = best_tip
             .consensus_state()
@@ -753,10 +653,9 @@ impl BlockProducerEnabled {
             next_epoch_data: Box::new(best_tip.consensus_state().next_epoch_data.clone()),
         });
 
-        if let Some(reason) = state
-            .block_producer
-            .with(None, |bp| bp.current.won_slot_should_discard(best_tip))
-        {
+        if let Some(reason) = state.block_producer.with(None, |bp| {
+            bp.current.won_slot_should_discard(best_tip, time)
+        }) {
             dispatcher.push(BlockProducerAction::WonSlotDiscard { reason });
         } else {
             dispatcher.push(BlockProducerAction::WonSlotSearch);
@@ -768,64 +667,46 @@ impl BlockProducerEnabled {
 fn broadcast_injected_block(global_state: &State, dispatcher: &mut Dispatcher<Action, State>) {
     use mina_p2p_messages::gossip::GossipNetMessageV2;
 
-    let Some(block) = global_state
+    let Some((block_hash, block)) = global_state
         .block_producer
         .as_ref()
         .and_then(|bp| bp.current.injected_block())
-        .map(|pb| pb.block.clone())
+        .map(|pb| (pb.hash().to_string(), pb.block.clone()))
     else {
         // Should be impossible, we call this immediately after having injected the block.
         return;
     };
 
+    let state_hash = block.header.protocol_state.try_hash().ok();
+    let slot = block
+        .header
+        .protocol_state
+        .body
+        .consensus_state
+        .curr_global_slot_since_hard_fork
+        .slot_number
+        .as_u32();
+    mina_core::debug!(mina_core::log::system_time();
+        kind = "ProducerBlockQueuedForGossip",
+        state_hash = state_hash.map(|hash| hash.to_string()),
+        slot = slot,
+    );
+    // OCaml adopts a successful local proof even after its slot and attempts
+    // broadcast. Keep the stale-gossip guard; default catch-up RPCs expose the
+    // retained block when the next timely descendant reaches the peer.
+    // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/block_producer/block_producer.ml#L853-L1026>
     let message = GossipNetMessageV2::NewState(block);
+    if let Some(p2p) = global_state.p2p.ready() {
+        if !p2p
+            .network
+            .scheduler
+            .broadcast_state
+            .block_gossip
+            .can_announce(&message, global_state.time())
+        {
+            mina_core::warn!(global_state.time(); kind = "BlockProducerAnnouncementSuppressed", block_hash = block_hash,
+                message = "Produced block retained for catch-up; gossip announcement suppressed");
+        }
+    }
     dispatcher.push(P2pNetworkPubsubAction::Broadcast { message });
-}
-
-fn can_apply_supercharged_coinbase(
-    block_stake_winner: &v2::NonZeroCurvePoint,
-    stake_proof_sparse_ledger: &v2::MinaBaseSparseLedgerBaseStableV2,
-    global_slot_since_genesis: &v2::MinaNumbersGlobalSlotSinceGenesisMStableV1,
-) -> bool {
-    use ledger::staged_ledger::staged_ledger::StagedLedger;
-
-    let winner = (block_stake_winner)
-        .try_into()
-        .expect("Public key being used cannot be invalid here");
-    let epoch_ledger = (stake_proof_sparse_ledger)
-        .try_into()
-        .expect("Sparse ledger being used cannot be invalid here");
-    let global_slot = (global_slot_since_genesis).into();
-
-    StagedLedger::can_apply_supercharged_coinbase_exn(winner, &epoch_ledger, global_slot)
-}
-
-fn next_to_staking_epoch_data(
-    data: &v2::ConsensusProofOfStakeDataEpochDataNextValueVersionedValueStableV1,
-) -> v2::ConsensusProofOfStakeDataEpochDataStakingValueVersionedValueStableV1 {
-    v2::ConsensusProofOfStakeDataEpochDataStakingValueVersionedValueStableV1 {
-        seed: data.seed.clone(),
-        ledger: data.ledger.clone(),
-        start_checkpoint: data.start_checkpoint.clone(),
-        lock_checkpoint: data.lock_checkpoint.clone(),
-        epoch_length: data.epoch_length,
-    }
-}
-
-fn ledger_proof_statement_from_emitted_proof(
-    emitted_ledger_proof: Option<&v2::LedgerProofProdStableV2>,
-    pred_proof_statement: &v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement,
-) -> v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement {
-    match emitted_ledger_proof.map(|proof| &proof.statement) {
-        None => pred_proof_statement.clone(),
-        Some(stmt) => v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement {
-            source: stmt.source.clone(),
-            target: stmt.target.clone(),
-            connecting_ledger_left: stmt.connecting_ledger_left.clone(),
-            connecting_ledger_right: stmt.connecting_ledger_right.clone(),
-            supply_increase: stmt.supply_increase.clone(),
-            fee_excess: stmt.fee_excess.clone(),
-            sok_digest: (),
-        },
-    }
 }

@@ -1,0 +1,37 @@
+{
+ "data": {
+  "genesisConstants": {
+   "genesisTimestamp": "2026-08-19T10:00:00.000000-08:00"
+  },
+  "daemonStatus": {
+   "consensusTimeBestTip": {
+    "epoch": "8",
+    "slot": "3540",
+    "globalSlot": "60660",
+    "startTime": "1792621800000",
+    "endTime": "1792621890000"
+   },
+   "globalSlotSinceGenesisBestTip": 920220,
+   "consensusConfiguration": {
+    "slotDuration": 90000,
+    "slotsPerEpoch": 7140,
+    "k": 290,
+    "epochDuration": 642600000
+   },
+   "nextBlockProduction": null,
+   "blockProductionKeys": []
+  },
+  "bestChain": [
+   {
+    "stateHash": "3NKhuc4rGbMwkjowakSnWUKZZnZYftGs4atT77jf3iTDWPwUjfXa",
+    "protocolState": {
+     "consensusState": {
+      "slot": "3540",
+      "slotSinceGenesis": "920220",
+      "epoch": "8"
+     }
+    }
+   }
+  ]
+ }
+}

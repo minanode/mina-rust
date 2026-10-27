@@ -58,12 +58,16 @@
 //!
 //! ## Example Usage
 //!
+//! Requires verifier indices and SRS parameters supplied by the application.
+//! This example is compiled without loading external circuit data.
+//!
 //! ```rust,no_run
-//! use snark::{SnarkConfig, SnarkState};
+//! use mina_snark::{SnarkConfig, SnarkState};
 //!
 //! // Initialize SNARK state with configuration
-//! let config = SnarkConfig { /* ... */ };
-//! let state = SnarkState::new(config);
+//! fn initialize_snark(config: SnarkConfig) -> SnarkState {
+//!     SnarkState::new(config)
+//! }
 //!
 //! // The state machine handles verification requests through actions
 //! // dispatched by the main node's Redux store

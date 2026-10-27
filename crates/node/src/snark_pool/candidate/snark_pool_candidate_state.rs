@@ -68,6 +68,21 @@ impl SnarkPoolCandidatesState {
         (len, inconsistency)
     }
 
+    /// The works received from peers and still held, one per peer and job.
+    pub fn works_iter(&self) -> impl Iterator<Item = &Snark> {
+        self.by_peer
+            .values()
+            .flat_map(BTreeMap::values)
+            .filter_map(|state| match state {
+                SnarkPoolCandidateState::InfoReceived { .. }
+                | SnarkPoolCandidateState::WorkFetchPending { .. } => None,
+                SnarkPoolCandidateState::WorkReceived { work, .. }
+                | SnarkPoolCandidateState::WorkVerifyPending { work, .. }
+                | SnarkPoolCandidateState::WorkVerifyError { work, .. }
+                | SnarkPoolCandidateState::WorkVerifySuccess { work, .. } => Some(work),
+            })
+    }
+
     pub fn peer_work_count(&self, peer_id: &PeerId) -> usize {
         self.by_peer.get(peer_id).map(|v| v.len()).unwrap_or(0)
     }

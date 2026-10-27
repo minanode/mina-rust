@@ -1,0 +1,23 @@
+{
+  "time": "2026-10-20T18:16:23.288626864Z",
+  "version": "m4-wave-1-21-g85225b2e",
+  "git": {
+    "commit_time": "2026-10-20T18:13:53.000000000Z",
+    "commit_hash": "85225b2eba3c1fc16ed6164e53e23500a85f97bf",
+    "branch": "integration/wave-2a"
+  },
+  "cargo": {
+    "features": "default,exit_on_invalid_peers,openapi,p2p_libp2p,p2p_webrtc,replay",
+    "opt_level": 3,
+    "target": "x86_64-unknown-linux-gnu",
+    "is_debug": false
+  },
+  "rustc": {
+    "channel": "stable",
+    "commit_date": "2025-12-08",
+    "commit_hash": "ded5c06cf21d2b93bffd5d884aa6e96934ee4234",
+    "host": "x86_64-unknown-linux-gnu",
+    "version": "1.92.0",
+    "llvm_version": "21.1"
+  }
+}

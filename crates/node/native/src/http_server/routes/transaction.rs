@@ -9,19 +9,19 @@ use axum::{extract::State, Json};
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use mina_node::rpc::{
-    RpcInjectPayment, RpcLedgerSlimAccountsResponse, RpcTransactionInjectResponse,
-    RpcTransactionPoolResponse, RpcTransitionFrontierUserCommandsResponse,
+    RpcLedgerSlimAccountsResponse, RpcTransactionInjectResponse, RpcTransactionPoolResponse,
+    RpcTransitionFrontierUserCommandsResponse,
 };
 
-use crate::http_server::{AppError, AppResult, AppState};
+use crate::http_server::{types::TX_SUBMISSION_DISABLED, AppError, AppResult, AppState};
 
 /// Transaction routes
 pub fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(transaction_pool))
+        .routes(routes!(best_chain_user_commands))
         .routes(routes!(accounts))
         .routes(routes!(send_payment))
-        .routes(routes!(best_chain_user_commands))
 }
 
 /// Transaction pool
@@ -72,18 +72,22 @@ async fn accounts(State(state): State<AppState>) -> AppResult<Json<RpcLedgerSlim
     path = "/send-payment",
     tag = "transaction",
     responses(
-        (status = 200, description = "Payment result")
+        (status = 200, description = "Payment result"),
+        (status = 403, description = "Transaction submission is off on this node (start it with --enable-tx-submission)")
     )
 )]
 async fn send_payment(
     State(state): State<AppState>,
-    Json(payments): Json<Vec<RpcInjectPayment>>,
+    Json(payments): Json<Vec<crate::input_limits::Payment>>,
 ) -> AppResult<Json<RpcTransactionInjectResponse>> {
+    if !state.tx_submission() {
+        return Err(AppError::Forbidden(TX_SUBMISSION_DISABLED.to_owned()));
+    }
     match state
         .rpc_sender()
         .transaction_pool()
         .inject()
-        .payment(payments)
+        .payment(payments.into_iter().map(|p| p.0).collect())
         .await
     {
         Err(err) => Err(AppError::Internal(err)),

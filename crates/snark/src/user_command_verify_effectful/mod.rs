@@ -23,4 +23,7 @@ pub enum SnarkUserCommandVerifyError {
     VerificationFailed,
     #[error("validator thread crashed")]
     ValidatorThreadCrashed,
+    /// The verifier's reasons, e.g. `Invalid_signature`.
+    #[error("{0}")]
+    Invalid(String),
 }

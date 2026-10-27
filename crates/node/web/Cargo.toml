@@ -12,16 +12,20 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 console_error_panic_hook = { workspace = true }
 derive_more = { workspace = true }
+futures = { workspace = true }
+gloo-timers = { workspace = true }
 gloo-utils = { workspace = true }
 js-sys = { workspace = true }
 jsonpath-rust = { workspace = true }
 ledger = { workspace = true }
 libp2p-identity = { workspace = true, features = ["peerid"] }
+mina-curves = { workspace = true }
 mina-node = { workspace = true }
 mina-node-common = { workspace = true }
 mina-p2p-messages = { workspace = true }
 mina-signer = { workspace = true }
 mina-vrf = { workspace = true }
+once_cell = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
 redux = { workspace = true }
@@ -30,7 +34,22 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = [
+  "File",
+  "FileSystemDirectoryHandle",
+  "FileSystemFileHandle",
+  "FileSystemGetDirectoryOptions",
+  "FileSystemGetFileOptions",
+  "FileSystemHandle",
+  "FileSystemHandleKind",
+  "FileSystemReadWriteOptions",
+  "FileSystemRemoveOptions",
+  "FileSystemSyncAccessHandle",
+  "StorageManager",
+] }
 
 [features]
 default = ["p2p-webrtc"]
 p2p-webrtc = ["mina-node-common/p2p-webrtc"]
+# Ready events instead of the WebRTC driver's sleeps (WN2-RTC).
+p2p-webrtc-ready-events = ["mina-node-common/p2p-webrtc-ready-events"]

@@ -1,0 +1,22 @@
+ 21:37:59 up 3 days, 22:29,  3 users,  load average: 21.36, 19.36, 14.58
+check: 0 mismatches
+kernel                                          ns/op      iters
+ark Fp mul (chain)                               16.4    6146613
+ark Fp square (chain)                            19.2    5277931
+ark Fp add (chain)                                0.9  115653895
+ark Poseidon permutation                      24674.4       3958
+ark hash_with_kimchi, 2 fields                24620.7       4055
+ark hash_with_kimchi, 10 fields              121552.6        804
+arkworks Fp<Fp9Config> mul (chain)               47.6    1917858
+arkworks Fp<Fp9Config> square (chain)            33.9    2956373
+arkworks Fp<Fp9Config>, poseidon crate permutation      56891.0       1775
+fp9 mul (chain)                                  51.8    1830696
+fp9 mul CIOS (chain)                             39.7    2421500
+fp9 square (chain)                               30.3    3297545
+fp9 add (chain)                                   3.9   25633802
+fp9 Poseidon permutation                      51807.6       1936
+fp9 Poseidon permutation, CIOS mul            44573.0       2218
+fp9 Poseidon permutation, lazy MDS            41830.1       2198
+fp9 Poseidon permutation, lazy, no cond. sub.      40133.1       2460
+fp9 hash, 2 fields, lazy, no cond. sub.       40155.6       2531
+fp9 hash, 10 fields, lazy, no cond. sub.     201988.2        501

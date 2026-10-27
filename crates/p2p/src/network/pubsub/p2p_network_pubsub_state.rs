@@ -62,6 +62,89 @@ pub struct P2pNetworkPubsubState {
 
     /// `iwant` requests, tracking the number of times peers have expressed interest in specific messages.
     pub iwant: VecDeque<P2pNetworkPubsubIwantRequestCount>,
+
+    /// Which transports recently sent us each block as a peer's best tip.
+    /// Decides which blocks [`super::P2pNetworkPubsubAction::WebRtcRebroadcast`]
+    /// may gossip.
+    pub block_sources: P2pNetworkPubsubBlockSources,
+
+    /// Block-hash deduplication, retained for the entire eligible gossip window.
+    #[serde(default)]
+    pub block_gossip: super::block_gossip::BlockGossipState,
+}
+
+/// Which transports recently sent us each block as a peer's best tip: libp2p
+/// (gossip or an RPC answer) or WebRTC.
+///
+/// We gossip a block to libp2p peers in a message of our own, binprot-encoded
+/// again, only if it came from a WebRTC peer and from no libp2p peer. That is
+/// how a block from a web node reaches the libp2p network. A block that came
+/// as libp2p gossip is forwarded as the original message instead. One that a
+/// libp2p peer gave us by RPC is already on the libp2p network, as that peer's
+/// best tip, so gossiping it adds nothing, and it would put our encoding in
+/// front of OCaml peers: OCaml bans the sender of gossip it can't decode, by
+/// peer id and IP, for a day.
+#[derive(Default, Serialize, Deserialize, Debug, Clone)]
+pub struct P2pNetworkPubsubBlockSources {
+    sources: BTreeMap<mina_p2p_messages::v2::StateHash, P2pNetworkPubsubBlockSource>,
+    /// Hashes in `sources`, oldest first.
+    queue: VecDeque<mina_p2p_messages::v2::StateHash>,
+}
+
+/// The transports a block came from, see [`P2pNetworkPubsubBlockSources`].
+#[derive(Default, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct P2pNetworkPubsubBlockSource {
+    pub libp2p: bool,
+    pub webrtc: bool,
+}
+
+impl P2pNetworkPubsubBlockSources {
+    /// How many blocks to remember. Mainnet makes a block every few minutes,
+    /// and a block is gossiped seconds after it arrives, once it is applied.
+    pub const CAPACITY: usize = 128;
+
+    /// Records that a peer sent us `hash` as its best tip, over libp2p or not.
+    pub fn record(&mut self, hash: &mina_p2p_messages::v2::StateHash, is_libp2p: bool) {
+        let source = match self.sources.get_mut(hash) {
+            Some(source) => source,
+            None => {
+                if self.queue.len() >= Self::CAPACITY {
+                    if let Some(oldest) = self.queue.pop_front() {
+                        self.sources.remove(&oldest);
+                    }
+                }
+                self.queue.push_back(hash.clone());
+                self.sources.entry(hash.clone()).or_default()
+            }
+        };
+        if is_libp2p {
+            source.libp2p = true;
+        } else {
+            source.webrtc = true;
+        }
+    }
+
+    pub fn get(
+        &self,
+        hash: &mina_p2p_messages::v2::StateHash,
+    ) -> Option<P2pNetworkPubsubBlockSource> {
+        self.sources.get(hash).copied()
+    }
+
+    /// Whether we may gossip `hash` to libp2p peers in a message of our own:
+    /// it came from a WebRTC peer, and from no libp2p peer.
+    pub fn came_only_from_webrtc(&self, hash: &mina_p2p_messages::v2::StateHash) -> bool {
+        self.get(hash)
+            .is_some_and(|source| source.webrtc && !source.libp2p)
+    }
+
+    pub fn len(&self) -> usize {
+        self.sources.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty()
+    }
 }
 
 #[derive(Default, Serialize, Deserialize, Debug, Clone, MallocSizeOf)]
@@ -74,6 +157,22 @@ pub struct P2pNetworkPubsubIwantRequestCount {
 impl P2pNetworkPubsubState {
     pub fn prune_peer_state(&mut self, peer_id: &PeerId) {
         self.clients.remove(peer_id);
+        self.block_gossip.forget_peer(peer_id);
+    }
+
+    /// Forgets a reset stream of a peer. If it was our outgoing stream we stop
+    /// writing to the peer until the scheduler has reopened it; if it was the
+    /// peer's, its unfinished message goes.
+    pub fn prune_stream_state(&mut self, peer_id: &PeerId, stream_id: StreamId, incoming: bool) {
+        let Some(client) = self.clients.get_mut(peer_id) else {
+            return;
+        };
+        if client.outgoing_stream_id == Some(stream_id) {
+            client.outgoing_stream_id = None;
+            self.block_gossip.forget_peer(peer_id);
+        } else if incoming {
+            client.clear_buffer();
+        }
     }
 
     pub fn filter_iwant_message_ids(&mut self, message_id: &[u8], timestamp: Timestamp) -> bool {
@@ -164,6 +263,12 @@ pub struct P2pNetworkPubsubClientState {
     /// Cache of recently published messages.
     pub cache: P2pNetworkPubsubRecentlyPublishCache,
 
+    /// Explicit block requests queued for this RPC, allowed to bypass the
+    /// unsolicited publication cache. Consumed at the final send-time check.
+    #[serde(default)]
+    #[with_malloc_size_of_func = "measurement::message_ids"]
+    pub iwant_replies: BTreeSet<P2pNetworkPubsubMessageCacheId>,
+
     /// Buffer for incoming data fragments.
     ///
     /// Stores partial data received from peers, facilitating the assembly of complete
@@ -178,6 +283,26 @@ pub struct P2pNetworkPubsubClientState {
 }
 
 impl P2pNetworkPubsubClientState {
+    pub fn reply_to_iwant(&mut self, message: &pb::Message) {
+        if !super::block_gossip::BlockGossipState::is_block(message) {
+            self.publish(message);
+            return;
+        }
+        let Ok(id) = compute_message_id(message) else {
+            return;
+        };
+        // Coalesce repeated IDs, including a copy already queued by broadcast.
+        if self.iwant_replies.insert(id)
+            && !self
+                .message
+                .publish
+                .iter()
+                .any(|msg| compute_message_id(msg).ok() == Some(id))
+        {
+            self.message.publish.push(message.clone());
+        }
+    }
+
     pub fn publish(&mut self, message: &pb::Message) {
         let Ok(id) = compute_message_id(message) else {
             self.message.publish.push(message.clone());
@@ -234,6 +359,7 @@ pub enum P2pNetworkPubsubMessageCacheMessage {
     },
     PreValidatedSnark {
         job_id: SnarkJobId,
+        snark: Box<mina_core::snark::Snark>,
         message: pb::Message,
         peer_id: PeerId,
         time: Timestamp,
@@ -341,6 +467,24 @@ impl P2pNetworkPubsubMessageCache {
                     .any(|message| matches!(message, P2pNetworkPubsubMessageCacheMessage::PreValidatedSnark { job_id,.. } if job_id == snark_job_id))
             },
         }
+    }
+
+    /// Select the exact proof and fee that passed validation. Endpoint job IDs
+    /// alone can identify different statements, provers, fees, and proofs.
+    pub fn snark_message_id(
+        &self,
+        checked: &mina_core::snark::Snark,
+    ) -> Option<P2pNetworkPubsubMessageCacheId> {
+        self.map.iter().find_map(|(id, message)| match message {
+            P2pNetworkPubsubMessageCacheMessage::PreValidatedSnark { snark, .. }
+                if snark.fee == checked.fee
+                    && snark.snarker == checked.snarker
+                    && snark.proofs == checked.proofs =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        })
     }
 
     pub fn get_message_id_and_message(
@@ -470,6 +614,13 @@ mod measurement {
         val.capacity() * mem::size_of::<Timestamp>()
     }
 
+    pub fn message_ids(
+        val: &BTreeSet<P2pNetworkPubsubMessageCacheId>,
+        _ops: &mut MallocSizeOfOps,
+    ) -> usize {
+        val.len() * size_of::<P2pNetworkPubsubMessageCacheId>()
+    }
+
     impl MallocSizeOf for P2pNetworkPubsubRecentlyPublishCache {
         fn size_of(&self, _ops: &mut malloc_size_of::MallocSizeOfOps) -> usize {
             let map_size = self.map.len() * size_of::<P2pNetworkPubsubMessageCacheId>();
@@ -492,5 +643,121 @@ mod measurement {
         fn size_of(&self, _ops: &mut MallocSizeOfOps) -> usize {
             0
         }
+    }
+
+    impl MallocSizeOf for P2pNetworkPubsubBlockSources {
+        fn size_of(&self, _ops: &mut MallocSizeOfOps) -> usize {
+            let hash = size_of::<mina_p2p_messages::v2::StateHash>();
+            self.sources.len() * (hash + size_of::<P2pNetworkPubsubBlockSource>())
+                + self.queue.capacity() * hash
+        }
+    }
+}
+
+#[cfg(test)]
+mod block_source_tests {
+    use mina_p2p_messages::{
+        bigint::BigInt,
+        v2::{DataHashLibStateHashStableV1, StateHash},
+    };
+
+    use super::{P2pNetworkPubsubBlockSource, P2pNetworkPubsubBlockSources};
+
+    fn hash(n: u32) -> StateHash {
+        let mut bytes = [0; 32];
+        bytes[..4].copy_from_slice(&n.to_le_bytes());
+        DataHashLibStateHashStableV1(BigInt::from_bytes(bytes)).into()
+    }
+
+    #[test]
+    fn only_a_block_from_webrtc_alone_may_be_gossiped() {
+        let mut sources = P2pNetworkPubsubBlockSources::default();
+        let (webrtc, libp2p, both, unknown) = (hash(1), hash(2), hash(3), hash(4));
+        sources.record(&webrtc, false);
+        sources.record(&libp2p, true);
+        sources.record(&both, false);
+        sources.record(&both, true);
+
+        assert!(sources.came_only_from_webrtc(&webrtc));
+        // Gossip or an RPC answer from a libp2p peer: libp2p has it already.
+        assert!(!sources.came_only_from_webrtc(&libp2p));
+        // Seen from a libp2p peer too, in either order.
+        assert!(!sources.came_only_from_webrtc(&both));
+        sources.record(&webrtc, true);
+        assert!(!sources.came_only_from_webrtc(&webrtc));
+        // Our own blocks, and blocks we no longer remember.
+        assert!(!sources.came_only_from_webrtc(&unknown));
+        assert_eq!(
+            sources.get(&both),
+            Some(P2pNetworkPubsubBlockSource {
+                libp2p: true,
+                webrtc: true
+            })
+        );
+    }
+
+    #[test]
+    fn remembers_the_latest_blocks_only() {
+        let mut sources = P2pNetworkPubsubBlockSources::default();
+        let capacity = P2pNetworkPubsubBlockSources::CAPACITY as u32;
+        for n in 0..capacity {
+            sources.record(&hash(n), false);
+        }
+        // A block seen again doesn't take another place.
+        sources.record(&hash(0), false);
+        assert_eq!(sources.len(), capacity as usize);
+        assert!(sources.came_only_from_webrtc(&hash(0)));
+
+        sources.record(&hash(capacity), false);
+        assert_eq!(sources.len(), capacity as usize);
+        assert!(sources.get(&hash(0)).is_none());
+        assert!(sources.came_only_from_webrtc(&hash(1)));
+        assert!(sources.came_only_from_webrtc(&hash(capacity)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client(outgoing_stream_id: Option<StreamId>) -> P2pNetworkPubsubClientState {
+        P2pNetworkPubsubClientState {
+            protocol: BroadcastAlgorithm::Meshsub1_1_0,
+            addr: ConnectionAddr {
+                sock_addr: "127.0.0.1:8302".parse().unwrap(),
+                incoming: false,
+            },
+            outgoing_stream_id,
+            message: pb::Rpc {
+                subscriptions: vec![],
+                publish: vec![],
+                control: None,
+            },
+            cache: Default::default(),
+            iwant_replies: Default::default(),
+            buffer: vec![1, 2, 3],
+            incoming_messages: vec![],
+        }
+    }
+
+    #[test]
+    fn a_reset_stream_is_forgotten_but_not_the_peer() {
+        let peer = PeerId::from_bytes([1; 32]);
+        let mut state = P2pNetworkPubsubState::default();
+        state.clients.insert(peer, client(Some(3)));
+
+        // A peer's stream that isn't pubsub: our stream and the buffer stay.
+        state.prune_stream_state(&peer, 4, false);
+        assert_eq!(state.clients[&peer].outgoing_stream_id, Some(3));
+        assert_eq!(state.clients[&peer].buffer, [1, 2, 3]);
+
+        // The peer's pubsub stream: its unfinished message goes.
+        state.prune_stream_state(&peer, 4, true);
+        assert!(state.clients[&peer].buffer.is_empty());
+
+        // Our pubsub stream: we stop writing, but keep the peer.
+        state.prune_stream_state(&peer, 3, false);
+        assert_eq!(state.clients[&peer].outgoing_stream_id, None);
+        assert!(state.clients.contains_key(&peer));
     }
 }

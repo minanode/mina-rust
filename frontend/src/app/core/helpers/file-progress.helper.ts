@@ -43,40 +43,45 @@ class AssetMonitor {
       self.downloads.set(resource.toString(), downloadInfo);
       self.emitProgress(downloadInfo);
 
+      let response: Response;
       try {
-        const response = await originalFetch(resource, options);
-        const reader = response.clone().body.getReader();
+        response = await originalFetch(resource, options);
+      } catch (error) {
+        downloadInfo.status = 'error';
+        self.emitProgress(downloadInfo);
+        throw error;
+      }
+
+      // The response goes back at once, so that the browser compiles the
+      // WASM while it downloads; a clone is read meanwhile for the progress.
+      // Reading the clone to the end first held up the compilation until
+      // the whole file was in. Passing the response itself, not a new one
+      // made from the clone, keeps its URL, by which Chrome caches the
+      // compiled code.
+      const reader = response.clone().body.getReader();
+      (async () => {
         let receivedLength = 0;
-
         while (true) {
-          try {
-            const { done, value } = await reader.read();
-
-            if (done) {
-              break;
-            }
-
-            receivedLength += value.length;
-            downloadInfo.progress =
-              (receivedLength / downloadInfo.totalSize) * 100;
-            self.emitProgress(downloadInfo);
-          } catch (error) {
-            downloadInfo.status = 'error';
-            self.emitProgress(downloadInfo);
-            throw error;
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
           }
+          receivedLength += value.length;
+          downloadInfo.progress = Math.min(
+            (receivedLength / downloadInfo.totalSize) * 100,
+            100,
+          );
+          self.emitProgress(downloadInfo);
         }
-
         downloadInfo.status = 'complete';
         downloadInfo.endTime = performance.now();
         downloadInfo.duration = downloadInfo.endTime - downloadInfo.startTime;
         self.emitProgress(downloadInfo);
-        return await response;
-      } catch (error_1) {
+      })().catch(() => {
         downloadInfo.status = 'error';
         self.emitProgress(downloadInfo);
-        throw error_1;
-      }
+      });
+      return response;
     };
   }
 

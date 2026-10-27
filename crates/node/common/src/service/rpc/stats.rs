@@ -51,6 +51,39 @@ impl Stats {
         JsValue::from_serde(&res).unwrap_or_default()
     }
 
+    /// Receipts newest first; or, given `hashes` (an array of state hashes,
+    /// at most 128), those blocks' receipts. See `VerificationQuery`.
+    pub async fn verification(
+        &self,
+        limit: Option<usize>,
+        offset: Option<usize>,
+        hashes: JsValue,
+    ) -> Result<JsValue, JsValue> {
+        let hashes = if hashes.is_falsy() {
+            Vec::new()
+        } else {
+            let hashes: Vec<String> = hashes.into_serde().map_err(|err| err.to_string())?;
+            hashes
+                .iter()
+                .take(mina_node::verification::MAX_RECEIPT_PAGE_SIZE)
+                .map(|hash| hash.parse())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|err| format!("invalid state hash: {err}"))?
+        };
+        let query = mina_node::verification::VerificationQuery {
+            limit,
+            offset: offset.unwrap_or(0),
+            hashes,
+        };
+        let res = self
+            .sender
+            .oneshot_request::<RpcVerificationStatsGetResponse>(RpcRequest::VerificationStatsGet(
+                query,
+            ))
+            .await;
+        Ok(JsValue::from_serde(&res).unwrap_or_default())
+    }
+
     pub async fn block_producer(&self) -> JsValue {
         let res = self
             .sender

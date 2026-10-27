@@ -9,6 +9,8 @@ impl P2pNetworkState {
         state_context: Substate<Action, State, Self>,
         action: redux::ActionWithMeta<P2pNetworkAction>,
         limits: &P2pLimits,
+        catchup_enabled: bool,
+        rpc_channel_available: bool,
     ) -> Result<(), String>
     where
         State: crate::P2pStateTrait,
@@ -35,6 +37,7 @@ impl P2pNetworkState {
             P2pNetworkAction::Yamux(a) => P2pNetworkYamuxState::reducer(
                 Substate::from_compatible_substate(state_context),
                 meta.with_action(a),
+                limits,
             ),
             P2pNetworkAction::Identify(a) => P2pNetworkIdentifyState::reducer(
                 Substate::from_compatible_substate(state_context),
@@ -54,6 +57,8 @@ impl P2pNetworkState {
                 Substate::from_compatible_substate(state_context),
                 meta.with_action(a),
                 limits,
+                catchup_enabled,
+                rpc_channel_available,
             ),
         }
     }
@@ -84,6 +89,7 @@ impl P2pNetworkState {
                             .pending
                             .as_ref()
                             .is_some_and(|query_header| query_header.id == id)
+                            || state.pending_incoming.contains_key(&id)
                         {
                             Some(state)
                         } else {

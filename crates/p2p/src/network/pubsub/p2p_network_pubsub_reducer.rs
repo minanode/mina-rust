@@ -1,6 +1,5 @@
 use std::{collections::btree_map::Entry, time::Duration};
 
-use binprot::BinProtRead;
 use mina_core::{
     block::BlockWithHash, bug_condition, fuzz_maybe, fuzzed_maybe, snark::Snark, Substate,
 };
@@ -28,6 +27,11 @@ use super::{
 };
 
 const MAX_MESSAGE_KEEP_DURATION: Duration = Duration::from_secs(300);
+
+/// The largest gossipsub RPC we take from a peer, OCaml's largest message.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/8250f62a9bb6450f6c9fdc9a3af72da62c2f5e39/src/app/libp2p_helper/src/libp2p_helper/config_msg.go#L199>
+const MAX_RPC_SIZE: usize = 32 * 1024 * 1024;
 
 impl P2pNetworkPubsubState {
     pub fn reducer<Action, State>(
@@ -66,11 +70,17 @@ impl P2pNetworkPubsubState {
                         control: None,
                     },
                     cache: Default::default(),
+                    iwant_replies: Default::default(),
                     buffer: vec![],
                     incoming_messages: vec![],
                 });
                 state.protocol = protocol;
                 state.addr = addr;
+                // A peer sends gossip on one stream, and opens another only
+                // once the last one failed, so the start of an RPC buffered
+                // from that one will never be completed. Kept, it would be
+                // taken for the start of this stream's first RPC.
+                state.clear_buffer();
 
                 pubsub_state
                     .topics
@@ -98,6 +108,7 @@ impl P2pNetworkPubsubState {
                             control: None,
                         },
                         cache: Default::default(),
+                        iwant_replies: Default::default(),
                         buffer: vec![],
                         incoming_messages: vec![],
                     }
@@ -154,6 +165,9 @@ impl P2pNetworkPubsubState {
                     seen_limit,
                     addr,
                 });
+                // Control-only RPCs (notably IWANT) have no validation callback
+                // to flush their replies. Do not leave them until the next block.
+                dispatcher.push(P2pNetworkPubsubAction::OutgoingMessage { peer_id });
 
                 Ok(())
             }
@@ -378,6 +392,7 @@ impl P2pNetworkPubsubState {
             }
             P2pNetworkPubsubAction::OutgoingMessageClear { peer_id } => {
                 if let Some(v) = pubsub_state.clients.get_mut(&peer_id) {
+                    v.iwant_replies.clear();
                     v.message = pb::Rpc {
                         subscriptions: vec![],
                         publish: vec![],
@@ -484,38 +499,72 @@ impl P2pNetworkPubsubState {
                 Ok(())
             }
             P2pNetworkPubsubAction::BroadcastSigned { signature } => {
-                if let Some(mut message) = pubsub_state.to_sign.pop_front() {
-                    message.signature = Some(signature.0.to_vec());
-                    pubsub_state
-                        .clients
-                        .iter_mut()
-                        .for_each(|(_, state)| state.publish(&message));
-                }
+                pubsub_state.broadcast_signed(signature, time);
 
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
                 Self::broadcast(dispatcher, state)
             }
             P2pNetworkPubsubAction::OutgoingData { mut data, peer_id } => {
-                let (dispatcher, state) = state_context.into_dispatcher_and_state();
-                let state: &Self = state.substate()?;
-
-                let Some(state) = state.clients.get(&peer_id) else {
+                let Some(client) = pubsub_state.clients.get(&peer_id) else {
                     bug_condition!(
                         "Missing state for action: `P2pNetworkPubsubAction::OutgoingData`"
                     );
                     return Ok(());
                 };
+                let Some(stream_id) = client.outgoing_stream_id else {
+                    if let Ok(rpc) =
+                        <pb::Rpc as prost::Message>::decode_length_delimited(data.as_ref())
+                    {
+                        for message in &rpc.publish {
+                            if let Some((hash, slot)) =
+                                super::block_gossip::BlockGossipState::message_identity(message)
+                            {
+                                mina_core::debug!(time; kind = "BlockGossipSuppressed",
+                                    state_hash = hash.to_string(), slot = slot,
+                                    reason = "no_outgoing_stream", phase = "transport",
+                                    peer_id = display(peer_id));
+                            }
+                        }
+                    }
+                    return Ok(());
+                };
+                let addr = client.addr;
+                // Signing, validation, IWANT, and stream setup can all queue a
+                // publication. Recheck using send time at the transport boundary.
+                let mut rpc = <pb::Rpc as prost::Message>::decode_length_delimited(data.as_ref())
+                    .map_err(|err| format!("outgoing pubsub RPC: {err}"))?;
+                pubsub_state.filter_outgoing_rpc(&mut rpc, peer_id, time);
+                let (dispatcher, global) = state_context.into_dispatcher_and_state();
+                let current: &Self = global.substate()?;
+                let before = rpc.publish.len();
+                super::filter_snark_gossip(&mut rpc, &current.mcache, |work| {
+                    global.snark_work_is_eligible(work)
+                });
+                if rpc.publish.len() < before {
+                    mina_core::debug!(time; kind = "SnarkPoolSendSuppressed", publications = before - rpc.publish.len());
+                }
+                for message in &rpc.publish {
+                    if let Some((hash, slot)) =
+                        super::block_gossip::BlockGossipState::message_identity(message)
+                    {
+                        mina_core::debug!(time; kind = "BlockGossipTransportHandoff",
+                            state_hash = hash.to_string(), slot = slot,
+                            peer_id = display(peer_id));
+                    }
+                }
+                if rpc.publish.is_empty() && rpc.subscriptions.is_empty() && rpc.control.is_none() {
+                    return Ok(());
+                }
+                data = prost::Message::encode_length_delimited_to_vec(&rpc).into();
                 fuzz_maybe!(&mut data, crate::fuzzer::mutate_pubsub);
                 let flags = fuzzed_maybe!(Default::default(), crate::fuzzer::mutate_yamux_flags);
 
-                if let Some(stream_id) = state.outgoing_stream_id.as_ref().copied() {
-                    dispatcher.push(P2pNetworkYamuxAction::OutgoingData {
-                        addr: state.addr,
-                        stream_id,
-                        data,
-                        flags,
-                    });
-                }
+                dispatcher.push(P2pNetworkYamuxAction::OutgoingData {
+                    addr,
+                    stream_id,
+                    data,
+                    flags,
+                });
                 Ok(())
             }
             P2pNetworkPubsubAction::ValidateIncomingMessage { message_id } => {
@@ -551,10 +600,13 @@ impl P2pNetworkPubsubState {
                         message: NetworkPoolSnarkPoolDiffVersionedStableV2::AddSolvedWork(snark),
                         ..
                     } => {
+                        let statement = &snark.0;
                         let snark: Snark = snark.1.clone().into();
+                        super::checked_snark_gossip(statement, &snark)?;
                         let job_id = snark.job_id();
                         P2pNetworkPubsubMessageCacheMessage::PreValidatedSnark {
                             job_id,
+                            snark: Box::new(snark),
                             message,
                             peer_id,
                             time,
@@ -580,7 +632,8 @@ impl P2pNetworkPubsubState {
                         dispatcher.push(P2pPeerAction::BestTipUpdate { peer_id, best_tip });
                     }
                     GossipNetMessageV2::TransactionPoolDiff { message, nonce } => {
-                        let nonce = nonce.as_u32();
+                        // Received nonces are not used, so truncating is fine.
+                        let nonce = nonce.as_u64() as u32;
                         dispatcher.push(P2pChannelsTransactionAction::Libp2pReceived {
                             peer_id,
                             transactions: message.0.into_iter().collect(),
@@ -596,7 +649,7 @@ impl P2pNetworkPubsubState {
                         dispatcher.push(P2pChannelsSnarkAction::Libp2pReceived {
                             peer_id,
                             snark: Box::new(snark),
-                            nonce: nonce.as_u32(),
+                            nonce: nonce.as_u64() as u32,
                         });
                     }
                     _ => {}
@@ -619,6 +672,9 @@ impl P2pNetworkPubsubState {
                 let raw_message = message.message().clone();
                 let peer_id = *message.peer_id();
 
+                if !pubsub_state.block_gossip.announce(&raw_message, time) {
+                    return Ok(());
+                }
                 pubsub_state.reduce_incoming_validated_message(message_id, peer_id, &raw_message);
 
                 let Some(message) = pubsub_state.mcache.map.get_mut(&message_id) else {
@@ -636,6 +692,7 @@ impl P2pNetworkPubsubState {
                 Self::broadcast(dispatcher, state)
             }
             P2pNetworkPubsubAction::PruneMessages {} => {
+                pubsub_state.block_gossip.prune(time);
                 let messages = pubsub_state
                     .mcache
                     .map
@@ -791,26 +848,67 @@ impl P2pNetworkPubsubState {
             return Ok(None);
         }
 
+        // A message we can't decode exactly as OCaml does is dropped here, so
+        // it is never validated or forwarded: OCaml bans the peer that
+        // forwards it. See `gossip::decode_pubsub_data`.
         match &message.data {
-            Some(data) if data.len() > 8 => {
-                let mut slice = &data[8..];
-                Ok(Some(
-                    gossip::GossipNetMessageV2::binprot_read(&mut slice)
-                        .map_err(|e| format!("Invalid `GossipNetMessageV2` message, error: {e}"))?,
-                ))
-            }
-            _ => Err("Invalid message".to_owned()),
+            Some(data) => Ok(Some(gossip::decode_pubsub_data(data).map_err(|e| {
+                format!("Invalid `GossipNetMessageV2` message, error: {e}")
+            })?)),
+            None => Err("Invalid message".to_owned()),
         }
     }
 
-    fn combined_with_pending_buffer<'a>(buffer: &'a mut Vec<u8>, data: &'a [u8]) -> &'a [u8] {
-        if buffer.is_empty() {
-            // Nothing pending, we can use the data directly
-            data
-        } else {
+    /// Takes the complete length-delimited RPCs off the front of a peer's
+    /// stream, which is what is left in `buffer` followed by `data`, and keeps
+    /// the bytes after the last complete one in `buffer`.
+    ///
+    /// An RPC can arrive in any number of pieces. go-yamux, which OCaml's
+    /// libp2p helper uses, sends at most 64 KiB in a frame, and a block is 0.1
+    /// to 2 MB, so a block from an OCaml peer arrives in 2 to 35 frames. An RPC
+    /// that doesn't decode is skipped. An invalid length, or one over
+    /// `MAX_RPC_SIZE`, drops what is buffered, as the stream can't be framed
+    /// from there.
+    fn take_complete_rpcs(buffer: &mut Vec<u8>, data: &[u8]) -> Vec<pb::Rpc> {
+        let buffered = !buffer.is_empty();
+        if buffered {
             buffer.extend_from_slice(data);
-            buffer.as_slice()
         }
+        let bytes = if buffered { buffer.as_slice() } else { data };
+
+        let mut rpcs = vec![];
+        let mut consumed = 0;
+        while consumed < bytes.len() {
+            let remaining = &bytes[consumed..];
+            let mut rest = remaining;
+            let len = match prost::decode_length_delimiter(&mut rest) {
+                Ok(len) if len <= MAX_RPC_SIZE => len,
+                // A varint takes at most 10 bytes: fewer may be its start.
+                Err(_) if remaining.len() < 10 => break,
+                _ => {
+                    consumed = bytes.len();
+                    break;
+                }
+            };
+            let Some(rpc) = rest.get(..len) else {
+                break;
+            };
+            if let Ok(rpc) = <pb::Rpc as prost::Message>::decode(rpc) {
+                rpcs.push(rpc);
+            }
+            consumed = bytes.len() - rest.len() + len;
+        }
+
+        if buffered {
+            buffer.drain(..consumed);
+        } else {
+            buffer.extend_from_slice(&data[consumed..]);
+        }
+        if buffer.is_empty() {
+            // Don't hold on to a block-sized allocation for every peer.
+            buffer.shrink_to(0x2000);
+        }
+        rpcs
     }
 
     /// Processes incoming data from a peer, handling subscriptions, control messages,
@@ -827,34 +925,19 @@ impl P2pNetworkPubsubState {
             return Ok(());
         };
 
-        // Data may be part of a partial message we received before.
-        let slice = Self::combined_with_pending_buffer(&mut client_state.buffer, &data);
-
-        match <pb::Rpc as prost::Message>::decode_length_delimited(slice) {
-            Ok(decoded) => {
-                client_state.clear_buffer();
+        // Data may complete a message we received part of before.
+        for decoded in Self::take_complete_rpcs(&mut client_state.buffer, &data) {
+            if let Some(client_state) = self.clients.get_mut(peer_id) {
                 client_state.incoming_messages.extend(decoded.publish);
-
-                let subscriptions = decoded.subscriptions;
-                let control = decoded.control.unwrap_or_default();
-
-                self.update_subscriptions(peer_id, subscriptions);
-                self.apply_control_commands(peer_id, &control);
-                self.respond_to_iwant_requests(peer_id, &control.iwant);
-                self.process_ihave_messages(peer_id, control.ihave, timestamp);
             }
-            Err(err) => {
-                // NOTE: not the ideal way to check for errors, but `prost` doesn't provide
-                // a better alternative, so we must check the message contents.
-                if err.to_string().contains("buffer underflow") && client_state.buffer.is_empty() {
-                    // Incomplete data, keep in buffer, should be completed later
-                    client_state.buffer = data.to_vec();
-                } else {
-                    // Clear the buffer for other decoding errors, otherwise this will cause issues
-                    // with any data we receive later.
-                    client_state.clear_buffer();
-                }
-            }
+
+            let subscriptions = decoded.subscriptions;
+            let control = decoded.control.unwrap_or_default();
+
+            self.update_subscriptions(peer_id, subscriptions);
+            self.apply_control_commands(peer_id, &control);
+            self.respond_to_iwant_requests(peer_id, &control.iwant, timestamp);
+            self.process_ihave_messages(peer_id, control.ihave, timestamp);
         }
 
         Ok(())
@@ -899,15 +982,93 @@ impl P2pNetworkPubsubState {
         }
     }
 
-    fn respond_to_iwant_requests(&mut self, peer_id: &PeerId, iwant_requests: &[pb::ControlIWant]) {
+    fn respond_to_iwant_requests(
+        &mut self,
+        peer_id: &PeerId,
+        iwant_requests: &[pb::ControlIWant],
+        time: Timestamp,
+    ) {
         // Respond to iwant requests by publishing available messages from the cache.
         for iwant in iwant_requests {
             for msg_id in &iwant.message_ids {
                 if let Some(msg) = self.mcache.get_message_from_raw_message_id(msg_id) {
+                    // Signature validation alone does not authorize forwarding a
+                    // block, transaction or SNARK that is still being validated.
+                    if !matches!(msg, P2pNetworkPubsubMessageCacheMessage::Validated { .. })
+                        || !super::block_gossip::BlockGossipState::is_fresh(msg.message(), time)
+                    {
+                        continue;
+                    }
                     if let Some(client) = self.clients.get_mut(peer_id) {
-                        client.publish(msg.message());
+                        client.reply_to_iwant(msg.message());
                     }
                 }
+            }
+        }
+    }
+
+    fn broadcast_signed(&mut self, signature: Data, time: Timestamp) {
+        if let Some(mut message) = self.to_sign.pop_front() {
+            message.signature = Some(signature.0.to_vec());
+            if self.block_gossip.announce(&message, time) {
+                let mut queued = 0;
+                for client in self.clients.values_mut() {
+                    let before = client.message.publish.len();
+                    client.publish(&message);
+                    queued += usize::from(client.message.publish.len() > before);
+                }
+                if queued == 0 {
+                    if let Some((hash, slot)) =
+                        super::block_gossip::BlockGossipState::message_identity(&message)
+                    {
+                        mina_core::debug!(time; kind = "BlockGossipSuppressed",
+                            state_hash = hash.to_string(), slot = slot,
+                            reason = "no_new_client_queue", phase = "signed");
+                    }
+                }
+            }
+        }
+    }
+
+    fn filter_outgoing_rpc(&mut self, rpc: &mut pb::Rpc, peer_id: PeerId, time: Timestamp) {
+        self.block_gossip.prune(time);
+        rpc.publish.retain(|message| {
+            let requested = super::p2p_network_pubsub_state::compute_message_id(message)
+                .ok()
+                .is_some_and(|id| {
+                    self.clients
+                        .get_mut(&peer_id)
+                        .is_some_and(|client| client.iwant_replies.remove(&id))
+                });
+            if requested {
+                self.block_gossip.send_iwant(message, peer_id, time)
+            } else {
+                self.block_gossip.send(message, peer_id, time)
+            }
+        });
+        if let Some(control) = &mut rpc.control {
+            for ihave in &mut control.ihave {
+                ihave.message_ids.retain(|id| {
+                    self.mcache
+                        .get_message_from_raw_message_id(id)
+                        .is_some_and(|message| {
+                            matches!(
+                                message,
+                                P2pNetworkPubsubMessageCacheMessage::Validated { .. }
+                            ) && super::block_gossip::BlockGossipState::is_fresh(
+                                message.message(),
+                                time,
+                            )
+                        })
+                });
+            }
+            control.ihave.retain(|ihave| !ihave.message_ids.is_empty());
+            if control.ihave.is_empty()
+                && control.iwant.is_empty()
+                && control.graft.is_empty()
+                && control.prune.is_empty()
+            {
+                rpc.control = None;
             }
         }
     }
@@ -926,6 +1087,10 @@ impl P2pNetworkPubsubState {
                     .into_iter()
                     .filter(|message_id| self.filter_iwant_message_ids(message_id, timestamp))
                     .collect::<Vec<_>>();
+
+                if message_ids.is_empty() {
+                    continue;
+                }
 
                 let Some(client) = self.clients.get_mut(peer_id) else {
                     bug_condition!("process_ihave_messages: State not found for {}", peer_id);
@@ -959,5 +1124,555 @@ impl P2pNetworkPubsubState {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        super::{
+            block_gossip::tests::{mesa_block, message, slot_start},
+            p2p_network_pubsub_state::compute_message_id,
+        },
+        *,
+    };
+    use crate::{token::BroadcastAlgorithm, ConnectionAddr};
+    use binprot::BinProtRead;
+
+    fn cache_validated(
+        state: &mut P2pNetworkPubsubState,
+        message: pb::Message,
+        time: Timestamp,
+    ) -> P2pNetworkPubsubMessageCacheId {
+        let id = compute_message_id(&message).unwrap();
+        state.mcache.map.insert(
+            id,
+            P2pNetworkPubsubMessageCacheMessage::Validated {
+                message,
+                peer_id: PeerId::from_bytes([2; 32]),
+                time,
+            },
+        );
+        id
+    }
+
+    #[test]
+    fn delayed_producer_signature_and_duplicate_injection_do_not_publish() {
+        let block = mesa_block();
+        let time = slot_start(&block);
+        let msg = message(block.clone(), 1);
+        let mut state = state_with_client();
+        state.to_sign.push_back(msg.clone());
+        state.broadcast_signed(vec![3; 64].into(), time + 90_000_000_000);
+        assert!(state.to_sign.is_empty());
+        assert!(state.clients[&peer()].message.publish.is_empty());
+        state.to_sign.push_back(msg.clone());
+        state.broadcast_signed(vec![3; 64].into(), time);
+        assert_eq!(state.clients[&peer()].message.publish, vec![msg]);
+        state.to_sign.push_back(message(block, 2));
+        state.broadcast_signed(vec![3; 64].into(), time);
+        assert_eq!(state.clients[&peer()].message.publish.len(), 1);
+    }
+
+    #[test]
+    fn delayed_iwant_reply_is_filtered_at_send_and_fresh_reply_keeps_original_bytes() {
+        let block = mesa_block();
+        let time = slot_start(&block);
+        let msg = message(block, 1);
+        let mut state = state_with_client();
+        let id = cache_validated(&mut state, msg.clone(), time);
+        let request = pb::ControlIWant {
+            message_ids: vec![id.to_raw_bytes()],
+        };
+        state.respond_to_iwant_requests(&peer(), std::slice::from_ref(&request), time);
+        let mut rpc = std::mem::take(&mut state.clients.get_mut(&peer()).unwrap().message);
+        assert_eq!(rpc.publish, vec![msg.clone()]);
+        state.filter_outgoing_rpc(&mut rpc, peer(), time + 90_000_000_000);
+        assert!(rpc.publish.is_empty());
+
+        let mut state = state_with_client();
+        cache_validated(&mut state, msg.clone(), time);
+        state.respond_to_iwant_requests(&peer(), std::slice::from_ref(&request), time);
+        let mut rpc = std::mem::take(&mut state.clients.get_mut(&peer()).unwrap().message);
+        state.filter_outgoing_rpc(&mut rpc, peer(), time);
+        assert_eq!(rpc.publish, vec![msg]);
+        state.respond_to_iwant_requests(&peer(), &[request], time + 90_000_000_000);
+        assert!(state.clients[&peer()].message.publish.is_empty());
+    }
+
+    fn take_reply(state: &mut P2pNetworkPubsubState, time: Timestamp) -> pb::Rpc {
+        let mut rpc = std::mem::take(&mut state.clients.get_mut(&peer()).unwrap().message);
+        state.filter_outgoing_rpc(&mut rpc, peer(), time);
+        rpc
+    }
+
+    fn reset_or_reconnect(state: &mut P2pNetworkPubsubState, reconnect: bool) {
+        if reconnect {
+            state.prune_peer_state(&peer());
+            assert!(!state.clients.contains_key(&peer()));
+            state.clients = state_with_client().clients;
+        } else {
+            state.prune_stream_state(&peer(), 3, false);
+            assert_eq!(state.clients[&peer()].outgoing_stream_id, None);
+        }
+        state.clients.get_mut(&peer()).unwrap().outgoing_stream_id = Some(5);
+    }
+
+    #[test]
+    fn failed_iwant_send_can_retry_after_reset_or_disconnect_but_not_after_expiry() {
+        let block = mesa_block();
+        let time = slot_start(&block);
+        let msg = message(block, 1);
+        for reconnect in [false, true] {
+            for expired in [false, true] {
+                let mut state = state_with_client();
+                state.clients.get_mut(&peer()).unwrap().outgoing_stream_id = Some(3);
+                let id = cache_validated(&mut state, msg.clone(), time);
+                let request = pb::ControlIWant {
+                    message_ids: vec![id.to_raw_bytes()],
+                };
+                assert!(state.block_gossip.announce(&msg, time));
+                state.respond_to_iwant_requests(&peer(), std::slice::from_ref(&request), time);
+                let lost = take_reply(&mut state, time);
+                assert_eq!(lost.publish, vec![msg.clone()]);
+                // Model a transport failure: the first RPC never reaches the
+                // receiving parser. Exercise the scheduler's actual cleanup.
+                reset_or_reconnect(&mut state, reconnect);
+                assert!(!state.block_gossip.announce(&msg, time));
+                // Its stream send mark was cleared, independently of retries.
+                assert!(state.block_gossip.send(&msg, peer(), time));
+                assert!(!state.block_gossip.send(&msg, peer(), time));
+                let retry_time = if expired {
+                    time + 90_000_000_000
+                } else {
+                    time + 1_000_000
+                };
+                state.respond_to_iwant_requests(&peer(), &[request], retry_time);
+                let retry = take_reply(&mut state, retry_time);
+                let mut receiver = state_with_client();
+                let bytes = prost::Message::encode_length_delimited_to_vec(&retry);
+                receiver
+                    .reduce_incoming_data(&peer(), bytes.into(), retry_time)
+                    .unwrap();
+                if expired {
+                    assert!(receiver.clients[&peer()].incoming_messages.is_empty());
+                } else {
+                    assert_eq!(
+                        receiver.clients[&peer()].incoming_messages,
+                        vec![msg.clone()]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_iwant_is_bounded_across_ids_and_reconnects() {
+        let block = mesa_block();
+        let time = slot_start(&block);
+        let msg = message(block.clone(), 1);
+        let mut state = state_with_client();
+        let id = cache_validated(&mut state, msg.clone(), time);
+        let alternate = message(block, 2);
+        let alternate_id = cache_validated(&mut state, alternate.clone(), time);
+        // An unsolicited copy may have been lost too. It must not consume the
+        // explicit request budget, nor may its client-cache entry block IWANT.
+        assert!(state.block_gossip.announce(&msg, time));
+        state.clients.get_mut(&peer()).unwrap().publish(&msg);
+        assert_eq!(take_reply(&mut state, time).publish, vec![msg.clone()]);
+        // go-libp2p-pubsub's bound: three explicit responses, then refusal.
+        for attempt in 0..4 {
+            let (id, expected) = if attempt % 2 == 0 {
+                (id, &msg)
+            } else {
+                (alternate_id, &alternate)
+            };
+            let request = pb::ControlIWant {
+                message_ids: vec![id.to_raw_bytes(); 2],
+            };
+            state.respond_to_iwant_requests(&peer(), &[request], time);
+            let rpc = take_reply(&mut state, time);
+            if attempt < 3 {
+                assert_eq!(rpc.publish, vec![expected.clone()]);
+            } else {
+                assert!(rpc.publish.is_empty());
+            }
+            if attempt == 1 {
+                reset_or_reconnect(&mut state, true);
+            }
+        }
+        // Peer-local budget: another peer still has its own first response.
+        assert!(state
+            .block_gossip
+            .send_iwant(&msg, PeerId::from_bytes([4; 32]), time));
+    }
+
+    #[test]
+    fn ihave_with_no_missing_ids_does_not_queue_an_empty_iwant() {
+        let block = mesa_block();
+        let time = slot_start(&block);
+        let mut state = state_with_client();
+        let id = cache_validated(&mut state, message(block, 1), time);
+        for ids in [vec![], vec![id.to_raw_bytes()]] {
+            state.process_ihave_messages(
+                &peer(),
+                vec![pb::ControlIHave {
+                    topic_id: Some(TOPIC.to_owned()),
+                    message_ids: ids,
+                }],
+                time,
+            );
+            assert!(state.clients[&peer()].message_is_empty());
+        }
+        let unknown = b"missing".to_vec();
+        state.process_ihave_messages(
+            &peer(),
+            vec![pb::ControlIHave {
+                topic_id: Some(TOPIC.to_owned()),
+                message_ids: vec![id.to_raw_bytes(), unknown.clone()],
+            }],
+            time,
+        );
+        let rpc = take_reply(&mut state, time);
+        assert_eq!(
+            rpc.control.unwrap().iwant,
+            vec![pb::ControlIWant {
+                message_ids: vec![unknown]
+            }]
+        );
+    }
+
+    #[test]
+    fn iwant_never_bypasses_block_validation() {
+        let block = mesa_block();
+        let time = slot_start(&block);
+        let msg = message(block.clone(), 1);
+        let mut state = state_with_client();
+        let id = state
+            .mcache
+            .put(
+                msg.clone(),
+                GossipNetMessageV2::NewState(block.clone()),
+                peer(),
+                time,
+            )
+            .unwrap();
+        let request = pb::ControlIWant {
+            message_ids: vec![id.to_raw_bytes()],
+        };
+        state.respond_to_iwant_requests(&peer(), std::slice::from_ref(&request), time);
+        assert!(state.clients[&peer()].message.publish.is_empty());
+        state.mcache.map.insert(
+            id,
+            P2pNetworkPubsubMessageCacheMessage::PreValidatedBlockMessage {
+                block_hash: block.try_hash().unwrap(),
+                message: msg,
+                peer_id: peer(),
+                time,
+            },
+        );
+        state.respond_to_iwant_requests(&peer(), &[request], time);
+        assert!(state.clients[&peer()].message.publish.is_empty());
+    }
+
+    #[test]
+    fn frontier_forwarding_and_ihave_cannot_outlive_the_slot() {
+        let block = mesa_block();
+        let time = slot_start(&block);
+        let msg = message(block.clone(), 1);
+        let mut state = state_with_client();
+        let id = cache_validated(&mut state, msg.clone(), time);
+        state
+            .topics
+            .entry(TOPIC.to_owned())
+            .or_default()
+            .insert(peer(), Default::default());
+        // Not on mesh: forward by IHAVE, followed by an IWANT request.
+        assert!(state.block_gossip.announce(&msg, time));
+        state.reduce_incoming_validated_message(id, PeerId::from_bytes([2; 32]), &msg);
+        let mut rpc = std::mem::take(&mut state.clients.get_mut(&peer()).unwrap().message);
+        assert_eq!(rpc.control.as_ref().unwrap().ihave.len(), 1);
+        let mut fresh = rpc.clone();
+        state.filter_outgoing_rpc(&mut fresh, peer(), time);
+        assert_eq!(fresh, rpc);
+        // A changed best tip, catchup completion, or re-encoded message for
+        // this hash must not initiate another announcement, even while fresh.
+        assert!(!state.block_gossip.announce(&message(block, 2), time));
+        state.filter_outgoing_rpc(&mut rpc, peer(), time + 90_000_000_000);
+        assert!(rpc.control.is_none());
+        let mut stale = state_with_client();
+        assert!(!stale.block_gossip.announce(&msg, time + 90_000_000_000));
+    }
+
+    /// What go-yamux puts in one data frame, as OCaml's libp2p helper uses it.
+    const GO_YAMUX_FRAME: usize = 64 * 1024 - 12;
+
+    fn peer() -> PeerId {
+        PeerId::from_bytes([1; 32])
+    }
+
+    fn state_with_client() -> P2pNetworkPubsubState {
+        let mut state = P2pNetworkPubsubState::default();
+        state.clients.insert(
+            peer(),
+            P2pNetworkPubsubClientState {
+                protocol: BroadcastAlgorithm::Meshsub1_1_0,
+                addr: ConnectionAddr {
+                    sock_addr: "127.0.0.1:8302".parse().unwrap(),
+                    incoming: false,
+                },
+                outgoing_stream_id: None,
+                message: pb::Rpc {
+                    subscriptions: vec![],
+                    publish: vec![],
+                    control: None,
+                },
+                cache: Default::default(),
+                iwant_replies: Default::default(),
+                buffer: vec![],
+                incoming_messages: vec![],
+            },
+        );
+        state
+    }
+
+    /// A length-delimited RPC publishing one message of `size` bytes.
+    fn rpc(size: usize, fill: u8) -> Vec<u8> {
+        let message = pb::Message {
+            from: Some(vec![0; 38]),
+            data: Some(vec![fill; size]),
+            seqno: Some(vec![0; 8]),
+            topic: TOPIC.to_owned(),
+            signature: Some(vec![fill; 64]),
+            key: None,
+        };
+        let rpc = pb::Rpc {
+            subscriptions: vec![],
+            publish: vec![message],
+            control: None,
+        };
+        let mut data = vec![];
+        prost::Message::encode_length_delimited(&rpc, &mut data).unwrap();
+        data
+    }
+
+    /// Feeds `data` in pieces of `piece` bytes, and returns the size of each
+    /// message received and how many bytes are left buffered.
+    fn receive(data: &[u8], piece: usize) -> (Vec<usize>, usize) {
+        let mut state = state_with_client();
+        for piece in data.chunks(piece) {
+            state
+                .reduce_incoming_data(&peer(), Data::from(piece.to_vec()), Timestamp::ZERO)
+                .unwrap();
+        }
+        let client = &state.clients[&peer()];
+        let sizes = client
+            .incoming_messages
+            .iter()
+            .map(|m| m.data.as_ref().map_or(0, Vec::len))
+            .collect();
+        (sizes, client.buffer.len())
+    }
+
+    /// A block from an OCaml peer is 0.1 to 2 MB, in 64 KiB frames. Before,
+    /// only a message in at most two pieces was received.
+    #[test]
+    fn a_block_sized_message_in_go_yamux_frames_is_received() {
+        for size in [1_000, 100_000, 150_000, 650_000, 2_200_000] {
+            assert_eq!(
+                receive(&rpc(size, 7), GO_YAMUX_FRAME),
+                (vec![size], 0),
+                "{size} bytes"
+            );
+        }
+        // One byte at a time, which splits the length prefix too.
+        assert_eq!(receive(&rpc(3_000, 7), 1), (vec![3_000], 0));
+    }
+
+    #[test]
+    fn several_messages_in_one_piece_are_all_received() {
+        let mut data = rpc(10, 1);
+        data.extend(rpc(200_000, 2));
+        data.extend(rpc(30, 3));
+        assert_eq!(receive(&data, data.len()), (vec![10, 200_000, 30], 0));
+        // The start of a fourth stays buffered until the rest arrives.
+        let fourth = rpc(500, 4);
+        data.extend(&fourth[..100]);
+        assert_eq!(receive(&data, GO_YAMUX_FRAME), (vec![10, 200_000, 30], 100));
+    }
+
+    #[test]
+    fn a_length_over_the_limit_drops_the_buffer() {
+        let mut data = vec![];
+        prost::encode_length_delimiter(MAX_RPC_SIZE + 1, &mut data).unwrap();
+        data.extend([0; 100]);
+        assert_eq!(receive(&data, data.len()), (vec![], 0));
+
+        // The next message is received again.
+        let mut state = state_with_client();
+        for piece in [data, rpc(20, 5)] {
+            state
+                .reduce_incoming_data(&peer(), Data::from(piece), Timestamp::ZERO)
+                .unwrap();
+        }
+        assert_eq!(state.clients[&peer()].incoming_messages.len(), 1);
+    }
+
+    /// Block 564003, with its proof and the SNARK work it carries, as a Mesa
+    /// mainnet node served it (`mina-rpc-capture`): 650 KB.
+    fn mesa_best_tip() -> mina_p2p_messages::v2::MinaBlockBlockStableV2 {
+        use mina_p2p_messages::{rpc::GetBestTipV2Response, rpc_kernel::ResponsePayload};
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../p2p-messages/tests/files/mesa/get_best_tip_v3.bin"
+        );
+        let bytes = std::fs::read(path).unwrap();
+        let payload =
+            ResponsePayload::<GetBestTipV2Response>::binprot_read(&mut &bytes[..]).unwrap();
+        payload.0.unwrap().0.unwrap().data
+    }
+
+    /// A real block, gossiped the way OCaml's libp2p helper sends it: one RPC
+    /// in go-yamux frames. It is received whole, and decodes to the same block.
+    #[test]
+    fn a_mesa_block_in_go_yamux_frames_decodes() {
+        let block = mesa_best_tip();
+        let hash = block.try_hash().unwrap();
+        let data =
+            super::super::encode_message(&GossipNetMessageV2::NewState(block.into())).unwrap();
+        let message = pb::Message {
+            from: Some(vec![0; 38]),
+            data: Some(data.clone()),
+            seqno: Some(vec![0; 8]),
+            topic: TOPIC.to_owned(),
+            signature: Some(vec![9; 64]),
+            key: None,
+        };
+        let rpc = pb::Rpc {
+            subscriptions: vec![],
+            publish: vec![message],
+            control: None,
+        };
+        let mut bytes = vec![];
+        prost::Message::encode_length_delimited(&rpc, &mut bytes).unwrap();
+        assert!(bytes.len() > 9 * GO_YAMUX_FRAME, "{} bytes", bytes.len());
+
+        let mut state = state_with_client();
+        for frame in bytes.chunks(GO_YAMUX_FRAME) {
+            state
+                .reduce_incoming_data(&peer(), Data::from(frame.to_vec()), Timestamp::ZERO)
+                .unwrap();
+        }
+        let client = state.clients.get_mut(&peer()).unwrap();
+        assert!(client.buffer.is_empty());
+        let received = std::mem::take(&mut client.incoming_messages);
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].data.as_ref(), Some(&data));
+
+        let Ok(Some(GossipNetMessageV2::NewState(decoded))) =
+            state.reduce_incoming_message(&received[0], 10)
+        else {
+            panic!("not a block");
+        };
+        assert_eq!(decoded.try_hash().unwrap(), hash);
+    }
+
+    /// Any split of a stream of RPCs, at any byte: every message arrives, in
+    /// order, with its own bytes.
+    #[test]
+    fn rpcs_split_anywhere_are_all_received() {
+        // xorshift64, so that a failure can be replayed.
+        let mut seed = 0x1234_5678_9abc_def1_u64;
+        let mut next = move |bound: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % bound as u64) as usize
+        };
+        for _ in 0..20 {
+            let sizes: Vec<usize> = (0..12)
+                .map(|i| match next(4) {
+                    0 => next(10),
+                    1 => next(2_000),
+                    2 => next(140_000),
+                    _ => 2 * GO_YAMUX_FRAME + next(300_000),
+                } + i)
+                .collect();
+            let mut stream = vec![];
+            for (i, &size) in sizes.iter().enumerate() {
+                stream.extend(rpc(size, i as u8));
+            }
+
+            let mut state = state_with_client();
+            let mut rest = &stream[..];
+            while !rest.is_empty() {
+                let piece = match next(3) {
+                    0 => 1 + next(16),
+                    1 => GO_YAMUX_FRAME,
+                    _ => 1 + next(3 * GO_YAMUX_FRAME),
+                }
+                .min(rest.len());
+                let (piece, after) = rest.split_at(piece);
+                state
+                    .reduce_incoming_data(&peer(), Data::from(piece.to_vec()), Timestamp::ZERO)
+                    .unwrap();
+                rest = after;
+            }
+
+            let client = &state.clients[&peer()];
+            assert!(client.buffer.is_empty());
+            let received: Vec<_> = client
+                .incoming_messages
+                .iter()
+                .map(|m| m.data.clone().unwrap_or_default())
+                .collect();
+            assert_eq!(received.len(), sizes.len(), "sizes {sizes:?}");
+            for (i, (data, &size)) in received.iter().zip(&sizes).enumerate() {
+                assert_eq!(data.len(), size, "message {i} of {sizes:?}");
+                assert!(data.iter().all(|&b| b == i as u8), "message {i}");
+            }
+        }
+    }
+
+    /// A complete RPC that is not a protobuf `Rpc` is skipped; the stream goes
+    /// on from the next one.
+    #[test]
+    fn an_rpc_that_does_not_decode_is_skipped() {
+        let mut data = vec![5, 0xff, 0xff, 0xff, 0xff, 0xff];
+        data.extend(rpc(70_000, 6));
+        assert_eq!(receive(&data, GO_YAMUX_FRAME), (vec![70_000], 0));
+        assert_eq!(receive(&data, 1), (vec![70_000], 0));
+    }
+
+    /// The start of an RPC buffered from a stream that failed must not be
+    /// prepended to the next stream's data: the reducer clears the buffer when
+    /// a peer opens a new stream to us (`NewStream { incoming: true, .. }`).
+    #[test]
+    fn a_partial_rpc_from_a_failed_stream_is_dropped() {
+        let first = rpc(100_000, 1);
+        let second = rpc(500, 2);
+
+        let mut state = state_with_client();
+        state
+            .reduce_incoming_data(
+                &peer(),
+                Data::from(first[..1_000].to_vec()),
+                Timestamp::ZERO,
+            )
+            .unwrap();
+        // Kept, the first RPC's start swallows the new stream's data.
+        let mut kept = state.clone();
+        kept.reduce_incoming_data(&peer(), Data::from(second.clone()), Timestamp::ZERO)
+            .unwrap();
+        assert!(kept.clients[&peer()].incoming_messages.is_empty());
+
+        state.clients.get_mut(&peer()).unwrap().clear_buffer();
+        state
+            .reduce_incoming_data(&peer(), Data::from(second), Timestamp::ZERO)
+            .unwrap();
+        let client = &state.clients[&peer()];
+        assert_eq!(client.incoming_messages.len(), 1);
+        assert!(client.buffer.is_empty());
     }
 }

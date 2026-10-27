@@ -1,3 +1,9 @@
+mod serving_limits;
+pub use serving_limits::*;
+
+mod catchup;
+pub use catchup::*;
+
 mod p2p_channels_rpc_state;
 pub use p2p_channels_rpc_state::*;
 
@@ -5,6 +11,12 @@ mod p2p_channels_rpc_actions;
 pub use p2p_channels_rpc_actions::*;
 
 mod p2p_channels_rpc_reducer;
+
+mod completed_snarks_budget;
+pub use completed_snarks_budget::*;
+
+mod p2p_channels_rpc_best_tip_budget;
+pub use p2p_channels_rpc_best_tip_budget::*;
 
 use std::{sync::Arc, time::Duration};
 
@@ -54,6 +66,8 @@ pub enum P2pRpcKind {
     Snark,
     Transaction,
     InitialPeers,
+    Catchup,
+    CompletedSnarks,
 }
 
 impl P2pRpcKind {
@@ -65,9 +79,10 @@ impl P2pRpcKind {
                 config.staged_ledger_aux_and_pending_coinbases_at_block
             }
             Self::Block => config.block,
-            Self::Snark => config.snark,
+            Self::Snark | Self::CompletedSnarks => config.snark,
             Self::Transaction => config.transaction,
             Self::InitialPeers => config.initial_peers,
+            Self::Catchup => None,
         }
     }
 
@@ -80,6 +95,7 @@ impl P2pRpcKind {
             Self::Snark => false,
             Self::Transaction => false,
             Self::InitialPeers => true,
+            Self::Catchup | Self::CompletedSnarks => true,
         }
     }
 }
@@ -94,6 +110,8 @@ pub enum P2pRpcRequest {
     Snark(SnarkJobId),
     Transaction(TransactionHash),
     InitialPeers,
+    Catchup(CatchupRequest),
+    CompletedSnarks,
 }
 
 impl P2pRpcRequest {
@@ -108,6 +126,8 @@ impl P2pRpcRequest {
             Self::Snark(_) => P2pRpcKind::Snark,
             Self::Transaction(_) => P2pRpcKind::Transaction,
             Self::InitialPeers => P2pRpcKind::InitialPeers,
+            Self::Catchup(_) => P2pRpcKind::Catchup,
+            Self::CompletedSnarks => P2pRpcKind::CompletedSnarks,
         }
     }
 }
@@ -138,7 +158,7 @@ impl std::fmt::Display for P2pRpcRequest {
             Self::LedgerQuery(ledger_hash, query) => {
                 match query {
                     MinaLedgerSyncLedgerQueryStableV1::NumAccounts => write!(f, ", NumAccounts, ")?,
-                    MinaLedgerSyncLedgerQueryStableV1::WhatChildHashes(addr) => {
+                    MinaLedgerSyncLedgerQueryStableV1::WhatChildHashes(addr, _) => {
                         write!(f, ", ChildHashes, {}, ", addr_to_str(addr))?
                     }
                     MinaLedgerSyncLedgerQueryStableV1::WhatContents(addr) => {
@@ -157,7 +177,8 @@ impl std::fmt::Display for P2pRpcRequest {
             Self::Transaction(hash) => {
                 write!(f, ", {hash}")
             }
-            Self::InitialPeers => Ok(()),
+            Self::InitialPeers | Self::CompletedSnarks => Ok(()),
+            Self::Catchup(request) => write!(f, "{request:?}"),
         }
     }
 }
@@ -186,20 +207,26 @@ pub enum P2pRpcResponse {
     Snark(Snark),
     Transaction(Transaction),
     InitialPeers(List<P2pConnectionOutgoingInitOpts>),
+    Catchup(Box<CatchupResponse>),
+    CompletedSnarks(mina_p2p_messages::rpc::CompletedSnarks),
+    /// Internal serving error; WebRTC encodes this as its existing None response.
+    LedgerQueryError(LedgerHash, mina_p2p_messages::string::CharString),
 }
 
 impl P2pRpcResponse {
     pub fn kind(&self) -> P2pRpcKind {
         match self {
             Self::BestTipWithProof(_) => P2pRpcKind::BestTipWithProof,
-            Self::LedgerQuery(_) => P2pRpcKind::LedgerQuery,
+            Self::LedgerQuery(_) | Self::LedgerQueryError(..) => P2pRpcKind::LedgerQuery,
             Self::StagedLedgerAuxAndPendingCoinbasesAtBlock(_) => {
                 P2pRpcKind::StagedLedgerAuxAndPendingCoinbasesAtBlock
             }
             Self::Block(_) => P2pRpcKind::Block,
             Self::Snark(_) => P2pRpcKind::Snark,
             Self::Transaction(_) => P2pRpcKind::Transaction,
+            Self::CompletedSnarks(_) => P2pRpcKind::CompletedSnarks,
             Self::InitialPeers(_) => P2pRpcKind::InitialPeers,
+            Self::Catchup(_) => P2pRpcKind::Catchup,
         }
     }
 }
@@ -216,6 +243,48 @@ mod libp2p {
         },
     };
 
+    pub fn unavailable_response_into_libp2p(
+        request: &P2pRpcRequest,
+        id: P2pRpcId,
+    ) -> Option<(ResponseHeader, Data)> {
+        let bytes = match request {
+            P2pRpcRequest::BestTipWithProof => response_bytes::<rpc::GetBestTipV2Response>(None),
+            P2pRpcRequest::Block(_) => {
+                response_bytes::<<rpc::GetTransitionChainV2 as RpcMethod>::Response>(None)
+            }
+            P2pRpcRequest::StagedLedgerAuxAndPendingCoinbasesAtBlock(_) => {
+                response_bytes::<rpc::GetStagedLedgerAuxAndPendingCoinbasesAtHashV2Response>(None)
+            }
+            P2pRpcRequest::CompletedSnarks => {
+                response_bytes::<<rpc::GetCompletedSnarksV1 as RpcMethod>::Response>(None)
+            }
+            P2pRpcRequest::LedgerQuery(..) => {
+                response_bytes::<<rpc::AnswerSyncLedgerQueryV2 as RpcMethod>::Response>(RpcResult(
+                    Err(mina_p2p_messages::core::Error::new("Ledger unavailable")),
+                ))
+            }
+            P2pRpcRequest::InitialPeers => response_bytes::<
+                <rpc::GetSomeInitialPeersV1ForV2 as RpcMethod>::Response,
+            >(List::new()),
+            P2pRpcRequest::Catchup(CatchupRequest::Ancestry(_)) => {
+                response_bytes::<rpc::GetAncestryV2Response>(None)
+            }
+            P2pRpcRequest::Catchup(CatchupRequest::TransitionChain(_)) => {
+                response_bytes::<<rpc::GetTransitionChainV2 as RpcMethod>::Response>(None)
+            }
+            P2pRpcRequest::Catchup(CatchupRequest::TransitionChainProof(_)) => {
+                response_bytes::<rpc::GetTransitionChainProofV1ForV2Response>(None)
+            }
+            P2pRpcRequest::Catchup(CatchupRequest::TransitionKnowledge) => {
+                response_bytes::<<rpc::GetTransitionKnowledgeV1ForV2 as RpcMethod>::Response>(
+                    List::new(),
+                )
+            }
+            _ => return None,
+        };
+        Some((ResponseHeader { id }, bytes.into()))
+    }
+
     pub fn internal_response_into_libp2p(
         response: P2pRpcResponse,
         id: P2pRpcId,
@@ -223,6 +292,7 @@ mod libp2p {
         use binprot::BinProtWrite;
 
         match response {
+            P2pRpcResponse::Catchup(r) => Some((ResponseHeader { id }, r.into_bytes().into())),
             P2pRpcResponse::BestTipWithProof(r) => {
                 type Method = rpc::GetBestTipV2;
                 type Payload = ResponsePayload<<Method as RpcMethod>::Response>;
@@ -238,8 +308,28 @@ mod libp2p {
                 }))));
 
                 let mut v = vec![];
-                <Payload as BinProtWrite>::binprot_write(&r, &mut v).unwrap_or_default();
+                <Payload as BinProtWrite>::binprot_write(&r, &mut v)
+                    .inspect_err(|error| {
+                        mina_core::log::inner::warn!("RPC response unavailable: {error}")
+                    })
+                    .ok()?;
                 Some((ResponseHeader { id: id as _ }, v.into()))
+            }
+            P2pRpcResponse::LedgerQueryError(hash, error) => {
+                // OCaml rpcs.ml:426-432 wraps the responder error with the
+                // ledger hash sexp (the field bigint, in hexadecimal).
+                let hex = hash
+                    .0
+                    .to_bytes()
+                    .iter()
+                    .rev()
+                    .map(|b| format!("{b:02X}"))
+                    .collect::<String>();
+                let error = format!(
+                    "Refusing to answer sync ledger query for ledger_hash: 0x{hex}. Error: {error}"
+                );
+                let response = RpcResult::<(), _>(Err(mina_p2p_messages::core::Error::new(&error)));
+                Some((ResponseHeader { id }, response_bytes(response).into()))
             }
             P2pRpcResponse::LedgerQuery(answer) => {
                 type Method = rpc::AnswerSyncLedgerQueryV2;
@@ -248,7 +338,11 @@ mod libp2p {
                 let r = RpcResult(Ok(NeedsLength(RpcResult(Ok(answer)))));
 
                 let mut v = vec![];
-                <Payload as BinProtWrite>::binprot_write(&r, &mut v).unwrap_or_default();
+                <Payload as BinProtWrite>::binprot_write(&r, &mut v)
+                    .inspect_err(|error| {
+                        mina_core::log::inner::warn!("RPC response unavailable: {error}")
+                    })
+                    .ok()?;
                 Some((ResponseHeader { id: id as _ }, v.into()))
             }
             P2pRpcResponse::StagedLedgerAuxAndPendingCoinbasesAtBlock(staged_ledger_info) => {
@@ -272,7 +366,11 @@ mod libp2p {
                 )))));
 
                 let mut v = vec![];
-                <Payload as BinProtWrite>::binprot_write(&r, &mut v).unwrap_or_default();
+                <Payload as BinProtWrite>::binprot_write(&r, &mut v)
+                    .inspect_err(|error| {
+                        mina_core::log::inner::warn!("RPC response unavailable: {error}")
+                    })
+                    .ok()?;
                 Some((ResponseHeader { id: id as _ }, v.into()))
             }
             P2pRpcResponse::Block(block) => {
@@ -282,8 +380,15 @@ mod libp2p {
                 let r = RpcResult(Ok(NeedsLength(Some(List::one(block.as_ref().clone())))));
 
                 let mut v = vec![];
-                <Payload as BinProtWrite>::binprot_write(&r, &mut v).unwrap_or_default();
+                <Payload as BinProtWrite>::binprot_write(&r, &mut v)
+                    .inspect_err(|error| {
+                        mina_core::log::inner::warn!("RPC response unavailable: {error}")
+                    })
+                    .ok()?;
                 Some((ResponseHeader { id: id as _ }, v.into()))
+            }
+            P2pRpcResponse::CompletedSnarks(works) => {
+                Some((ResponseHeader { id }, response_bytes(Some(works)).into()))
             }
             P2pRpcResponse::Snark(_) => {
                 // should use gossipsub to broadcast
@@ -304,7 +409,11 @@ mod libp2p {
                 let r = RpcResult(Ok(NeedsLength(r)));
 
                 let mut v = vec![];
-                <Payload as BinProtWrite>::binprot_write(&r, &mut v).unwrap_or_default();
+                <Payload as BinProtWrite>::binprot_write(&r, &mut v)
+                    .inspect_err(|error| {
+                        mina_core::log::inner::warn!("RPC response unavailable: {error}")
+                    })
+                    .ok()?;
                 Some((ResponseHeader { id: id as _ }, v.into()))
             }
         }
@@ -317,6 +426,19 @@ mod libp2p {
         use binprot::BinProtWrite;
 
         match request {
+            P2pRpcRequest::CompletedSnarks => {
+                let mut data = Vec::new();
+                NeedsLength(()).binprot_write(&mut data).unwrap_or_default();
+                Some((
+                    QueryHeader {
+                        tag: rpc::GetCompletedSnarksV1::NAME.into(),
+                        version: rpc::GetCompletedSnarksV1::VERSION,
+                        id,
+                    },
+                    data.into(),
+                ))
+            }
+            P2pRpcRequest::Catchup(_) => None, // inbound only
             P2pRpcRequest::BestTipWithProof => {
                 type Method = rpc::GetBestTipV2;
                 type Payload = QueryPayload<<Method as RpcMethod>::Query>;

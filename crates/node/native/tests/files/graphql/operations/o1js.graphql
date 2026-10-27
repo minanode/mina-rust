@@ -1,0 +1,139 @@
+# The daemon queries o1js sends, from o1-labs/o1js src/lib/mina/v1/graphql.ts
+# at be64e45e (2026-10-13), named here so they can be sent one at a time. The
+# account and transaction ids o1js interpolates are fixed values. Its archive
+# queries (events, actions) go to the archive node, not the daemon, and its
+# sendZkapp mutation is transaction submission (P6), so neither is here.
+
+query O1jsGenesisConstants {
+  genesisConstants {
+    genesisTimestamp
+    coinbase
+    accountCreationFee
+  }
+  daemonStatus {
+    consensusConfiguration {
+      epochDuration
+      k
+      slotDuration
+      slotsPerEpoch
+    }
+  }
+}
+
+query O1jsLastBlock {
+  bestChain(maxLength: 1) {
+    protocolState {
+      blockchainState {
+        snarkedLedgerHash
+        stagedLedgerHash
+        date
+        utcDate
+        stagedLedgerProofEmitted
+      }
+      previousStateHash
+      consensusState {
+        blockHeight
+        slotSinceGenesis
+        slot
+        nextEpochData {
+          ledger {hash totalCurrency}
+          seed
+          startCheckpoint
+          lockCheckpoint
+          epochLength
+        }
+        stakingEpochData {
+          ledger {hash totalCurrency}
+          seed
+          startCheckpoint
+          lockCheckpoint
+          epochLength
+        }
+        epochCount
+        minWindowDensity
+        totalCurrency
+        epoch
+      }
+    }
+  }
+}
+
+query O1jsLastBlockFailureCheck {
+  bestChain(maxLength: 3) {
+    transactions {
+      zkappCommands {
+        hash
+        failureReason {
+          failures
+          index
+        }
+      }
+    }
+    stateHash
+    protocolState {
+      consensusState {
+        blockHeight
+        epoch
+        slotSinceGenesis
+      }
+      previousStateHash
+    }
+  }
+}
+
+query O1jsAccount {
+  account(publicKey: "B62qkMUJyt7LmPnfu8in6qshaQSvTgLgNjx6h7YySRJ28wJegJ82n6u", token: "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf") {
+    publicKey
+    token
+    nonce
+    balance { total }
+    tokenSymbol
+    receiptChainHash
+    timing {
+      initialMinimumBalance
+      cliffTime
+      cliffAmount
+      vestingPeriod
+      vestingIncrement
+    }
+    permissions {
+      editState
+      access
+      send
+      receive
+      setDelegate
+      setPermissions
+      setVerificationKey {
+        auth
+        txnVersion
+      }
+      setZkappUri
+      editActionState
+      setTokenSymbol
+      incrementNonce
+      setVotingFor
+      setTiming
+    }
+    delegateAccount { publicKey }
+    votingFor
+    zkappState
+    verificationKey {
+      verificationKey
+      hash
+    }
+    actionState
+    provedState
+    zkappUri
+  }
+}
+
+query O1jsCurrentSlot {
+  bestChain(maxLength: 1) {
+    protocolState {
+      consensusState {
+        slot
+        slotSinceGenesis
+      }
+    }
+  }
+}

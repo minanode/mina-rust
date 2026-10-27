@@ -1,12 +1,7 @@
 use crate::{
-    block_producer::BlockProducerCurrentState,
+    block_producer::{block_prover_input, BlockProducerCurrentState},
     ledger::write::{LedgerWriteAction, LedgerWriteRequest},
     BlockProducerAction, Store,
-};
-use mina_node_account::AccountSecretKey;
-use mina_p2p_messages::v2::{
-    BlockchainSnarkBlockchainStableV2, ConsensusStakeProofStableV2,
-    MinaStateSnarkTransitionValueStableV2, ProverExtendBlockchainInputStableV2,
 };
 use redux::ActionWithMeta;
 
@@ -29,6 +24,10 @@ pub fn block_producer_effects<S: crate::Service>(
             if !store.dispatch(BlockProducerAction::WonSlotWait) {
                 store.dispatch(BlockProducerAction::WonSlotProduceInit);
             }
+            // Each status change is kept for a restart (F-producer). The
+            // service hands the history to a thread of its own: no file I/O
+            // here.
+            store.service.save_block_production();
         }
         BlockProducerEffectfulAction::StagedLedgerDiffCreateInit => {
             if let Some(stats) = store.service.stats() {
@@ -135,7 +134,18 @@ pub fn block_producer_effects<S: crate::Service>(
                 }
             }
 
-            store.dispatch(BlockProducerAction::BlockProveInit);
+            // Our block's consensus state exists now: it is proved only if
+            // it beats the best tip, which may have changed meanwhile.
+            let state = store.state.get();
+            let discard = state.transition_frontier.best_tip().and_then(|best_tip| {
+                state.block_producer.with(None, |bp| {
+                    bp.current.won_slot_should_discard(best_tip, meta.time())
+                })
+            });
+            match discard {
+                Some(reason) => store.dispatch(BlockProducerAction::WonSlotDiscard { reason }),
+                None => store.dispatch(BlockProducerAction::BlockProveInit),
+            };
         }
         BlockProducerEffectfulAction::BlockProveInit => {
             let service = &mut store.service;
@@ -143,83 +153,59 @@ pub fn block_producer_effects<S: crate::Service>(
             if let Some(stats) = service.stats() {
                 stats.block_producer().proof_create_start(meta.time());
             }
-            let Some((block_hash, input)) = store.state.get().block_producer.with(None, |bp| {
-                let BlockProducerCurrentState::BlockUnprovenBuilt {
-                    won_slot,
-                    chain,
-                    emitted_ledger_proof,
-                    pending_coinbase_update,
-                    pending_coinbase_witness,
-                    stake_proof_sparse_ledger,
-                    block,
-                    block_hash,
-                    ..
-                } = &bp.current
-                else {
-                    return None;
-                };
+            let Some((block_hash, input, deadline)) =
+                store.state.get().block_producer.with(None, |bp| {
+                    let BlockProducerCurrentState::BlockUnprovenBuilt {
+                        won_slot,
+                        chain,
+                        emitted_ledger_proof,
+                        pending_coinbase_update,
+                        pending_coinbase_witness,
+                        stake_proof_sparse_ledger,
+                        block,
+                        block_hash,
+                        ..
+                    } = &bp.current
+                    else {
+                        return None;
+                    };
 
-                let pred_block = chain.last()?;
-
-                let producer_public_key = block
-                    .protocol_state
-                    .body
-                    .consensus_state
-                    .block_creator
-                    .clone();
-
-                let input = Box::new(ProverExtendBlockchainInputStableV2 {
-                    chain: BlockchainSnarkBlockchainStableV2 {
-                        state: pred_block.header().protocol_state.clone(),
-                        proof: pred_block.header().protocol_state_proof.clone(),
-                    },
-                    next_state: block.protocol_state.clone(),
-                    block: MinaStateSnarkTransitionValueStableV2 {
-                        blockchain_state: block.protocol_state.body.blockchain_state.clone(),
-                        consensus_transition: block
-                            .protocol_state
-                            .body
-                            .consensus_state
-                            .curr_global_slot_since_hard_fork
-                            .slot_number
-                            .clone(),
-                        pending_coinbase_update: pending_coinbase_update.clone(),
-                    },
-                    ledger_proof: emitted_ledger_proof.clone(),
-                    prover_state: ConsensusStakeProofStableV2 {
-                        delegator: won_slot.delegator.1.into(),
-                        delegator_pk: won_slot.delegator.0.clone(),
-                        coinbase_receiver_pk: block
-                            .protocol_state
-                            .body
-                            .consensus_state
-                            .coinbase_receiver
-                            .clone(),
-                        ledger: stake_proof_sparse_ledger.clone(),
-                        // it is replaced with correct keys in the service.
-                        producer_private_key: AccountSecretKey::genesis_producer().into(),
-                        producer_public_key,
-                    },
-                    pending_coinbase: pending_coinbase_witness.clone(),
-                });
-                Some((block_hash.clone(), input))
-            }) else {
+                    let input = block_prover_input(
+                        won_slot,
+                        chain,
+                        emitted_ledger_proof.clone(),
+                        pending_coinbase_update,
+                        pending_coinbase_witness,
+                        stake_proof_sparse_ledger,
+                        block,
+                    )?;
+                    Some((
+                        block_hash.clone(),
+                        Box::new(input),
+                        won_slot.next_slot_time(),
+                    ))
+                })
+            else {
                 return;
             };
-            service.prove(block_hash, input);
+            service.prove(block_hash, input, deadline);
             store.dispatch(BlockProducerAction::BlockProvePending);
+            // Built and proving, once the proof is asked for.
+            store.service.save_block_production();
         }
         BlockProducerEffectfulAction::BlockProveSuccess => {
             if let Some(stats) = store.service.stats() {
                 stats.block_producer().proof_create_end(meta.time());
             }
             store.dispatch(BlockProducerAction::BlockProduced);
+            store.service.save_block_production();
         }
         BlockProducerEffectfulAction::WonSlotDiscard { reason } => {
             if let Some(stats) = store.service.stats() {
                 stats.block_producer().discarded(meta.time(), reason);
             }
             store.dispatch(BlockProducerAction::WonSlotSearch);
+            store.service.save_block_production();
         }
         BlockProducerEffectfulAction::BlockProduced { block } => {
             if let Some(stats) = store.service.stats() {

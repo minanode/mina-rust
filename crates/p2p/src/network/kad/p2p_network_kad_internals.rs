@@ -312,6 +312,24 @@ impl<const K: usize> P2pNetworkKadRoutingTable<K> {
         }
     }
 
+    /// Removes the entry of `peer_id`, if there is one and it isn't ours.
+    /// Returns whether it was there. Buckets are not merged back.
+    pub fn remove(&mut self, peer_id: &PeerId) -> bool {
+        let Ok(key) = P2pNetworkKadKey::try_from(peer_id) else {
+            return false;
+        };
+        if key == self.this_key {
+            return false;
+        }
+        let index = (self.this_key - &key)
+            .to_index()
+            .min(self.buckets.len() - 1);
+        let bucket = &mut self.buckets[index].0;
+        let len = bucket.len();
+        bucket.retain(|entry| entry.key != key);
+        bucket.len() != len
+    }
+
     /// Looks up a Kademlia entry with the specified `key`.
     pub fn look_up(&self, key: &P2pNetworkKadKey) -> Option<&P2pNetworkKadEntry> {
         // distance to this node
@@ -394,7 +412,7 @@ impl P2pNetworkKadEntry {
 
     pub fn new(peer_id: PeerId, addrs: Vec<Multiaddr>) -> Result<Self, P2pNetworkKadKeyError> {
         if addrs.len() > Self::MAX_ADDRS {
-            mina_core::log::info!(
+            mina_core::log::debug!(
                 mina_core::log::system_time();
                 kind = "P2pNetworkKadEntry new",
                 summary = format!("truncating {addrs:?} to {} elements", Self::MAX_ADDRS),
@@ -411,6 +429,10 @@ impl P2pNetworkKadEntry {
 
     pub fn dist(&self, other: &P2pNetworkKadEntry) -> P2pNetworkKadDist {
         self.key - other.key
+    }
+
+    pub(super) fn retain_addresses(&mut self, keep: impl FnMut(&Multiaddr) -> bool) {
+        self.addrs.retain(keep);
     }
 
     pub fn addresses(&self) -> &Vec<Multiaddr> {
@@ -889,6 +911,48 @@ mod tests {
                 prev = Some((e.clone(), dist));
             }
         }
+    }
+
+    /// A stale peer id is removed from the routing table (I18), so that we
+    /// stop asking it and handing it out; our own entry stays.
+    #[test]
+    fn remove_drops_only_that_peer() {
+        let this = entry_with_peer_id(peer_id_rand());
+        let this_peer = this.peer_id;
+        let mut rt: P2pNetworkKadRoutingTable = P2pNetworkKadRoutingTable::new(this);
+        let peers = (0..200).map(|_| peer_id_rand()).collect::<Vec<_>>();
+        for peer_id in &peers {
+            let _ = rt.insert(entry_with_peer_id(*peer_id));
+        }
+        let present = peers
+            .iter()
+            .filter(|p| {
+                rt.look_up(&P2pNetworkKadKey::try_from(*p).unwrap())
+                    .is_some()
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        assert!(present.len() >= 20);
+        let (gone, kept) = present.split_at(present.len() / 2);
+        for peer_id in gone {
+            assert!(rt.remove(peer_id));
+            assert!(!rt.remove(peer_id), "removed twice");
+        }
+        for peer_id in gone {
+            assert!(rt
+                .look_up(&P2pNetworkKadKey::try_from(peer_id).unwrap())
+                .is_none());
+        }
+        for peer_id in kept {
+            assert!(rt
+                .look_up(&P2pNetworkKadKey::try_from(peer_id).unwrap())
+                .is_some());
+        }
+        assert!(!rt.remove(&this_peer));
+        assert!(rt
+            .look_up(&P2pNetworkKadKey::try_from(this_peer).unwrap())
+            .is_some());
+        rt.assert_k_buckets();
     }
 }
 mod measurement {

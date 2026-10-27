@@ -54,7 +54,11 @@ export class NodesBootstrapTableComponent
 
   protected readonly tableHeads: TableColumnList<NodesBootstrapNode> = [
     { name: '#', sort: 'index' },
-    { name: 'global slot', sort: 'globalSlot' },
+    {
+      name: 'slot since fork',
+      sort: 'globalSlot',
+      tooltip: 'Global slot since the hard fork, as on every page here',
+    },
     { name: 'height' },
     { name: 'best tip', sort: 'bestTip' },
     { name: 'amount', sort: 'fetchedBlocks' },
@@ -85,7 +89,7 @@ export class NodesBootstrapTableComponent
 
   protected override setupTable(): void {
     this.table.gridTemplateColumns = [
-      50, 100, 80, 140, 80, 65, 65, 80, 80, 65, 65, 80,
+      50, 150, 80, 140, 80, 65, 65, 80, 80, 65, 65, 80,
     ];
     this.table.propertyForActiveCheck = 'index';
     this.table.thGroupsTemplate = this.thGroupsTemplate;

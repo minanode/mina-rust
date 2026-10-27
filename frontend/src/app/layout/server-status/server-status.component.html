@@ -1,7 +1,7 @@
 @if (details) {
   <div
     class="wrapper fx-row-vert-cent"
-    [ngClass]="switchForbidden ? AppNodeStatus.PENDING : details.status"
+    [ngClass]="switchForbidden ? AppNodeStatus.PENDING : chipClass"
   >
     @if (!switchForbidden && !hideNodeStats && !isMobile) {
       @if (!hideTx) {
@@ -62,14 +62,11 @@
           @if (!isMobile) {
             <span class="mina-icon icon-300 f-20">dns</span>
           }
-          <div>{{ details.status }}</div>
-          <span>
-            @if (details.blockHeight) {
-              <span>#</span>
-            }
-            {{ details.blockHeight }}
-          </span>
-          <span>{{ blockTimeAgo ? blockTimeAgo + ' ago' : '' }}</span>
+          <div data-status-label>{{ chip?.label }}</div>
+          <span data-status-height>{{ chip?.height }}</span>
+          @if (chip?.detail && !isMobile) {
+            <span data-status-detail>· {{ chip.detail }}</span>
+          }
         </div>
       }
       @if (!isMobile || (isMobile && switchForbidden)) {
@@ -144,22 +141,59 @@
     @fadeIn
     class="node-status-popup secondary bg-surface-top border-rad-8 popup-box-shadow-weak p-8 pb-5 w-100 h-100 text-nowrap"
   >
-    <div class="h-sm tertiary">Node Status</div>
+    <div class="h-sm tertiary">Node status</div>
     <div class="fx-row-vert-cent flex-between h-xs">
-      <div>MINA short history</div>
+      <div>Node's sync phase</div>
       <div [ngClass]="details.status" class="f-600">{{ details.status }}</div>
     </div>
+    @if (details.status !== AppNodeStatus.SYNCED && details.targetHeight) {
+      <div class="fx-row-vert-cent flex-between h-xs">
+        <div>Syncing to</div>
+        <div class="f-600">{{ formatHeight(details.targetHeight) }}</div>
+      </div>
+    }
     <div class="fx-row-vert-cent flex-between h-xs">
-      <div>Latest applied block</div>
-      <div [class.success-primary]="details.blockHeight !== null" class="f-600">
-        {{ details.blockHeight }}
+      <div>
+        {{ fresh?.synced ? 'Best tip' : 'Applied tip (not synced)' }}
+      </div>
+      <div class="f-600">
+        {{ formatHeight(details.blockHeight) }}
       </div>
     </div>
     <div class="fx-row-vert-cent flex-between h-xs">
-      <div>Last updated</div>
-      <div [class.success-primary]="details.blockHeight !== null" class="f-600">
-        {{ blockTimeAgo ? blockTimeAgo + ' ago' : '' }}
+      <div>Its block time</div>
+      <div class="f-600">
+        {{ utcTime(details.bestTipTimestamp) }}
+        @if (fresh?.tipAgeMs !== null) {
+          · {{ formatAge(fresh.tipAgeMs) }} old
+        }
       </div>
     </div>
+    <div class="fx-row-vert-cent flex-between h-xs">
+      <div>Last sync event</div>
+      <div class="f-600">
+        {{
+          fresh?.syncEventAgeMs !== null
+            ? formatAge(fresh.syncEventAgeMs) + ' ago'
+            : '–'
+        }}
+      </div>
+    </div>
+    <div class="fx-row-vert-cent flex-between h-xs">
+      <div>Status sampled</div>
+      <div class="f-600" [class.warn-primary]="fresh?.sampleStale">
+        {{
+          fresh?.sampleAgeMs !== null
+            ? formatAge(fresh.sampleAgeMs) + ' ago'
+            : 'never'
+        }}
+      </div>
+    </div>
+    @if (details.maxPeerHeight) {
+      <div class="fx-row-vert-cent flex-between h-xs">
+        <div>Highest peer tip</div>
+        <div class="f-600">{{ formatHeight(details.maxPeerHeight) }}</div>
+      </div>
+    }
   </div>
 </ng-template>

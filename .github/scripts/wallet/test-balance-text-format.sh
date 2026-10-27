@@ -19,7 +19,7 @@ cd "$REPO_ROOT"
 echo "Test: Verify text format output structure"
 TEXT_OUTPUT=$(./target/release/mina wallet balance \
     --address "B62qkiqPXFDayJV8JutYvjerERZ35EKrdmdcXh3j1rDUHRs1bJkFFcX" \
-    --endpoint "$MINA_NODE_ENDPOINT" \
+    --node "$MINA_NODE_ENDPOINT" \
     --format text 2>&1 || true)
 
 echo "Text format output:"

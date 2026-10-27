@@ -75,7 +75,7 @@ services:
       --server-port 3086
       --output-dir /data
     ports:
-      - 3086:3086
+      - "127.0.0.1:3086:3086"
     depends_on:
       postgres-ocaml:
         condition: service_healthy
@@ -94,7 +94,7 @@ services:
       --server-port 3087
       --output-dir /data
     ports:
-      - 3087:3087
+      - "127.0.0.1:3087:3087"
     depends_on:
       postgres-mina-rust:
         condition: service_healthy
@@ -124,10 +124,12 @@ services:
       --peer /dns4/primary-tcp-proxy.hz.minaprotocol.network/tcp/40109/p2p/12D3KooWT1nNJLGE8jWcshPSq3FmSXmmNn2MzfmvJcWYZ1HrtHnZ
     # volumes:
     #   # - /tmp/ocaml-node-keys:/keys
+    # Only the p2p port is published on every interface; the others are for
+    # this host only.
     ports:
       - 8302:8302
-      - 8301:8301
-      - 5000:5000
+      - "127.0.0.1:8301:8301"
+      - "127.0.0.1:5000:5000"
     depends_on:
       # libp2p-keys-permissions:
       #   condition: service_completed_successfully
@@ -143,7 +145,7 @@ services:
       node
       --archive-archiver-process
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       archive-mina-rust:
         condition: service_started

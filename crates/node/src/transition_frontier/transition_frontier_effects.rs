@@ -6,13 +6,14 @@ use crate::{
     ledger::LEDGER_DEPTH,
     p2p::{channels::best_tip::P2pChannelsBestTipAction, P2pNetworkPubsubAction},
     snark_pool::{SnarkPoolAction, SnarkWork},
-    stats::sync::SyncingLedger,
+    stats::sync::{SyncRestored, SyncingLedger},
     Store, TransactionPoolAction,
 };
 
 use super::{
     candidate::TransitionFrontierCandidateAction,
     genesis::TransitionFrontierGenesisAction,
+    persist::{PersistRestoreState, TransitionFrontierPersistAction},
     sync::{
         ledger::{
             snarked::{TransitionFrontierSyncLedgerSnarkedAction, ACCOUNT_SUBTREE_HEIGHT},
@@ -36,6 +37,7 @@ pub fn transition_frontier_effects<S: crate::Service>(
     let (action, meta) = action.split();
 
     match action {
+        TransitionFrontierAction::VerificationRecorded { .. } => {}
         TransitionFrontierAction::Genesis(a) => {
             // TODO(refactor): this should be handled by a callback and removed from here
             // whenever any of these is going to happen, genesisinject must happen first
@@ -274,11 +276,97 @@ pub fn transition_frontier_effects<S: crate::Service>(
                 TransitionFrontierSyncAction::Ledger(ref a) => {
                     handle_transition_frontier_sync_ledger_action(a.clone(), &meta, store)
                 }
+                TransitionFrontierSyncAction::RestoreInit { .. } => {
+                    if let Some(stats) = store.service.stats() {
+                        if let TransitionFrontierSyncState::BlocksPending { chain, .. } =
+                            &store.state.get().transition_frontier.sync
+                        {
+                            stats.syncing_blocks_init(chain);
+                        }
+                    }
+                }
             }
             a.effects(&meta, store);
         }
         TransitionFrontierAction::Synced { .. } => {
+            // The commit of a restore's replay ends the restore (I5d1),
+            // before the chain put, which a restore holds back.
+            if store.dispatch(TransitionFrontierPersistAction::ReplayDone) {
+                if let Some(stats) = store.service.stats() {
+                    stats.restore_done(meta.time());
+                }
+            }
             synced_effects(&meta, store);
+            // A new best chain: hand it to the frontier store (R20 D4).
+            store.dispatch(TransitionFrontierPersistAction::ChainPutInit);
+            // Our included work, if the block changed it (P5.4).
+            let log = store.state.get().external_snark_worker.included_work();
+            if !log.is_empty() {
+                crate::external_snark_worker_effectful::ExternalSnarkWorkerService::save_included_work(
+                    &mut store.service,
+                    log,
+                );
+            }
+            // The block production history, if an attempt's status changed
+            // (F-producer).
+            crate::block_producer_effectful::BlockProducerService::save_block_production(
+                &mut store.service,
+            );
+        }
+        TransitionFrontierAction::Persist(TransitionFrontierPersistAction::LoadSuccess {
+            restored,
+        }) => {
+            // The replay is this run's first sync: record it as a restore
+            // (F-dash3), before `RestoreInit` adds its blocks.
+            let Some(PersistRestoreState::Replaying { time, info }) =
+                store.state.get().transition_frontier.persist.restore()
+            else {
+                return;
+            };
+            if &info.tip != restored.tip().hash() {
+                return;
+            }
+            let record = SyncRestored {
+                generation: info.generation,
+                attempt: info.attempt,
+                root: info.root.clone(),
+                root_height: info.root_height,
+                tip: info.tip.clone(),
+                tip_height: info.tip_height,
+                blocks: info.blocks,
+                ledgers: info.ledgers,
+                load_start: info.load_started,
+                load_ms: info.timings.total_ms,
+                replay_start: *time,
+                replay_end: None,
+                failed: None,
+            };
+            if let Some(stats) = store.service.stats() {
+                stats.restore_start(&restored.root, restored.tip(), &restored.ledgers, record);
+            }
+        }
+        TransitionFrontierAction::Persist(TransitionFrontierPersistAction::ReplayFailed {
+            error,
+        }) => {
+            // Close the restore's record as failed (F-dash3): the node
+            // bootstraps, and the next sync target starts a fresh record.
+            if let Some(stats) = store.service.stats() {
+                stats.restore_failed(meta.time(), &error);
+            }
+        }
+        TransitionFrontierAction::Persist(_) => {}
+        TransitionFrontierAction::PersistEffect(a) => {
+            a.effects(&meta, store);
+        }
+        TransitionFrontierAction::GenesisLedgersLoadInit => {}
+        TransitionFrontierAction::GenesisLedgersLoadSuccess => {
+            // GenesisInject ran while ledger-dependent work was held.
+            if let Some(best_tip) = store.state().transition_frontier.best_tip().cloned() {
+                store.dispatch(BlockProducerAction::BestTipUpdate { best_tip });
+            }
+        }
+        TransitionFrontierAction::GenesisLedgersLoadError { error } => {
+            genesis_ledgers_load_failed(&error);
         }
         TransitionFrontierAction::SyncFailed { .. } => {
             // TODO(SEC): disconnect/blacklist peers that caused this.
@@ -320,10 +408,37 @@ fn synced_effects<S: crate::Service>(
             hash: best_tip.hash().clone(),
         },
     }) {
-        // Otherwise block was received from WebRTC so inject it in libp2p.
-        store.dispatch(P2pNetworkPubsubAction::WebRtcRebroadcast {
+        // Otherwise, if the block came from a WebRTC peer and from no libp2p
+        // peer, inject it in libp2p. Its enabling condition checks that, so a
+        // block a libp2p peer gave us by RPC, which that peer has already, is
+        // not gossiped in our own encoding.
+        let reencoded = store.dispatch(P2pNetworkPubsubAction::WebRtcRebroadcast {
             message: GossipNetMessageV2::NewState(best_tip.block().clone()),
         });
+        // One line per best tip that didn't come as libp2p gossip, so a log
+        // shows which blocks we put on libp2p in our own encoding, and where
+        // the others came from.
+        let source = store.state().p2p.ready().and_then(|p2p| {
+            p2p.network
+                .scheduler
+                .broadcast_state
+                .block_sources
+                .get(best_tip.hash())
+        });
+        mina_core::log::debug!(
+            meta.time();
+            kind = "TransitionFrontierSyncedBestTipGossip",
+            summary = if reencoded {
+                "best tip gossiped to libp2p peers in our own encoding"
+            } else {
+                "best tip not gossiped in our own encoding"
+            },
+            reencoded,
+            state_hash = best_tip.hash().to_string(),
+            height = best_tip.height(),
+            from_libp2p = source.map(|s| s.libp2p),
+            from_webrtc = source.map(|s| s.webrtc),
+        );
     }
 
     let best_tip_hash = best_tip.merkle_root_hash().clone();
@@ -355,6 +470,9 @@ fn handle_transition_frontier_sync_ledger_action<S: crate::Service>(
     match action {
         TransitionFrontierSyncLedgerAction::Init => {
             transition_frontier_sync_ledger_init_effects(meta, store);
+        }
+        TransitionFrontierSyncLedgerAction::LocalSnarkedSuccess => {
+            transition_frontier_sync_ledger_snarked_success_effects(meta, store);
         }
         TransitionFrontierSyncLedgerAction::Snarked(a) => {
             match a {
@@ -513,4 +631,17 @@ fn handle_transition_frontier_sync_ledger_action<S: crate::Service>(
             }
         }
     }
+}
+
+/// The cached full-config path cannot bootstrap without its genesis ledgers.
+/// This also handles failure to spawn the loader thread, via its error event.
+pub(super) fn genesis_ledgers_load_failed(error: &str) -> ! {
+    mina_core::error!(
+        mina_core::log::system_time();
+        kind = "GenesisCache",
+        summary = "deferred genesis ledger load failed; sync, ledger reads and production remain blocked; stopping the node",
+        error = error,
+    );
+    eprintln!("Fatal: deferred genesis ledger load failed: {error}; stopping the node");
+    std::process::exit(1);
 }

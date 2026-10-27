@@ -27,10 +27,11 @@ Before using wallet commands, you need:
 
 ### Environment variables
 
-You can set the following environment variables for convenience:
+Key passwords are read only from `MINA_PRIVKEY_PASS`. A password given as an
+argument is refused. You can set these environment variables once per shell:
 
 ```bash
-export MINA_PRIVKEY_PASS="your-password"
+read -rs -p "Key password: " MINA_PRIVKEY_PASS && export MINA_PRIVKEY_PASS
 export MINA_NETWORK="mainnet"  # or "devnet"
 ```
 
@@ -48,11 +49,12 @@ their respective sections:
 
 ## Understanding amounts
 
-All amounts in the CLI are specified in **nanomina**:
+Amounts and fees on the command line are in **MINA**, with at most 9 decimal
+places:
 
-- 1 MINA = 1,000,000,000 nanomina
-- 0.1 MINA = 100,000,000 nanomina
-- 0.01 MINA = 10,000,000 nanomina (common minimum fee)
+- `--amount 1` sends 1 MINA (1,000,000,000 nanomina)
+- `--fee 0.1` pays a 0.1 MINA fee
+- `--fee 0.01` pays a 0.01 MINA fee (common minimum fee)
 
 ## GraphQL integration
 

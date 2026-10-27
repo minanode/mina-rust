@@ -22,7 +22,7 @@ PASSWORD="test-password"
 
 echo "Test: Verify --from option works with key file (text format)"
 export MINA_PRIVKEY_PASS="$PASSWORD"
-BALANCE_OUTPUT=$(./target/release/mina wallet balance --from "$KEY_FILE" --endpoint "$MINA_NODE_ENDPOINT" --format text 2>&1 || true)
+BALANCE_OUTPUT=$(./target/release/mina wallet balance --from "$KEY_FILE" --node "$MINA_NODE_ENDPOINT" --format text 2>&1 || true)
 
 echo "Balance command output:"
 echo "$BALANCE_OUTPUT"

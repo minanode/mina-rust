@@ -3,8 +3,12 @@ use redux::Dispatcher;
 
 use crate::{
     ledger_effectful::LedgerEffectfulAction,
-    transition_frontier::sync::{
-        ledger::staged::TransitionFrontierSyncLedgerStagedAction, TransitionFrontierSyncAction,
+    persist::event::PersistWriteError,
+    transition_frontier::{
+        persist::TransitionFrontierPersistAction,
+        sync::{
+            ledger::staged::TransitionFrontierSyncLedgerStagedAction, TransitionFrontierSyncAction,
+        },
     },
     Action, BlockProducerAction, State, Substate,
 };
@@ -42,13 +46,13 @@ impl LedgerWriteState {
                 }
             }
             LedgerWriteAction::Success { response } => {
-                if let Self::Pending { request, .. } = state {
-                    *state = Self::Success {
-                        time: meta.time(),
-                        request: request.clone(),
-                        response: response.clone(),
-                    };
-                }
+                let Self::Pending { request, .. } = state else {
+                    return;
+                };
+                *state = Self::Success {
+                    time: meta.time(),
+                    kind: request.kind(),
+                };
 
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
                 Self::propagate_write_response(dispatcher, state, response.clone());
@@ -65,17 +69,11 @@ impl LedgerWriteState {
         state: &State,
         response: LedgerWriteResponse,
     ) {
-        let Some(request) = &state.ledger.write.request() else {
-            return;
-        };
-        match (request, response) {
-            (
-                _,
-                LedgerWriteResponse::StagedLedgerReconstruct {
-                    staged_ledger_hash,
-                    result,
-                },
-            ) => {
+        match response {
+            LedgerWriteResponse::StagedLedgerReconstruct {
+                staged_ledger_hash,
+                result,
+            } => {
                 let sync = &state.transition_frontier.sync;
                 let expected_ledger = sync
                     .ledger_target()
@@ -100,14 +98,11 @@ impl LedgerWriteState {
                     }
                 }
             }
-            (
-                _,
-                LedgerWriteResponse::StagedLedgerDiffCreate {
-                    pred_block_hash,
-                    global_slot_since_genesis,
-                    result,
-                },
-            ) => {
+            LedgerWriteResponse::StagedLedgerDiffCreate {
+                pred_block_hash,
+                global_slot_since_genesis,
+                result,
+            } => {
                 let Some((expected_pred_block_hash, expected_global_slot)) = None.or_else(|| {
                     let pred_block = state.block_producer.current_parent_chain()?.last()?;
                     let won_slot = state.block_producer.current_won_slot()?;
@@ -132,13 +127,10 @@ impl LedgerWriteState {
                     }
                 }
             }
-            (
-                _,
-                LedgerWriteResponse::BlockApply {
-                    block_hash: hash,
-                    result,
-                },
-            ) => match result {
+            LedgerWriteResponse::BlockApply {
+                block_hash: hash,
+                result,
+            } => match result {
                 Err(error) => {
                     dispatcher
                         .push(TransitionFrontierSyncAction::BlocksNextApplyError { hash, error });
@@ -154,18 +146,31 @@ impl LedgerWriteState {
                     });
                 }
             },
-            (
-                _,
-                LedgerWriteResponse::Commit {
-                    best_tip_hash,
-                    result,
-                },
-            ) => {
+            LedgerWriteResponse::Commit {
+                best_tip_hash,
+                result,
+            } => {
                 let best_tip = state.transition_frontier.sync.best_tip();
                 if best_tip.is_some_and(|tip| tip.hash() == &best_tip_hash) {
                     dispatcher.push(TransitionFrontierSyncAction::CommitSuccess { result });
                 }
             }
+            LedgerWriteResponse::PersistCheckpoint { root, result } => match result {
+                Ok(snapshot) => {
+                    dispatcher.push(TransitionFrontierPersistAction::CheckpointPending {
+                        root,
+                        snapshot: Box::new(snapshot),
+                    });
+                }
+                Err(error) => {
+                    dispatcher.push(TransitionFrontierPersistAction::CheckpointError {
+                        error: PersistWriteError {
+                            error,
+                            disable: false,
+                        },
+                    });
+                }
+            },
         }
     }
 }

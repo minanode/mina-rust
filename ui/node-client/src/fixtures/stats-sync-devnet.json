@@ -1,0 +1,116 @@
+{
+  "$comment": "GET /stats/sync?limit=1 from the devnet-dev node, 2026-10-23: a Catchup record keeping the run's restore (F-dash3); blocks cut to two.",
+  "records": [
+    {
+      "kind": "Catchup",
+      "best_tip_received": 1792771479616449413,
+      "synced": 1792771479828168231,
+      "ledgers": {
+        "staking_epoch": {
+          "snarked": {
+            "hash": "jw8rQN8Wu7mFYuCfGV8SVc1BxvaeW8QnENFBz7N3B5duj5fWrN1",
+            "fetch_hashes_start": null,
+            "fetch_hashes_end": null,
+            "fetch_accounts_start": null,
+            "fetch_accounts_end": null
+          },
+          "staged": {
+            "hash": null,
+            "fetch_parts_start": null,
+            "fetch_parts_end": null,
+            "reconstruct_start": null,
+            "reconstruct_end": null
+          },
+          "from_store": true
+        },
+        "next_epoch": {
+          "snarked": {
+            "hash": "jwGVgywp9Es9EgPR3rH1zaPRzpJM1gUUZztUFw3JS5QuAds627v",
+            "fetch_hashes_start": null,
+            "fetch_hashes_end": null,
+            "fetch_accounts_start": null,
+            "fetch_accounts_end": null
+          },
+          "staged": {
+            "hash": null,
+            "fetch_parts_start": null,
+            "fetch_parts_end": null,
+            "reconstruct_start": null,
+            "reconstruct_end": null
+          },
+          "from_store": true
+        },
+        "root": {
+          "snarked": {
+            "hash": "jxY8VLQG2nrtYey5pptvGwRgMng7iymgVWkvGn9bbJb3QMkYmda",
+            "fetch_hashes_start": null,
+            "fetch_hashes_end": null,
+            "fetch_accounts_start": null,
+            "fetch_accounts_end": null
+          },
+          "staged": {
+            "hash": "jwus64qvWDqyDZt3DzL58XuX2TKrgGMCDs1qzcREyi7iyouYk3f",
+            "fetch_parts_start": null,
+            "fetch_parts_end": null,
+            "reconstruct_start": null,
+            "reconstruct_end": null
+          },
+          "from_store": true
+        }
+      },
+      "blocks": [
+        {
+          "global_slot": 62323,
+          "height": 578883,
+          "hash": "3NLqEMZA6dJ16P9fMWA4oxFQTUcNVyoSCyZkabNbichyFH5vuc5W",
+          "pred_hash": "3NKQTwfLHFim3uLeiF1s6H4BxKVj64g4J96zVDGUcGLBZsaJ1kmE",
+          "status": "Applied",
+          "fetch_start": null,
+          "fetch_end": 1792771479616449413,
+          "apply_start": 1792771479623718059,
+          "apply_end": 1792771479635373958
+        },
+        {
+          "global_slot": 62322,
+          "height": 578882,
+          "hash": "3NKQTwfLHFim3uLeiF1s6H4BxKVj64g4J96zVDGUcGLBZsaJ1kmE",
+          "pred_hash": "3NLR4FrfqG9n29xDt4MCK8LVyT2fWvoJLbHsDBa8p4zS3mDiyMQC",
+          "status": "Applied",
+          "fetch_start": null,
+          "fetch_end": null,
+          "apply_start": null,
+          "apply_end": 1792771390258195687
+        }
+      ],
+      "resyncs": [
+        {
+          "kind": "RootLedgerChange",
+          "time": 1792764821151503414
+        },
+        {
+          "kind": "RootLedgerChange",
+          "time": 1792766711254092384
+        },
+        {
+          "kind": "RootLedgerChange",
+          "time": 1792768511774102417
+        }
+      ],
+      "restored": {
+        "generation": 284,
+        "attempt": 1,
+        "root": "3NKZZKer6C11seK7iGAbZA44VUWSbBedR4eA5kYbKDenLFsK3bRH",
+        "root_height": 578391,
+        "tip": "3NKPqviw4sVDnFQQ6DpfAKaRpNYLzGx2T35aT6F2b7L7SEkPQKgT",
+        "tip_height": 578688,
+        "blocks": 297,
+        "ledgers": 3,
+        "load_start": 1792734197505769639,
+        "load_ms": 3739.1030499999997,
+        "replay_start": 1792734201253811183,
+        "replay_end": 1792734206100976975,
+        "failed": null
+      }
+    }
+  ]
+}

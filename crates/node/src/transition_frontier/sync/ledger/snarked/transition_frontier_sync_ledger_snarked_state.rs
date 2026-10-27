@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mina_p2p_messages::v2::LedgerHash;
 use redux::Timestamp;
@@ -31,6 +31,10 @@ pub enum TransitionFrontierSyncLedgerSnarkedState {
         num_accounts: u64,
         /// Hash of the subtree containing all accounts
         contents_hash: LedgerHash,
+        #[serde(default)]
+        unavailable_peers: BTreeSet<PeerId>,
+        #[serde(default)]
+        peer_query_errors: BTreeMap<PeerId, Timestamp>,
     },
     /// Doing BFS to sync snarked ledger tree.
     MerkleTreeSyncPending {
@@ -48,6 +52,11 @@ pub enum TransitionFrontierSyncLedgerSnarkedState {
         /// Pending ongoing address queries and their attempts
         #[serde_as(as = "Vec<(_, _)>")]
         pending_addresses: BTreeMap<LedgerAddress, LedgerAddressQueryPending>,
+        #[serde(default)]
+        unavailable_peers: BTreeSet<PeerId>,
+        /// Last refusal or invalid answer, shared across all address queries.
+        #[serde(default)]
+        peer_query_errors: BTreeMap<PeerId, Timestamp>,
     },
     MerkleTreeSyncSuccess {
         time: Timestamp,
@@ -119,6 +128,30 @@ impl PeerRpcState {
     pub fn is_success(&self) -> bool {
         matches!(self, Self::Success { .. })
     }
+
+    /// Failed, or without an outcome for [`super::LEDGER_QUERY_STALE_AFTER`].
+    pub fn is_failed_or_stale(&self, now: Timestamp) -> bool {
+        match self {
+            Self::Error { .. } => true,
+            Self::Init { time } | Self::Pending { time, .. } | Self::Success { time, .. } => now
+                .checked_sub(*time)
+                .is_some_and(|elapsed| elapsed >= super::LEDGER_QUERY_STALE_AFTER),
+        }
+    }
+
+    pub fn retry_ready(&self, now: Timestamp) -> bool {
+        match self {
+            Self::Error { time, error, .. } => {
+                matches!(
+                    error,
+                    PeerLedgerQueryError::Timeout | PeerLedgerQueryError::Disconnected
+                ) || now
+                    .checked_sub(*time)
+                    .is_some_and(|elapsed| elapsed >= super::LEDGER_QUERY_RETRY_DELAY)
+            }
+            _ => self.is_failed_or_stale(now),
+        }
+    }
 }
 
 impl TransitionFrontierSyncLedgerSnarkedState {
@@ -154,6 +187,65 @@ impl TransitionFrontierSyncLedgerSnarkedState {
         &self.target().snarked_ledger_hash
     }
 
+    pub fn peer_unavailable(&self, peer_id: &PeerId) -> bool {
+        matches!(
+            self,
+            Self::NumAccountsSuccess { unavailable_peers, .. }
+                | Self::MerkleTreeSyncPending { unavailable_peers, .. }
+                if unavailable_peers.contains(peer_id)
+        )
+    }
+
+    pub fn peer_query_retry_ready(&self, peer_id: &PeerId, now: Timestamp) -> bool {
+        let errors = match self {
+            Self::NumAccountsSuccess {
+                peer_query_errors, ..
+            }
+            | Self::MerkleTreeSyncPending {
+                peer_query_errors, ..
+            } => peer_query_errors,
+            _ => return true,
+        };
+        errors.get(peer_id).is_none_or(|time| {
+            now.checked_sub(*time)
+                .is_some_and(|elapsed| elapsed >= super::LEDGER_QUERY_RETRY_DELAY)
+        })
+    }
+
+    /// A rejected RPC still needs an answer. Keep its expected hash and make
+    /// the address retryable, rather than leaving the transport's Success.
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/syncable_ledger/syncable_ledger.ml#L711-L832>
+    pub fn reject_address_answer(
+        &mut self,
+        address: &LedgerAddress,
+        sender: &PeerId,
+        now: Timestamp,
+    ) {
+        let Self::MerkleTreeSyncPending {
+            pending_addresses,
+            peer_query_errors,
+            ..
+        } = self
+        else {
+            return;
+        };
+        let Some(attempt) = pending_addresses
+            .get_mut(address)
+            .and_then(|query| query.attempts.get_mut(sender))
+        else {
+            return;
+        };
+        let Some(rpc_id) = attempt.rpc_id() else {
+            return;
+        };
+        *attempt = PeerRpcState::Error {
+            time: now,
+            rpc_id,
+            error: PeerLedgerQueryError::InvalidResponse,
+        };
+        peer_query_errors.insert(*sender, now);
+    }
+
     pub fn is_num_accounts_query_next(&self) -> bool {
         matches!(self, Self::NumAccountsPending { .. })
     }
@@ -177,8 +269,12 @@ impl TransitionFrontierSyncLedgerSnarkedState {
         }
     }
 
-    /// Addresses that were being queried already and need to be retried
-    pub fn sync_address_retry_iter(&self) -> impl '_ + Iterator<Item = LedgerAddress> {
+    /// Addresses that were being queried already and need to be retried: every
+    /// attempt failed or is stale ([`PeerRpcState::is_failed_or_stale`]).
+    pub fn sync_address_retry_iter(
+        &self,
+        now: Timestamp,
+    ) -> impl '_ + Iterator<Item = LedgerAddress> {
         let pending = match self {
             Self::MerkleTreeSyncPending {
                 pending_addresses, ..
@@ -187,7 +283,7 @@ impl TransitionFrontierSyncLedgerSnarkedState {
         };
         pending
             .iter()
-            .filter(|(_, s)| s.attempts.values().all(|s| s.is_error()))
+            .filter(move |(_, s)| s.attempts.values().all(|s| s.is_failed_or_stale(now)))
             .map(|(addr, _)| addr.clone())
     }
 

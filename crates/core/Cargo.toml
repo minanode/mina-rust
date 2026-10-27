@@ -51,6 +51,7 @@ web-sys = { workspace = true, features = ["Window", "Response"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+zstd = { workspace = true }
 
 [features]
 fuzzing = ["mina-fuzzer"]

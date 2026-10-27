@@ -1,0 +1,22 @@
+diff --git a/crates/node/src/transition_frontier/sync/ledger/snarked/transition_frontier_sync_ledger_snarked_reducer.rs b/crates/node/src/transition_frontier/sync/ledger/snarked/transition_frontier_sync_ledger_snarked_reducer.rs
+index 9ae2a1ce..9f150d04 100644
+--- a/crates/node/src/transition_frontier/sync/ledger/snarked/transition_frontier_sync_ledger_snarked_reducer.rs
++++ b/crates/node/src/transition_frontier/sync/ledger/snarked/transition_frontier_sync_ledger_snarked_reducer.rs
+@@ -678,8 +678,15 @@ fn peer_query_address_init(
+         MinaLedgerSyncLedgerQueryStableV1::WhatContents(address.clone().into())
+     } else {
+         // Several levels at once, but not below the account subtrees, which
+-        // are fetched whole.
+-        let depth = SYNC_LEDGER_QUERY_DEPTH.min(accounts_depth - address.length());
++        // are fetched whole. R4 negative test: all remaining levels when
++        // they fit OCaml's maximum of 8, without changing the check on the
++        // answers in the effects.
++        let remaining = accounts_depth - address.length();
++        let depth = if remaining <= 8 {
++            remaining
++        } else {
++            SYNC_LEDGER_QUERY_DEPTH.min(remaining)
++        };
+         MinaLedgerSyncLedgerQueryStableV1::WhatChildHashes(
+             address.clone().into(),
+             (depth as u64).into(),

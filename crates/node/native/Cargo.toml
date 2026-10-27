@@ -7,10 +7,12 @@ license.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 axum = { workspace = true }
+base64 = { workspace = true }
 bs58 = { workspace = true }
 bytes = { workspace = true }
 dataloader = { workspace = true }
 derive_more = { workspace = true }
+futures = { workspace = true }
 getrandom = { workspace = true }
 hex = { workspace = true }
 jsonpath-rust = { workspace = true }
@@ -21,6 +23,7 @@ libp2p-identity = { workspace = true, features = ["peerid"] }
 mina-core = { path = "../../core" }
 mina-node = { workspace = true, features = ["replay", "openapi"] }
 mina-node-common = { path = "../common" }
+mina-node-report = { workspace = true }
 mina-p2p-messages = { workspace = true }
 mina-signer = { workspace = true }
 mina-snark = { workspace = true }
@@ -31,13 +34,28 @@ rand = { workspace = true }
 rayon = { workspace = true }
 redux = { workspace = true, features = ["serializable_callbacks"] }
 reqwest = { workspace = true, features = ["blocking", "json"] }
+# The node dashboard (F-console), embedded at build time. Already in the lock
+# through utoipa-swagger-ui.
+rust-embed = { version = "8.11", optional = true, features = [
+  "debug-embed",
+  "deterministic-timestamps",
+] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha3 = { workspace = true }
 strum = { workspace = true }
 strum_macros = { workspace = true }
+tempfile = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["process", "macros"] }
+time = { workspace = true }
+tokio = { workspace = true, features = [
+  "process",
+  "macros",
+  "rt",
+  "signal",
+  "sync",
+  "time",
+] }
 tower-http = { workspace = true, features = ["cors"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -46,16 +64,42 @@ utoipa-axum = { workspace = true }
 utoipa-scalar = { workspace = true, optional = true, features = ["axum"] }
 utoipa-swagger-ui = { workspace = true, optional = true }
 
+[dev-dependencies]
+# GraphQL tests: reads precomputed blocks.
+mina-block-replay = { path = "../../../tools/block-replay" }
+zstd = { workspace = true }
+
+[target.'cfg(not(target_arch = "aarch64"))'.dependencies]
+tikv-jemalloc-sys = { version = "0.6", optional = true, features = ["stats"] }
+
 [features]
-default = ["p2p-libp2p", "openapi-uis", "graphiql"]
+# No bundled API docs UI by default: see the developer UIs below. The OpenAPI
+# spec itself (`/api-docs/openapi.json`) is always served.
+default = ["p2p-libp2p"]
+
+# The node dashboard (ui/dashboard/dist), served at `/` unless the node runs
+# with `--no-dashboard`. Without a built dist it serves a page saying how to
+# build it.
+dashboard = ["dep:rust-embed"]
 
 # P2P
 p2p-libp2p = ["mina-node-common/p2p-libp2p"]
 p2p-webrtc = ["mina-node-common/p2p-webrtc"]
+p2p-webrtc-rustrtc = ["mina-node-common/p2p-webrtc-rustrtc"]
+p2p-webrtc-rs = ["mina-node-common/p2p-webrtc-rs"]
+p2p-webrtc-rustrtc-lib = ["mina-node-common/p2p-webrtc-rustrtc-lib"]
+p2p-webrtc-ready-events = ["mina-node-common/p2p-webrtc-ready-events"]
 
-# API documentation UIs
-openapi-uis = ["swagger-ui", "scalar", "stoplight-elements"]
+# Developer UIs, all off by default; the docs site documents the APIs.
+# Swagger UI serves its own files, which embed about 11 MB in the binary
+# (with it, it also serves `/api-docs/openapi.json`).
 swagger-ui = ["dep:utoipa-swagger-ui"]
+# Scalar, Stoplight Elements and GraphiQL load their scripts from CDNs
+# (jsDelivr, unpkg, esm.sh), which then run on the node's own origin, where
+# they could change the SNARK worker: even when built in, they are not served
+# while worker control is on.
+openapi-uis = ["swagger-ui", "scalar", "stoplight-elements"]
 scalar = ["dep:utoipa-scalar"]
 stoplight-elements = []
 graphiql = []
+memory-debug = ["dep:tikv-jemalloc-sys", "mina-node/memory-debug"]

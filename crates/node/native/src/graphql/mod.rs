@@ -1,6 +1,7 @@
+use crate::input_limits::{self as limits, bounded};
 use account::{create_account_loader, AccountLoader, GraphQLAccount};
 use block::{GraphQLBlock, GraphQLSnarkJob, GraphQLUserCommands};
-use juniper::{graphql_value, FieldError, GraphQLEnum};
+use juniper::{graphql_value, FieldError, GraphQLEnum, ID};
 use ledger::{Account, AccountId};
 use mina_core::{
     block::AppliedBlock, consensus::ConsensusConstants, constants::constraint_constants,
@@ -10,15 +11,13 @@ use mina_node::{
     account::AccountPublicKey,
     ledger::read::LedgerStatus,
     rpc::{
-        AccountQuery, GetBlockQuery, PooledCommandsQuery, RpcBestChainResponse,
+        AccountQuery, DelegatorsQuery, GetBlockQuery, PooledCommandsQuery, RpcBestChainResponse,
         RpcGenesisBlockResponse, RpcGetBlockResponse, RpcLedgerAccountDelegatorsGetResponse,
-        RpcLedgerStatusGetResponse, RpcNodeStatus, RpcPooledUserCommandsResponse,
-        RpcPooledZkappCommandsResponse, RpcRequest, RpcSnarkPoolCompletedJobsResponse,
-        RpcSnarkPoolPendingJobsGetResponse, RpcSnarkerConfig, RpcStatusGetResponse,
-        RpcSyncStatsGetResponse, RpcTransactionInjectResponse, RpcTransactionStatusGetResponse,
-        SyncStatsQuery,
+        RpcLedgerStatusGetResponse, RpcMetricsGetResponse, RpcNodeStatus,
+        RpcPooledUserCommandsResponse, RpcPooledZkappCommandsResponse, RpcRequest,
+        RpcSnarkPoolCompletedJobsResponse, RpcSnarkPoolPendingJobsGetResponse, RpcSnarkerConfig,
+        RpcStatusGetResponse, RpcTransactionInjectResponse, RpcTransactionStatusGetResponse,
     },
-    stats::sync::SyncKind,
     BuildEnv,
 };
 use mina_node_common::rpc::RpcSender;
@@ -28,6 +27,7 @@ use mina_p2p_messages::v2::{
 };
 use mina_signer::CompressedPubKey;
 use o1_utils::field_helpers::FieldHelpersError;
+use scalars::{PublicKeyScalar, TokenIdScalar};
 use snark::{GraphQLPendingSnarkWork, GraphQLSnarkWorker};
 use std::str::FromStr;
 use tokio::sync::OnceCell;
@@ -37,10 +37,21 @@ use zkapp::GraphQLZkapp;
 pub mod account;
 pub mod block;
 pub mod constants;
+pub mod membership;
+pub(crate) mod ocaml_errors;
+pub mod scalars;
 pub mod snark;
 pub mod transaction;
 pub mod user_command;
+pub mod verification;
+mod work_id;
 pub mod zkapp;
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+mod send_tests;
 
 /// Base58 encoded public key
 pub type GraphQLPublicKey = String;
@@ -57,6 +68,8 @@ pub enum Error {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConversionError {
+    #[error(transparent)]
+    InputTooLong(#[from] crate::input_limits::InputTooLong),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -109,7 +122,12 @@ impl From<ConversionError> for Error {
 /// This optimizes the number of request to the state machine
 pub struct Context {
     rpc_sender: RpcSender,
+    /// Whether the mutations that submit transactions are allowed. Off by
+    /// default; `--enable-tx-submission` turns it on.
+    tx_submission: bool,
+    public_graphql: bool,
     account_loader: AccountLoader,
+    light_path_loader: membership::LightPathLoader,
     // Caches
     statemachine_status_cache: OnceCell<Option<RpcNodeStatus>>,
     best_tip_cache: OnceCell<Option<AppliedBlock>>,
@@ -122,10 +140,37 @@ impl Context {
     pub fn new(rpc_sender: RpcSender) -> Self {
         Self {
             rpc_sender: rpc_sender.clone(),
+            tx_submission: false,
+            public_graphql: false,
             statemachine_status_cache: OnceCell::new(),
             best_tip_cache: OnceCell::new(),
             ledger_status_cache: OnceCell::new(),
             account_loader: create_account_loader(rpc_sender.clone()),
+            light_path_loader: membership::create_light_path_loader(rpc_sender.clone()),
+        }
+    }
+
+    /// Allows or refuses the mutations that submit transactions.
+    pub fn with_tx_submission(mut self, enabled: bool) -> Self {
+        self.tx_submission = enabled;
+        self
+    }
+
+    /// Applies the public router's resolver work limits.
+    pub fn with_public_graphql(mut self, public: bool) -> Self {
+        self.public_graphql = public;
+        self
+    }
+
+    /// An error for a submission when submission is off on this node.
+    fn ensure_tx_submission(&self) -> juniper::FieldResult<()> {
+        if self.tx_submission {
+            Ok(())
+        } else {
+            Err(FieldError::new(
+                crate::http_server::TX_SUBMISSION_DISABLED,
+                graphql_value!(null),
+            ))
         }
     }
 
@@ -174,14 +219,11 @@ impl Context {
 
     pub async fn fetch_delegators(
         &self,
-        ledger_hash: LedgerHash,
+        query: DelegatorsQuery,
         account_id: AccountId,
     ) -> RpcLedgerAccountDelegatorsGetResponse {
         self.rpc_sender
-            .oneshot_request(RpcRequest::LedgerAccountDelegatorsGet(
-                ledger_hash.clone(),
-                account_id.clone(),
-            ))
+            .oneshot_request(RpcRequest::LedgerAccountDelegatorsGet(query, account_id))
             .await
             .flatten()
     }
@@ -189,7 +231,7 @@ impl Context {
 
 #[derive(Clone, Copy, Debug, GraphQLEnum)]
 #[allow(clippy::upper_case_acronyms)]
-enum SyncStatus {
+pub(crate) enum SyncStatus {
     CONNECTING,
     LISTENING,
     OFFLINE,
@@ -241,30 +283,142 @@ impl Query {
     ///
     /// # Returns
     /// Account information including balance, nonce, delegate, and other fields
-    async fn account(
-        public_key: String,
-        token: Option<String>,
+    ///
+    /// Like OCaml, this is null when the account does not exist, and the
+    /// token defaults to MINA. It looks the one account up by its id.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L1940-L1960>
+    /// Bounded receipts produced by this process; no archive or peer claims.
+    async fn verification(
         context: &Context,
-    ) -> juniper::FieldResult<account::GraphQLAccount> {
-        let public_key = AccountPublicKey::from_str(&public_key)?;
-        let req = match token {
-            None => AccountQuery::SinglePublicKey(public_key),
-            Some(token) => {
-                let token_id = TokenIdKeyHash::from_str(&token)?;
-                AccountQuery::PubKeyWithTokenId(public_key, token_id)
-            }
+    ) -> Result<verification::LocalVerificationStats, FieldError> {
+        let snapshot = context
+            .rpc_sender
+            .oneshot_request::<mina_node::rpc::RpcVerificationStatsGetResponse>(
+                RpcRequest::VerificationStatsGet(
+                    mina_node::verification::VerificationQuery::summary(),
+                ),
+            )
+            .await
+            .ok_or_else(|| {
+                FieldError::new("Verification telemetry unavailable", graphql_value!(null))
+            })?;
+        Ok(snapshot.into())
+    }
+
+    /// This node's verification receipts of up to 20 blocks, by state hash,
+    /// in the order given; a block it keeps no receipt for is left out. Not
+    /// in OCaml's schema. A fixed public projection of the receipts that
+    /// `/stats/verification` serves its operator, allowed with
+    /// `--public-graphql`.
+    async fn verification_receipts(
+        state_hashes: Vec<String>,
+        context: &Context,
+    ) -> juniper::FieldResult<Vec<verification::PublicVerificationReceipt>> {
+        verification::public_receipts(context, state_hashes).await
+    }
+
+    async fn account(
+        public_key: PublicKeyScalar,
+        token: Option<TokenIdScalar>,
+        context: &Context,
+    ) -> juniper::FieldResult<Option<account::GraphQLAccount>> {
+        let public_key = public_key_argument(&public_key, "account")?;
+        let token_id = match token {
+            None => TokenIdKeyHash::default(),
+            Some(token) => token_id_argument(&token, "token", "account")?,
         };
         let accounts: Vec<Account> = context
             .rpc_sender
-            .oneshot_request(RpcRequest::LedgerAccountsGet(req))
+            .oneshot_request(RpcRequest::LedgerAccountsGet(
+                AccountQuery::PubKeyWithTokenId(public_key, token_id),
+            ))
             .await
             .ok_or(Error::StateMachineEmptyResponse)?;
 
         Ok(accounts
-            .first()
-            .cloned()
-            .ok_or(Error::StateMachineEmptyResponse)?
-            .try_into()?)
+            .into_iter()
+            .next()
+            .map(TryInto::try_into)
+            .transpose()?)
+    }
+
+    /// obtain a membership proof for an account in the snarked ledger along
+    /// with the accounts full information encoded as base64 binable type
+    ///
+    /// The snarked ledger of the best-chain block `stateHash`. At most
+    /// [`membership::MAX_MEMBERSHIP_ACCOUNTS`] (32) accounts per field, read
+    /// in one ledger call under the light request limit.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L2481-L2500>
+    async fn encoded_snarked_ledger_account_membership(
+        account_infos: Vec<membership::AccountInput>,
+        state_hash: String,
+        context: &Context,
+    ) -> juniper::FieldResult<Vec<membership::GraphQLEncodedAccount>> {
+        membership::encoded_snarked_ledger_account_membership(context, account_infos, state_hash)
+            .await
+    }
+
+    /// All the accounts of a public key, one per token
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L1962-L1984>
+    async fn accounts(
+        public_key: PublicKeyScalar,
+        context: &Context,
+    ) -> juniper::FieldResult<Vec<account::GraphQLAccount>> {
+        let public_key = public_key_argument(&public_key, "accounts")?;
+        let accounts: Vec<Account> = context
+            .rpc_sender
+            .oneshot_request(RpcRequest::LedgerAccountsGet(
+                AccountQuery::SinglePublicKey(public_key),
+            ))
+            .await
+            .ok_or(Error::StateMachineEmptyResponse)?;
+
+        Ok(accounts
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Find the account that owns a given token
+    ///
+    /// Every account owns the token its id derives; the default token has
+    /// no owner, which needs no ledger lookup.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L2020-L2036>
+    async fn token_owner(
+        token_id: TokenIdScalar,
+        context: &Context,
+    ) -> juniper::FieldResult<Option<account::GraphQLAccount>> {
+        let token_id = token_id_argument(&token_id, "tokenId", "tokenOwner")?;
+        if token_id == TokenIdKeyHash::default() {
+            return Ok(None);
+        }
+        let accounts: Vec<Account> = context
+            .rpc_sender
+            .oneshot_request(RpcRequest::LedgerAccountsGet(AccountQuery::TokenOwner(
+                token_id,
+            )))
+            .await
+            .ok_or(Error::StateMachineEmptyResponse)?;
+
+        Ok(accounts
+            .into_iter()
+            .next()
+            .map(TryInto::try_into)
+            .transpose()?)
+    }
+
+    /// Accounts for which the daemon tracks the private key. This node keeps
+    /// no wallet keys, so the list is empty, as OCaml's is without any.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L1917-L1922>
+    async fn tracked_accounts(
+        _context: &Context,
+    ) -> juniper::FieldResult<Vec<account::GraphQLAccount>> {
+        Ok(vec![])
     }
 
     /// Get the current synchronization status of the node
@@ -272,40 +426,30 @@ impl Query {
     /// # Returns
     /// One of: CONNECTING, LISTENING, OFFLINE, BOOTSTRAP, SYNCED, CATCHUP
     async fn sync_status(context: &Context) -> juniper::FieldResult<SyncStatus> {
-        let state: RpcSyncStatsGetResponse = context
-            .rpc_sender
-            .oneshot_request(RpcRequest::SyncStatsGet(SyncStatsQuery { limit: Some(1) }))
-            .await
-            .ok_or(Error::StateMachineEmptyResponse)?;
-
-        if let Some(state) = state.as_ref().and_then(|s| s.first()) {
-            if state.synced.is_some() {
-                Ok(SyncStatus::SYNCED)
-            } else {
-                match &state.kind {
-                    SyncKind::Bootstrap => Ok(SyncStatus::BOOTSTRAP),
-                    SyncKind::Catchup => Ok(SyncStatus::CATCHUP),
-                }
-            }
-        } else {
-            Ok(SyncStatus::LISTENING)
-        }
+        fetch_sync_status(context).await
     }
 
-    /// Retrieve the best chain of blocks from the transition frontier
+    /// Retrieve a list of blocks from transition frontier's root to the
+    /// current best tip
     ///
     /// # Arguments
-    /// - `max_length`: Maximum number of blocks to return
+    /// - `max_length`: The maximum number of blocks to return. If there are
+    ///   more blocks in the transition frontier from root to tip, the
+    ///   maxLength blocks closest to the best tip are returned. Without it,
+    ///   the whole best chain, as OCaml.
     ///
     /// # Returns
-    /// List of blocks in the best chain, ordered from newest to oldest
+    /// The blocks, oldest first
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L2157-L2182>
     async fn best_chain(
-        max_length: i32,
+        max_length: Option<i32>,
         context: &Context,
     ) -> juniper::FieldResult<Vec<GraphQLBlock>> {
+        let max_length = max_length.map_or(u32::MAX, |n| n.max(0) as u32);
         let best_chain: Vec<AppliedBlock> = context
             .rpc_sender
-            .oneshot_request(RpcRequest::BestChain(max_length as u32))
+            .oneshot_request(RpcRequest::BestChain(max_length))
             .await
             .ok_or(Error::StateMachineEmptyResponse)?;
 
@@ -354,31 +498,55 @@ impl Query {
     ///
     /// # Returns
     /// Transaction status (PENDING, INCLUDED, or UNKNOWN)
+    ///
+    /// The errors are OCaml's: an id that does not decode is
+    /// `Invalid transaction provided (<why>)`, with ocaml-base64's reason
+    /// when it is not Base64.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L2038-L2081>
     async fn transaction_status(
-        payment: Option<String>,
-        zkapp_transaction: Option<String>,
+        payment: Option<ID>,
+        zkapp_transaction: Option<ID>,
         context: &Context,
     ) -> juniper::FieldResult<GraphQLTransactionStatus> {
-        if payment.is_some() && zkapp_transaction.is_some() {
-            return Err(Error::Custom(
-                "Cannot provide both payment and zkapp transaction".to_string(),
-            )
-            .into());
+        fn decode<T>(
+            id: &str,
+            max_len: usize,
+            from_base64: impl Fn(&str) -> Result<T, conv::Error>,
+        ) -> Result<T, FieldError> {
+            let why = match ocaml_errors::base64_error(id) {
+                Some(why) => why.to_owned(),
+                None => match bounded(id, max_len).map_err(ConversionError::from) {
+                    Ok(id) => match from_base64(id) {
+                        Ok(tx) => return Ok(tx),
+                        Err(e) => e.to_string(),
+                    },
+                    Err(e) => e.to_string(),
+                },
+            };
+            Err(FieldError::new(
+                format!("Invalid transaction provided ({why})"),
+                graphql_value!(null),
+            ))
         }
 
-        let tx = if let Some(payment) = payment {
-            MinaBaseUserCommandStableV2::SignedCommand(MinaBaseSignedCommandStableV2::from_base64(
+        let tx = match (payment, zkapp_transaction) {
+            (Some(payment), None) => MinaBaseUserCommandStableV2::SignedCommand(decode(
                 &payment,
-            )?)
-        } else if let Some(zkapp_transaction) = zkapp_transaction {
-            MinaBaseUserCommandStableV2::ZkappCommand(
-                MinaBaseZkappCommandTStableV1WireStableV1::from_base64(&zkapp_transaction)?,
-            )
-        } else {
-            return Err(Error::Custom(
-                "Must provide either payment or zkapp transaction".to_string(),
-            )
-            .into());
+                limits::SIGNED_COMMAND,
+                MinaBaseSignedCommandStableV2::from_base64,
+            )?),
+            (None, Some(zkapp_transaction)) => MinaBaseUserCommandStableV2::ZkappCommand(decode(
+                &zkapp_transaction,
+                limits::OPAQUE_BASE64,
+                MinaBaseZkappCommandTStableV1WireStableV1::from_base64,
+            )?),
+            _ => {
+                return Err(FieldError::new(
+                    "Invalid query: Specify either a payment ID or a zkApp transaction ID",
+                    graphql_value!(null),
+                ));
+            }
         };
         let res: RpcTransactionStatusGetResponse = context
             .rpc_sender
@@ -397,19 +565,35 @@ impl Query {
     ///
     /// # Returns
     /// Block data including transactions, SNARK jobs, and metadata
+    ///
+    /// The errors are OCaml's. A height is taken as OCaml's
+    /// `Unsigned.UInt32.of_int` takes it, so a negative one wraps.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L2282-L2328>
     async fn block(
         height: Option<i32>,
         state_hash: Option<String>,
         context: &Context,
     ) -> juniper::FieldResult<GraphQLBlock> {
         let query = match (height, state_hash) {
-            (Some(height), None) => GetBlockQuery::Height(height.try_into().unwrap_or(u32::MAX)),
-            (None, Some(state_hash)) => GetBlockQuery::Hash(state_hash.parse()?),
+            (Some(height), None) => GetBlockQuery::Height(height as u32),
+            (None, Some(state_hash)) => {
+                // Bounded first: Base58 decoding is quadratic in the length.
+                let state_hash = bounded(&state_hash, limits::STATE_HASH)?;
+                if let Some(error) = ocaml_errors::base58_check_error(
+                    state_hash,
+                    mina_p2p_messages::b58version::STATE_HASH,
+                    "State hash",
+                ) {
+                    return Err(FieldError::new(error, graphql_value!(null)));
+                }
+                GetBlockQuery::Hash(state_hash.parse()?)
+            }
             _ => {
-                return Err(Error::Custom(
-                    "Must provide exactly one of state hash, height".to_owned(),
-                )
-                .into());
+                return Err(FieldError::new(
+                    "Must provide exactly one of state hash, height",
+                    graphql_value!(null),
+                ));
             }
         };
 
@@ -420,18 +604,18 @@ impl Query {
 
         match res {
             None => Err(Error::Custom("response channel dropped".to_owned()).into()),
-            Some(None) => match query {
-                GetBlockQuery::Hash(hash) => Err(Error::Custom(format!(
-                    "Could not find block with hash: `{}` in transition frontier",
-                    hash
-                ))
-                .into()),
-                GetBlockQuery::Height(height) => Err(Error::Custom(format!(
-                    "Could not find block with height: `{}` in transition frontier",
-                    height
-                ))
-                .into()),
-            },
+            // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_lib/mina_lib.ml#L2672-L2702>
+            Some(None) => Err(FieldError::new(
+                match query {
+                    GetBlockQuery::Hash(hash) => {
+                        format!("Block with state hash {hash} not found in transition frontier")
+                    }
+                    GetBlockQuery::Height(height) => {
+                        format!("Could not find block in transition frontier with height {height}")
+                    }
+                },
+                graphql_value!(null),
+            )),
             Some(Some(block)) => Ok(GraphQLBlock::try_from(block)?),
         }
     }
@@ -446,15 +630,18 @@ impl Query {
     /// - `ids`: list of base64 encoded [`MinaBaseZkappCommandTStableV1WireStableV1`]
     async fn pooled_user_commands(
         &self,
-        public_key: Option<String>,
+        public_key: Option<PublicKeyScalar>,
         hashes: Option<Vec<String>>,
-        ids: Option<Vec<String>>,
+        ids: Option<Vec<ID>>,
         context: &Context,
     ) -> juniper::FieldResult<Vec<GraphQLUserCommands>> {
         let query = parse_pooled_commands_query(
-            public_key,
+            public_key
+                .map(|key| public_key_argument(&key, "pooledUserCommands"))
+                .transpose()?,
             hashes,
             ids,
+            limits::SIGNED_COMMAND,
             MinaBaseSignedCommandStableV2::from_base64,
         )?;
 
@@ -479,15 +666,18 @@ impl Query {
     /// - `hashes`: list of base58 encoded [`TransactionHash`]es
     /// - `ids`: list of base64 encoded [`MinaBaseZkappCommandTStableV1WireStableV1`]
     async fn pooled_zkapp_commands(
-        public_key: Option<String>,
+        public_key: Option<PublicKeyScalar>,
         hashes: Option<Vec<String>>,
-        ids: Option<Vec<String>>,
+        ids: Option<Vec<ID>>,
         context: &Context,
     ) -> juniper::FieldResult<Vec<GraphQLZkapp>> {
         let query = parse_pooled_commands_query(
-            public_key,
+            public_key
+                .map(|key| public_key_argument(&key, "pooledZkappCommands"))
+                .transpose()?,
             hashes,
             ids,
+            limits::OPAQUE_BASE64,
             MinaBaseZkappCommandTStableV1WireStableV1::from_base64,
         )?;
 
@@ -506,7 +696,11 @@ impl Query {
     /// Retrieve the genesis block
     ///
     /// # Returns
-    /// The genesis block data
+    /// The genesis block data. Its `stagedLedgerProofEmitted` comes from the
+    /// transition frontier, as for every block in OCaml, so it is null when
+    /// the genesis block is not in the frontier (a hard fork genesis).
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L984-L1001>
     async fn genesis_block(context: &Context) -> juniper::FieldResult<GraphQLBlock> {
         let block = context
             .rpc_sender
@@ -514,11 +708,18 @@ impl Query {
             .await
             .ok_or(Error::StateMachineEmptyResponse)?
             .ok_or(Error::StateMachineEmptyResponse)?;
+        let in_frontier: RpcGetBlockResponse = context
+            .rpc_sender
+            .oneshot_request(RpcRequest::GetBlock(GetBlockQuery::Hash(
+                block.hash.clone(),
+            )))
+            .await
+            .ok_or(Error::StateMachineEmptyResponse)?;
 
-        Ok(GraphQLBlock::try_from(AppliedBlock {
+        Ok(GraphQLBlock::genesis(
             block,
-            just_emitted_a_proof: false,
-        })?)
+            in_frontier.map(|b| b.just_emitted_a_proof),
+        )?)
     }
 
     /// Get completed SNARK jobs from the SNARK pool
@@ -552,6 +753,23 @@ impl Query {
             .into_iter()
             .map(GraphQLPendingSnarkWork::try_from)
             .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// The peers this node is connected to
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L2337-L2344>
+    async fn get_peers(
+        context: &Context,
+    ) -> juniper::FieldResult<Vec<constants::GraphQLRpcPeerInfo>> {
+        constants::fetch_connected_peers(context).await
+    }
+
+    /// The peers the daemon first used to connect to the network. Not exposed
+    /// by this node's state machine yet, so the list is empty.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L2328-L2335>
+    async fn initial_peers(_context: &Context) -> juniper::FieldResult<Vec<String>> {
+        Ok(vec![])
     }
 
     /// The chain-agnostic identifier of the network
@@ -594,7 +812,7 @@ impl Query {
         let account = context
             .load_account(AccountId {
                 public_key: CompressedPubKey::try_from(&config.public_key)?,
-                token_id: TokenIdKeyHash::default().into(),
+                token_id: ledger::TokenId::default(),
             })
             .await;
 
@@ -603,6 +821,28 @@ impl Query {
             account,
             fee: config.fee.to_string(),
         }))
+    }
+}
+
+/// The sync status the `syncStatus` query and `daemonStatus` report: the
+/// phase `/status` and `/readyz` go by (F-dash3), `CONNECTING` and
+/// `LISTENING` until the node has heard a best tip from a peer, as OCaml's.
+pub(crate) async fn fetch_sync_status(context: &Context) -> juniper::FieldResult<SyncStatus> {
+    let snapshot: RpcMetricsGetResponse = context
+        .rpc_sender
+        .oneshot_request(RpcRequest::MetricsGet)
+        .await
+        .ok_or(Error::StateMachineEmptyResponse)?;
+    Ok(sync_status(&snapshot.sync_phase))
+}
+
+fn sync_status(phase: &str) -> SyncStatus {
+    match phase {
+        "Connecting" => SyncStatus::CONNECTING,
+        "Bootstrap" => SyncStatus::BOOTSTRAP,
+        "Catchup" => SyncStatus::CATCHUP,
+        "Synced" => SyncStatus::SYNCED,
+        _ => SyncStatus::LISTENING,
     }
 }
 
@@ -681,6 +921,7 @@ impl Mutation {
         input: zkapp::SendZkappInput,
         context: &Context,
     ) -> juniper::FieldResult<zkapp::GraphQLSendZkappResponse> {
+        context.ensure_tx_submission()?;
         inject_tx(input.try_into()?, context).await
     }
 
@@ -694,31 +935,22 @@ impl Mutation {
     /// Payment response with transaction hash and details
     async fn send_payment(
         input: user_command::InputGraphQLPayment,
-        signature: user_command::UserCommandSignature,
+        signature: Option<user_command::UserCommandSignature>,
         context: &Context,
     ) -> juniper::FieldResult<user_command::GraphQLSendPaymentResponse> {
-        // Grab the sender's account to get the infered nonce
-        let token_id = TokenIdKeyHash::default();
-        let public_key = AccountPublicKey::from_str(&input.from)
-            .map_err(|e| Error::Conversion(ConversionError::Base58Check(e)))?;
-
-        let accounts: Vec<Account> = context
-            .rpc_sender
-            .oneshot_request(RpcRequest::LedgerAccountsGet(
-                AccountQuery::PubKeyWithTokenId(public_key, token_id),
-            ))
-            .await
-            .ok_or(Error::StateMachineEmptyResponse)?;
-
-        let infered_nonce = accounts
-            .first()
-            .ok_or(Error::StateMachineEmptyResponse)?
-            .nonce;
-
-        let command = input
-            .create_user_command(infered_nonce, signature)
-            .map_err(Error::Conversion)?;
-
+        context.ensure_tx_submission()?;
+        let signature = signature.ok_or_else(|| field_error(NO_UNLOCKED_KEY))?;
+        let (common, body) = input.parse().map_err(field_error)?;
+        let receiver = match &body {
+            ledger::scan_state::transaction_logic::signed_command::Body::Payment(payment) => {
+                Some((payment.receiver_pk.clone(), payment.amount))
+            }
+            _ => None,
+        };
+        let command = signed_command_to_send(context, common, body, signature).await?;
+        if let Some((receiver, amount)) = receiver {
+            warn_if_below_account_creation_fee(context, receiver, amount).await;
+        }
         inject_tx(command, context).await
     }
 
@@ -732,54 +964,184 @@ impl Mutation {
     /// Delegation response with transaction hash and details
     async fn send_delegation(
         input: user_command::InputGraphQLDelegation,
-        signature: user_command::UserCommandSignature,
+        signature: Option<user_command::UserCommandSignature>,
         context: &Context,
     ) -> juniper::FieldResult<user_command::GraphQLSendDelegationResponse> {
-        // Payment commands are always for the default (MINA) token
-        let token_id = TokenIdKeyHash::default();
-        let public_key = AccountPublicKey::from_str(&input.from)?;
-
-        // Grab the sender's account to get the infered nonce
-        let accounts: Vec<Account> = context
-            .rpc_sender
-            .oneshot_request(RpcRequest::LedgerAccountsGet(
-                AccountQuery::PubKeyWithTokenId(public_key, token_id),
-            ))
-            .await
-            .ok_or(Error::StateMachineEmptyResponse)?;
-
-        let infered_nonce = accounts
-            .first()
-            .ok_or(Error::StateMachineEmptyResponse)?
-            .nonce;
-        let command = input.create_user_command(infered_nonce, signature)?;
-
+        context.ensure_tx_submission()?;
+        let signature = signature.ok_or_else(|| field_error(NO_UNLOCKED_KEY))?;
+        let (common, body) = input.parse().map_err(field_error)?;
+        let command = signed_command_to_send(context, common, body, signature).await?;
         inject_tx(command, context).await
+    }
+}
+
+/// OCaml's answer to an unsigned send for a key it doesn't hold; this node
+/// holds no keys.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L500-L505>
+const NO_UNLOCKED_KEY: &str = "Couldn't find an unlocked key for specified `sender`. Did you \
+     unlock the account you're making a transaction from?";
+
+fn field_error(message: impl AsRef<str>) -> FieldError {
+    FieldError::new(message.as_ref(), graphql_value!(null))
+}
+
+/// Builds the signed command `sendPayment` or `sendDelegation` submits, with
+/// OCaml's checks in OCaml's order: the node is not bootstrapping, the nonce
+/// is inferred or in range, the signature is valid for this network.
+///
+/// OCaml: `Mina_commands.setup_and_submit_user_command` and
+/// `User_command_input.to_user_command`,
+/// <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/user_command_input/user_command_input.ml#L200-L232>
+async fn signed_command_to_send(
+    context: &Context,
+    common: user_command::SignedCommandInput,
+    body: ledger::scan_state::transaction_logic::signed_command::Body,
+    signature: user_command::UserCommandSignature,
+) -> juniper::FieldResult<MinaBaseUserCommandStableV2> {
+    use ledger::scan_state::currency::Nonce;
+
+    let signature: mina_signer::Signature = signature.try_into()?;
+    let from = user_command::compressed(&common.from).map_err(field_error)?;
+    let account_id = ledger::AccountId::new(from, ledger::TokenId::default());
+
+    let nonces: mina_node::rpc::RpcTransactionNonceGetResponse = context
+        .rpc_sender
+        .oneshot_request(RpcRequest::TransactionNonceGet(account_id))
+        .await
+        .ok_or(Error::StateMachineEmptyResponse)?;
+    if nonces.bootstrapping {
+        return Err(field_error(
+            mina_node::rpc::TRANSACTION_INJECT_BOOTSTRAPPING,
+        ));
+    }
+
+    let accounts: Vec<Account> = context
+        .rpc_sender
+        .oneshot_request(RpcRequest::LedgerAccountsGet(
+            AccountQuery::PubKeyWithTokenId(common.from.clone(), TokenIdKeyHash::default()),
+        ))
+        .await
+        .ok_or(Error::StateMachineEmptyResponse)?;
+    let ledger_nonce = accounts.first().map(|account| account.nonce);
+
+    // OCaml's `get_current_nonce`: the pool's, else the ledger's; the minimum
+    // is the ledger's.
+    let inferred = nonces
+        .pool_nonce
+        .map(Nonce::from_u32)
+        .or(ledger_nonce)
+        .ok_or_else(|| {
+            field_error(user_command::creation_error(
+                user_command::CANNOT_INFER_NONCE,
+            ))
+        })?;
+    let min = ledger_nonce.unwrap_or(inferred);
+    let nonce = user_command::choose_nonce(common.nonce, min, inferred)
+        .map_err(|e| field_error(user_command::creation_error(&e)))?;
+
+    let command = common
+        .command(nonce, body, signature)
+        .map_err(field_error)?;
+    user_command::check_signature(&command)
+        .map_err(|e| field_error(user_command::creation_error(&e)))?;
+
+    Ok(MinaBaseUserCommandStableV2::SignedCommand(
+        (&command).into(),
+    ))
+}
+
+/// OCaml logs a warning when a payment to an account that doesn't exist yet
+/// can't pay the account creation fee: it will be included, as failed.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/user_command_input/user_command_input.ml#L171-L198>
+async fn warn_if_below_account_creation_fee(
+    context: &Context,
+    receiver: mina_signer::CompressedPubKey,
+    amount: ledger::scan_state::currency::Amount,
+) {
+    let creation_fee = mina_core::constants::constraint_constants().account_creation_fee;
+    if amount.as_u64() >= creation_fee {
+        return;
+    }
+    let receiver_key = AccountPublicKey::from(receiver);
+    let accounts: Option<Vec<Account>> = context
+        .rpc_sender
+        .oneshot_request(RpcRequest::LedgerAccountsGet(
+            AccountQuery::PubKeyWithTokenId(receiver_key.clone(), TokenIdKeyHash::default()),
+        ))
+        .await;
+    if accounts.is_some_and(|accounts| accounts.is_empty()) {
+        tracing::warn!(
+            "A transaction was submitted that is likely to fail because the receiver \
+             account doesn't appear to have been created already and the transaction \
+             amount of {} is smaller than the account creation fee of {}.",
+            user_command::to_mina_string(amount.as_u64()),
+            user_command::to_mina_string(creation_fee)
+        );
     }
 }
 
 /// Helper function used by [`Query::pooled_user_commands`] and
 /// [`Query::pooled_zkapp_commands`] to parse public key, transaction hashes and
 /// command ids
-fn parse_pooled_commands_query<ID, F>(
-    public_key: Option<String>,
-    hashes: Option<Vec<String>>,
-    ids: Option<Vec<String>>,
-    id_map_fn: F,
-) -> Result<PooledCommandsQuery<ID>, ConversionError>
-where
-    F: Fn(&str) -> Result<ID, conv::Error>,
-{
-    let public_key = match public_key {
-        Some(public_key) => Some(AccountPublicKey::from_str(&public_key)?),
-        None => None,
-    };
+/// A `publicKey` argument, refused as OCaml's `PublicKey` scalar refuses
+/// one that does not decode.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L2479-L2494>
+fn public_key_argument(
+    public_key: &PublicKeyScalar,
+    field_name: &str,
+) -> Result<AccountPublicKey, FieldError> {
+    bounded(&public_key.0, limits::PUBLIC_KEY)
+        .ok()
+        .and_then(|key| AccountPublicKey::from_str(key).ok())
+        // An x outside the field decodes but is no key; the ledger would
+        // panic on it.
+        .filter(|key| CompressedPubKey::try_from(key.clone()).is_ok())
+        .ok_or_else(|| {
+            ocaml_errors::argument_error("publicKey", "PublicKey", field_name, &public_key.0)
+        })
+}
 
+/// A `TokenId` argument, refused as OCaml's `TokenId` scalar refuses one
+/// that does not decode.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L2505-L2520>
+fn token_id_argument(
+    token: &TokenIdScalar,
+    arg_name: &str,
+    field_name: &str,
+) -> Result<TokenIdKeyHash, FieldError> {
+    bounded(&token.0, limits::TOKEN_ID)
+        .ok()
+        .and_then(|token| TokenIdKeyHash::from_str(token).ok())
+        // A value outside the field decodes but is no token id; the ledger
+        // would panic on it.
+        .filter(|token| ledger::TokenId::try_from(token).is_ok())
+        .ok_or_else(|| ocaml_errors::argument_error(arg_name, "TokenId", field_name, &token.0))
+}
+
+fn parse_pooled_commands_query<CommandId, F>(
+    public_key: Option<AccountPublicKey>,
+    hashes: Option<Vec<String>>,
+    ids: Option<Vec<ID>>,
+    id_max_len: usize,
+    id_map_fn: F,
+) -> Result<PooledCommandsQuery<CommandId>, ConversionError>
+where
+    F: Fn(&str) -> Result<CommandId, conv::Error>,
+{
     let hashes = match hashes {
         Some(hashes) => Some(
             hashes
                 .into_iter()
-                .map(|tx| TransactionHash::from_str(tx.as_str()))
+                .map(|tx| -> Result<_, ConversionError> {
+                    Ok(TransactionHash::from_str(bounded(
+                        &tx,
+                        limits::TRANSACTION_HASH,
+                    )?)?)
+                })
                 .collect::<Result<Vec<_>, _>>()?,
         ),
         None => None,
@@ -788,7 +1150,9 @@ where
     let ids = match ids {
         Some(ids) => Some(
             ids.into_iter()
-                .map(|id| id_map_fn(id.as_str()))
+                .map(|id| -> Result<_, ConversionError> {
+                    Ok(id_map_fn(bounded(&id, id_max_len)?)?)
+                })
                 .collect::<Result<Vec<_>, _>>()?,
         ),
         None => None,
@@ -800,3 +1164,6 @@ where
         ids,
     })
 }
+
+#[cfg(test)]
+mod input_tests;

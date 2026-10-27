@@ -2,12 +2,22 @@ use ark_ff::{One, Zero};
 use mina_curves::pasta::{Fp, Fq};
 
 use super::{
-    field::Boolean,
+    field::{Boolean, ToBoolean},
     step::{Basic, FeatureFlags, ForStep, ForStepKind, OptFlag},
     transaction::CircuitPlonkVerificationKeyEvals,
     wrap::{Domain, Domains},
 };
 
+/// Sizes of each circuit, for the Mesa (4.0.2) mainnet circuits.
+///
+/// `ROWS` is the number of gates in the circuit's `*_gates.json`, which is the
+/// number of rows in `*_rows_rev.bin` plus `PRIMARY_LEN`. `AUX_LEN` is the
+/// number of external variables the circuit's blobs refer to, minus
+/// `PRIMARY_LEN`: the number of `exists` values the witness must push. Both
+/// come from the blobs `tools/mesa-circuits/generate.sh` dumps with OCaml
+/// 4.0.2 (`tools/mesa-circuits/blob_stats.py` decodes them, and
+/// `proofs::provers::tests::mesa_circuit_sizes` checks them). A witness of the
+/// wrong length is wrong: tests assert both in `compute_witness`.
 pub trait ProofConstants {
     /// Number of public inputs
     const PRIMARY_LEN: usize;
@@ -37,23 +47,23 @@ pub struct WrapZkappOptSignedProof {}
 
 impl ProofConstants for StepZkappOptSignedOptSignedProof {
     const PRIMARY_LEN: usize = 67;
-    const AUX_LEN: usize = 104914;
+    const AUX_LEN: usize = 121851;
     const PREVIOUS_CHALLENGES: usize = 0;
-    const ROWS: usize = 18655;
+    const ROWS: usize = 20450;
 }
 
 impl ProofConstants for StepZkappOptSignedProof {
     const PRIMARY_LEN: usize = 67;
-    const AUX_LEN: usize = 71842;
+    const AUX_LEN: usize = 80311;
     const PREVIOUS_CHALLENGES: usize = 0;
-    const ROWS: usize = 11332;
+    const ROWS: usize = 12230;
 }
 
 impl ProofConstants for StepZkappProvedProof {
     const PRIMARY_LEN: usize = 67;
-    const AUX_LEN: usize = 210350;
+    const AUX_LEN: usize = 221286;
     const PREVIOUS_CHALLENGES: usize = 1;
-    const ROWS: usize = 20023;
+    const ROWS: usize = 20924;
 }
 
 // Same values than `WrapTransactionProof`
@@ -82,16 +92,16 @@ impl ProofConstants for WrapZkappOptSignedProof {
 
 impl ProofConstants for StepTransactionProof {
     const PRIMARY_LEN: usize = 67;
-    const AUX_LEN: usize = 94478;
+    const AUX_LEN: usize = 94479;
     const PREVIOUS_CHALLENGES: usize = 0;
     const ROWS: usize = 17806;
 }
 
 impl ProofConstants for WrapTransactionProof {
     const PRIMARY_LEN: usize = 40;
-    const AUX_LEN: usize = 179491;
+    const AUX_LEN: usize = 182025;
     const PREVIOUS_CHALLENGES: usize = 2;
-    const ROWS: usize = 15122;
+    const ROWS: usize = 15129;
 }
 
 // Same values than `WrapTransactionProof`
@@ -104,23 +114,23 @@ impl ProofConstants for WrapMergeProof {
 
 impl ProofConstants for WrapBlockProof {
     const PRIMARY_LEN: usize = 40;
-    const AUX_LEN: usize = 179208;
+    const AUX_LEN: usize = 181742;
     const PREVIOUS_CHALLENGES: usize = 2;
-    const ROWS: usize = 14657;
+    const ROWS: usize = 14664;
 }
 
 impl ProofConstants for StepMergeProof {
     const PRIMARY_LEN: usize = 67;
-    const AUX_LEN: usize = 352469;
+    const AUX_LEN: usize = 357407;
     const PREVIOUS_CHALLENGES: usize = 2;
-    const ROWS: usize = 29010;
+    const ROWS: usize = 29019;
 }
 
 impl ProofConstants for StepBlockProof {
     const PRIMARY_LEN: usize = 67;
-    const AUX_LEN: usize = 338873;
+    const AUX_LEN: usize = 343869;
     const PREVIOUS_CHALLENGES: usize = 2;
-    const ROWS: usize = 34797;
+    const ROWS: usize = 34901;
 }
 
 pub trait ForWrapData {
@@ -167,6 +177,8 @@ impl ForWrapData for WrapZkappProvedProof {
             pi_branches: 5,
             step_widths: default_step_widths(),
             step_domains: default_step_domains(),
+            // For a zkApp key of wrap domain 2^13; the zkApp prover passes the
+            // key's own (`WrapParams::wrap_domain_indices`).
             wrap_domain_indices: Box::new([Fq::one(), Fq::zero()]),
         }
     }
@@ -282,8 +294,15 @@ pub fn make_step_transaction_data(wrap_key: &CircuitPlonkVerificationKeyEvals<Fp
     self_data
 }
 
-/// Zkapps using proof authorization
-pub fn make_step_zkapp_data(wrap_key: &CircuitPlonkVerificationKeyEvals<Fp>) -> ForStep {
+/// Zkapps using proof authorization. The wrap domain of a side-loaded key is
+/// the key's own `actual_wrap_domain_size`, one-hot: 2^13, 2^14 or 2^15 for a
+/// zkApp whose proofs verify 0, 1 or 2 proofs.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/pickles/types_map.ml#L178-L186>
+pub fn make_step_zkapp_data(
+    wrap_key: &CircuitPlonkVerificationKeyEvals<Fp>,
+    actual_wrap_domain_size: &crate::ProofVerified,
+) -> ForStep {
     let basic = Basic {
         proof_verifieds: vec![0, 2, 0, 0, 1],
         wrap_domain: Domains {
@@ -304,6 +323,8 @@ pub fn make_step_zkapp_data(wrap_key: &CircuitPlonkVerificationKeyEvals<Fp>) -> 
 
     let self_branches = 5; // 8 ?
     let max_proofs_verified = 2;
+    let wrap_domain_one_hot: [Boolean; 3] =
+        std::array::from_fn(|i| (i == actual_wrap_domain_size.to_int()).to_boolean());
     let self_data = ForStep {
         branches: self_branches,
         max_proofs_verified,
@@ -317,11 +338,7 @@ pub fn make_step_zkapp_data(wrap_key: &CircuitPlonkVerificationKeyEvals<Fp>) -> 
         ),
         public_input: (),
         wrap_key: wrap_key.clone(), // TODO: Use ref
-        wrap_domain: ForStepKind::SideLoaded(Box::new([
-            Boolean::True,
-            Boolean::False,
-            Boolean::False,
-        ])),
+        wrap_domain: ForStepKind::SideLoaded(Box::new(wrap_domain_one_hot)),
         step_domains: ForStepKind::SideLoaded(()),
         feature_flags: basic.feature_flags,
         num_chunks: 1,

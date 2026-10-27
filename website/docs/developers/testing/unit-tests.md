@@ -30,6 +30,35 @@ make test-release
 make nextest
 ```
 
+### Public-network CLI bootstrap
+
+`cargo test --release -p mina-cli` skips the public devnet bootstrap test.
+Running ignored tests alone does not opt in to public-network access. To run
+that test explicitly:
+
+```bash
+MINA_TEST_PUBLIC_NETWORK=1 cargo test --release -p mina-cli --test bootstrap -- --ignored --exact bootstrap --nocapture
+```
+
+The test starts a devnet follower and uses a temporary node workdir, overriding
+`MINA_HOME`. The child receives only the test environment and the inherited
+`PATH`, `BPF_ALIAS`, `NO_PEER_DISCOVERY`, and `MINA_RECORD` settings. It removes
+that workdir after stopping and reaping the child, including on timeout. HTTP
+port 49998 and libp2p port 49999 must be free. `MINA_COMMAND` can select an
+alternate node executable. Set `OUT_PATH` to a log file prefix to keep stdout
+and stderr after the temporary workdir is removed. The dedicated CI bootstrap
+job supplies both opt-ins.
+
+The P2P test that resolves a nonexistent domain also requires explicit public
+DNS access:
+
+```bash
+MINA_TEST_PUBLIC_NETWORK=1 cargo test --release -p mina-p2p --lib -- --ignored --exact webrtc::host::tests::test_resolve_invalid_domain
+```
+
+On a shared development machine, obtain a node slot and approval before running
+this live test, following the repository's lane rules.
+
 ### Performance Considerations
 
 1. **Resource management**: Monitor memory and CPU usage during tests

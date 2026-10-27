@@ -39,6 +39,10 @@ pub struct RustNodeTestingConfig {
     #[serde(default)]
     pub recorder: Recorder,
     pub peer_discovery: bool,
+    /// How many libp2p peers the node keeps, if not the default
+    /// ([`mina_node::p2p::P2pLimits::libp2p_target_peers`]).
+    #[serde(default)]
+    pub libp2p_target_peers: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
@@ -68,6 +72,7 @@ impl RustNodeTestingConfig {
             libp2p_port: None,
             recorder: Default::default(),
             peer_discovery: true,
+            libp2p_target_peers: None,
         }
     }
 
@@ -84,6 +89,7 @@ impl RustNodeTestingConfig {
             libp2p_port: None,
             recorder: Default::default(),
             peer_discovery: true,
+            libp2p_target_peers: None,
         }
     }
 
@@ -127,6 +133,11 @@ impl RustNodeTestingConfig {
 
     pub fn with_no_peer_discovery(mut self) -> Self {
         self.peer_discovery = false;
+        self
+    }
+
+    pub fn with_libp2p_target_peers(mut self, n: usize) -> Self {
+        self.libp2p_target_peers = Some(n);
         self
     }
 }

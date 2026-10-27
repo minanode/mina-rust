@@ -1,0 +1,183 @@
+:host {
+  display: block;
+}
+.verification-panel {
+  margin: 12px;
+  padding: 16px;
+  border: 1px solid var(--base-divider);
+  border-radius: 8px;
+}
+h2 {
+  font-size: 16px;
+  margin: 0 0 10px;
+}
+p {
+  margin: 10px 0;
+}
+.metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 32px;
+}
+.metrics span,
+.metrics strong,
+small {
+  display: block;
+}
+.metrics strong {
+  font-size: 18px;
+  margin-top: 5px;
+}
+.secondary,
+.metrics span {
+  color: var(--base-secondary);
+}
+.verified {
+  color: var(--success-primary);
+}
+.warn {
+  color: var(--warn-primary);
+}
+.aware {
+  color: var(--aware-primary);
+}
+.best-tip-receipt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+.best-tip-receipt small {
+  display: inline;
+}
+.freshness {
+  padding: 12px 16px;
+}
+.freshness .metrics strong {
+  font-size: 16px;
+}
+.freshness p {
+  margin: 10px 0 0;
+}
+.key {
+  overflow-wrap: anywhere;
+  font-family: monospace;
+  font-size: 11px;
+}
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+}
+dd {
+  margin: 0;
+}
+.table-scroll {
+  overflow-x: auto;
+}
+table {
+  width: 100%;
+  text-align: left;
+  border-collapse: collapse;
+}
+th,
+td {
+  padding: 8px;
+  border-bottom: 1px solid var(--base-divider);
+}
+summary {
+  cursor: pointer;
+}
+
+.updated {
+  display: inline;
+  margin-left: 8px;
+}
+.receipt-notes,
+.best-tip-receipt {
+  margin-top: 12px;
+}
+td details {
+  max-width: 360px;
+}
+dd {
+  min-width: 0;
+}
+
+// Collapsed to a one-line summary (dashboard).
+.verification-panel.compact {
+  padding: 0;
+}
+// Like the cards' header bars: 40px high, 12px side padding.
+.summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  padding: 4px 12px;
+
+  h2 {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    font-size: inherit;
+    font-weight: inherit;
+  }
+
+  .updated {
+    margin-left: 0;
+  }
+}
+.summary-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  width: 100%;
+  // The global button height is !important; the summary may wrap.
+  height: auto !important;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: 2px solid var(--selected-primary);
+    outline-offset: 4px;
+    border-radius: 4px;
+  }
+
+  .chevron {
+    font-size: 20px;
+    color: var(--base-secondary);
+    transition: transform 0.2s ease;
+  }
+
+  &:hover .chevron {
+    color: var(--base-primary);
+  }
+
+  &[aria-expanded='true'] .chevron {
+    transform: rotate(90deg);
+  }
+
+  // Sized like the cards' titles above it.
+  .title {
+    font-weight: 600;
+  }
+}
+.summary-line {
+  color: var(--base-secondary);
+
+  [data-verified-count] {
+    color: var(--base-primary);
+  }
+}
+.compact .verification-details {
+  padding: 4px 12px 12px;
+  border-top: 1px solid var(--base-divider);
+}

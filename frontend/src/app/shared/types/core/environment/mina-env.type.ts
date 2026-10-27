@@ -12,6 +12,9 @@
  * @see {@link https://github.com/o1-labs/mina-rust/tree/develop/frontend/src/environments}
  */
 export interface MinaEnv {
+  /** Use the minimal --public-graphql HTTP surface (no operator panels). */
+  publicApi?: boolean;
+
   /** Whether this is a production build */
   production: boolean;
 
@@ -39,6 +42,16 @@ export interface MinaEnv {
   /** Hide the transactions pill in the status bar */
   hideTxPill?: boolean;
 
+  /**
+   * Controls that act on the chain. A view-only build (the public demo) has
+   * none: no block production pages or key upload, and no send controls.
+   * Absent means all enabled, as for a developer build.
+   */
+  controls?: FrontendControls;
+
+  /** The commit this frontend was built from (MINA_FRONTEND_COMMIT). */
+  frontendCommit?: string;
+
   /** Global configuration shared across all nodes */
   globalConfig?: {
     /** Feature flags configuration defining which UI sections are available */
@@ -51,7 +64,41 @@ export interface MinaEnv {
 
     /** For WebNodes, optionally supply multiaddrs of known bootnodes */
     webNodeBootNodes?: Readonly<string[]>;
+
+    /** For WebNodes, the network to join, `devnet` (default) or `mainnet` */
+    webNodeNetwork?: string;
+
+    /** For WebNodes, the URL of a prebuilt genesis config (bin_prot), needed
+     * for any network other than devnet */
+    webNodeGenesisUrl?: string;
+
+    /** For WebNodes, keep the verified ledgers and blocks in the browser's
+     * Origin Private File System so that a reload restores from them (I5e).
+     * Off unless set; `webnodeFrontierStore` in localStorage (`on` or `off`)
+     * overrides it. */
+    webNodeFrontierStore?: boolean;
+
+    /** For WebNodes, the URL of a JSON list of RTCIceServer (STUN and TURN)
+     * the node fetches at start (W1); its built-in STUN servers without */
+    webNodeIceServersUrl?: string;
+
+    /** For WebNodes whose WASM is on another host: its URL and the SHA-256
+     * the page checks it against before running it (W1) */
+    webNodeWasmUrl?: string;
+    webNodeWasmSha256?: string;
   };
+}
+
+export interface FrontendControls {
+  /** Block production pages, and starting a web node with a key. */
+  producer: boolean;
+  /** Sending payments and zkApp transactions (Benchmarks). */
+  send: boolean;
+  /**
+   * Starting a web node that sells SNARK work for a public key (P5.3). It
+   * takes no private key, but proves in the visitor's browser.
+   */
+  snarker?: boolean;
 }
 
 /**
@@ -97,6 +144,10 @@ export interface MinaNode {
 export type FeaturesConfig = Partial<{
   /** Main dashboard view */
   dashboard: string[];
+
+  /** Recent best-chain blocks and ledger account lookup (native nodes) */
+  blocks: string[];
+  accounts: string[];
 
   /** Node management and monitoring features */
   nodes: string[];

@@ -20,6 +20,9 @@ import BuildSpecializedSh from "!!raw-loader!./scripts/setup/build-specialized.s
 import FormatAndLintSh from "!!raw-loader!./scripts/setup/format-and-lint.sh";
 import NixDevelop from "!!raw-loader!./scripts/setup/nix-develop.sh";
 
+For the Mesa fork, start with [Reproduce our results](reproduce-results.mdx).
+The instructions below also cover inherited upstream development workflows.
+
 Welcome to Mina Rust Node development! This guide will help you set up your
 development environment and build the Mina Rust Node from source.
 
@@ -43,8 +46,8 @@ for the node's continued development and mainnet readiness.
   - Other Linux distributions may work but are not officially supported
   - Note: While we test compilation on all platforms, the full test suite is
     only run on ubuntu-22.04 (for GLIBC compatibility with container tests)
-- **Memory**: At least 8GB RAM (16GB recommended)
-- **Storage**: At least 20GB free space
+- **Memory**: Budget 32 GB for Mesa builds and tests (provisional allowance)
+- **Storage**: Budget 60 GB free space, plus fixture and log growth
 - **Network**: Stable internet connection for downloading dependencies
 
 ### Required Tools
@@ -64,6 +67,17 @@ for the node's continued development and mainnet readiness.
 </TabItem>
 </Tabs>
 
+The imported scripts are the dependency list. In particular, whole-workspace
+tests link the packet sniffer and need `libpcap-dev` (Homebrew `libpcap` on
+macOS). `clang`, `cmake` and `protobuf-compiler` support native builds; `zstd`,
+`openssl`, `tar`, Python and `time` support replay acquisition and measurement.
+The Linux milestone scenario gate also uses `unshare` and `ip` for a private
+loopback network. On a managed host, have its administrator install packages.
+
+A narrower test run that does not link the sniffer is
+`cargo test --release -p mina-core -p mina-p2p-messages --lib`; it is not the
+whole workspace or the milestone gate.
+
 #### 2. Rust Toolchain
 
 The Mina Rust Node requires both stable and nightly Rust toolchains, plus
@@ -73,7 +87,7 @@ additional tools for development:
 
 This installs:
 
-- Rust 1.92 (stable) and nightly toolchains
+- Rust 1.92 (stable) and nightly-2026-07-15 toolchains
 - Required components: `rustfmt`, `clippy`, `rust-src`
 - `taplo-cli`: TOML formatter required for `make format`
 
@@ -129,11 +143,9 @@ components:
 
 ### 3. Run Tests
 
-You can run a different set of tests. The command `make help` will give you the
-whole set of targets. You can also visit the file
+The command `make help` lists the local test targets. Upstream
 [tests.yaml](https://github.com/o1-labs/mina-rust/blob/develop/.github/workflows/tests.yaml)
-to explore the targets used for testing in our continuous integration
-environment.
+documents the upstream CI selection.
 
 ## Development Workflow
 
@@ -302,8 +314,6 @@ make test-p2p
    [Discord](https://discord.com/channels/484437221055922177/1290662938734231552)
    and participate in discussions on the
    [Mina Protocol Forums](https://forums.minaprotocol.com/)
-5. **Read CLAUDE.md**: Check the project-specific development guide in the root
-   directory
 
 ## Getting Help
 

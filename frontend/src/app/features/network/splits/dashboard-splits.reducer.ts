@@ -1,25 +1,16 @@
-import {
-  isMobile,
-  noMillisFormat,
-  sort,
-  SortDirection,
-  TableSort,
-  toReadableDate,
-} from '@mina-rust/shared';
+import { AppActions } from '@app/app.actions';
+import { isMobile, sort, SortDirection, TableSort } from '@mina-rust/shared';
 import { DashboardSplitsState } from '@network/splits/dashboard-splits.state';
 import {
   DASHBOARD_SPLITS_CLOSE,
   DASHBOARD_SPLITS_GET_SPLITS,
   DASHBOARD_SPLITS_GET_SPLITS_SUCCESS,
-  DASHBOARD_SPLITS_MERGE_NODES,
   DASHBOARD_SPLITS_SET_ACTIVE_PEER,
   DASHBOARD_SPLITS_SORT_PEERS,
-  DASHBOARD_SPLITS_SPLIT_NODES,
   DASHBOARD_SPLITS_TOGGLE_SIDE_PANEL,
   DashboardSplitsActions,
 } from '@network/splits/dashboard-splits.actions';
 import { DashboardSplitsLink } from '@shared/types/network/splits/dashboard-splits-link.type';
-import { DashboardNodeCount } from '@shared/types/network/splits/dashboard-node-count.type';
 import { DashboardSplitsPeer } from '@shared/types/network/splits/dashboard-splits-peer.type';
 import { DashboardSplitsSet } from '@shared/types/network/splits/dashboard-splits-set.type';
 
@@ -28,9 +19,6 @@ const initialState: DashboardSplitsState = {
   links: [],
   sets: [],
   activePeer: undefined,
-  networkSplitsDetails: undefined,
-  networkMergeDetails: undefined,
-  nodeStats: undefined,
   fetching: true,
   sort: {
     sortBy: 'outgoingConnections',
@@ -41,18 +29,34 @@ const initialState: DashboardSplitsState = {
 
 export function topologyReducer(
   state: DashboardSplitsState = initialState,
-  action: DashboardSplitsActions,
+  action:
+    | DashboardSplitsActions
+    | ReturnType<typeof AppActions.changeActiveNode>,
 ): DashboardSplitsState {
   switch (action.type) {
+    case AppActions.changeActiveNode.type:
+      return {
+        ...initialState,
+        sort: state.sort,
+        openSidePanel: state.openSidePanel,
+        node: action.node.name,
+      };
+
     case DASHBOARD_SPLITS_GET_SPLITS: {
       return {
         ...state,
+        peers: [],
+        links: [],
+        sets: [],
         activePeer: undefined,
         fetching: true,
       };
     }
 
     case DASHBOARD_SPLITS_GET_SPLITS_SUCCESS: {
+      if (state.node !== undefined && action.payload.node !== state.node) {
+        return state;
+      }
       const peers = action.payload.peers.map(p => ({
         ...p,
         radius: getRadius(p, action.payload.links),
@@ -67,14 +71,12 @@ export function topologyReducer(
       return {
         ...state,
         peers,
+        node: action.payload.node,
         sets: sets.map(set => ({
           ...set,
           peers: sortPeers(set.peers, state.sort),
         })),
         links: action.payload.links,
-        nodeStats: getNodeCount(
-          peers.map(p => ({ url: !p.node ? 'node' : p.node.toLowerCase() })),
-        ),
         fetching: false,
       };
     }
@@ -84,24 +86,6 @@ export function topologyReducer(
         ...state,
         activePeer: action.payload,
         openSidePanel: true,
-      };
-    }
-
-    case DASHBOARD_SPLITS_SPLIT_NODES: {
-      return {
-        ...state,
-        fetching: true,
-        networkSplitsDetails:
-          'Last split: ' + toReadableDate(Date.now(), noMillisFormat),
-      };
-    }
-
-    case DASHBOARD_SPLITS_MERGE_NODES: {
-      return {
-        ...state,
-        fetching: true,
-        networkMergeDetails:
-          'Last merge: ' + toReadableDate(Date.now(), noMillisFormat),
       };
     }
 
@@ -135,7 +119,7 @@ function getRadius(
   peer: DashboardSplitsPeer,
   links: DashboardSplitsLink[],
 ): number {
-  if (peer.node === 'Webnode') {
+  if (peer.self) {
     return 14;
   }
   const occurrence = links.filter(
@@ -154,24 +138,6 @@ function getRadius(
   } else {
     return 14;
   }
-}
-
-function getNodeCount<T extends { url: string }>(
-  nodes: T[],
-): DashboardNodeCount {
-  return {
-    nodes: nodes.filter(node => node.url.includes('node')).map(n => n.url)
-      .length,
-    producers: nodes.filter(node => node.url.includes('prod')).map(n => n.url)
-      .length,
-    snarkers: nodes.filter(node => node.url.includes('snarker')).map(n => n.url)
-      .length,
-    seeders: nodes.filter(node => node.url.includes('seed')).map(n => n.url)
-      .length,
-    transactionGenerators: nodes
-      .filter(node => node.url.includes('transaction-generator'))
-      .map(n => n.url).length,
-  };
 }
 
 function splitThePeers(

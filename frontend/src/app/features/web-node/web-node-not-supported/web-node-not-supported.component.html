@@ -1,10 +1,5 @@
 <div class="header border-bottom fx-row-full-cent">
-  <img
-    class="mina-svg"
-    src="assets/images/logo/text-logo-text.svg"
-    height="40"
-    width="346"
-  />
+  <mina-brand-logo />
 </div>
 @if (isPhone) {
   <div class="phone-content flex-column align-center flex-center">
@@ -16,7 +11,7 @@
     </div>
     <div class="ios-box w-100 fx-col-vert-cent text-center">
       <div class="headline">
-        Your iOS {{ iOSVersion ?? '' }} isn't supported
+        Your iOS {{ iOSVersion ?? 'version' }} isn't supported
       </div>
       <div class="sub-headline tertiary">
         To use the Web Node please update your device to the latest iOS version.

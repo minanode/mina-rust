@@ -28,7 +28,13 @@ export class StateActionsService {
   ): Observable<[StateActionsStats, StateActionGroup[]]> {
     return this.rust
       .get<any>(`/stats/actions?id=${slot}`)
-      .pipe(map(res => [this.mapActionStats(res), this.mapActions(res.stats)]));
+      .pipe(
+        map(res =>
+          res
+            ? [this.mapActionStats(res), this.mapActions(res.stats)]
+            : ([{}, []] as [StateActionsStats, StateActionGroup[]]),
+        ),
+      );
   }
 
   private mapActionStats(response: any): StateActionsStats {

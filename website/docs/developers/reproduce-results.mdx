@@ -1,0 +1,300 @@
+---
+title: Reproduce our results
+sidebar_position: 2
+description: Mesa source builds, sync, milestone tests, replay and web setup.
+---
+
+import CodeBlock from "@theme/CodeBlock";
+import SystemDeps from "!!raw-loader!./scripts/setup/install-system-deps.sh";
+import RustTools from "!!raw-loader!./scripts/setup/install-rust.sh";
+import WasmTools from "!!raw-loader!./scripts/setup/install-wasm-tools.sh";
+import BrowserDeps from "!!raw-loader!./scripts/setup/install-browser-deps.sh";
+import NodeTools from "!!raw-loader!./scripts/setup/install-nvm.sh";
+import Build from "!!raw-loader!./scripts/reproduce/build.sh";
+import Sync from "!!raw-loader!./scripts/reproduce/sync.sh";
+import Tests from "!!raw-loader!./scripts/reproduce/tests.sh";
+import Genesis from "!!raw-loader!./scripts/reproduce/genesis.sh";
+import Replay from "!!raw-loader!./scripts/reproduce/replay.sh";
+import WebBuild from "!!raw-loader!./scripts/reproduce/web-build.sh";
+import Browser from "!!raw-loader!./scripts/reproduce/browser.sh";
+import Pending from "!!raw-loader!../../../tools/regression/inputs/publication-pending.txt";
+
+# Reproduce our results
+
+This is the Mesa fork's common entry point. The historical reference is **m9,
+`f2ce649c75f5e29a83def47cce5283bc3c774c82`**. R37 fetched that public source,
+built a fresh native CLI, synced mainnet and devnet, passed 26 prover tests and
+replayed 15,897 mainnet blocks with every staged-ledger hash matching. It needed
+local OCaml tools and regenerated genesis. It did not reproduce the complete
+1,025-test gate or browser sync. Those are limitations, not successful checks.
+
+This R40 pack adds the pinned bootstrap JSON and portable runners. Use a
+published revision containing this page; the owner still needs to integrate and
+publish R40. Historical evidence is retained privately in the repository. A new
+run produces its own timing and count receipts; machine load, available peers
+and browser memory affect the results.
+
+## Source and prerequisites
+
+Clone `https://github.com/minanode/mina-rust.git`, fetch the exact published
+revision you intend to measure and check it out detached. Record
+`git rev-parse HEAD` with the logs. The m9 pin alone predates this page and the
+checked-in mainnet JSON. Do not silently substitute an upstream Berkeley release
+or cached binaries from another worktree.
+
+Use x86-64 Ubuntu 24.04 for this recipe, Bash, a working clock, Internet access,
+**32 GB RAM and 60 GB free disk** as provisional allowances, plus growing logs
+and fixtures (full mainnet block download is about 5.5 GB). These are not
+measured minimum requirements. Administrator installation is a separate step;
+agents on the shared development machine must not run sudo themselves.
+
+<CodeBlock language="bash" title="scripts/setup/install-system-deps.sh">
+  {SystemDeps}
+</CodeBlock>
+
+This includes `libpcap-dev`, needed to link whole-workspace packet-sniffer
+tests, and the native/replay tools missing from the older setup. The
+[developer guide](getting-started.mdx) imports the same Linux/macOS scripts. The
+milestone P2P scenarios additionally require Linux to permit unprivileged
+user/network namespaces (`unshare`, with loopback configured by `ip`).
+
+<CodeBlock language="bash" title="scripts/setup/install-rust.sh">
+  {RustTools}
+</CodeBlock>
+
+<CodeBlock language="bash" title="scripts/setup/install-nvm.sh">
+  {NodeTools}
+</CodeBlock>
+
+The native build uses Rust **1.92** and Node **24**. On the development machine,
+wrap every compilation, including `cargo install` from setup, with
+`CARGO_BUILD_JOBS=8 tools/regression/lock.sh build -- ...`. The scripts below
+already lock their Cargo builds. Use your assigned ports: HTTP `3400+10N`,
+libp2p `8600+10N`, static `4210+N`; defaults below are slot 1. Never use
+protected services for these measurements.
+
+## Build
+
+Run from the checkout root, using fresh Cargo/target directories for a
+cold-build measurement. Do not share a target directory with a different
+checkout: generated Swagger UI build output (in builds with the `swagger-ui`
+feature) can contain its absolute path. Use `/usr/bin/time -p` around the build
+if recording wall/user/system time; report lock wait separately when possible.
+
+<CodeBlock language="bash" title="scripts/reproduce/build.sh">
+  {Build}
+</CodeBlock>
+
+`genesis_ledgers/mesa-mainnet-without-ledgers.json` is the exact **6,222-byte**
+canonical mainnet file used by the gates, SHA256
+`02fdf2a3a3b07d3b0afada6f01d747b560f35989518d2a5516f3a805736c7bb3`. Devnet's
+JSON is checked in too. Neither contains full ledger accounts or needs prover
+blobs for a non-producing node; current ledgers come from peers.
+
+## Sync mainnet and devnet
+
+First protect the HTTP port with host/cloud firewall rules: the listener binds
+all IPv4 interfaces and has no authentication. The libp2p port is separate.
+Follow the [operator quick start](../node-runners/mesa-quickstart.md) for the
+local dashboard, firewall considerations, status fields and cleanup.
+
+Run the imported script with `NETWORK=mainnet`, then stop it before rerunning
+with `NETWORK=devnet`. Choose unused ports and separate work directories; it
+runs in the foreground and records logs. It generates its own peer identity; do
+not provide, print or copy an existing private key.
+
+<CodeBlock language="bash" title="scripts/reproduce/sync.sh">
+  {Sync}
+</CodeBlock>
+
+In another terminal,
+`target/release/mina node status --node http://127.0.0.1:3410 --check` should
+report synced, a fresh tip and enough peers. Use your chosen HTTP port. Record
+network, chain ID, height, peer count and log timestamps; do not query `/state`.
+Mainnet's chain ID is
+`0718f61ab88f9d0fa643ff4dc3a3d5998dd6d51a6008b2b0339b0dbb26133886`; devnet's is
+`ebfce0d570bc22eb041e1a7b0a46bbc3ed5d0a1030ef2ab5e36eef908b93eba8`. Sync checks
+current consensus following; it does not verify every historical block proof.
+Stop each foreground run with Ctrl-C before moving on.
+
+## Tests and milestone gate
+
+<CodeBlock language="bash" title="scripts/reproduce/tests.sh">
+  {Tests}
+</CodeBlock>
+
+`make test-release` is the workspace command, not a guarantee that every ignored
+fixture or prover test ran. A narrow no-pcap alternative is
+`cargo test --release -p mina-core -p mina-p2p-messages --lib` under the build
+lock; it is not the full gate.
+
+The tracked `tools/regression/milestone/` runners preserve m9's package/feature
+selection: **56 ordinary suites plus four isolated P2P scenario suites**. See
+`tools/regression/README.md`, “Milestone gate runners”, for commands and
+required environment variables. `build-tests.sh` compiles and records Cargo
+JSON; `pin-executables.py` copies and hashes the executables;
+`run-tests.py MODE --plan` shows the selection without executing it.
+`tests-all.sh` records libtest counts, commands, exit codes and elapsed seconds
+and fails on any failed mode.
+
+The full fixture modes require the unpublished inputs below. With only source,
+run the ordinary and scenario modes after building/pinning; report which modes
+you actually ran. m9's 1,025 tests in 60 suites is a historical receipt, not a
+hardcoded success count. Focused modes repeat some tests and are counted
+separately. `aux-tests.sh` also runs frontend, mock watcher and offline evidence
+checks without a real node.
+
+`prover-tests.sh` needs both `circuit-blobs/4.0.2mainnet` and
+`circuit-blobs/4.0.2devnet`, sets `MINA_CIRCUIT_BLOBS_BASE_DIR` explicitly and
+runs **7 devnet and 19 mainnet tests in separate processes**. The network config
+is global; combining all `mesa_` tests in one process is invalid. Mesa blobs are
+publication pending; `make download-circuits` fetches older Berkeley assets and
+does not satisfy this prerequisite. Offline generation is available in
+`tools/mesa-circuits/generate.sh` using `scripts/ocaml-mina`, a private `TMPDIR`
+and the checked-in `mesa-mainnet-fork.json` or `mesa-devnet-fork.json`. It needs
+the OCaml tooling below, which a fresh HOME does not install automatically. The
+generator's `--check` verifies eight circuits/24 blobs and the live
+verification-key coordinates; compare the resulting bytes with the inventory.
+
+## Genesis regeneration
+
+The canonical artifact remains the pinned file. Current generation adds runtime
+`proof`/`daemon` metadata: **513 extra JSON bytes**, and a **526-byte binary
+header** (`MINAGEN1`, length, 514-byte metadata). It is not a whitespace or
+field-order difference. The R37 6,735-byte JSON digest
+`cc9b39d79a8d6a0a916fd892404bba4d9faa7ba14e1e165702551c26163c4191` is reproduced
+by adding that metadata; every pre-existing JSON field is identical.
+
+Regeneration checks ledger roots instead of claiming legacy byte identity.
+`genesis-from-tarballs.sh` checks tarball SHA3-256, stored roots and rebuilt
+account roots. The explicit manifest root mode reads both regenerated files and
+compares their three roots with the canonical JSON. Default manifest checking
+still enforces exact sizes/SHA256s for supplied historical fixtures.
+
+<CodeBlock language="bash" title="scripts/reproduce/genesis.sh">
+  {Genesis}
+</CodeBlock>
+
+This script needs OCaml 4.0.2's `mina-rocksdb-scanner`. The wrapper defaults to
+`~/.local/opt/mina-4.0.2`; set `OCAML_MINA_PREFIX` to the extracted prefix
+instead. The original Ubuntu noble packages are identified below. They can be
+obtained from the upstream `stable.apt.packages.minaprotocol.com` repository's
+`pool/noble/m/mi/` paths using the exact filenames, verified by SHA256 and
+extracted with `dpkg-deb -x FILE PREFIX` without sudo. Runtime libraries include
+`libjemalloc2` and `libpq5`; have the administrator install those or provide a
+user-local library path. This is an additional toolchain, not part of rustup.
+The project's packaged tooling bundle and installation validation remain
+publication pending; do not assume the maintainer's installed prefix exists.
+
+## Replay
+
+A replay requires the full-ledger binary, not the small bootstrap JSON. Supply
+`reproduction-inputs/genesis-mainnet/mesa-mainnet.bin` with its inventory hash,
+or generate it by the root-checked route above. Public mainnet blocks can be
+fetched directly; their subset checksums are already tracked.
+
+<CodeBlock language="bash" title="scripts/reproduce/replay.sh">
+  {Replay}
+</CodeBlock>
+
+Expected chain: heights **548148 through 564044**, **15,897 blocks**, ending at
+`3NL9ixEeoyrPa8nLyyKsRnHNuMg6yoaztdFdK5ZbRmJkPqqBE5Hd`, with every staged-ledger
+hash matching. `check_chain` checks parsing, parent links and account-update
+digests; the replay applies ledger changes. Neither is the separate historical
+SNARK/header-proof gate. The script explicitly skips the archived reconstruction
+measurement, whose dump is not public.
+
+For exact from-dump/reconstruction receipts, supply the two mainnet dumps in the
+inventory, then check `inputs/replay-from-dump.txt` and `inputs/rebuild.txt`
+with `tools/regression/inputs.py`. The regression README also documents writing
+a new dump with `mina-block-replay --write-dump`; report a regenerated dump
+under its own hash and do not label it the pinned fixture. Devnet's subset needs
+its root dump and binary, plus seven genesis-head blocks deleted from the public
+bucket. Those exact fixtures are publication pending; a current-root alternative
+does not reproduce the historical genesis-head receipt.
+
+## Web node
+
+Install the nightly's own target and sources and the matching wasm-bindgen CLI:
+
+<CodeBlock language="bash" title="scripts/setup/install-wasm-tools.sh">
+  {WasmTools}
+</CodeBlock>
+
+Use an explicit relay on the same network. `RELAY` is its reachable multiaddr,
+for example `/dns4/relay.example/tcp/443/webrtc/https/p2p/PEER_ID`; use the
+actual host, port and public peer ID supplied by its operator. A localhost relay
+is usable only when you run it yourself on the browser's machine. A remote
+browser needs HTTPS and a reachable relay; this pack does not supply a relay
+service. The devnet relay setup is documented in `tools/regression/README.md`.
+
+Set `RELAY` before running this script. It defaults to devnet; `NETWORK=mainnet`
+selects the checked-in mainnet genesis. No `.work` genesis input or locally
+preinstalled tooling is required after the setup steps. `npm ci` installs the
+frontend dependencies in this checkout. The build stamps commit, genesis and
+WASM hashes in `build-info.json`; build from a clean commit.
+
+<CodeBlock language="bash" title="scripts/reproduce/web-build.sh">
+  {WebBuild}
+</CodeBlock>
+
+Open `/loading-web-node` and start the non-producing node. `serve.json` provides
+COOP/COEP headers needed by WASM threads. Build/HTTP success is not evidence of
+browser sync. For an automated receipt, install browser runtime libraries first:
+the administrator can use this Ubuntu 22.04/24.04 script, which selects the
+matching t64 package names:
+
+<CodeBlock language="bash" title="scripts/setup/install-browser-deps.sh">
+  {BrowserDeps}
+</CodeBlock>
+
+The browser installer uses the Chrome revision from the locked puppeteer-core,
+downloads it into a task-local cache and prints the path; it does not launch a
+browser. Only `tools/regression/webnode/run.mjs` starts the browser/node and
+takes the shared browser lock. The command below sets `CHROME` and
+`PUPPETEER_DIR` explicitly. A lock timeout is not a bootstrap failure.
+
+<CodeBlock language="bash" title="scripts/reproduce/browser.sh">
+  {Browser}
+</CodeBlock>
+
+Stop the static server with Ctrl-C after recording. Private native acceptance
+and browser block-production gates are separate opt-in runners documented in
+`tools/regression/README.md`; they need the unpublished proving/OCaml inputs and
+create their own isolated networks. They are not part of syncing public
+mainnet/devnet or this non-producing web recipe.
+
+## Publication pending
+
+Nothing was uploaded by R40. The owner decides publication. These sizes are
+uncompressed file bytes measured with `stat`; SHA256s cover existing files, not
+hypothetical release archives. Circuit sets and the devnet head are directories,
+so their **individual file hashes and sizes** are in the imported manifest below
+rather than an invented directory/archive checksum.
+
+| Artifact                                          |       Bytes | Purpose and status                                                                |
+| ------------------------------------------------- | ----------: | --------------------------------------------------------------------------------- |
+| Mesa mainnet circuit blobs, 24 files              | 135,982,491 | Full-proof proving; publication pending                                           |
+| Mesa devnet circuit blobs, 24 files               | 135,982,491 | Full-proof proving; publication pending                                           |
+| `mesa-mainnet.bin`                                | 255,584,893 | Pinned full-ledger replay genesis; publication pending                            |
+| `mesa-devnet.bin`                                 | 239,160,036 | Pinned devnet replay genesis; publication pending                                 |
+| Mainnet dump at 563044                            |  95,401,250 | Exact 1,000-block from-dump replay; publication pending                           |
+| `reconstruct-current.binprot`                     | 136,790,878 | Archived rebuild measurement; publication pending                                 |
+| Devnet root dump at 577343                        | 104,988,108 | Devnet 287-block replay; publication pending                                      |
+| Devnet genesis head: seven blocks plus chain file |      97,158 | Deleted public history, exact head replay; publication pending                    |
+| OCaml generic 4.0.2-84b8d96 amd64 deb             | 363,720,926 | Reference mina, scanner and helper; project tooling bundle publication pending    |
+| OCaml mainnet config deb                          |       1,992 | Pinned upstream mainnet configuration; project tooling bundle publication pending |
+| OCaml devnet config deb                           |       1,994 | Pinned upstream devnet configuration; project tooling bundle publication pending  |
+
+The original OCaml packages have upstream apt provenance; “publication pending”
+refers to the project's pinned reproduction distribution, not a claim that the
+upstream files never existed publicly. Mainnet replay blocks are public and
+fetched above. Both small network genesis JSONs are tracked in this repository.
+The inventory excludes private keys and proving-key caches.
+
+<CodeBlock
+  language="text"
+  title="tools/regression/inputs/publication-pending.txt"
+>
+  {Pending}
+</CodeBlock>

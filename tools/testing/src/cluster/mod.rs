@@ -20,14 +20,22 @@
 //!
 //! # Example
 //!
+//! Compiled without starting Rust or OCaml nodes.
+//!
 //! ```rust,no_run
-//! let mut cluster = Cluster::new(ClusterConfig::default());
+//! use mina_node_testing::{
+//!     cluster::{Cluster, ClusterConfig},
+//!     node::{RustNodeTestingConfig, OcamlNodeTestingConfig},
+//! };
+//!
+//! let mut cluster = Cluster::new(ClusterConfig::new(None)?);
 //!
 //! // Add Rust node with custom configuration
-//! let rust_node = cluster.add_rust_node(RustNodeTestingConfig::default());
+//! let rust_node = cluster.add_rust_node(RustNodeTestingConfig::devnet_default());
 //!
 //! // Add OCaml node for cross-implementation testing
 //! let ocaml_node = cluster.add_ocaml_node(OcamlNodeTestingConfig::default());
+//! # Ok::<(), anyhow::Error>(())
 //! ```
 
 mod config;
@@ -444,9 +452,13 @@ impl Cluster {
                 client_port: Some(http_port),
                 testing_run: true,
                 chain_id_override: None,
+                block_first_lead: None,
                 skip_proof_verification: false,
+                worker_control: false,
+                snarker_strategy: Default::default(),
             },
             p2p: P2pConfig {
+                catchup_rpc: Default::default(),
                 libp2p_port: Some(libp2p_port),
                 listen_port: Some(http_port),
                 identity_pub_key: p2p_sec_key.public_key(),
@@ -455,7 +467,14 @@ impl Cluster {
                 enabled_channels: ChannelId::iter_all().collect(),
                 peer_discovery: testing_config.peer_discovery,
                 timeouts: testing_config.timeouts,
-                limits: P2pLimits::default().with_max_peers(Some(testing_config.max_peers)),
+                limits: {
+                    let limits =
+                        P2pLimits::default().with_max_peers(Some(testing_config.max_peers));
+                    match testing_config.libp2p_target_peers {
+                        Some(n) => limits.with_libp2p_target_peers(Some(n)),
+                        None => limits,
+                    }
+                },
                 meshsub: P2pMeshsubConfig {
                     initial_time: testing_config
                         .initial_time
@@ -491,7 +510,7 @@ impl Cluster {
 
         if let Some(keypair) = block_producer_sec_key {
             info!(system_time(); "Initializing block producer for Rust node {}", node_id.index());
-            let provers = BlockProver::make(None, None);
+            let provers = BlockProver::make(None, None).unwrap();
             service_builder.block_producer_init(keypair, Some(provers));
         }
 
@@ -514,7 +533,13 @@ impl Cluster {
                 let task = async {
                     tokio::select! {
                         _ = shutdown.wait() => {}
-                        _ = http_server::run(http_port, rpc_sender) => {}
+                        // Test clusters submit transactions through their nodes.
+                        _ = http_server::run(
+                            std::net::Ipv4Addr::LOCALHOST.into(),
+                            http_port,
+                            rpc_sender,
+                            http_server::HttpServerOptions { tx_submission: true, ..Default::default() },
+                        ) => {}
                     }
                 };
                 local_set.block_on(&runtime, task);

@@ -1,0 +1,12 @@
+genesis_state_hash (zero currencies) 3NLASv5h1h1iLVxhj3dZpRfxmSSYG6qPLk1oto1xuqPnm49L2VZ6
+digest transaction-merge            d71089b3a1669535999e8f181cd59afc
+digest transaction-base             3bf6bb8a97665fe7a9df6fc146e4f942
+digest zkapp-opt_signed-opt_signed  614aec09ed5e4068f46d010f0070226b
+digest zkapp-opt_signed             0fe3381f501f432744727c296be464b0
+digest zkapp-proved                 cad581432831f10fee99161532504937
+digest blockchain-step              8e1ca52b46476d9b7f3fa0b7523ce7a7
+genesis_constants_hash 0874c6a1d2c8819b8debefb55912c6ad0466dcb374a09045b9ad0061638a8f0a
+transaction_version md5 a87ff679a2f3e71d9181a67b7542122c = md5(4)
+network_version md5 cfcd208495d565ef66e7dff9f98764da = md5(0)
+chain_id 2cae926c47771e8e87a18d22f6ea78557d07ae9d43b68b35cbd4b18e5dc7176e
+chain_id printed by mina matches

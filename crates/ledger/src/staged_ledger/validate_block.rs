@@ -21,12 +21,15 @@ pub enum BlockBodyValidationError {
     },
     InvalidBlockProduced,
     InvalidState,
+    /// The body could not be encoded: a proof it holds is cached and could
+    /// not be read back (PC2). Says nothing about the block's validity.
+    ProofUnavailable(String),
 }
 
 pub fn block_body_hash(
     body: &StagedLedgerDiffDiffStableV2,
 ) -> Result<ConsensusBodyReferenceStableV1, BlockBodyValidationError> {
-    let bytes = serialize_with_len_and_tag(body);
+    let bytes = serialize_with_len_and_tag(body)?;
     blocks_of_data(MAX_BLOCK_SIZE, &bytes)
         .map(|(_, hash)| hash)
         .map(|hash| hash.as_slice().into())
@@ -55,16 +58,22 @@ pub fn validate_block(block: &MinaBlockBlockStableV2) -> Result<(), BlockBodyVal
     }
 }
 
-fn serialize_with_len_and_tag(block: &StagedLedgerDiffDiffStableV2) -> Vec<u8> {
+/// A body's work and zkApp proofs can be cached (PC2), so encoding it can
+/// read files: a failed read is an error here, never a panic.
+fn serialize_with_len_and_tag(
+    block: &StagedLedgerDiffDiffStableV2,
+) -> Result<Vec<u8>, BlockBodyValidationError> {
     let mut bytes = Vec::with_capacity(32 * 1024);
-    block.binprot_write(&mut bytes).unwrap();
+    block
+        .binprot_write(&mut bytes)
+        .map_err(|error| BlockBodyValidationError::ProofUnavailable(error.to_string()))?;
     let len = bytes.len();
 
     let mut bytes_with_header = Vec::with_capacity(len + 5);
     bytes_with_header.extend(((len + 1) as u32).to_le_bytes());
     bytes_with_header.extend(BODY_TAG.to_ne_bytes());
     bytes_with_header.append(&mut bytes);
-    bytes_with_header
+    Ok(bytes_with_header)
 }
 
 fn blake2(data: &[u8]) -> Link {

@@ -87,19 +87,13 @@ impl<const MAX_LENGTH: usize> Serialize for BoundedByteString<MAX_LENGTH> {
         if !serializer.is_human_readable() {
             return self.0.serialize(serializer);
         }
-        let s = self
-            .0
-            .iter()
-            .map(|&byte| {
-                if byte.is_ascii_graphic() {
-                    (byte as char).to_string()
-                } else {
-                    // Convert non-printable bytes to escape sequences
-                    format!("\\x{:02x}", byte)
-                }
-            })
-            .collect::<String>();
-        serializer.serialize_str(&s)
+        // OCaml writes the bytes as a JSON string as they are. A string that
+        // is UTF-8 is written the same way; any other is written as bytes
+        // (an array of numbers in `serde_json`), and both read back.
+        match std::str::from_utf8(&self.0) {
+            Ok(s) => serializer.serialize_str(s),
+            Err(_) => serializer.serialize_bytes(&self.0),
+        }
     }
 }
 
@@ -225,11 +219,13 @@ impl<const MAX_LENGTH: usize> Serialize for BoundedCharString<MAX_LENGTH> {
         if !serializer.is_human_readable() {
             return self.0.serialize(serializer);
         }
-        let s = match std::string::String::from_utf8(self.0.clone()) {
-            Ok(s) => s,
-            Err(e) => return Err(serde::ser::Error::custom(format!("{e}"))),
-        };
-        serializer.serialize_str(&s)
+        // OCaml strings are byte strings. A precomputed block can contain a
+        // token symbol that is not UTF-8; serde_json represents those bytes as
+        // an array, just as it does for BoundedByteString.
+        match std::str::from_utf8(&self.0) {
+            Ok(s) => serializer.serialize_str(s),
+            Err(_) => serializer.serialize_bytes(&self.0),
+        }
     }
 }
 
@@ -242,7 +238,7 @@ impl<'de, const MAX_LENGTH: usize> Deserialize<'de> for BoundedCharString<MAX_LE
             return Vec::<u8>::deserialize(deserializer).map(|cs| Self(cs, PhantomData));
         }
         struct V;
-        impl Visitor<'_> for V {
+        impl<'de> Visitor<'de> for V {
             type Value = Vec<u8>;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -255,9 +251,20 @@ impl<'de, const MAX_LENGTH: usize> Deserialize<'de> for BoundedCharString<MAX_LE
             {
                 Ok(v.as_bytes().to_vec())
             }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut bytes = Vec::new();
+                while let Some(byte) = seq.next_element()? {
+                    bytes.push(byte);
+                }
+                Ok(bytes)
+            }
         }
         deserializer
-            .deserialize_str(V)
+            .deserialize_any(V)
             .map(|cs| Self(cs, PhantomData))
     }
 }
@@ -343,7 +350,18 @@ mod tests {
 
     use binprot::{BinProtRead, BinProtWrite, Nat0};
 
-    use super::{ByteString, CharString, MINA_STRING_MAX_LENGTH};
+    use super::{ByteString, CharString, TokenSymbol, MINA_STRING_MAX_LENGTH};
+
+    #[test]
+    fn token_symbol_non_utf8_json_round_trip() {
+        let symbol = TokenSymbol::from([0xff].as_slice());
+        let json = serde_json::to_string(&symbol).unwrap();
+        assert_eq!(json, "[255]");
+        let decoded: TokenSymbol = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.as_ref(), &[0xff]);
+        let ascii: TokenSymbol = serde_json::from_str("\"MINA\"").unwrap();
+        assert_eq!(ascii.as_ref(), b"MINA");
+    }
 
     #[test]
     #[ignore = "Fix it"]
@@ -418,5 +436,19 @@ mod tests {
         let mut inp = input(MINA_STRING_MAX_LENGTH + 1);
         let res = CharString::binprot_read(&mut inp);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn byte_string_json_round_trip() {
+        for (bytes, json) in [
+            (b"".to_vec(), r#""""#),
+            (b"MINA".to_vec(), r#""MINA""#),
+            ("a \u{e9}\\".as_bytes().to_vec(), "\"a \u{e9}\\\\\""),
+            (vec![0xd5, 0x7f, 0x00], "[213,127,0]"),
+        ] {
+            let bs = ByteString::from(bytes.clone());
+            assert_eq!(serde_json::to_string(&bs).unwrap(), json);
+            assert_eq!(serde_json::from_str::<ByteString>(json).unwrap().0, bytes);
+        }
     }
 }

@@ -22,14 +22,21 @@ pub enum TransitionFrontierGenesisAction {
     Produce,
     ProveInit,
     /// Proving genesis block.
-    #[action_event(level = info)]
-    ProvePending,
+    #[action_event(level = debug)]
+    ProvePending {
+        deadline: redux::Timestamp,
+    },
     /// Genesis block proved.
     #[action_event(level = info)]
     ProveSuccess {
         proof: Arc<v2::MinaBaseProofStableV2>,
     },
-    // TODO(refactor): add prove error
+    /// A failed attempt retries once within the original won slot, then
+    /// enters ProveError with a cached genesis block for sync/prevalidation.
+    #[action_event(level = error, fields(error))]
+    ProveError {
+        error: String,
+    },
 }
 
 impl redux::EnablingCondition<crate::State> for TransitionFrontierGenesisAction {
@@ -59,11 +66,15 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierGenesisAction 
                         TransitionFrontierGenesisState::Produced { .. }
                     )
             }
-            TransitionFrontierGenesisAction::ProvePending => matches!(
+            TransitionFrontierGenesisAction::ProvePending { .. } => matches!(
                 genesis_state,
                 TransitionFrontierGenesisState::Produced { .. }
             ),
             TransitionFrontierGenesisAction::ProveSuccess { .. } => matches!(
+                genesis_state,
+                TransitionFrontierGenesisState::ProvePending { .. }
+            ),
+            TransitionFrontierGenesisAction::ProveError { .. } => matches!(
                 genesis_state,
                 TransitionFrontierGenesisState::ProvePending { .. }
             ),

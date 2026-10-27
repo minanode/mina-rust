@@ -174,3 +174,9 @@ pub type ArrayN16<T> = ArrayN<T, 16>;
 
 /// Mina array limited to 4000 elements.
 pub type ArrayN4000<T> = ArrayN<T, 4000>;
+
+/// Mesa raised the per-account-update limit on event and action elements to
+/// 1024, which in practice removes the per-event limit.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/account_update.ml#L1089-L1097>
+pub type ArrayN1024<T> = ArrayN<T, 1024>;

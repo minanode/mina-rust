@@ -1,9 +1,23 @@
+#[cfg(feature = "p2p-webrtc-ready-events")]
+mod ready;
 #[cfg(target_arch = "wasm32")]
 mod web;
 #[cfg(all(not(target_arch = "wasm32"), feature = "p2p-webrtc-cpp"))]
 mod webrtc_cpp;
-#[cfg(all(not(target_arch = "wasm32"), feature = "p2p-webrtc-rs"))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "p2p-webrtc-rs",
+    not(feature = "p2p-webrtc-cpp")
+))]
 mod webrtc_rs;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(feature = "p2p-webrtc-rs"),
+    not(feature = "p2p-webrtc-cpp")
+))]
+mod webrtc_rustrtc;
+#[cfg(all(feature = "p2p-webrtc-ready-events", feature = "p2p-webrtc-cpp"))]
+compile_error!("p2p-webrtc-ready-events is not implemented for the p2p-webrtc-cpp backend");
 
 use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc, time::Duration};
 
@@ -27,9 +41,24 @@ use crate::{
     P2pChannelEvent, P2pConnectionEvent, P2pEvent, PeerId,
 };
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "p2p-webrtc-rs"))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "p2p-webrtc-rs",
+    not(feature = "p2p-webrtc-cpp")
+))]
 mod imports {
     pub use super::webrtc_rs::{
+        build_api, certificate_from_pem_key, webrtc_signal_send, Api, RTCCertificate, RTCChannel,
+        RTCConnection, RTCConnectionState, RTCSignalingError,
+    };
+}
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(feature = "p2p-webrtc-rs"),
+    not(feature = "p2p-webrtc-cpp")
+))]
+mod imports {
+    pub use super::webrtc_rustrtc::{
         build_api, certificate_from_pem_key, webrtc_signal_send, Api, RTCCertificate, RTCChannel,
         RTCConnection, RTCConnectionState, RTCSignalingError,
     };
@@ -51,6 +80,25 @@ mod imports {
 
 use imports::*;
 pub use imports::{webrtc_signal_send, RTCSignalingError};
+
+/// The WebRTC implementation of this build, for `mina --version` and
+/// `mina build-info`.
+#[cfg(target_arch = "wasm32")]
+pub const BACKEND: &str = "browser";
+#[cfg(all(not(target_arch = "wasm32"), feature = "p2p-webrtc-cpp"))]
+pub const BACKEND: &str = "libdatachannel";
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "p2p-webrtc-rs",
+    not(feature = "p2p-webrtc-cpp")
+))]
+pub const BACKEND: &str = "webrtc-rs";
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(feature = "p2p-webrtc-rs"),
+    not(feature = "p2p-webrtc-cpp")
+))]
+pub const BACKEND: &str = "rustrtc";
 
 use super::TaskSpawner;
 
@@ -104,9 +152,20 @@ pub struct PeerState {
 
 #[derive(thiserror::Error, derive_more::From, Debug)]
 pub(super) enum Error {
-    #[cfg(all(not(target_arch = "wasm32"), feature = "p2p-webrtc-rs"))]
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        feature = "p2p-webrtc-rs",
+        not(feature = "p2p-webrtc-cpp")
+    ))]
     #[error("{0}")]
     Rtc(::webrtc::Error),
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        not(feature = "p2p-webrtc-rs"),
+        not(feature = "p2p-webrtc-cpp")
+    ))]
+    #[error("{0}")]
+    Rtc(::rustrtc::RtcError),
     #[cfg(all(not(target_arch = "wasm32"), feature = "p2p-webrtc-cpp"))]
     #[error("{0}")]
     Rtc(::datachannel::Error),
@@ -143,12 +202,7 @@ pub struct RTCConfig {
 
 #[derive(Serialize)]
 pub struct RTCConfigIceServers(Vec<RTCConfigIceServer>);
-#[derive(Serialize)]
-pub struct RTCConfigIceServer {
-    pub urls: Vec<String>,
-    pub username: Option<String>,
-    pub credential: Option<String>,
-}
+pub type RTCConfigIceServer = webrtc::IceServer;
 
 #[derive(Serialize)]
 pub struct RTCChannelConfig {
@@ -158,29 +212,13 @@ pub struct RTCChannelConfig {
 
 impl Default for RTCConfigIceServers {
     fn default() -> Self {
-        Self(vec![
-            RTCConfigIceServer {
-                urls: vec!["stun:65.109.110.75:3478".to_owned()],
-                username: Some("mina".to_owned()),
-                credential: Some("webrtc".to_owned()),
-            },
-            RTCConfigIceServer {
-                urls: vec!["stun:176.9.147.28:3478".to_owned()],
-                username: None,
-                credential: None,
-            },
-            RTCConfigIceServer {
-                urls: vec![
-                    "stun:stun.l.google.com:19302".to_owned(),
-                    "stun:stun1.l.google.com:19302".to_owned(),
-                    "stun:stun2.l.google.com:19302".to_owned(),
-                    "stun:stun3.l.google.com:19302".to_owned(),
-                    "stun:stun4.l.google.com:19302".to_owned(),
-                ],
-                username: None,
-                credential: None,
-            },
-        ])
+        Self(webrtc::IceServer::defaults())
+    }
+}
+
+impl From<Vec<RTCConfigIceServer>> for RTCConfigIceServers {
+    fn from(value: Vec<RTCConfigIceServer>) -> Self {
+        Self(value)
     }
 }
 
@@ -228,6 +266,7 @@ async fn peer_start(
     closed: mpsc::Sender<()>,
     certificate: RTCCertificate,
     rng_seed: [u8; 32],
+    ice_servers: Arc<Vec<RTCConfigIceServer>>,
 ) {
     let PeerAddArgs {
         peer_id,
@@ -238,7 +277,7 @@ async fn peer_start(
     let is_outgoing = matches!(kind, PeerConnectionKind::Outgoing);
 
     let config = RTCConfig {
-        ice_servers: Default::default(),
+        ice_servers: ice_servers.to_vec().into(),
         certificate,
         seed: rng_seed,
     };
@@ -283,6 +322,8 @@ async fn peer_start(
         }
         std::future::ready(())
     });
+    #[cfg(feature = "p2p-webrtc-ready-events")]
+    let ch0_listener = ready::Ch0Listener::listen(&main_channel);
 
     let answer = if is_outgoing {
         let answer_fut = async {
@@ -348,7 +389,21 @@ async fn peer_start(
                         let _ = connected_tx.send(Ok(()));
                     }
                 }
+                #[cfg(not(feature = "p2p-webrtc-ready-events"))]
                 RTCConnectionState::Disconnected | RTCConnectionState::Closed => {
+                    if let Some(connected_tx) = connected_tx.take() {
+                        let _ = connected_tx.send(Err("disconnected"));
+                    } else {
+                        let _ = closed.try_send(());
+                    }
+                }
+                // A connection whose ICE checks fail goes to `Failed` without
+                // `Disconnected`; it ends here instead of waiting for the
+                // state machine's timeout.
+                #[cfg(feature = "p2p-webrtc-ready-events")]
+                RTCConnectionState::Disconnected
+                | RTCConnectionState::Closed
+                | RTCConnectionState::Failed => {
                     if let Some(connected_tx) = connected_tx.take() {
                         let _ = connected_tx.send(Err("disconnected"));
                     } else {
@@ -374,56 +429,158 @@ async fn peer_start(
 
     // Exchange encrypted connection authorization messsages. Makes sure
     // there is a link between peer identity and connection.
-    let (remote_auth_tx, remote_auth_rx) = oneshot::channel::<ConnectionAuthEncrypted>();
-    let mut remote_auth_tx = Some(remote_auth_tx);
-    main_channel.on_message(move |data| {
-        if let Some(tx) = remote_auth_tx.take() {
-            if let Ok(auth) = data.try_into() {
-                let _ = tx.send(auth);
-            }
-        }
-        #[cfg(not(all(not(target_arch = "wasm32"), feature = "p2p-webrtc-cpp")))]
-        std::future::ready(())
-    });
-    let msg = match cmd_receiver.recv().await {
-        None => return,
-        Some(msg) => msg,
-    };
-    match msg.0 {
-        PeerCmd::ConnectionAuthorizationSend(None) => {
-            // eprintln!("PeerCmd::ConnectionAuthorizationSend(None)");
+    #[cfg(feature = "p2p-webrtc-ready-events")]
+    {
+        let auth = match cmd_receiver.recv().await {
+            None => return,
+            Some(msg) => match msg.0 {
+                PeerCmd::ConnectionAuthorizationSend(Some(auth)) => auth,
+                PeerCmd::ConnectionAuthorizationSend(None) => return,
+                cmd => {
+                    bug_condition!("unexpected peer cmd! Expected `PeerCmd::ConnectionAuthorizationSend`. received: {cmd:?}");
+                    return;
+                }
+            },
+        };
+        let _ = main_channel_open.await;
+        let (remote_auth_rx, ready) = ready::start(main_channel, ch0_listener, auth);
+        let res = remote_auth_rx
+            .await
+            .map_err(|_| "didn't receive connection authentication message".to_owned());
+        let is_err = res.is_err();
+        let _ = event_sender(P2pConnectionEvent::Finalized(peer_id, res).into());
+        if is_err {
             return;
         }
-        PeerCmd::ConnectionAuthorizationSend(Some(auth)) => {
-            let _ = main_channel_open.await;
+        // Channel 0 stays open: it carries the ready messages.
+        peer_loop(peer_id, event_sender, cmd_receiver, pc, abort, ready).await
+    }
+    #[cfg(not(feature = "p2p-webrtc-ready-events"))]
+    {
+        let (remote_auth_tx, remote_auth_rx) = oneshot::channel::<ConnectionAuthEncrypted>();
+        let mut remote_auth_tx = Some(remote_auth_tx);
+        main_channel.on_message(move |data| {
+            if let Some(tx) = remote_auth_tx.take() {
+                if let Ok(auth) = data.try_into() {
+                    let _ = tx.send(auth);
+                }
+            }
+            #[cfg(not(all(not(target_arch = "wasm32"), feature = "p2p-webrtc-cpp")))]
+            std::future::ready(())
+        });
+        let msg = match cmd_receiver.recv().await {
+            None => return,
+            Some(msg) => msg,
+        };
+        match msg.0 {
+            PeerCmd::ConnectionAuthorizationSend(None) => {
+                // eprintln!("PeerCmd::ConnectionAuthorizationSend(None)");
+                return;
+            }
+            PeerCmd::ConnectionAuthorizationSend(Some(auth)) => {
+                let _ = main_channel_open.await;
 
-            // Add a delay for sending messages after channel
-            // was opened. Some initial messages get lost otherwise.
-            // TODO(binier): find deeper cause and fix it.
-            sleep(Duration::from_secs(1)).await;
-            let _ = main_channel
-                .send(&bytes::Bytes::copy_from_slice(auth.as_ref()))
-                .await;
+                // Add a delay for sending messages after channel
+                // was opened. Some initial messages get lost otherwise.
+                // TODO(binier): find deeper cause and fix it.
+                sleep(Duration::from_secs(1)).await;
+                let _ = main_channel
+                    .send(&bytes::Bytes::copy_from_slice(auth.as_ref()))
+                    .await;
 
-            let res = match remote_auth_rx.await {
-                Err(_) => Err("didn't receive connection authentication message".to_owned()),
-                Ok(remote_auth) => Ok(remote_auth),
-            };
-            let is_err = res.is_err();
-            let _ = event_sender(P2pConnectionEvent::Finalized(peer_id, res).into());
-            if is_err {
+                let res = match remote_auth_rx.await {
+                    Err(_) => Err("didn't receive connection authentication message".to_owned()),
+                    Ok(remote_auth) => Ok(remote_auth),
+                };
+                let is_err = res.is_err();
+                let _ = event_sender(P2pConnectionEvent::Finalized(peer_id, res).into());
+                if is_err {
+                    return;
+                }
+            }
+            cmd => {
+                bug_condition!("unexpected peer cmd! Expected `PeerCmd::ConnectionAuthorizationSend`. received: {cmd:?}");
                 return;
             }
         }
-        cmd => {
-            bug_condition!("unexpected peer cmd! Expected `PeerCmd::ConnectionAuthorizationSend`. received: {cmd:?}");
-            return;
+
+        let _ = main_channel.close().await;
+
+        peer_loop(peer_id, event_sender, cmd_receiver, pc, abort).await
+    }
+}
+
+/// A channel buffer keeps at most this much capacity between messages
+/// (WN-MEM). `Vec::clear` keeps the capacity of the largest message the channel
+/// has carried, such as a staged-ledger answer of tens of MB on the RPC
+/// channel, and in a web node's WASM memory that stayed taken for the life of
+/// the connection.
+const KEEP_BUF_CAPACITY: usize = 1024 * 1024;
+
+/// Empty `buf` for the next message, freeing a large allocation.
+fn release_large(buf: &mut Vec<u8>) {
+    buf.clear();
+    if buf.capacity() > KEEP_BUF_CAPACITY {
+        *buf = Vec::new();
+    }
+}
+
+/// Append `bytes` of a message of `len` bytes. Grows by doubling, as `Vec`
+/// would, so the allocation stays paced by the bytes received, but never past
+/// `len`: doubling a 40 MB message's buffer would otherwise take 64 MB, and
+/// copying it 96 MB at once.
+fn extend_within(buf: &mut Vec<u8>, bytes: &[u8], len: usize) {
+    let need = buf.len().saturating_add(bytes.len());
+    if need > buf.capacity() {
+        let target = need
+            .max(buf.capacity().saturating_mul(2))
+            .min(len.max(need));
+        buf.reserve_exact(target - buf.len());
+    }
+    buf.extend_from_slice(bytes);
+}
+
+/// Take the next length-prefixed message of `chan_id` from `msg`, which holds
+/// one chunk received on the channel; `buf` and `len` carry a partly received
+/// message between chunks.
+fn process_msg(
+    chan_id: ChannelId,
+    buf: &mut Vec<u8>,
+    len: &mut u32,
+    msg: &mut &[u8],
+) -> Result<Option<ChannelMsg>, String> {
+    let len = if buf.is_empty() {
+        if msg.len() < 4 {
+            return Err("WebRTCMessageTooSmall".to_owned());
+        } else {
+            *len = u32::from_be_bytes(msg[..4].try_into().expect("Size checked above"));
+            *msg = &msg[4..];
+            let len = *len as usize;
+            if len > chan_id.max_msg_size() {
+                return Err(format!(
+                    "ChannelMsgLenOverLimit; len: {}, limit: {}",
+                    len,
+                    chan_id.max_msg_size()
+                ));
+            }
+            len
         }
+    } else {
+        *len as usize
+    };
+    let bytes_left = len - buf.len();
+
+    if bytes_left > msg.len() {
+        extend_within(buf, msg, len);
+        *msg = &[];
+        return Ok(None);
     }
 
-    let _ = main_channel.close().await;
-
-    peer_loop(peer_id, event_sender, cmd_receiver, pc, abort).await
+    extend_within(buf, &msg[..bytes_left], len);
+    *msg = &msg[bytes_left..];
+    let msg = ChannelMsg::decode(&mut &buf[..], chan_id).map_err(|err| err.to_string())?;
+    release_large(buf);
+    Ok(Some(msg))
 }
 
 struct Channel {
@@ -445,14 +602,290 @@ impl MsgBuffer {
     }
 
     fn encode(&mut self, msg: &ChannelMsg) -> Result<Vec<u8>, std::io::Error> {
-        msg.encode(&mut self.buf)?;
+        self.buf.clear();
+        if let Err(error) = msg.encode(&mut self.buf) {
+            self.buf.clear();
+            return Err(error);
+        }
         let len_encoded = (self.buf.len() as u32).to_be_bytes();
         let encoded = len_encoded
             .into_iter()
             .chain(self.buf.iter().cloned())
             .collect();
-        self.buf.clear();
+        release_large(&mut self.buf);
         Ok(encoded)
+    }
+}
+
+/// Reassembles length-prefixed channel messages from data channel chunks.
+///
+/// After the first framing or decode error the stream position is unknown, so
+/// the rest of that chunk and every later chunk on the channel are dropped;
+/// the single error reported makes the caller disconnect the peer.
+struct MsgReassembler {
+    chan_id: ChannelId,
+    buf: Vec<u8>,
+    len: u32,
+    failed: bool,
+}
+
+impl MsgReassembler {
+    fn new(chan_id: ChannelId) -> Self {
+        Self {
+            chan_id,
+            buf: Vec::new(),
+            len: 0,
+            failed: false,
+        }
+    }
+
+    fn feed(&mut self, mut data: &[u8], mut on_msg: impl FnMut(Result<ChannelMsg, String>)) {
+        if self.failed {
+            return;
+        }
+        while !data.is_empty() {
+            match process_msg(self.chan_id, &mut self.buf, &mut self.len, &mut data) {
+                Ok(None) => {}
+                Ok(Some(msg)) => on_msg(Ok(msg)),
+                Err(err) => {
+                    self.failed = true;
+                    self.buf = Vec::new();
+                    self.len = 0;
+                    on_msg(Err(err));
+                    return;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod reassembler_tests {
+    use super::*;
+    use crate::channels::rpc::RpcChannelMsg;
+
+    fn feed_all(r: &mut MsgReassembler, chunks: &[&[u8]]) -> Vec<Result<ChannelMsg, String>> {
+        let mut out = Vec::new();
+        for chunk in chunks {
+            r.feed(chunk, |res| out.push(res));
+        }
+        out
+    }
+
+    fn encoded(msg: &ChannelMsg) -> Vec<u8> {
+        MsgBuffer::new(1024).encode(msg).unwrap()
+    }
+
+    #[test]
+    fn short_first_chunk_reports_one_error_and_stops() {
+        let mut r = MsgReassembler::new(ChannelId::Rpc);
+        let valid = encoded(&ChannelMsg::Rpc(RpcChannelMsg::Response(1, None)));
+        let out = feed_all(&mut r, &[&[0u8], &valid]);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].is_err());
+    }
+
+    #[test]
+    fn undecodable_message_reports_one_error_and_stops() {
+        let mut r = MsgReassembler::new(ChannelId::Rpc);
+        let mut bad = 3u32.to_be_bytes().to_vec();
+        bad.extend_from_slice(&[0xff, 0xff, 0xff]);
+        let valid = encoded(&ChannelMsg::Rpc(RpcChannelMsg::Response(1, None)));
+        let mut chunk = bad.clone();
+        chunk.extend_from_slice(&valid);
+        let out = feed_all(&mut r, &[&chunk, &valid]);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].is_err());
+        assert!(r.buf.is_empty());
+    }
+
+    /// A message that fails to decode gives back its buffer, however large.
+    #[test]
+    fn large_undecodable_message_frees_its_buffer() {
+        let mut r = MsgReassembler::new(ChannelId::Rpc);
+        let len = 2 * KEEP_BUF_CAPACITY;
+        let mut bad = (len as u32).to_be_bytes().to_vec();
+        bad.resize(4 + len, 0xff);
+        let chunks: Vec<&[u8]> = bad.chunks(CHUNK_SIZE).collect();
+        let out = feed_all(&mut r, &chunks);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].is_err());
+        assert_eq!(r.buf.capacity(), 0);
+    }
+
+    #[test]
+    fn valid_messages_split_across_chunks_are_reassembled() {
+        let mut r = MsgReassembler::new(ChannelId::Rpc);
+        let a = encoded(&ChannelMsg::Rpc(RpcChannelMsg::Response(1, None)));
+        let b = encoded(&ChannelMsg::Rpc(RpcChannelMsg::Response(2, None)));
+        let mut both = a.clone();
+        both.extend_from_slice(&b);
+        let out = feed_all(&mut r, &[&a[..5], &a[5..], &b, &both]);
+        assert_eq!(out.len(), 4);
+        assert!(out.iter().all(|r| r.is_ok()));
+    }
+}
+
+#[cfg(test)]
+mod reassembly_tests {
+    use super::*;
+    use crate::channels::rpc::{P2pRpcResponse, RpcChannelMsg};
+    use mina_p2p_messages::{
+        binprot::BinProtRead, rpc::GetBestTipV2Response, rpc_kernel::ResponsePayload,
+    };
+
+    fn block_response() -> ChannelMsg {
+        let bytes = include_bytes!("../../../../p2p-messages/tests/files/mesa/get_best_tip_v3.bin");
+        let response =
+            ResponsePayload::<GetBestTipV2Response>::binprot_read(&mut bytes.as_slice()).unwrap();
+        let block = Arc::new(response.0.unwrap().0.unwrap().data);
+        ChannelMsg::Rpc(RpcChannelMsg::Response(
+            7,
+            Some(P2pRpcResponse::Block(block)),
+        ))
+    }
+
+    /// A message sent in 16 KiB chunks, as `ChannelSend` does, comes out whole,
+    /// and the buffer never holds more than the message.
+    #[test]
+    fn chunked_message_reassembles_within_its_length() {
+        let msg = block_response();
+        let encoded = MsgBuffer::new(64 * 1024).encode(&msg).unwrap();
+        let body_len = encoded.len() - 4;
+        assert!(body_len > 2 * CHUNK_SIZE, "the test needs several chunks");
+        let (mut buf, mut len) = (Vec::new(), 0u32);
+        let mut decoded = Vec::new();
+        for chunk in encoded.chunks(CHUNK_SIZE) {
+            let mut data = chunk;
+            while !data.is_empty() {
+                if let Some(msg) =
+                    process_msg(msg.channel_id(), &mut buf, &mut len, &mut data).unwrap()
+                {
+                    decoded.push(msg);
+                }
+                assert!(buf.capacity() <= body_len);
+            }
+        }
+        assert_eq!(decoded.len(), 1);
+        let mut again = Vec::new();
+        decoded[0].encode(&mut again).unwrap();
+        assert_eq!(again, encoded[4..]);
+        assert!(buf.is_empty());
+    }
+
+    /// Two messages in one chunk both come out.
+    #[test]
+    fn two_messages_in_one_chunk() {
+        let a = ChannelMsg::Rpc(RpcChannelMsg::Response(1, None));
+        let b = ChannelMsg::Rpc(RpcChannelMsg::Response(2, None));
+        let mut encoder = MsgBuffer::new(1024);
+        let mut chunk = encoder.encode(&a).unwrap();
+        chunk.extend(encoder.encode(&b).unwrap());
+        let (mut buf, mut len) = (Vec::new(), 0u32);
+        let mut data = &chunk[..];
+        let first = process_msg(a.channel_id(), &mut buf, &mut len, &mut data).unwrap();
+        let second = process_msg(a.channel_id(), &mut buf, &mut len, &mut data).unwrap();
+        assert!(matches!(
+            first,
+            Some(ChannelMsg::Rpc(RpcChannelMsg::Response(1, None)))
+        ));
+        assert!(matches!(
+            second,
+            Some(ChannelMsg::Rpc(RpcChannelMsg::Response(2, None)))
+        ));
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn large_buffers_are_freed_between_messages() {
+        let mut small = Vec::with_capacity(KEEP_BUF_CAPACITY);
+        small.extend_from_slice(&[1; 100]);
+        release_large(&mut small);
+        assert!(small.is_empty());
+        assert_eq!(small.capacity(), KEEP_BUF_CAPACITY);
+
+        let mut large = Vec::with_capacity(KEEP_BUF_CAPACITY + 1);
+        large.extend_from_slice(&[1; 100]);
+        release_large(&mut large);
+        assert!(large.is_empty());
+        assert_eq!(large.capacity(), 0);
+    }
+
+    #[test]
+    fn growth_doubles_but_stops_at_the_length() {
+        let len = 40 * 1024 * 1024;
+        let mut buf = Vec::new();
+        let chunk = vec![0u8; CHUNK_SIZE];
+        let mut capacities = Vec::new();
+        while buf.len() < len {
+            let take = CHUNK_SIZE.min(len - buf.len());
+            extend_within(&mut buf, &chunk[..take], len);
+            if capacities.last() != Some(&buf.capacity()) {
+                capacities.push(buf.capacity());
+            }
+        }
+        assert_eq!(buf.capacity(), len);
+        // Paced by the bytes received: about log2(len / CHUNK_SIZE) steps.
+        assert!(capacities.len() < 16, "{capacities:?}");
+        assert!(capacities.windows(2).all(|w| w[1] <= 2 * w[0]));
+    }
+}
+
+#[cfg(test)]
+mod pc2_tests {
+    use super::*;
+    use crate::channels::rpc::{P2pRpcResponse, RpcChannelMsg};
+    use mina_p2p_messages::{
+        binprot::BinProtRead, proof_cache::ProofStore, rpc::GetBestTipV2Response,
+        rpc_kernel::ResponsePayload, v2,
+    };
+
+    #[test]
+    fn pc2_unavailable_proof_does_not_poison_the_next_channel_message() {
+        let bytes = include_bytes!("../../../../p2p-messages/tests/files/mesa/get_best_tip_v3.bin");
+        let response =
+            ResponsePayload::<GetBestTipV2Response>::binprot_read(&mut bytes.as_slice()).unwrap();
+        let block = Arc::new(response.0.unwrap().0.unwrap().data);
+        let work = block
+            .body
+            .staged_ledger_diff
+            .diff
+            .0
+            .completed_works
+            .iter()
+            .next()
+            .unwrap();
+        let proof = match &work.proofs {
+            v2::TransactionSnarkWorkTStableV2Proofs::One(p) => &p.0.proof,
+            v2::TransactionSnarkWorkTStableV2Proofs::Two((p, _)) => &p.0.proof,
+        };
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../target/test-data/proof-cache/channel-{}",
+            std::process::id()
+        ));
+        let store = ProofStore::dir(&dir).unwrap();
+        proof.cache_in(&store).unwrap();
+        let file = std::fs::read_dir(&dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        std::fs::remove_file(file).unwrap();
+        let msg = ChannelMsg::Rpc(RpcChannelMsg::Response(
+            1,
+            Some(P2pRpcResponse::Block(block)),
+        ));
+        let mut buffer = MsgBuffer::new(1024);
+        assert!(buffer.encode(&msg).is_err());
+        assert!(buffer.buf.is_empty());
+        let valid = ChannelMsg::Rpc(RpcChannelMsg::Response(2, None));
+        assert_eq!(
+            buffer.encode(&valid).unwrap(),
+            MsgBuffer::new(1024).encode(&valid).unwrap()
+        );
+        drop(msg);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 
@@ -494,6 +927,7 @@ async fn peer_loop(
     mut cmd_receiver: mpsc::TrackedUnboundedReceiver<PeerCmd>,
     mut pc: RTCConnection,
     aborted: Aborted,
+    #[cfg(feature = "p2p-webrtc-ready-events")] ready: ready::Ready,
 ) {
     // TODO(binier): maybe use small_vec (stack allocated) or something like that.
     let mut channels = Channels::new();
@@ -608,73 +1042,34 @@ async fn peer_loop(
 
                 #[allow(unused_mut)]
                 if let Some(mut chan) = chan {
-                    fn process_msg(
-                        chan_id: ChannelId,
-                        buf: &mut Vec<u8>,
-                        len: &mut u32,
-                        msg: &mut &[u8],
-                    ) -> Result<Option<ChannelMsg>, String> {
-                        let len = if buf.is_empty() {
-                            if msg.len() < 4 {
-                                return Err("WebRTCMessageTooSmall".to_owned());
-                            } else {
-                                *len = u32::from_be_bytes(
-                                    msg[..4].try_into().expect("Size checked above"),
-                                );
-                                *msg = &msg[4..];
-                                let len = *len as usize;
-                                if len > chan_id.max_msg_size() {
-                                    return Err(format!(
-                                        "ChannelMsgLenOverLimit; len: {}, limit: {}",
-                                        len,
-                                        chan_id.max_msg_size()
-                                    ));
-                                }
-                                len
-                            }
-                        } else {
-                            *len as usize
-                        };
-                        let bytes_left = len - buf.len();
-
-                        if bytes_left > msg.len() {
-                            buf.extend_from_slice(msg);
-                            *msg = &[];
-                            return Ok(None);
-                        }
-
-                        buf.extend_from_slice(&msg[..bytes_left]);
-                        *msg = &msg[bytes_left..];
-                        let msg = ChannelMsg::decode(&mut &buf[..], chan_id)
-                            .map_err(|err| err.to_string())?;
-                        buf.clear();
-                        Ok(Some(msg))
-                    }
-
-                    let mut len = 0;
-                    let mut buf = Vec::new();
+                    let mut reassembler = MsgReassembler::new(chan_id);
                     let event_sender_clone = event_sender.clone();
 
-                    chan.on_message(move |mut data| {
-                        while !data.is_empty() {
-                            let res = match process_msg(chan_id, &mut buf, &mut len, &mut data) {
-                                Ok(None) => continue,
-                                Ok(Some(msg)) => Ok(Box::new(msg)),
-                                Err(err) => Err(err),
-                            };
-                            let _ =
-                                event_sender_clone(P2pChannelEvent::Received(peer_id, res).into());
-                        }
+                    chan.on_message(move |data| {
+                        reassembler.feed(data, |res| {
+                            let _ = event_sender_clone(
+                                P2pChannelEvent::Received(peer_id, res.map(Box::new)).into(),
+                            );
+                        });
                         #[cfg(not(all(not(target_arch = "wasm32"), feature = "p2p-webrtc-cpp")))]
                         std::future::ready(())
                     });
+                    // Our handler is registered: the peer may send.
+                    #[cfg(feature = "p2p-webrtc-ready-events")]
+                    ready.announce(chan_id);
+                    #[cfg(feature = "p2p-webrtc-ready-events")]
+                    let ready = ready.clone();
 
                     let event_sender = event_sender.clone();
                     let fut = async move {
                         // Add a delay for sending messages after channel
                         // was opened. Some initial messages get lost otherwise.
                         // TODO(binier): find deeper cause and fix it.
+                        #[cfg(not(feature = "p2p-webrtc-ready-events"))]
                         sleep(Duration::from_secs(3)).await;
+                        // Until the peer's channel is listening (ready.rs).
+                        #[cfg(feature = "p2p-webrtc-ready-events")]
+                        ready.wait(chan_id).await;
 
                         while let Some((msg_id, encoded, _tracker)) = sender_rx.recv().await {
                             let encoded = bytes::Bytes::from(encoded);
@@ -740,15 +1135,17 @@ pub trait P2pServiceWebrtc: redux::Service {
         secret_key: SecretKey,
         spawner: S,
         rng_seed: [u8; 32],
+        config: webrtc::WebrtcConfig,
     ) -> P2pServiceCtx {
         const MAX_PEERS: usize = 500;
         let (cmd_sender, mut cmd_receiver) = mpsc::tracked_unbounded_channel();
 
         let certificate = certificate_from_pem_key(secret_key.to_pem().as_str());
+        let ice_servers = Arc::new(config.ice_servers());
 
         spawner.spawn_main("webrtc", async move {
             #[allow(clippy::all)]
-            let api = build_api();
+            let api = build_api(&config);
             let conn_permits = Arc::new(Semaphore::const_new(MAX_PEERS));
             while let Some(cmd) = cmd_receiver.recv().await {
                 match cmd.0 {
@@ -759,6 +1156,7 @@ pub trait P2pServiceWebrtc: redux::Service {
                         let peer_id = args.peer_id;
                         let event_sender = args.event_sender.clone();
                         let certificate = certificate.clone();
+                        let ice_servers = ice_servers.clone();
                         spawn_local(async move {
                             let Ok(_permit) = conn_permits.try_acquire() else {
                                 // state machine shouldn't allow this to happen.
@@ -773,7 +1171,7 @@ pub trait P2pServiceWebrtc: redux::Service {
                                 event_sender_clone(P2pConnectionEvent::Closed(peer_id).into());
                             });
                             tokio::select! {
-                                _ = peer_start(api, args, aborted.clone(), closed_tx.clone(), certificate, rng_seed) => {}
+                                _ = peer_start(api, args, aborted.clone(), closed_tx.clone(), certificate, rng_seed, ice_servers) => {}
                                 _ = aborted.wait() => {
                                 }
                             }

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{P2pState, PeerId};
 
-use super::{P2pChannelsRpcState, P2pRpcId, P2pRpcLocalState, P2pRpcRequest, P2pRpcResponse};
+use super::{P2pChannelsRpcState, P2pRpcId, P2pRpcRequest, P2pRpcResponse};
 
 pub type P2pChannelsRpcActionWithMetaRef<'a> = redux::ActionWithMeta<&'a P2pChannelsRpcAction>;
 
@@ -89,58 +89,66 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsRpcAction {
                 id,
                 request,
                 on_init: _,
-            } => state
-                .peers
-                .get(peer_id)
-                .filter(|p| !p.is_libp2p() || request.kind().supported_by_libp2p())
-                .and_then(|p| p.status.as_ready())
-                .is_some_and(|p| {
-                    matches!(
-                        &p.channels.rpc,
-                        P2pChannelsRpcState::Ready {
-                            local: P2pRpcLocalState::WaitingForRequest { .. }
-                                | P2pRpcLocalState::Responded { .. },
-                            ..
-                        } if p.channels.next_local_rpc_id() == *id
-                    )
-                }),
+            } => {
+                !matches!(request.as_ref(), P2pRpcRequest::Catchup(_))
+                    && state
+                        .peers
+                        .get(peer_id)
+                        .filter(|p| !p.is_libp2p() || request.kind().supported_by_libp2p())
+                        .and_then(|p| p.status.as_ready())
+                        .is_some_and(|p| {
+                            p.channels.rpc.can_send_request()
+                                && p.channels.next_local_rpc_id() == *id
+                        })
+                    && (!matches!(request.as_ref(), P2pRpcRequest::BestTipWithProof)
+                        || state.is_best_tip_request_within_budget(peer_id, time))
+                    && (!matches!(request.as_ref(), P2pRpcRequest::CompletedSnarks)
+                        || state.is_completed_snarks_request_within_budget(peer_id, time))
+            }
             P2pChannelsRpcAction::Timeout { peer_id, id } => {
                 state.get_ready_peer(peer_id).is_some_and(|p| {
-                    matches!(
-                        &p.channels.rpc,
-                        P2pChannelsRpcState::Ready {
-                            local: P2pRpcLocalState::Requested { id: rpc_id, .. },
-                            ..
-                        } if rpc_id == id
-                    )
+                    p.channels
+                        .rpc
+                        .unanswered_local_rpc()
+                        .is_some_and(|(rpc_id, _)| rpc_id == *id)
                 }) && state.is_peer_rpc_timed_out(peer_id, *id, time)
             }
             P2pChannelsRpcAction::ResponseReceived { peer_id, id, .. } => {
                 // TODO(binier): use consensus to enforce that peer doesn't send
                 // us inferior block than it has in the past.
+                // TODO(binier): validate that response corresponds to request.
+                // A request that timed out once may still be answered.
                 state.get_ready_peer(peer_id).is_some_and(|p| {
-                    match &p.channels.rpc {
-                        P2pChannelsRpcState::Ready { local, .. } => {
-                            // TODO(binier): validate that response corresponds to request.
-                            matches!(
-                                local,
-                                P2pRpcLocalState::Requested { id: rpc_id, .. }
-                                    if rpc_id == id
-                            )
-                        }
-                        _ => false,
-                    }
+                    p.channels
+                        .rpc
+                        .unanswered_local_rpc()
+                        .is_some_and(|(rpc_id, _)| rpc_id == *id)
                 })
             }
-            P2pChannelsRpcAction::RequestReceived { peer_id, id, .. } => state
-                .get_ready_peer(peer_id)
-                .is_some_and(|p| match &p.channels.rpc {
-                    P2pChannelsRpcState::Ready { remote, .. } => {
-                        remote.pending_requests.len() < MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS
-                            && remote.pending_requests.iter().all(|v| v.id != *id)
-                    }
-                    _ => false,
-                }),
+            P2pChannelsRpcAction::RequestReceived {
+                peer_id,
+                id,
+                request,
+            } => {
+                (!matches!(request.as_ref(), P2pRpcRequest::Catchup(_))
+                    || (state.is_libp2p_peer(peer_id) && state.config.catchup_rpc.allows(peer_id)))
+                    && state
+                        .get_ready_peer(peer_id)
+                        .is_some_and(|p| match &p.channels.rpc {
+                            P2pChannelsRpcState::Ready { remote, .. } => {
+                                remote.pending_requests.len()
+                                    < if state.is_libp2p_peer(peer_id)
+                                        && state.config.catchup_rpc.allows(peer_id)
+                                    {
+                                        super::MAX_CATCHUP_RPC_REQUESTS
+                                    } else {
+                                        MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS
+                                    }
+                                    && remote.pending_requests.iter().all(|v| v.id != *id)
+                            }
+                            _ => false,
+                        })
+            }
             P2pChannelsRpcAction::ResponsePending { peer_id, id } => state
                 .get_ready_peer(peer_id)
                 .is_some_and(|p| match &p.channels.rpc {
@@ -153,22 +161,28 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsRpcAction {
             P2pChannelsRpcAction::ResponseSend {
                 peer_id,
                 id,
-                response: _response,
+                response: _,
             } => {
                 #[cfg(feature = "p2p-libp2p")]
                 if state.is_libp2p_peer(peer_id) {
-                    let Some(response) = _response.as_ref() else {
-                        return false;
-                    };
-                    return if !response.kind().supported_by_libp2p() {
-                        false
-                    } else if let Some(streams) =
-                        state.network.scheduler.rpc_incoming_streams.get(peer_id)
-                    {
-                        !streams.is_empty()
-                    } else {
-                        false
-                    };
+                    return state
+                        .network
+                        .scheduler
+                        .rpc_incoming_streams
+                        .get(peer_id)
+                        .is_some_and(|streams| {
+                            streams
+                                .values()
+                                .any(|stream| stream.pending_incoming.contains_key(id))
+                        })
+                        && state
+                            .get_ready_peer(peer_id)
+                            .is_some_and(|p| match &p.channels.rpc {
+                                P2pChannelsRpcState::Ready { remote, .. } => {
+                                    remote.pending_requests.iter().any(|r| r.id == *id)
+                                }
+                                _ => false,
+                            });
                 }
 
                 state.get_ready_peer(peer_id).is_some_and(|p| {

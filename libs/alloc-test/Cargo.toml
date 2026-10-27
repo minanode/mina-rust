@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "alloc-test"
 version = "0.1.1"
 edition = "2021"

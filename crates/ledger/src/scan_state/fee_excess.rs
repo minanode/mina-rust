@@ -189,6 +189,11 @@ impl FeeExcess {
         })
     }
 
+    /// The witness of `rebalance` in the merge circuit, on field elements.
+    /// When the tokens are equal, the right excess moves to the left one and
+    /// becomes zero.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/fee_excess.ml#L301-L343>
     fn rebalance_checked(
         fee_token_l: TokenId,
         fee_excess_l: Fp,
@@ -211,7 +216,7 @@ impl FeeExcess {
                 Boolean::False => Fp::zero(),
             });
 
-            (fee_excess_l + amount_to_move, fee_excess_r + amount_to_move)
+            (fee_excess_l + amount_to_move, fee_excess_r - amount_to_move)
         };
 
         let fee_token_l = {
@@ -275,6 +280,11 @@ impl FeeExcess {
         .rebalance()
     }
 
+    /// The witness of `combine` in the merge circuit: the combined excesses
+    /// are computed as field elements, then converted back to signed fees
+    /// (`convert_to_currency`).
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/fee_excess.ml#L383-L471>
     pub fn combine_checked(
         Self {
             fee_token_l: fee_token1_l,
@@ -315,11 +325,19 @@ impl FeeExcess {
         let (fee_token_l, fee_excess_l, fee_token_r, fee_excess_r) =
             Self::rebalance_checked(fee_token1_l, fee_excess1_l, fee_token2_r, fee_excess2_r, w);
 
+        // A negative excess is `-magnitude` in the field: its magnitude is the
+        // low 64 bits of its negation, not of the excess itself. The circuit
+        // checks that `sgn * magnitude` is the excess, so a wrong magnitude
+        // made every merge whose fee excess is negative unprovable (a fee
+        // transfer merged with anything but the commands that pay for it).
         let convert_to_currency = |excess: Fp| {
-            let bigint: BigInteger256 = excess.into();
-            let is_neg = bigint.get_bit(255 - 1);
-            let sgn = if is_neg { Sgn::Neg } else { Sgn::Pos };
-            let magnitude = Fee::from_u64(bigint.0[0]);
+            let is_neg = BigInteger256::from(excess).get_bit(255 - 1);
+            let (sgn, excess) = if is_neg {
+                (Sgn::Neg, -excess)
+            } else {
+                (Sgn::Pos, excess)
+            };
+            let magnitude = Fee::from_u64(BigInteger256::from(excess).0[0]);
             Signed::create(magnitude, sgn)
         };
 
@@ -403,4 +421,65 @@ fn eliminate_fee_excess_checked<'a>(
         combine(fee_token_r, fee_excess_r, fee_excess_m);
 
     ((fee_token_l, fee_excess_l), (fee_token_r, fee_excess_r))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The merge circuit's witness of a fee excess combination is the
+    /// combination itself, negative excesses included: the circuit checks
+    /// that each signed fee it is given is the field element it computed.
+    #[test]
+    fn combine_checked_matches_combine() {
+        let fee = |nanomina: i64| {
+            let magnitude = Fee::from_u64(nanomina.unsigned_abs());
+            match nanomina < 0 {
+                true => Signed::create(magnitude, Sgn::Neg),
+                false => Signed::create(magnitude, Sgn::Pos),
+            }
+        };
+        let excess = |l: i64, r: i64| FeeExcess {
+            fee_token_l: TokenId::default(),
+            fee_excess_l: fee(l),
+            fee_token_r: TokenId::default(),
+            fee_excess_r: fee(r),
+        };
+        let mut largest = excess(0, 0);
+        largest.fee_excess_l = Signed::create(Fee::from_u64(u64::MAX), Sgn::Neg);
+        // A coinbase then its fee transfer, as in block 548148; a command
+        // then a fee transfer it more than pays for; the reverse; and the
+        // largest magnitudes.
+        let cases = [
+            (excess(0, 0), excess(-10_000_000, 0)),
+            (excess(11_000_000, 0), excess(-10_000_000, 0)),
+            (excess(-10_000_000, 0), excess(11_000_000, 0)),
+            (excess(-1, 0), excess(-2, 0)),
+            (excess(1, 0), excess(-1, 0)),
+            (excess(0, 0), excess(0, i64::MIN + 1)),
+            (excess(0, 0), largest),
+        ];
+        for (a, b) in cases {
+            let combined = FeeExcess::combine(&a, &b).unwrap();
+            let mut w = Witness::<Fp>::empty();
+            let (fee_token_l, fee_excess_l, fee_token_r, fee_excess_r) =
+                FeeExcess::combine_checked(&a, &b, &mut w);
+            let checked = FeeExcess {
+                fee_token_l,
+                fee_excess_l,
+                fee_token_r,
+                fee_excess_r,
+            };
+            let same = |x: &Signed<Fee>, y: &Signed<Fee>| {
+                x.magnitude == y.magnitude && (x.is_zero() || x.sgn == y.sgn)
+            };
+            assert!(
+                same(&checked.fee_excess_l, &combined.fee_excess_l)
+                    && same(&checked.fee_excess_r, &combined.fee_excess_r)
+                    && checked.fee_token_l == combined.fee_token_l
+                    && checked.fee_token_r == combined.fee_token_r,
+                "{a:?} and {b:?}: {checked:?}, not {combined:?}"
+            );
+        }
+    }
 }

@@ -25,6 +25,19 @@ impl From<InvalidBigInt> for String {
 impl std::error::Error for InvalidBigInt {}
 // ---
 
+/// `a < b` for little-endian limbs. A missing limb counts as zero.
+fn limbs_less_than(a: &[u64], b: &[u64]) -> bool {
+    let len = a.len().max(b.len());
+    for i in (0..len).rev() {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        if x != y {
+            return x < y;
+        }
+    }
+    false
+}
+
 #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, derive_more::From, derive_more::Into)]
 pub struct BigInt(BigInteger256);
 
@@ -55,11 +68,22 @@ impl BigInt {
         mina_curves::pasta::Fp::from(1u64).into()
     }
 
+    /// The field element with this value, or `InvalidBigInt` when the value is
+    /// at or above the field's modulus.
+    ///
+    /// Values come from the wire as 32 raw bytes, so they can be anything.
+    /// ark-ff's `From<BigInteger256>` unwraps the same check, and so panics
+    /// on such a value; OCaml fails to decode it (kimchi-stubs'
+    /// `caml_pasta_fp_of_bigint` returns an error).
     pub fn to_field<F>(&self) -> Result<F, InvalidBigInt>
     where
-        F: ark_ff::Field + From<BigInteger256>,
+        F: PrimeField + From<BigInteger256>,
     {
         let Self(biginteger) = self;
+        if !limbs_less_than(biginteger.as_ref(), F::MODULUS.as_ref()) {
+            return Err(InvalidBigInt);
+        }
+        // Can't panic now: the value is below the modulus.
         Ok(F::from(*biginteger))
     }
 
@@ -205,6 +229,65 @@ impl SexpOf for BigInt {
     }
 }
 
+/// Validate Fp-valued fields while decoding, including values in containers.
+/// Proof verification need not consume every field in the original gossip.
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/kimchi_pasta_snarky_backend/field.ml#L180-L189>
+/// Binding: <https://github.com/o1-labs/proof-systems/blob/dfb9a27b800c8f32afd85ee8cddbddfc29a5733b/kimchi-stubs/src/arkworks/pasta_fp.rs#L267-L276>
+pub(crate) trait FpFieldEncoding {
+    fn check_fp(&self) -> Result<(), InvalidBigInt>;
+}
+
+impl FpFieldEncoding for BigInt {
+    fn check_fp(&self) -> Result<(), InvalidBigInt> {
+        if limbs_less_than(self.0.as_ref(), mina_curves::pasta::Fp::MODULUS.as_ref()) {
+            Ok(())
+        } else {
+            Err(InvalidBigInt)
+        }
+    }
+}
+
+impl<T: FpFieldEncoding> FpFieldEncoding for Option<T> {
+    fn check_fp(&self) -> Result<(), InvalidBigInt> {
+        self.iter().try_for_each(FpFieldEncoding::check_fp)
+    }
+}
+
+impl<A: FpFieldEncoding, B: FpFieldEncoding> FpFieldEncoding for (A, B) {
+    fn check_fp(&self) -> Result<(), InvalidBigInt> {
+        self.0.check_fp()?;
+        self.1.check_fp()
+    }
+}
+
+impl<T: FpFieldEncoding, const N: u64> FpFieldEncoding for crate::array::ArrayN<T, N> {
+    fn check_fp(&self) -> Result<(), InvalidBigInt> {
+        self.iter().try_for_each(FpFieldEncoding::check_fp)
+    }
+}
+
+impl<T: FpFieldEncoding, const N: usize> FpFieldEncoding for crate::pseq::PaddedSeq<T, N> {
+    fn check_fp(&self) -> Result<(), InvalidBigInt> {
+        self.iter().try_for_each(FpFieldEncoding::check_fp)
+    }
+}
+
+impl<T: FpFieldEncoding> FpFieldEncoding for crate::list::List<T> {
+    fn check_fp(&self) -> Result<(), InvalidBigInt> {
+        self.iter().try_for_each(FpFieldEncoding::check_fp)
+    }
+}
+
+pub(crate) fn read_fp<T: binprot::BinProtRead + FpFieldEncoding, R: std::io::Read + ?Sized>(
+    r: &mut R,
+) -> Result<T, binprot::Error> {
+    let value = T::binprot_read(r)?;
+    value
+        .check_fp()
+        .map_err(|e| binprot::Error::CustomError(Box::new(e)))?;
+    Ok(value)
+}
+
 impl binprot::BinProtRead for BigInt {
     fn binprot_read<R: std::io::Read + ?Sized>(r: &mut R) -> Result<Self, binprot::Error>
     where
@@ -212,7 +295,13 @@ impl binprot::BinProtRead for BigInt {
     {
         let mut bytes = [0u8; 32];
         r.read_exact(&mut bytes)?;
-        Ok(Self::from_bytes(bytes))
+        let value = Self::from_bytes(bytes);
+        // The untyped wire value can hold either Pasta field. Fp positions
+        // select `read_fp` in v2/generated.rs; all other positions use Fq.
+        if !limbs_less_than(value.0.as_ref(), mina_curves::pasta::Fq::MODULUS.as_ref()) {
+            return Err(binprot::Error::CustomError(Box::new(InvalidBigInt)));
+        }
+        Ok(value)
     }
 }
 
@@ -404,7 +493,6 @@ mod tests {
         let bigints = [
             BigInt::from_bytes([0; 32]),
             BigInt::from_bytes([1; 32]),
-            BigInt::from_bytes([0xff; 32]),
             from_bytes(&[0, 1, 2, 3, 4]),
         ];
 
@@ -412,6 +500,24 @@ mod tests {
             let deser: BigInt = from_binprot(&bigint.to_bytes());
             assert_eq!(&bigint.0, &deser.0);
         }
+    }
+
+    /// Every `BigInt` on the wire is a Pasta field element, which OCaml fails
+    /// to decode at or above its modulus: we refuse what both fields refuse.
+    #[test]
+    fn deserialize_refuses_values_at_or_above_the_larger_modulus() {
+        use mina_curves::pasta::{Fp, Fq};
+
+        let read = |b: &BigInt| BigInt::binprot_read(&mut &b.to_bytes()[..]);
+        assert!(read(&BigInt::from_bytes([0xff; 32])).is_err());
+        assert!(read(&BigInt(Fq::MODULUS)).is_err());
+        let mut q_minus_one = Fq::MODULUS;
+        q_minus_one.0[0] -= 1;
+        assert!(read(&BigInt(q_minus_one)).is_ok());
+        // p is below q: an Fp position with p in it decodes, and fails
+        // `to_field::<Fp>` where it is converted.
+        assert!(read(&BigInt(Fp::MODULUS)).is_ok());
+        assert!(BigInt(Fp::MODULUS).to_field::<Fp>().is_err());
     }
 
     #[test]
@@ -483,6 +589,36 @@ mod tests {
 
     use super::*;
     use rsexp::Sexp;
+
+    /// A field element read from the wire can be any 256-bit value. At or above
+    /// the modulus it must be an error, not ark-ff's panic.
+    #[test]
+    fn to_field_refuses_values_at_or_above_the_modulus() {
+        use mina_curves::pasta::{Fp, Fq};
+
+        let p = BigInt(Fp::MODULUS);
+        let q = BigInt(Fq::MODULUS);
+        let max = BigInt(BigInteger256::new([u64::MAX; 4]));
+
+        assert!(p.to_field::<Fp>().is_err());
+        assert!(max.to_field::<Fp>().is_err());
+        assert!(q.to_field::<Fq>().is_err());
+        assert!(max.to_field::<Fq>().is_err());
+        assert!(Fp::try_from(&p).is_err());
+        assert!(Fq::try_from(q.clone()).is_err());
+
+        // Pallas' base field is smaller than its scalar field: q is above p.
+        assert!(q.to_field::<Fp>().is_err());
+        // p is below q, so it is a valid scalar.
+        assert!(p.to_field::<Fq>().is_ok());
+
+        // The largest valid values convert, and round-trip.
+        let mut p_minus_one = Fp::MODULUS;
+        p_minus_one.0[0] -= 1;
+        let fp: Fp = BigInt(p_minus_one).to_field().unwrap();
+        assert_eq!(BigInt::from(fp), BigInt(p_minus_one));
+        assert_eq!(BigInt::zero().to_field::<Fp>().unwrap(), Fp::from(0u64));
+    }
 
     #[test]
     fn test_sexp_bigint() {

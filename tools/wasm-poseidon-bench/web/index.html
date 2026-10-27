@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>R8 WASM Poseidon benchmark</title>
+  </head>
+  <body>
+    <pre id="out"></pre>
+    <script type="module">
+      import { runBench } from "./bench-core.mjs";
+      const out = document.getElementById("out");
+      const log = s => {
+        out.textContent += s + "\n";
+        console.log(s);
+      };
+      const params = new URLSearchParams(location.search);
+      const modules = (params.get("wasm") ?? "plain.wasm").split(",");
+      const filter = params.get("filter")
+        ? new RegExp(params.get("filter"))
+        : null;
+      const all = {};
+      try {
+        for (const m of modules) {
+          log(`== ${m} (${navigator.userAgent})`);
+          const bytes = await (await fetch(m)).arrayBuffer();
+          all[m] = await runBench(bytes, { filter, log });
+        }
+        window.__r8 = { ok: true, all };
+      } catch (e) {
+        log(`error: ${e}`);
+        window.__r8 = { ok: false, error: String(e) };
+      }
+    </script>
+  </body>
+</html>

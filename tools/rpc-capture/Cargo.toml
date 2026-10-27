@@ -1,0 +1,18 @@
+[package]
+name = "mina-rpc-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Send one Mina RPC to a live peer and save the raw response"
+
+[dependencies]
+binprot = { workspace = true }
+clap = { workspace = true }
+env_logger = { workspace = true }
+hex = { workspace = true }
+libp2p = { workspace = true, features = ["macros", "tokio"] }
+log = { workspace = true }
+mina-p2p-messages = { workspace = true }
+mina-transport = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+void = "1"

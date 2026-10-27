@@ -1,0 +1,21 @@
+# A relay for native peers, on top of docker-compose.yml. Add this line to
+# .env, and every docker compose command uses both files:
+#
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.relay.yml
+#
+# Other nodes can list it as a peer by its address and peer id. The peer id
+# comes from p2p-secret-key in the state dir: keep that file, and the id
+# stays the same across restarts, upgrades and a new container.
+#
+# Set its public address in .env, and open the peer port (TCP 8302) to the
+# internet:
+#
+#   MINA_NODE_ARGS=--libp2p-external-ip 203.0.113.7
+#
+# Relaying to browser nodes over WebRTC needs more listeners and ports:
+# https://minanode.org/docs/run-a-relay/
+
+services:
+  mina:
+    # No SNARK worker control: a relay's dashboard has no worker to run.
+    command: node --network devnet ${MINA_NODE_ARGS:-}

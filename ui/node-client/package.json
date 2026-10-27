@@ -1,0 +1,30 @@
+{
+  "name": "@minanode/node-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Typed client for a Mina Rust node's HTTP API and GraphQL, with React hooks; shipped as source",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts",
+    "./react": "./src/react.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "react": "19.3.1",
+    "typescript": "5.9.3",
+    "vitest": "5.0.5"
+  }
+}

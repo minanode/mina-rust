@@ -16,6 +16,7 @@ pub use crate::{
     transition_frontier::{
         archive::archive_service::ArchiveService,
         genesis_effectful::TransitionFrontierGenesisService,
+        persist_effectful::TransitionFrontierPersistService,
         sync::ledger::snarked::TransitionFrontierSyncLedgerSnarkedService,
     },
 };
@@ -32,6 +33,7 @@ pub trait Service:
     + P2pService
     + LedgerService
     + TransitionFrontierGenesisService
+    + TransitionFrontierPersistService
     + TransitionFrontierSyncLedgerSnarkedService
     + SnarkPoolService
     + SnarkUserCommandVerifyService

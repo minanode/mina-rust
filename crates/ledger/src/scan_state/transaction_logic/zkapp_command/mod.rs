@@ -22,7 +22,7 @@ use crate::{
     zkapps::checks::{ZkappCheck, ZkappCheckOps},
     AccountId, AuthRequired, ControlTag, MutableFp, MyCow, Permissions, SetVerificationKey,
     ToInputs, TokenId, TokenSymbol, VerificationKey, VerificationKeyWire, VotingFor, ZkAppAccount,
-    ZkAppUri,
+    ZkAppUri, ZKAPP_STATE_SIZE,
 };
 use ark_ff::{UniformRand, Zero};
 use itertools::Itertools;
@@ -38,7 +38,7 @@ use poseidon::hash::{
     Inputs,
 };
 use rand::{seq::SliceRandom, Rng};
-use std::sync::Arc;
+use rayon::prelude::*;
 
 pub mod from_applied_sequence;
 pub mod from_unapplied_sequence;
@@ -530,7 +530,7 @@ impl<T> WithHash<T> {
 /// <https://github.com/MinaProtocol/mina/blob/2ee6e004ba8c6a0541056076aab22ea162f7eb3a/src/lib/mina_base/account_update.ml#L319>
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Update {
-    pub app_state: [SetOrKeep<Fp>; 8],
+    pub app_state: [SetOrKeep<Fp>; ZKAPP_STATE_SIZE],
     pub delegate: SetOrKeep<CompressedPubKey>,
     pub verification_key: SetOrKeep<VerificationKeyWire>,
     pub permissions: SetOrKeep<Permissions<AuthRequired>>,
@@ -598,7 +598,8 @@ impl Update {
         let token_account = token_account.unwrap_or(false);
         let zkapp_account = zkapp_account.unwrap_or(false);
 
-        let app_state: [_; 8] = std::array::from_fn(|_| SetOrKeep::gen(|| Fp::rand(&mut rng)));
+        let app_state: [_; ZKAPP_STATE_SIZE] =
+            std::array::from_fn(|_| SetOrKeep::gen(|| Fp::rand(&mut rng)));
 
         let delegate = if !token_account {
             SetOrKeep::gen(|| gen_keypair().public.into_compressed())
@@ -1040,17 +1041,20 @@ impl ZkAppPreconditions {
                             hash,
                             total_currency,
                         },
-                    seed: _,
+                    seed,
                     start_checkpoint,
                     lock_checkpoint,
                     epoch_length,
                 } = epoch_data;
                 // Reverse to match OCaml order of the list, while still executing `zcheck`
-                // in correct order
+                // in correct order. Mesa checks the seed too.
+                //
+                // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/zkapp_precondition.ml#L1174-L1183>
                 [
                     (epoch_length, ClosedInterval::min_max).zcheck::<Ops>(&view.epoch_length, w),
                     (lock_checkpoint, Fp::zero).zcheck::<Ops>(&view.lock_checkpoint, w),
                     (start_checkpoint, Fp::zero).zcheck::<Ops>(&view.start_checkpoint, w),
+                    (seed, Fp::zero).zcheck::<Ops>(&view.seed, w),
                     (total_currency, ClosedInterval::min_max)
                         .zcheck::<Ops>(&view.ledger.total_currency, w),
                     (hash, Fp::zero).zcheck::<Ops>(&view.ledger.hash, w),
@@ -1185,7 +1189,7 @@ pub struct Account {
     pub nonce: Numeric<Nonce>,
     pub receipt_chain_hash: Hash<Fp>, // TODO: Should be type `ReceiptChainHash`
     pub delegate: EqData<CompressedPubKey>,
-    pub state: [EqData<Fp>; 8],
+    pub state: [EqData<Fp>; ZKAPP_STATE_SIZE],
     pub action_state: EqData<Fp>,
     pub proved_state: EqData<bool>,
     pub is_new: EqData<bool>,
@@ -1515,8 +1519,11 @@ pub enum AuthorizationKind {
 impl AuthorizationKind {
     pub fn vk_hash(&self) -> Fp {
         match self {
+            // Cached: hashing the verification key costs hundreds of
+            // Poseidon permutations, and every account update's digest needs
+            // this.
             AuthorizationKind::NoneGiven | AuthorizationKind::Signature => {
-                VerificationKey::dummy().hash()
+                VerificationKeyWire::dummy_hash()
             }
             AuthorizationKind::Proof(hash) => *hash,
         }
@@ -1758,7 +1765,8 @@ pub struct BodySimple {
 /// Also, in OCaml it has custom `{to/from}_binable` implementation.
 ///
 /// <https://github.com/MinaProtocol/mina/blob/2ee6e004ba8c6a0541056076aab22ea162f7eb3a/src/lib/pickles/pickles_intf.ml#L316>
-pub type SideLoadedProof = Arc<mina_p2p_messages::v2::PicklesProofProofsVerifiedMaxStableV2>;
+pub type SideLoadedProof =
+    mina_p2p_messages::ProofRef<mina_p2p_messages::v2::PicklesProofProofsVerifiedMaxStableV2>;
 
 /// Authorization methods for zkApp account updates.
 ///
@@ -1798,7 +1806,7 @@ impl Control {
 
     pub fn dummy_of_tag(tag: ControlTag) -> Self {
         match tag {
-            ControlTag::Proof => Self::Proof(dummy::sideloaded_proof()),
+            ControlTag::Proof => Self::Proof(dummy::sideloaded_proof().into()),
             ControlTag::Signature => Self::Signature(Signature::dummy()),
             ControlTag::NoneGiven => Self::NoneGiven,
         }
@@ -2023,7 +2031,7 @@ impl AccountUpdate {
         self.body.update.permissions.clone()
     }
 
-    pub fn app_state(&self) -> [SetOrKeep<Fp>; 8] {
+    pub fn app_state(&self) -> [SetOrKeep<Fp>; ZKAPP_STATE_SIZE] {
         self.body.update.app_state.clone()
     }
 
@@ -2250,7 +2258,7 @@ impl AccountUpdate {
                 match rng.gen_range(0..3) {
                     0 => Control::NoneGiven,
                     1 => Control::Signature(Signature::dummy()),
-                    _ => Control::Proof(dummy::sideloaded_proof()),
+                    _ => Control::Proof(dummy::sideloaded_proof().into()),
                 }
             },
         }
@@ -2316,7 +2324,9 @@ struct CallForestContext {
     this: TokenId,
 }
 
-pub trait AccountUpdateRef {
+/// `Sync`, so the account updates of a call forest can be digested in
+/// parallel.
+pub trait AccountUpdateRef: Sync {
     fn account_update_ref(&self) -> &AccountUpdate;
 }
 impl AccountUpdateRef for AccountUpdate {
@@ -2324,7 +2334,7 @@ impl AccountUpdateRef for AccountUpdate {
         self
     }
 }
-impl<T> AccountUpdateRef for (AccountUpdate, T) {
+impl<T: Sync> AccountUpdateRef for (AccountUpdate, T) {
     fn account_update_ref(&self) -> &AccountUpdate {
         let (this, _) = self;
         this
@@ -2591,6 +2601,30 @@ impl<AccUpdate: Clone + AccountUpdateRef> CallForest<AccUpdate> {
 impl<AccUpdate: Clone + AccountUpdateRef> CallForest<AccUpdate> {
     /// <https://github.com/MinaProtocol/mina/blob/3fe924c80a4d01f418b69f27398f5f93eb652514/src/lib/mina_base/zkapp_command.ml#L583>
     pub fn accumulate_hashes(&self) {
+        // Each account update's digest is independent of the others and costs
+        // about a millisecond natively, most of the work of applying a zkApp
+        // command whose digests aren't cached: compute them all in parallel,
+        // then chain them into stack hashes, a permutation each.
+        let mut digests = Vec::new();
+        self.collect_account_update_digests(&mut digests);
+        digests.par_iter().for_each(|(account_update, digest)| {
+            digest.set(account_update.account_update_ref().digest())
+        });
+        self.accumulate_stack_hashes();
+    }
+
+    fn collect_account_update_digests<'a>(
+        &'a self,
+        digests: &mut Vec<(&'a AccUpdate, &'a MutableFp)>,
+    ) {
+        for elem in &self.0 {
+            digests.push((&elem.elt.account_update, &elem.elt.account_update_digest));
+            elem.elt.calls.collect_account_update_digests(digests);
+        }
+    }
+
+    /// The stack hashes, once every account update's digest is set.
+    fn accumulate_stack_hashes(&self) {
         /// <https://github.com/MinaProtocol/mina/blob/3fe924c80a4d01f418b69f27398f5f93eb652514/src/lib/mina_base/zkapp_command.ml#L293>
         fn cons(hash: Fp, h_tl: Fp) -> Fp {
             hash_with_kimchi(&MINA_ACCOUNT_UPDATE_CONS, &[hash, h_tl])
@@ -2613,19 +2647,7 @@ impl<AccUpdate: Clone + AccountUpdateRef> CallForest<AccUpdate> {
 
         for index in (0..self.0.len()).rev() {
             let elem = &self.0[index];
-            let WithStackHash {
-                elt:
-                    Tree::<AccUpdate> {
-                        account_update,
-                        account_update_digest,
-                        calls,
-                        ..
-                    },
-                ..
-            } = elem;
-
-            calls.accumulate_hashes();
-            account_update_digest.set(account_update.account_update_ref().digest());
+            elem.elt.calls.accumulate_stack_hashes();
 
             let node_hash = elem.elt.digest();
             let hash = hash(self.0.get(index + 1));
@@ -2785,27 +2807,20 @@ impl ZkAppCommand {
         })
     }
 
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/zkapp_command.ml#L1337-L1338>
     fn zkapp_cost(
         proof_segments: usize,
         signed_single_segments: usize,
         signed_pair_segments: usize,
-    ) -> f64 {
-        // (*10.26*np + 10.08*n2 + 9.14*n1 < 69.45*)
-        let GenesisConstant {
-            zkapp_proof_update_cost: proof_cost,
-            zkapp_signed_pair_update_cost: signed_pair_cost,
-            zkapp_signed_single_update_cost: signed_single_cost,
-            ..
-        } = GENESIS_CONSTANT;
-
-        (proof_cost * (proof_segments as f64))
-            + (signed_pair_cost * (signed_pair_segments as f64))
-            + (signed_single_cost * (signed_single_segments as f64))
+    ) -> usize {
+        proof_segments + signed_single_segments + signed_pair_segments
     }
 
     /// Zkapp_command transactions are filtered using this predicate
     /// - when adding to the transaction pool
     /// - in incoming blocks
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/zkapp_command.ml#L1344-L1423>
     pub fn valid_size(&self) -> Result<(), String> {
         use crate::proofs::zkapp::group::{SegmentBasic, ZkappCommandIntermediateState};
 
@@ -2845,7 +2860,7 @@ impl ZkAppCommand {
         }
 
         let GenesisConstant {
-            zkapp_transaction_cost_limit: cost_limit,
+            max_zkapp_segment_per_transaction,
             max_event_elements,
             max_action_elements,
             ..
@@ -2853,7 +2868,7 @@ impl ZkAppCommand {
 
         let zkapp_cost_within_limit =
             Self::zkapp_cost(proof_segments, signed_single_segments, signed_pair_segments)
-                < cost_limit;
+                <= max_zkapp_segment_per_transaction;
         let valid_event_elements = num_event_elements <= max_event_elements;
         let valid_action_elements = num_action_elements <= max_action_elements;
 

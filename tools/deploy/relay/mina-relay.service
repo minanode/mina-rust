@@ -1,0 +1,60 @@
+# The public devnet relay for web nodes: a native mina-rust node whose HTTP
+# port serves WebRTC signalling to browsers, behind Caddy (TLS) on 443.
+# Install as /etc/systemd/system/mina-relay.service; see README.md here.
+#
+# The libp2p key, which fixes the relay's peer id and with it the address in
+# every web build, is read from /etc/mina-relay/p2p.key at each start:
+# systemd hands it to this service alone in $CREDENTIALS_DIRECTORY, and
+# start-relay.sh puts it in the node's environment. It is never in argv.
+
+[Unit]
+Description=Mina devnet relay for web nodes (mina-rust)
+Documentation=file:///opt/mina-relay/current/README.md
+Wants=network-online.target
+After=network-online.target
+# Give up after 5 failed starts in 10 minutes, rather than loop on a bad
+# release; `systemctl reset-failed mina-relay` and start again.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=mina
+Group=mina
+EnvironmentFile=/etc/mina-relay/relay.env
+LoadCredential=p2p_key:/etc/mina-relay/p2p.key
+# /var/lib/mina-relay: the node's work directory, its frontier store and
+# its verifier index cache. Kept across upgrades and rollbacks.
+StateDirectory=mina-relay
+StateDirectoryMode=0750
+WorkingDirectory=/var/lib/mina-relay
+ExecStart=/opt/mina-relay/current/start-relay.sh
+Restart=on-failure
+RestartSec=30s
+# A stop lets the frontier store finish what it is writing.
+TimeoutStopSec=120s
+LimitNOFILE=65536
+
+# Hardening. The node needs its state directory, the network (netlink to
+# list its interfaces for ICE candidates) and nothing else.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

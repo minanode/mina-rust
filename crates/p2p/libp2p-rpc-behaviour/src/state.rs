@@ -41,6 +41,7 @@ pub struct Inner {
     command_queue: VecDeque<(usize, Vec<u8>)>,
     buffer: Buffer,
     ask_menu: bool,
+    pub heartbeat_replies: bool,
 }
 
 impl Inner {
@@ -68,6 +69,7 @@ impl Inner {
             },
             buffer: Buffer::default(),
             ask_menu,
+            heartbeat_replies: true,
         }
     }
 }
@@ -186,7 +188,9 @@ impl Inner {
             match header {
                 MessageHeader::Heartbeat => {
                     // TODO: handle heartbeat properly
-                    self.add(b"\x01\x00\x00\x00\x00\x00\x00\x00\x00".to_vec());
+                    if self.heartbeat_replies {
+                        self.add(b"\x01\x00\x00\x00\x00\x00\x00\x00\x00".to_vec());
+                    }
                 }
                 MessageHeader::Response(ResponseHeader { id }) if id == h_id => {
                     return Poll::Ready(Ok(Received::HandshakeDone));

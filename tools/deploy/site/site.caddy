@@ -1,0 +1,28 @@
+# The web node's pages from a host of our own, imported by
+# ../relay/Caddyfile: the alternative to Cloudflare Pages and R2 (README.md
+# here). Copy a build's browser/ directory to SITE_ROOT.
+#
+#   SITE_DOMAIN  the site's name (default minaweb.org)
+#   SITE_ROOT    the build's browser/ directory (default /srv/minaweb)
+
+{$SITE_DOMAIN:minaweb.org} {
+	root * {$SITE_ROOT:/srv/minaweb}
+	# Cross-origin isolation, without which the node has no threads.
+	header {
+		Cross-Origin-Opener-Policy same-origin
+		Cross-Origin-Embedder-Policy require-corp
+		Cross-Origin-Resource-Policy same-origin
+		Cache-Control no-cache
+	}
+	# A WASM is named by its content: another build is another name.
+	@wasm path /assets/webnode/pkg/mina_node_web_bg.*.wasm
+	header @wasm Cache-Control "public, max-age=31536000, immutable"
+	# The frontend routes in the page: other paths get index.html.
+	try_files {path} /index.html
+	# The build ships the WASM compressed (.br, .zst, .gz); Caddy compresses
+	# the rest.
+	encode zstd gzip
+	file_server {
+		precompressed br zstd gzip
+	}
+}

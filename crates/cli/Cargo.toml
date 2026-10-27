@@ -22,6 +22,7 @@ mina-core = { path = "../core" }
 mina-node = { workspace = true, features = ["replay"] }
 mina-node-account = { workspace = true }
 mina-node-native = { path = "../node/native" }
+mina-node-report = { workspace = true }
 mina-p2p-messages = { workspace = true }
 mina-signer = { workspace = true }
 mina-snark = { workspace = true }
@@ -31,11 +32,13 @@ num_cpus = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
 redux = { workspace = true }
+regex = { workspace = true }
 reqwest = { workspace = true, features = ["blocking", "json"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 shellexpand = { workspace = true }
+tempfile = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -44,13 +47,44 @@ tracing = { workspace = true }
 redux = { workspace = true, features = ["serializable_callbacks"] }
 tikv-jemallocator = { workspace = true }
 
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+# Native TLS reaches OpenSSL through reqwest; cross-build it without a host sysroot.
+openssl = { version = "0.10", features = ["vendored"] }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+# D6: only the Zig glibc-floor release build opts into vendored OpenSSL.
+openssl = { version = "0.10", features = ["vendored"], optional = true }
+
 [dev-dependencies]
-tempfile = { workspace = true }
+mina-node-common = { workspace = true }
+mina-node-report = { workspace = true, features = ["test-support"] }
+
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
+# MEM-ARM: reads jemalloc's compiled page size and arena default in tests.
+tikv-jemalloc-sys = "0.6"
 
 [features]
-default = ["p2p-libp2p", "p2p-webrtc", "exit-on-invalid-peers"]
+default = [
+  "p2p-libp2p",
+  "p2p-webrtc",
+  "exit-on-invalid-peers",
+  "embedded-circuits",
+  "dashboard",
+]
+# The node dashboard at `/` (F-console); `--no-dashboard` turns it off.
+dashboard = ["mina-node-native/dashboard"]
+embedded-circuits = ["ledger/embedded-circuits"]
+vendored-openssl = ["dep:openssl"]
 unsafe-signal-handlers = []
+memory-debug = ["mina-node-native/memory-debug", "tikv-jemallocator/stats"]
 p2p-libp2p = ["mina-node-native/p2p-libp2p"]
 p2p-webrtc = ["mina-node-native/p2p-webrtc"]
+# rustrtc is the WebRTC backend; p2p-webrtc-rs builds with the webrtc-rs
+# fork instead.
+p2p-webrtc-rustrtc = ["mina-node-native/p2p-webrtc-rustrtc"]
+p2p-webrtc-rs = ["mina-node-native/p2p-webrtc-rs"]
+p2p-webrtc-rustrtc-lib = ["mina-node-native/p2p-webrtc-rustrtc-lib"]
+# Ready events instead of the WebRTC driver's sleeps (implied by rustrtc).
+p2p-webrtc-ready-events = ["mina-node-native/p2p-webrtc-ready-events"]
 fuzzing = ["mina-node/fuzzing", "mina-core/fuzzing"]
 exit-on-invalid-peers = ["mina-node/exit-on-invalid-peers"]

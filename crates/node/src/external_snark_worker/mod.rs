@@ -14,3 +14,11 @@ pub use external_snark_worker_errors::*;
 
 mod external_snark_worker_impls;
 pub use external_snark_worker_impls::*;
+
+pub mod included_work;
+pub use included_work::{
+    IncludedWorkLog, IncludedWorkStatus, RpcIncludedWork, SnarkMarket, SnarkOffer, SnarkPurchase,
+};
+
+mod worker_control;
+pub use worker_control::*;

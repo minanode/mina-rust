@@ -14,6 +14,9 @@ pub trait TaskSpawner: Send + Clone {
 
 #[cfg(not(feature = "p2p-webrtc"))]
 pub mod webrtc {
+    /// The WebRTC implementation of this build: none.
+    pub const BACKEND: &str = "none";
+
     use std::collections::BTreeMap;
 
     use mina_core::channels::mpsc;
@@ -55,6 +58,7 @@ pub mod webrtc {
             _secret_key: SecretKey,
             _spawner: S,
             _rng_seed: [u8; 32],
+            _config: webrtc::WebrtcConfig,
         ) -> P2pServiceCtx {
             let (cmd_sender, _) = mpsc::unbounded_channel();
             P2pServiceCtx {

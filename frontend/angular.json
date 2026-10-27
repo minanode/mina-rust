@@ -65,7 +65,12 @@
               "node_modules/aos/dist/aos.js"
             ],
             "define": {
+              "MINA_FRONTEND_COMMIT": "\"\"",
+              "MINA_FRONTEND_CONTROLS": "\"\"",
+              "MINA_NATIVE_NODE_URL": "\"\"",
               "MINA_WEBNODE_BOOTNODES": "\"\"",
+              "MINA_WEBNODE_GENESIS_URL": "\"\"",
+              "MINA_WEBNODE_NETWORK": "\"\"",
               "MINA_WEBNODE_SEED_URLS": "\"\""
             },
             "allowedCommonJsDependencies": [
@@ -139,6 +144,40 @@
                 },
                 "fonts": false
               }
+            },
+            "native": {
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.native.ts"
+                }
+              ],
+              "optimization": {
+                "scripts": true,
+                "styles": {
+                  "minify": true,
+                  "inlineCritical": false
+                },
+                "fonts": false
+              },
+              "outputHashing": "all"
+            },
+            "public": {
+              "fileReplacements": [
+                {
+                  "replace": "src/environments/environment.ts",
+                  "with": "src/environments/environment.public.ts"
+                }
+              ],
+              "optimization": {
+                "scripts": true,
+                "styles": {
+                  "minify": true,
+                  "inlineCritical": false
+                },
+                "fonts": false
+              },
+              "outputHashing": "all"
             }
           },
           "defaultConfiguration": "production"

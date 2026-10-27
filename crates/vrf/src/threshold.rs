@@ -1,6 +1,7 @@
 use ark_ff::{BigInteger, BigInteger256, One, Zero};
 use itertools::unfold;
 use num::{rational::Ratio, BigInt, FromPrimitive, Signed};
+use std::sync::OnceLock;
 
 use crate::{BigInt2048, BigInt256, BigInt4096, BigRational2048, BigRational4096};
 
@@ -12,11 +13,51 @@ pub struct Threshold {
     pub threshold_rational: BigRational2048,
 }
 
+struct ThresholdConstants {
+    scale: BigInt2048,
+    denominator: BigInt4096,
+    coefficients: Vec<BigInt4096>,
+    linear_term_integer_part: BigInt4096,
+}
+
+static THRESHOLD_CONSTANTS: OnceLock<ThresholdConstants> = OnceLock::new();
+
 impl Threshold {
     const SIZE_IN_BITS: usize = 255;
 
     /// Creates a new Threshold struct
     pub fn new(delegated_stake: BigInt256, total_currency: BigInt256) -> Self {
+        let constants = THRESHOLD_CONSTANTS.get_or_init(Self::constants);
+        let numer = BigRational2048::new(
+            &constants.scale * &delegated_stake.to_nlimbs(),
+            total_currency.to_nlimbs(),
+        )
+        .floor()
+        .to_integer();
+        let input = BigRational4096::new(numer.to_nlimbs(), constants.scale.to_nlimbs());
+
+        let (res, _) = constants.coefficients.iter().fold(
+            (BigRational4096::zero(), BigRational4096::one()),
+            |(acc, x_i), coef| {
+                let x_i = &input * &x_i;
+                let c = Ratio::new(coef.clone(), constants.denominator.clone());
+                (acc + (&x_i * &c), x_i)
+            },
+        );
+
+        let threshold_rational =
+            res + input * bigint_to_bigrational(&constants.linear_term_integer_part);
+
+        Self {
+            delegated_stake,
+            total_currency,
+            threshold_rational: threshold_rational.to_nlimbs::<32>(),
+        }
+    }
+
+    // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml>
+    // The fixed-point Taylor coefficients are independent of stake and slot.
+    fn constants() -> ThresholdConstants {
         // 1. set up parameters to calculate threshold
         // Note: IMO all these parameters can be represented as constants. They do not change. The calculation is most likely in the
         //       code to adjust them in the future. We could create an utility that generates these params using f and log terms
@@ -33,52 +74,30 @@ impl Threshold {
 
         let abs_log_base: BigRational4096 = abs_log_base.to_nlimbs::<64>();
 
-        let coefficients = (1..terms_needed).map(|x| {
-            let c = abs_log_base.pow(x) / Self::factorial(x.into());
-            let c_frac = if x == 1 {
-                let c_whole = c.to_integer();
-                let c_frac = c - bigint_to_bigrational(&c_whole);
-                linear_term_integer_part = c_whole;
-                c_frac
-            } else {
-                c
-            };
-            if x % 2 == 0 {
-                -bigrational_as_fixed_point(c_frac, per_term_precission)
-            } else {
-                bigrational_as_fixed_point(c_frac, per_term_precission)
-            }
-        });
+        let coefficients = (1..terms_needed)
+            .map(|x| {
+                let c = abs_log_base.pow(x) / Self::factorial(x.into());
+                let c_frac = if x == 1 {
+                    let c_whole = c.to_integer();
+                    let c_frac = c - bigint_to_bigrational(&c_whole);
+                    linear_term_integer_part = c_whole;
+                    c_frac
+                } else {
+                    c
+                };
+                if x % 2 == 0 {
+                    -bigrational_as_fixed_point(c_frac, per_term_precission)
+                } else {
+                    bigrational_as_fixed_point(c_frac, per_term_precission)
+                }
+            })
+            .collect();
 
-        let two_tpo_per_term_precission = BigInt2048::one() << per_term_precission;
-
-        // one_minus_exp to calculate the threshold rational
-        let numer = BigRational2048::new(
-            &two_tpo_per_term_precission * &delegated_stake.to_nlimbs(),
-            total_currency.to_nlimbs(),
-        )
-        .floor()
-        .to_integer();
-        let input =
-            BigRational4096::new(numer.to_nlimbs(), two_tpo_per_term_precission.to_nlimbs());
-
-        let denom = BigInt::one() << per_term_precission;
-
-        let (res, _) = coefficients.into_iter().fold(
-            (BigRational4096::zero(), BigRational4096::one()),
-            |(acc, x_i), coef| {
-                let x_i = &input * &x_i;
-                let c = Ratio::new(coef, denom.clone());
-                (acc + (&x_i * &c), x_i)
-            },
-        );
-
-        let threshold_rational = res + input * bigint_to_bigrational(&linear_term_integer_part);
-
-        Self {
-            delegated_stake,
-            total_currency,
-            threshold_rational: threshold_rational.to_nlimbs::<32>(),
+        ThresholdConstants {
+            scale: BigInt2048::one() << per_term_precission,
+            denominator: BigInt::one() << per_term_precission,
+            coefficients,
+            linear_term_integer_part,
         }
     }
 
@@ -224,6 +243,69 @@ mod test {
     use num::{BigInt, BigRational, ToPrimitive};
 
     use super::*;
+
+    // The pre-BP1 implementation from 0248a2654, retained only for the
+    // differential test. It rebuilds every coefficient for every stake.
+    fn uncached_threshold(delegated_stake: BigInt256, total_currency: BigInt256) -> Threshold {
+        let f = BigRational2048::new(BigInt::from_u8(3).unwrap(), BigInt::from_u8(4).unwrap());
+        let base = BigRational2048::one() - f;
+        let abs_log_base = Threshold::log(100, base).abs();
+        let (precision, terms_needed, _) = Threshold::bit_params(&abs_log_base);
+        let terms_needed: i32 = terms_needed.try_into().unwrap();
+        let mut linear = BigInt::zero();
+        let abs_log_base: BigRational4096 = abs_log_base.to_nlimbs::<64>();
+        let coefficients = (1..terms_needed).map(|x| {
+            let c = abs_log_base.pow(x) / Threshold::factorial(x.into());
+            let c = if x == 1 {
+                let whole = c.to_integer();
+                let frac = c - bigint_to_bigrational(&whole);
+                linear = whole;
+                frac
+            } else {
+                c
+            };
+            if x % 2 == 0 {
+                -bigrational_as_fixed_point(c, precision)
+            } else {
+                bigrational_as_fixed_point(c, precision)
+            }
+        });
+        let scale = BigInt2048::one() << precision;
+        let numer = BigRational2048::new(
+            &scale * &delegated_stake.to_nlimbs(),
+            total_currency.to_nlimbs(),
+        )
+        .floor()
+        .to_integer();
+        let input = BigRational4096::new(numer.to_nlimbs(), scale.to_nlimbs());
+        let denominator = BigInt::one() << precision;
+        let (res, _) = coefficients.fold(
+            (BigRational4096::zero(), BigRational4096::one()),
+            |(acc, x_i), coef| {
+                let x_i = &input * &x_i;
+                let c = Ratio::new(coef, denominator.clone());
+                (acc + (&x_i * &c), x_i)
+            },
+        );
+        let threshold_rational = res + input * bigint_to_bigrational(&linear);
+        Threshold {
+            delegated_stake,
+            total_currency,
+            threshold_rational: threshold_rational.to_nlimbs::<32>(),
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn cached_constants_match_pre_bp1_thresholds() {
+        let total = BigInt::from(1_598_130_912_000_001_000u64);
+        for i in 0..3_600u64 {
+            let stake = BigInt::from(1_000_000_000u64 + i * 100_000);
+            let old = uncached_threshold(stake.clone(), total.clone());
+            let new = Threshold::new(stake, total.clone());
+            assert_eq!(old.threshold_rational, new.threshold_rational, "stake {i}");
+        }
+    }
 
     // TODO: move to regular fns, rework step
     fn first_non_zero(stake: BigInt, total_currency: BigInt, step: BigInt) -> BigInt {

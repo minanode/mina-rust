@@ -30,7 +30,9 @@ pub fn certificate_from_pem_key(_: &str) -> RTCCertificate {
 
 type MessageHandler = Box<dyn FnMut(&[u8]) + 'static + Send>;
 
-pub fn build_api() -> Api {}
+/// Only the ICE servers of the config apply, through [`RTCConfig`]: the UDP
+/// port range and NAT addresses are not passed to libdatachannel yet.
+pub fn build_api(_: &crate::webrtc::WebrtcConfig) -> Api {}
 
 pub struct RTCConnection {
     conn: Box<RtcPeerConnection<RTCConnectionHandlers>>,

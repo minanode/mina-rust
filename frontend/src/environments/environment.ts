@@ -25,7 +25,7 @@ export const environment: Readonly<MinaEnv> = {
         'graph-overview',
         'bootstrap-stats',
       ],
-      snarks: ['scan-state', 'work-pool'],
+      snarks: ['worker', 'scan-state', 'work-pool'],
       resources: ['memory'],
       'block-production': ['won-slots'],
       mempool: [],

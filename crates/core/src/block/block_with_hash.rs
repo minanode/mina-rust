@@ -153,6 +153,48 @@ impl<T: AsRef<Block>> BlockWithHash<T> {
         self.body().completed_works_iter()
     }
 
+    /// Release retained work and zkApp proofs after this block is accepted.
+    /// The bootstrap root is reconstructed, so its own works need not have
+    /// entered a scan-state tree. They must be cached explicitly too.
+    pub fn cache_proofs_in(
+        &self,
+        store: &crate::snark::proof_cache::ProofStore,
+    ) -> std::io::Result<()> {
+        for work in self.completed_works_iter() {
+            match &work.proofs {
+                v2::TransactionSnarkWorkTStableV2Proofs::One(p) => p.0.proof.cache_in(store)?,
+                v2::TransactionSnarkWorkTStableV2Proofs::Two((p, q)) => {
+                    p.0.proof.cache_in(store)?;
+                    q.0.proof.cache_in(store)?;
+                }
+            }
+        }
+        fn walk(
+            node: &v2::MinaBaseZkappCommandTStableV1WireStableV1AccountUpdatesAA,
+            store: &crate::snark::proof_cache::ProofStore,
+        ) -> std::io::Result<()> {
+            if let v2::MinaBaseControlStableV2::Proof(proof) = &node.account_update.authorization {
+                proof.cache_in(store)?;
+            }
+            for call in node.calls.iter() {
+                walk(&call.elt, store)?;
+            }
+            Ok(())
+        }
+        for command in self.commands_iter() {
+            if let v2::MinaBaseUserCommandStableV2::ZkappCommand(command) = &command.data {
+                for update in command.account_updates.iter() {
+                    walk(&update.elt, store)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn cache_proofs(&self) -> std::io::Result<()> {
+        self.cache_proofs_in(crate::snark::proof_cache::global())
+    }
+
     pub fn block_stake_winner(&self) -> &v2::NonZeroCurvePoint {
         block_stake_winner(self.header())
     }

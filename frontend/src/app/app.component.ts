@@ -5,7 +5,6 @@ import {
   getWindow,
   isBrowser,
   isDesktop,
-  MAX_WIDTH_700,
   MergedRoute,
   MinaRustEagerSharedModule,
   safelyExecuteInBrowser,
@@ -28,8 +27,17 @@ import { ToolbarComponent } from '@app/layout/toolbar/toolbar.component';
 import { SubmenuTabsComponent } from '@app/layout/submenu-tabs/submenu-tabs.component';
 import { WebNodeLandingPageComponent } from '@app/layout/web-node-landing-page/web-node-landing-page.component';
 import { MenuTabsComponent } from '@app/layout/menu-tabs/menu-tabs.component';
+import { AppService } from '@app/app.service';
+import { needsWebNodeStart } from '@shared/helpers/node-selection.helper';
 
 declare var AOS: any;
+
+/**
+ * The store's isMobile, as isMobile() (innerWidth <= 768) decides isDesktop:
+ * at 701 to 768 px the page had the mobile tabs and no side menu, while the
+ * toolbar and content margin still followed the desktop layout.
+ */
+const MOBILE_MAX_WIDTH = '(max-width: 768px)';
 
 @Component({
   selector: 'app-root',
@@ -83,6 +91,7 @@ export class AppComponent extends StoreDispatcher implements OnInit {
     private breakpointObserver: BreakpointObserver,
     private router: Router,
     private webNodeService: WebNodeService,
+    private appService: AppService,
   ) {
     AOS.init();
 
@@ -136,9 +145,13 @@ export class AppComponent extends StoreDispatcher implements OnInit {
   }
 
   private initAppFunctionalities(): void {
+    // Only a load that starts on the web node goes to its start page: a
+    // native node's page, such as a block, survives a reload (R27 #4).
     if (
-      this.webNodeService.hasWebNodeConfig() &&
-      !this.webNodeService.isWebNodeLoaded()
+      needsWebNodeStart(
+        this.appService.initialNode(),
+        this.webNodeService.isWebNodeLoaded(),
+      )
     ) {
       if (!getWindow()?.location.href.includes(`/${Routes.LOADING_WEB_NODE}`)) {
         this.router.navigate([Routes.LOADING_WEB_NODE], {
@@ -162,7 +175,7 @@ export class AppComponent extends StoreDispatcher implements OnInit {
 
   private scheduleNodeUpdates(): void {
     if (!this.nodeUpdateSubscription) {
-      this.nodeUpdateSubscription = timer(1000, 5000).subscribe(() =>
+      this.nodeUpdateSubscription = timer(1000, 10000).subscribe(() =>
         this.dispatch2(AppActions.getNodeDetails()),
       );
     }
@@ -170,7 +183,7 @@ export class AppComponent extends StoreDispatcher implements OnInit {
 
   private listenToWindowResizing(): void {
     this.breakpointObserver
-      .observe(MAX_WIDTH_700)
+      .observe(MOBILE_MAX_WIDTH)
       .subscribe((bs: BreakpointState) => {
         this.dispatch2(AppActions.toggleMobile({ isMobile: bs.matches }));
       });

@@ -1,0 +1,31 @@
+{
+  "$comment": "Text and UI colour pairs that must meet WCAG 2.2 AA in both themes. bg is a stack of layers, bottom first; 'token@0.12' is the token at 12% opacity. Checked by scripts/check-contrast.mjs and shown on the design-system page.",
+  "pairs": [
+    { "label": "Body text on page", "fg": "--foreground", "bg": ["--background"], "min": 4.5 },
+    { "label": "Body text on card", "fg": "--card-foreground", "bg": ["--card"], "min": 4.5 },
+    { "label": "Muted text on page", "fg": "--muted-foreground", "bg": ["--background"], "min": 4.5 },
+    { "label": "Muted text on card", "fg": "--muted-foreground", "bg": ["--card"], "min": 4.5 },
+    { "label": "Muted text on muted", "fg": "--muted-foreground", "bg": ["--muted"], "min": 4.5 },
+    { "label": "Secondary button", "fg": "--secondary-foreground", "bg": ["--secondary"], "min": 4.5 },
+    { "label": "Primary button", "fg": "--primary-foreground", "bg": ["--primary"], "min": 4.5 },
+    { "label": "Brand text on page", "fg": "--brand-text", "bg": ["--background"], "min": 4.5 },
+    { "label": "Brand text on card", "fg": "--brand-text", "bg": ["--card"], "min": 4.5 },
+    { "label": "Brand badge", "fg": "--brand-text", "bg": ["--card", "--brand@0.12"], "min": 4.5 },
+    { "label": "Muted text on hero glow (peak)", "fg": "--muted-foreground", "bg": ["--background", "--glow"], "min": 4.5 },
+    { "label": "Brand badge on hero glow (peak)", "fg": "--brand-text", "bg": ["--background", "--glow", "--brand@0.12"], "min": 4.5 },
+    { "label": "Hero gradient start", "fg": "--gradient-from", "bg": ["--background"], "min": 4.5 },
+    { "label": "Hero gradient end", "fg": "--gradient-to", "bg": ["--background"], "min": 4.5 },
+    { "label": "Status: working", "fg": "--status-live", "bg": ["--card", "--status-live@0.10"], "min": 4.5 },
+    { "label": "Status: public devnet", "fg": "--status-devnet", "bg": ["--card", "--status-devnet@0.10"], "min": 4.5 },
+    { "label": "Status: pending", "fg": "--status-pending", "bg": ["--card", "--status-pending@0.10"], "min": 4.5 },
+    { "label": "Status: planned", "fg": "--status-planned", "bg": ["--card", "--muted@0.60"], "min": 4.5 },
+    { "label": "Signal: error", "fg": "--destructive", "bg": ["--card", "--destructive@0.10"], "min": 4.5 },
+    { "label": "Destructive button", "fg": "--destructive-foreground", "bg": ["--destructive"], "min": 4.5 },
+    { "label": "Outline button border on page", "fg": "--field", "bg": ["--background"], "min": 3 },
+    { "label": "Outline button border on card", "fg": "--field", "bg": ["--card"], "min": 3 },
+    { "label": "Field border on page", "fg": "--field", "bg": ["--background"], "min": 3 },
+    { "label": "Field border on card", "fg": "--field", "bg": ["--card"], "min": 3 },
+    { "label": "Focus ring on page", "fg": "--ring", "bg": ["--background"], "min": 3 },
+    { "label": "Focus ring on card", "fg": "--ring", "bg": ["--card"], "min": 3 }
+  ]
+}

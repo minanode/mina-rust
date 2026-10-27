@@ -59,7 +59,10 @@
 //!    Add the new endpoint to `website/docs/developers/api-and-data/rpc-api.md`
 //!    so node operators can discover and use it
 
+mod interleave;
+pub use interleave::RpcEventInterleave;
 mod sender;
+mod state_filter;
 pub use sender::RpcSender;
 
 pub mod ledger;
@@ -72,13 +75,15 @@ use mina_node::rpc::{
     RpcBestChainResponse, RpcBlockProducerStatsGetResponse, RpcConsensusConstantsGetResponse,
     RpcConsensusTimeGetResponse, RpcDiscoveryBoostrapStatsResponse,
     RpcDiscoveryRoutingTableResponse, RpcGenesisBlockResponse, RpcGetBlockResponse,
-    RpcHealthCheckResponse, RpcHeartbeatGetResponse, RpcLedgerAccountDelegatorsGetResponse,
-    RpcLedgerAccountsResponse, RpcLedgerSlimAccountsResponse, RpcLedgerStatusGetResponse,
-    RpcMessageProgressResponse, RpcPeersGetResponse, RpcPooledUserCommandsResponse,
-    RpcPooledZkappCommandsResponse, RpcReadinessCheckResponse, RpcRequest,
-    RpcSnarkPoolCompletedJobsResponse, RpcSnarkPoolPendingJobsGetResponse, RpcStateGetError,
+    RpcHardForkExportResponse, RpcHealthCheckResponse, RpcHeartbeatGetResponse,
+    RpcLedgerAccountDelegatorsGetResponse, RpcLedgerAccountsResponse, RpcLedgerExportResponse,
+    RpcLedgerSlimAccountsResponse, RpcLedgerStatusGetResponse, RpcLightAccountResponse,
+    RpcLightBestTipResponse, RpcMessageProgressResponse, RpcPeersGetResponse,
+    RpcPooledUserCommandsResponse, RpcPooledZkappCommandsResponse, RpcReadinessCheckResponse,
+    RpcRequest, RpcSnarkPoolCompletedJobsResponse, RpcSnarkPoolPendingJobsGetResponse,
     RpcStatusGetResponse, RpcTransactionInjectResponse, RpcTransactionPoolResponse,
     RpcTransactionStatusGetResponse, RpcTransitionFrontierUserCommandsResponse,
+    RpcVerificationStatsGetResponse,
 };
 use serde::{Deserialize, Serialize};
 
@@ -102,7 +107,7 @@ pub use mina_node::{
     rpc_effectful::RespondError,
 };
 
-use crate::NodeService;
+use crate::{EventReceiver, NodeService};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum RpcP2pConnectionIncomingResponse {
@@ -122,6 +127,7 @@ pub struct RpcService {
 
     req_sender: mpsc::Sender<NodeRpcRequest>,
     req_receiver: mpsc::Receiver<NodeRpcRequest>,
+    interleave: RpcEventInterleave,
 }
 
 impl Default for RpcService {
@@ -137,7 +143,34 @@ impl RpcService {
             pending: Default::default(),
             req_sender: tx,
             req_receiver: rx,
+            interleave: Default::default(),
         }
+    }
+
+    /// The next event for `ProcessEvents`: a pending RPC request or the next
+    /// queued event, see [`RpcEventInterleave`]. `now` is the time of the
+    /// pick.
+    pub fn next_event(&mut self, now: redux::Instant, events: &mut EventReceiver) -> Option<Event> {
+        let Self {
+            pending,
+            req_receiver,
+            interleave,
+            ..
+        } = self;
+        interleave.next(
+            now,
+            || {
+                let req = req_receiver.try_recv().ok()?;
+                Some(Event::Rpc(pending.add(req.responder), Box::new(req.req)))
+            },
+            || events.try_next(),
+        )
+    }
+
+    /// The run loop found the event queue empty, see
+    /// [`RpcEventInterleave::events_drained`].
+    pub fn events_drained(&mut self) {
+        self.interleave.events_drained();
     }
 
     /// Channel for sending the rpc request to state machine.
@@ -249,6 +282,35 @@ fn optimize_filtered_state(
 }
 
 impl mina_node::rpc_effectful::RpcService for NodeService {
+    fn respond_memory_debug(
+        &mut self,
+        rpc_id: RpcId,
+        state: State,
+        stats: Option<mina_node::stats::Stats>,
+    ) -> Result<(), RespondError> {
+        let entry = self.rpc.pending.remove(rpc_id);
+        let chan = entry.ok_or(RespondError::UnknownRpcId)?;
+        let chan = chan
+            .downcast::<oneshot::Sender<serde_json::Value>>()
+            .or(Err(RespondError::UnexpectedResponseType))?;
+        let ledger = self.ledger_manager.memory_debug_handle();
+        std::thread::Builder::new()
+            .name("memory-diagnostic".into())
+            .spawn(move || {
+                let state_debug =
+                    mina_node::rpc_effectful::memory_debug(&state, stats.as_ref(), ledger.read());
+                let response = serde_json::json!({
+                    "state": state_debug,
+                    "p2p_heap_bytes": mina_node::rpc_effectful::memory_debug_p2p_heap(&state),
+                    "frontier_counts": state.transition_frontier.resources_usage(),
+                    "snark_pool_counts": state.snark_pool.resources_usage(),
+                });
+                let _ = chan.send(response);
+            })
+            .map_err(|err| RespondError::Custom(err.to_string()))?;
+        Ok(())
+    }
+
     fn respond_state_get(
         &mut self,
         rpc_id: RpcId,
@@ -260,21 +322,14 @@ impl mina_node::rpc_effectful::RpcService for NodeService {
             .downcast::<oneshot::Sender<RpcStateGetResponse>>()
             .or(Err(RespondError::UnexpectedResponseType))?;
         let response = if let Some(filter) = filter {
-            let (json_state, filter) = optimize_filtered_state(state, filter)?;
-            match filter.parse::<jsonpath_rust::JsonPathInst>() {
-                Ok(filter) => {
-                    let values = filter
-                        .find_slice(&json_state, Default::default())
-                        .into_iter()
-                        .map(|p| (*p).clone())
-                        .collect::<Vec<_>>();
-                    Ok(if values.len() == 1 {
-                        values[0].clone()
-                    } else {
-                        serde_json::Value::Array(values)
-                    })
+            // Validate before serializing even a top-level state subtree.
+            match state_filter::StateFilter::parse(filter) {
+                Err(err) => Err(err),
+                Ok(_) => {
+                    let (json_state, filter) = optimize_filtered_state(state, filter)?;
+                    state_filter::StateFilter::parse(&filter)
+                        .and_then(|filter| filter.evaluate(&json_state))
                 }
-                Err(err) => Err(RpcStateGetError::FilterError(err)),
             }
         } else {
             Ok(serde_json::to_value(state)?)
@@ -284,11 +339,24 @@ impl mina_node::rpc_effectful::RpcService for NodeService {
         Ok(())
     }
     rpc_service_impl!(respond_status_get, RpcStatusGetResponse);
+    rpc_service_impl!(respond_metrics_get, mina_node::rpc::RpcMetricsGetResponse);
+    rpc_service_impl!(
+        respond_snark_work_coverage_get,
+        mina_node::snark_pool::WorkCoverageStatus
+    );
 
     rpc_service_impl!(respond_heartbeat_get, RpcHeartbeatGetResponse);
+    rpc_service_impl!(
+        respond_proof_memory_get,
+        mina_node::rpc::RpcProofMemoryGetResponse
+    );
 
     rpc_service_impl!(respond_sync_stats_get, RpcSyncStatsGetResponse);
     rpc_service_impl!(respond_action_stats_get, RpcActionStatsGetResponse);
+    rpc_service_impl!(
+        respond_verification_stats_get,
+        RpcVerificationStatsGetResponse
+    );
     rpc_service_impl!(
         respond_block_producer_stats_get,
         RpcBlockProducerStatsGetResponse
@@ -361,6 +429,18 @@ impl mina_node::rpc_effectful::RpcService for NodeService {
         respond_snarker_config_get,
         mina_node::rpc::RpcSnarkerConfigGetResponse
     );
+    rpc_service_impl!(
+        respond_snark_worker_control_get,
+        mina_node::rpc::RpcSnarkWorkerControlGetResponse
+    );
+    rpc_service_impl!(
+        respond_snark_worker_control_set,
+        mina_node::rpc::RpcSnarkWorkerControlSetResponse
+    );
+    rpc_service_impl!(
+        respond_snark_work_included_get,
+        mina_node::rpc::RpcSnarkWorkIncludedGetResponse
+    );
     rpc_service_impl!(respond_health_check, RpcHealthCheckResponse);
     rpc_service_impl!(respond_readiness_check, RpcReadinessCheckResponse);
     rpc_service_impl!(
@@ -385,6 +465,10 @@ impl mina_node::rpc_effectful::RpcService for NodeService {
         RpcConsensusConstantsGetResponse
     );
     rpc_service_impl!(respond_transaction_status, RpcTransactionStatusGetResponse);
+    rpc_service_impl!(
+        respond_transaction_nonce,
+        mina_node::rpc::RpcTransactionNonceGetResponse
+    );
     rpc_service_impl!(respond_block_get, RpcGetBlockResponse);
     rpc_service_impl!(respond_pooled_user_commands, RpcPooledUserCommandsResponse);
     rpc_service_impl!(
@@ -398,6 +482,10 @@ impl mina_node::rpc_effectful::RpcService for NodeService {
         respond_ledger_account_delegators_get,
         RpcLedgerAccountDelegatorsGetResponse
     );
+    rpc_service_impl!(respond_ledger_export, RpcLedgerExportResponse);
+    rpc_service_impl!(respond_hard_fork_config, RpcHardForkExportResponse);
+    rpc_service_impl!(respond_light_best_tip, RpcLightBestTipResponse);
+    rpc_service_impl!(respond_light_account, RpcLightAccountResponse);
 }
 
 #[cfg(test)]

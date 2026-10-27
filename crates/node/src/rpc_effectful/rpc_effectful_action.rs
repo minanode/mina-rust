@@ -1,10 +1,11 @@
 use crate::{
-    external_snark_worker::{ExternalSnarkWorker, SnarkWorkId},
+    external_snark_worker::SnarkWorkId,
     p2p::{bootstrap::P2pNetworkKadBootstrapStats, connection::P2pConnectionResponse},
     rpc::{
         discovery::RpcDiscoveryRoutingTable, AccountQuery, ActionStatsQuery, RpcBestChainResponse,
         RpcConsensusTimeGetResponse, RpcGenesisBlockResponse, RpcGetBlockResponse,
-        RpcLedgerAccountDelegatorsGetResponse, RpcLedgerStatusGetResponse, RpcPeerInfo,
+        RpcHardForkExportResponse, RpcLedgerAccountDelegatorsGetResponse, RpcLedgerExportResponse,
+        RpcLedgerStatusGetResponse, RpcLightAccountResponse, RpcLightBestTipResponse, RpcPeerInfo,
         RpcPooledUserCommandsResponse, RpcPooledZkappCommandsResponse,
         RpcScanStateSummaryScanStateJob, RpcSnarkPoolCompletedJobsResponse,
         RpcSnarkPoolPendingJobsGetResponse, RpcSnarkerConfig, RpcTransactionInjectFailure,
@@ -28,6 +29,12 @@ pub enum RpcEffectfulAction {
     StatusGet {
         rpc_id: RpcId,
     },
+    MemoryDebugGet {
+        rpc_id: RpcId,
+    },
+    MetricsGet {
+        rpc_id: RpcId,
+    },
     HeartbeatGet {
         rpc_id: RpcId,
     },
@@ -38,6 +45,16 @@ pub enum RpcEffectfulAction {
     SyncStatsGet {
         rpc_id: RpcId,
         query: SyncStatsQuery,
+    },
+    VerificationStatsGet {
+        rpc_id: RpcId,
+        query: crate::verification::VerificationQuery,
+    },
+    SnarkWorkCoverageGet {
+        rpc_id: RpcId,
+    },
+    ProofMemoryGet {
+        rpc_id: RpcId,
     },
     BlockProducerStatsGet {
         rpc_id: RpcId,
@@ -99,13 +116,25 @@ pub enum RpcEffectfulAction {
         rpc_id: RpcId,
         job_id: SnarkJobId,
     },
+    /// The worker's state, not the whole worker: its log of included
+    /// work would be cloned for every request (P5.4).
     SnarkerWorkersGet {
         rpc_id: RpcId,
-        snark_worker: ExternalSnarkWorker,
+        snark_worker: Box<crate::rpc::RpcSnarkWorker>,
+    },
+    SnarkWorkerControlGet {
+        rpc_id: RpcId,
+    },
+    /// Answers a worker change: the worker as it is now, or `error`.
+    SnarkWorkerControlSet {
+        rpc_id: RpcId,
+        error: Option<String>,
+    },
+    SnarkWorkIncludedGet {
+        rpc_id: RpcId,
     },
     HealthCheck {
         rpc_id: RpcId,
-        has_peers: Result<(), String>,
     },
     ReadinessCheck {
         rpc_id: RpcId,
@@ -155,6 +184,10 @@ pub enum RpcEffectfulAction {
         rpc_id: RpcId,
         tx: MinaBaseUserCommandStableV2,
     },
+    TransactionNonceGet {
+        rpc_id: RpcId,
+        response: crate::rpc::RpcTransactionNonceGetResponse,
+    },
     BlockGet {
         rpc_id: RpcId,
         block: RpcGetBlockResponse,
@@ -178,6 +211,24 @@ pub enum RpcEffectfulAction {
     LedgerStatusGetSuccess {
         rpc_id: RpcId,
         response: RpcLedgerStatusGetResponse,
+    },
+    LedgerExportSuccess {
+        rpc_id: RpcId,
+        response: RpcLedgerExportResponse,
+    },
+    #[action_event(level = trace)]
+    LightBestTip {
+        rpc_id: RpcId,
+        response: RpcLightBestTipResponse,
+    },
+    #[action_event(level = trace)]
+    LightAccountSuccess {
+        rpc_id: RpcId,
+        response: RpcLightAccountResponse,
+    },
+    HardForkConfigSuccess {
+        rpc_id: RpcId,
+        response: RpcHardForkExportResponse,
     },
     LedgerAccountDelegatorsGetSuccess {
         rpc_id: RpcId,

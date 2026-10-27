@@ -2,19 +2,27 @@ use mina_node::BuildEnv;
 use mina_node_native::replay_state_with_input_actions;
 
 #[derive(Debug, clap::Args)]
-/// Replay node using initial state and input actions.
+/// Replay a node from the initial state and input actions that
+/// `mina node --record state-with-input-actions` wrote.
 pub struct ReplayStateWithInputActions {
-    #[arg(long, short, default_value = "~/.mina/recorder")]
+    /// The recorder directory.
+    #[arg(long, short, default_value = "~/.mina/recorder", value_name = "DIR")]
     pub dir: String,
 
-    #[arg(long, default_value = "./target/release/libreplay_dynamic_effects.so")]
+    /// A shared library of effects to run during the replay.
+    #[arg(
+        long,
+        default_value = "./target/release/libreplay_dynamic_effects.so",
+        value_name = "FILE"
+    )]
     pub dynamic_effects_lib: String,
 
+    /// Replay even if the recording's build differs from this binary's.
     #[arg(long)]
     pub ignore_mismatch: bool,
 
-    /// Verbosity level
-    #[arg(long, short, default_value = "info")]
+    /// The log level: `error`, `warn`, `info`, `debug` or `trace`.
+    #[arg(long, short, default_value = "info", value_name = "LEVEL")]
     pub verbosity: tracing::Level,
 }
 

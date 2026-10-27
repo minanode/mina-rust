@@ -41,7 +41,7 @@ use ark_ff::{BigInteger256, One, Zero};
 use ark_poly::{
     univariate::DensePolynomial, DenseUVPolynomial, EvaluationDomain, Radix2EvaluationDomain,
 };
-use kimchi::proof::{PointEvaluations, ProverCommitments, RecursionChallenge};
+use kimchi::proof::{PointEvaluations, ProofEvaluations, ProverCommitments, RecursionChallenge};
 use mina_curves::pasta::{Fp, Fq, Pallas};
 use mina_p2p_messages::{bigint::InvalidBigInt, v2};
 use mina_poseidon::pasta::FULL_ROUNDS;
@@ -480,28 +480,106 @@ pub mod step_verifier {
         }
     }
 
-    // TODO: This assumes that feature flags are never enabled (we make this assumption everywhere else too)
-    fn validate_feature_flags(hack_feature_flags: OptFlag, w: &mut Witness<Fp>) {
-        let no = CircuitVar::Var(Boolean::False);
-
-        let range_check0 = no;
-        let range_check1 = no;
-        let rot = no;
-        let xor = no;
-        let foreign_field_mul = no;
-        let lookup = no;
-
-        if let OptFlag::Maybe = hack_feature_flags {
-            let range_check_lookup = {
-                let first = range_check0.or(&range_check1, w);
-                first.or(&rot, w)
-            };
-            let lookups_per_row_4 = {
-                let first = xor.or(&range_check_lookup, w);
-                first.or(&foreign_field_mul, w)
-            };
-            let _lookups_per_row_3 = lookups_per_row_4.or(&lookup, w);
+    /// Checks that the proof has the optional evaluations its feature flags
+    /// enable, as the circuit asserts. The flags are the verified proof's: a
+    /// side-loaded zkApp proof's circuit may use custom gates and lookups
+    /// (ZK1).
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/kimchi_backend/common/plonk_types.ml#L874-L945>
+    fn validate_feature_flags(
+        hack_feature_flags: OptFlag,
+        feature_flags: &FeatureFlags<bool>,
+        evals: &ProofEvaluations<PointEvaluations<Vec<Fp>>>,
+        w: &mut Witness<Fp>,
+    ) -> anyhow::Result<()> {
+        let OptFlag::Maybe = hack_feature_flags else {
+            return Ok(());
         };
+        let flag = |b: bool| CircuitVar::Var(b.to_boolean());
+        let FeatureFlags {
+            range_check0,
+            range_check1,
+            foreign_field_add,
+            foreign_field_mul,
+            xor,
+            rot,
+            lookup,
+            runtime_tables,
+        } = feature_flags.clone();
+
+        let range_check_lookup = {
+            let first = flag(range_check0).or(&flag(range_check1), w);
+            first.or(&flag(rot), w)
+        };
+        let lookups_per_row_4 = {
+            let first = flag(xor).or(&range_check_lookup, w);
+            first.or(&flag(foreign_field_mul), w)
+        };
+        let lookups_per_row_3 = lookups_per_row_4.or(&flag(lookup), w);
+        let lookups_per_row_2 = lookups_per_row_3;
+        let [range_check_lookup, lookups_per_row_4, lookups_per_row_3, lookups_per_row_2] = [
+            range_check_lookup,
+            lookups_per_row_4,
+            lookups_per_row_3,
+            lookups_per_row_2,
+        ]
+        .map(|b| b.as_boolean().as_bool());
+
+        let ProofEvaluations {
+            range_check0_selector,
+            range_check1_selector,
+            foreign_field_add_selector,
+            foreign_field_mul_selector,
+            xor_selector,
+            rot_selector,
+            lookup_aggregation,
+            lookup_table,
+            lookup_sorted,
+            runtime_lookup_table,
+            runtime_lookup_table_selector,
+            xor_lookup_selector,
+            lookup_gate_lookup_selector,
+            range_check_lookup_selector,
+            foreign_field_mul_lookup_selector,
+            ..
+        } = evals;
+        // lookups_per_row + 1 sorted columns, for the lookup table
+        let sorted_flags = [
+            lookups_per_row_2,
+            lookups_per_row_2,
+            lookups_per_row_2,
+            lookups_per_row_3,
+            lookups_per_row_4,
+        ];
+        let enabled = [
+            (range_check0_selector, range_check0),
+            (range_check1_selector, range_check1),
+            (foreign_field_add_selector, foreign_field_add),
+            (foreign_field_mul_selector, foreign_field_mul),
+            (xor_selector, xor),
+            (rot_selector, rot),
+            (lookup_aggregation, lookups_per_row_2),
+            (lookup_table, lookups_per_row_2),
+        ]
+        .into_iter()
+        .chain(lookup_sorted.iter().zip(sorted_flags))
+        .chain([
+            (runtime_lookup_table, runtime_tables),
+            (runtime_lookup_table_selector, runtime_tables),
+            (xor_lookup_selector, xor),
+            (lookup_gate_lookup_selector, lookup),
+            (range_check_lookup_selector, range_check_lookup),
+            (foreign_field_mul_lookup_selector, foreign_field_mul),
+        ]);
+        for (index, (eval, flag)) in enabled.enumerate() {
+            if eval.is_some() != flag {
+                anyhow::bail!(
+                    "side-loaded proof's optional evaluation {index} does not match \
+                     its feature flags {feature_flags:?}"
+                );
+            }
+        }
+        Ok(())
     }
 
     pub(super) struct FinalizeOtherProofParams<'a> {
@@ -541,7 +619,12 @@ pub mod step_verifier {
             branch_data,
         } = deferred_values;
 
-        validate_feature_flags(hack_feature_flags, w);
+        validate_feature_flags(
+            hack_feature_flags,
+            &plonk.feature_flags,
+            &evals.evals.evals,
+            w,
+        )?;
 
         let AllEvals { ft_eval1, evals } = evals;
 
@@ -564,18 +647,18 @@ pub mod step_verifier {
                 zeta_to_domain_size,
                 perm,
                 feature_flags,
-                lookup: _,
+                lookup,
             } = plonk;
 
             // We decompose this way because of OCaml evaluation order
-            // let lookup = lookup.as_ref().map(|lookup| scalar(lookup, w));
             let lookup = match hack_feature_flags {
                 OptFlag::No => None,
                 OptFlag::Maybe => {
-                    // TODO: Hack
-                    // This assumes that `plonk.lookup` (just above) is [0, 0]
-                    // <https://github.com/MinaProtocol/mina/blob/a51f09d09e6ae83362ea74eaca072c8e40d08b52/src/lib/pickles/composition_types/composition_types.ml#L131>
-                    Some(scalar(&[0, 0], w))
+                    // `Opt.Maybe`: the proof's joint combiner, or the dummy
+                    // zero challenge when its circuit has no lookups, is
+                    // converted either way.
+                    // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/pickles/composition_types/composition_types.ml#L125-L132>
+                    Some(scalar(&lookup.unwrap_or([0, 0]), w))
                 }
                 OptFlag::Yes => todo!(),
             };
@@ -715,7 +798,8 @@ pub mod step_verifier {
             gamma_bytes: to_bytes(plonk.gamma),
             zeta_bytes: to_bytes(plonk.zeta),
             joint_combiner_bytes: None,
-            feature_flags: FeatureFlags::empty_bool(), // TODO
+            // Expanded by `make_scalars_env_checked`
+            feature_flags: plonk.feature_flags.clone(),
         };
 
         let combined_evals = {
@@ -2329,7 +2413,7 @@ fn expand_proof(params: ExpandProofParams) -> anyhow::Result<ExpandedProof> {
             .map(|v| to_field(to_bytes(*v)))
             .collect::<Vec<_>>();
 
-        let r = to_field(to_bytes(r.0));
+        let r = to_field(to_bytes(r.inner()));
         // let zeta = to_field(plonk0.zeta_bytes);
         let challenge_poly = challenge_polynomial(&chals);
         let b = challenge_poly(zeta) + (r * challenge_poly(zetaw));
@@ -2436,9 +2520,9 @@ fn expand_proof(params: ExpandProofParams) -> anyhow::Result<ExpandedProof> {
         public: &public,
         minimal: &tock_plonk_minimal,
         ft_eval1: proof.ft_eval1,
-        r: to_field(to_bytes(r.0)),
+        r: to_field(to_bytes(r.inner())),
         old_bulletproof_challenges: &prev_challenges,
-        xi: to_field(to_bytes(xi.0)),
+        xi: to_field(to_bytes(xi.inner())),
         zetaw,
     });
 
@@ -2461,7 +2545,7 @@ fn expand_proof(params: ExpandProofParams) -> anyhow::Result<ExpandedProof> {
             },
             combined_inner_product: shift(combined_inner_product),
             b: shift(b),
-            xi: to_bytes(xi.0),
+            xi: to_bytes(xi.inner()),
             bulletproof_challenges: new_bulletproof_challenges,
         },
         should_finalize: must_verify.value().as_bool(),

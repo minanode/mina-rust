@@ -4,7 +4,18 @@
 /// of the following: `redux::Store`, global state where time is stored,
 /// `redux::ActionMeta::time()`.
 pub fn system_time() -> redux::Timestamp {
-    redux::Timestamp::global_now()
+    #[cfg(not(target_family = "wasm"))]
+    {
+        redux::Timestamp::global_now()
+    }
+    // `global_now` offsets an `Instant` from a reference one shared by all
+    // threads, but each web worker's monotonic clock has its own time origin,
+    // so from another worker the offset can be negative and panic. Read the
+    // wall clock, which all workers share.
+    #[cfg(target_family = "wasm")]
+    {
+        redux::Timestamp::new((js_sys::Date::now() * 1_000_000.0) as u64)
+    }
 }
 
 pub fn time_to_str(t: redux::Timestamp) -> String {

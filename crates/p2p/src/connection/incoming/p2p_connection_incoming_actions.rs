@@ -62,7 +62,7 @@ pub enum P2pConnectionIncomingAction {
         error: P2pConnectionIncomingError,
     },
     /// Incoming connection is successful.
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     Success {
         peer_id: PeerId,
     },

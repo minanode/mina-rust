@@ -1,0 +1,136 @@
+{
+  "chain_id": "fd1ba486d438f77d5facb9021e68c914f7491ff1bf31838809a445a8be35ddce",
+  "daemon": {
+    "epoch_data": {
+      "next": {
+        "hash": "jwGyeX2GdWiyGBaSQQnZHHj6NCTa9GeWCD3t8KbcLVgFwiVCXL2",
+        "seed": "2vb9ZtLrY4rHrvAoZDSZ6tZV3N3yWesHC4gxkjKCe9dXXEy8SmLi"
+      },
+      "staking": {
+        "hash": "jwk9QANSsLrKqwKVNv4iNuv6ZCRojrxu3M6bnNBV1kVKDVGhB4P",
+        "seed": "2vaPBM2CkpnPhnPsrDEBwhX8d5XBP6UaedLCpVu3Y9bARWPCrQCC"
+      }
+    },
+    "genesis": {
+      "genesis_state_timestamp": "2026-10-22T02:24:28.000000Z"
+    },
+    "ledger": {
+      "add_genesis_winner": false,
+      "hash": "jxBQcuCUkfKeFn1W3Jt5HK68YHMr7eY6qDJ8bg6nMcHoYpnjdtd"
+    },
+    "proof": {
+      "fork": {
+        "blockchain_length": 545439,
+        "global_slot_since_genesis": 859586,
+        "state_hash": "3NLvdGJk7DjwHeMW9Hhmv2AMrRnaou5NXfU2KMfBF3MXx6TEQEui"
+      }
+    }
+  },
+  "daemon_migrated": {
+    "epoch_data": {
+      "next": {
+        "hash": "jwbj7HNPnMTGJwFm3JLDwSvo9FfZpZLSkQEmeoNXcE3xmuT2svn",
+        "seed": "2vb9ZtLrY4rHrvAoZDSZ6tZV3N3yWesHC4gxkjKCe9dXXEy8SmLi"
+      },
+      "staking": {
+        "hash": "jxWrQNsanTL93wKJKx9B3462tpwYdXrssiL17BbVKQe2xJdXp8c",
+        "seed": "2vaPBM2CkpnPhnPsrDEBwhX8d5XBP6UaedLCpVu3Y9bARWPCrQCC"
+      }
+    },
+    "genesis": {
+      "genesis_state_timestamp": "2026-10-22T02:24:28.000000Z"
+    },
+    "ledger": {
+      "add_genesis_winner": false,
+      "hash": "jwhfeEtPKp7w7aJkMyMXzYgEkJAp2NCaYZrFZBoP43CJ2hESaBY"
+    },
+    "proof": {
+      "fork": {
+        "blockchain_length": 545439,
+        "global_slot_since_genesis": 859586,
+        "state_hash": "3NLvdGJk7DjwHeMW9Hhmv2AMrRnaou5NXfU2KMfBF3MXx6TEQEui"
+      }
+    }
+  },
+  "files": {
+    "daemon-migrated.json": {
+      "bytes": 600,
+      "sha256": "6a6feb9e098e65f0ecfb3f20e3cf9b87cc3ca09e501c40164e4da4151c1d08ff"
+    },
+    "daemon.json": {
+      "bytes": 600,
+      "sha256": "0f578c12a4cfc35045006d2b61b437c9831ed62d25ab17df1a69ec963c830cff"
+    },
+    "fork_config.json": {
+      "bytes": 19426,
+      "sha256": "98cc19603bcdd5985ef26d3fa588dc67fd8a671a032ef2e877e9482b5af3aee6"
+    }
+  },
+  "format": "mina-rust-hardfork-export/1",
+  "inputs": {
+    "best_tip": {
+      "blockchain_length": 545443,
+      "curr_global_slot_since_hard_fork": 13,
+      "epoch": 0,
+      "global_slot_since_genesis": 859573,
+      "snarked_ledger_hash": "jxehvJTqUkgNZjxvvtM1A4odtsYhPCLVHLi5cQciSUAKmz1LZQd",
+      "staged_ledger_hash": "jxBQcuCUkfKeFn1W3Jt5HK68YHMr7eY6qDJ8bg6nMcHoYpnjdtd",
+      "state_hash": "3NL91Deh9a1LhJxUsAS8gqHNjntHc4YAqDtyhTR2oRBjfjyi1j35"
+    },
+    "fork": {
+      "blockchain_length": 545439,
+      "global_slot_since_genesis": 859586,
+      "state_hash": "3NLvdGJk7DjwHeMW9Hhmv2AMrRnaou5NXfU2KMfBF3MXx6TEQEui"
+    },
+    "fork_block": {
+      "blockchain_length": 545439,
+      "curr_global_slot_since_hard_fork": 9,
+      "epoch": 0,
+      "global_slot_since_genesis": 859569,
+      "snarked_ledger_hash": "jxehvJTqUkgNZjxvvtM1A4odtsYhPCLVHLi5cQciSUAKmz1LZQd",
+      "staged_ledger_hash": "jxBQcuCUkfKeFn1W3Jt5HK68YHMr7eY6qDJ8bg6nMcHoYpnjdtd",
+      "state_hash": "3NLvdGJk7DjwHeMW9Hhmv2AMrRnaou5NXfU2KMfBF3MXx6TEQEui"
+    },
+    "genesis_slot_since_hard_fork": 26,
+    "genesis_state_timestamp": "2026-10-22T02:24:28.000000Z",
+    "genesis_state_timestamp_ms": 1792635868000,
+    "next_epoch": {
+      "ledger_hash": "jwGyeX2GdWiyGBaSQQnZHHj6NCTa9GeWCD3t8KbcLVgFwiVCXL2",
+      "seed": "2vb9ZtLrY4rHrvAoZDSZ6tZV3N3yWesHC4gxkjKCe9dXXEy8SmLi"
+    },
+    "spec": "stop_slot",
+    "staking_epoch": {
+      "ledger_hash": "jwk9QANSsLrKqwKVNv4iNuv6ZCRojrxu3M6bnNBV1kVKDVGhB4P",
+      "seed": "2vaPBM2CkpnPhnPsrDEBwhX8d5XBP6UaedLCpVu3Y9bARWPCrQCC"
+    },
+    "stop_reached": true,
+    "stop_slots": {
+      "hard_fork_genesis_slot_delta": 12,
+      "slot_chain_end": 14,
+      "slot_tx_end": 10
+    }
+  },
+  "ledgers": {
+    "ledger": {
+      "hash": "jxBQcuCUkfKeFn1W3Jt5HK68YHMr7eY6qDJ8bg6nMcHoYpnjdtd",
+      "migrated_hash": "jwhfeEtPKp7w7aJkMyMXzYgEkJAp2NCaYZrFZBoP43CJ2hESaBY",
+      "num_accounts": 8
+    },
+    "next": {
+      "hash": "jwGyeX2GdWiyGBaSQQnZHHj6NCTa9GeWCD3t8KbcLVgFwiVCXL2",
+      "migrated_hash": "jwbj7HNPnMTGJwFm3JLDwSvo9FfZpZLSkQEmeoNXcE3xmuT2svn",
+      "num_accounts": 8
+    },
+    "staking": {
+      "hash": "jwk9QANSsLrKqwKVNv4iNuv6ZCRojrxu3M6bnNBV1kVKDVGhB4P",
+      "migrated_hash": "jxWrQNsanTL93wKJKx9B3462tpwYdXrssiL17BbVKQe2xJdXp8c",
+      "num_accounts": 8
+    }
+  },
+  "source": {
+    "cli_commit": "786d0e4d7c09648be93a40c7a40243516544e40c",
+    "network_id": "mina:devnet",
+    "node": "http://127.0.0.1:3660",
+    "sync_status": "SYNCED"
+  }
+}

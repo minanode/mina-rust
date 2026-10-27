@@ -1,0 +1,1860 @@
+{
+  "description": "I34b: five Mesa genesis block proofs plus one I34 payment regression. Every returned proof passed native mainnet verification and its negative controls. Linear samples omitted; final per-generation linear size is the high-water mark.",
+  "wasmBytes": 15144832,
+  "allocationCounterScope": "Requested allocations, including heap-allocated worker stacks/TLS; excludes static stack space, allocator metadata, code and browser/JS buffers. Realloc tracks net changes only.",
+  "initialDiagnostic": {
+    "rawDirectory": "/tmp/i34b/eight",
+    "result": "Setup completed; DevTools 120-second call timeout stopped the run during its first proof. No proof returned. Increased protocolTimeout to the overall experiment limit; all subsequent experiments passed."
+  },
+  "records": [
+    {
+      "kind": "block",
+      "threads": 8,
+      "runs": 3,
+      "generations": 2,
+      "proofCount": 4,
+      "instances": [
+        {
+          "generation": 0,
+          "results": [
+            {
+              "id": 5,
+              "phases": [
+                {
+                  "phase": "decode_input",
+                  "elapsed_ms": 0,
+                  "live_bytes": 890351083,
+                  "peak_bytes": 898634003
+                },
+                {
+                  "phase": "prove_step_and_wrap",
+                  "elapsed_ms": 59409,
+                  "live_bytes": 896763750,
+                  "peak_bytes": 2554068647
+                },
+                {
+                  "phase": "encode_proof",
+                  "elapsed_ms": 2,
+                  "live_bytes": 896785490,
+                  "peak_bytes": 2554068647
+                }
+              ],
+              "intoWasmMs": 0.04000002145767212,
+              "outOfWasmMs": 0.07999998331069946,
+              "inputTransferMs": 0.10498046875,
+              "linearBytes": 2645032960,
+              "stats": {
+                "phase": "snapshot",
+                "elapsed_ms": 0,
+                "live_bytes": 896692214,
+                "peak_bytes": 2554068647
+              },
+              "sentAt": 1792551948881.24,
+              "outputTransferMs": 1.1201171875,
+              "roundTripMs": 59429.68000000715,
+              "postMessageMs": 0.06499999761581421,
+              "inputBytes": 22053,
+              "outputBytes": 11138,
+              "proofNumber": 0
+            },
+            {
+              "id": 6,
+              "phases": [
+                {
+                  "phase": "decode_input",
+                  "elapsed_ms": 3,
+                  "live_bytes": 898839247,
+                  "peak_bytes": 2554068647
+                },
+                {
+                  "phase": "prove_step_and_wrap",
+                  "elapsed_ms": 65584,
+                  "live_bytes": 905224714,
+                  "peak_bytes": 2514360147
+                },
+                {
+                  "phase": "encode_proof",
+                  "elapsed_ms": 0,
+                  "live_bytes": 905246454,
+                  "peak_bytes": 2514360147
+                }
+              ],
+              "intoWasmMs": 0.05500000715255737,
+              "outOfWasmMs": 0.04499995708465576,
+              "inputTransferMs": 0.780029296875,
+              "linearBytes": 2645032960,
+              "stats": {
+                "phase": "snapshot",
+                "elapsed_ms": 0,
+                "live_bytes": 905153186,
+                "peak_bytes": 2514360147
+              },
+              "sentAt": 1792552014496.895,
+              "outputTransferMs": 0.625,
+              "roundTripMs": 65609.20500004292,
+              "postMessageMs": 0.15500003099441528,
+              "inputBytes": 22053,
+              "outputBytes": 11138,
+              "proofNumber": 1
+            },
+            {
+              "id": 7,
+              "phases": [
+                {
+                  "phase": "decode_input",
+                  "elapsed_ms": 0,
+                  "live_bytes": 907300211,
+                  "peak_bytes": 2514360147
+                },
+                {
+                  "phase": "prove_step_and_wrap",
+                  "elapsed_ms": 40426,
+                  "live_bytes": 913685678,
+                  "peak_bytes": 2537436143
+                },
+                {
+                  "phase": "encode_proof",
+                  "elapsed_ms": 1,
+                  "live_bytes": 913707418,
+                  "peak_bytes": 2537436143
+                }
+              ],
+              "intoWasmMs": 0.05500000715255737,
+              "outOfWasmMs": 0.034999966621398926,
+              "inputTransferMs": 0.7900390625,
+              "linearBytes": 2645032960,
+              "stats": {
+                "phase": "snapshot",
+                "elapsed_ms": 0,
+                "live_bytes": 913614142,
+                "peak_bytes": 2537436143
+              },
+              "sentAt": 1792552054962.545,
+              "outputTransferMs": 0.260009765625,
+              "roundTripMs": 40453.014999985695,
+              "postMessageMs": 0.1899999976158142,
+              "inputBytes": 22053,
+              "outputBytes": 11138,
+              "proofNumber": 2
+            }
+          ],
+          "setup": {
+            "id": 1,
+            "instantiateMs": 159.19999998807907,
+            "setupMs": 114655.00999999046,
+            "phases": [
+              {
+                "phase": "prover_srs",
+                "elapsed_ms": 9815,
+                "live_bytes": 28120589,
+                "peak_bytes": 28121663
+              },
+              {
+                "phase": "block_verifier",
+                "elapsed_ms": 13133,
+                "live_bytes": 31948519,
+                "peak_bytes": 33847765
+              },
+              {
+                "phase": "transaction_verifier",
+                "elapsed_ms": 13071,
+                "live_bytes": 35775703,
+                "peak_bytes": 37674943
+              },
+              {
+                "phase": "blobs_and_prover_indexes",
+                "elapsed_ms": 78456,
+                "live_bytes": 884008003,
+                "peak_bytes": 898634003
+              }
+            ],
+            "linearBytes": 911081472,
+            "stats": {
+              "phase": "snapshot",
+              "elapsed_ms": 0,
+              "live_bytes": 884007514,
+              "peak_bytes": 898634003
+            },
+            "resources": [
+              {
+                "name": "/prover.mjs",
+                "bytes": 3820,
+                "durationMs": 6.8549999594688416
+              },
+              {
+                "name": "/workers.mjs",
+                "bytes": 1301,
+                "durationMs": 13.514999985694885
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 9.865000009536743
+              },
+              {
+                "name": "/pkg/mina_isolated_prover_bg.wasm",
+                "bytes": 15144832,
+                "durationMs": 80.78999996185303
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 3.6600000262260437
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 6.115000009536743
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 3.6100000143051147
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 6.910000026226044
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 10.060000002384186
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 11.2950000166893
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 13.915000021457672
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 19.15499997138977
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 17.19999998807907
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 4.560000002384186
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/block_verifier_index.postcard",
+                "bytes": 335,
+                "durationMs": 5.180000007152557
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/transaction_verifier_index.postcard",
+                "bytes": 335,
+                "durationMs": 3.3399999737739563
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-blockchain-snark-step-0-12336df97ce8f76e9ed70f921cb69031_gates.json",
+                "bytes": 22947835,
+                "durationMs": 71.82000005245209
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-blockchain-snark-step-0-12336df97ce8f76e9ed70f921cb69031_internal_vars.bin",
+                "bytes": 1241436,
+                "durationMs": 9.314999997615814
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-blockchain-snark-step-0-12336df97ce8f76e9ed70f921cb69031_rows_rev.bin",
+                "bytes": 2530908,
+                "durationMs": 12.02999997138977
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-blockchain-snark-8b96fb94502d979e55c2e9750e08794e_gates.json",
+                "bytes": 7692346,
+                "durationMs": 37.25
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-blockchain-snark-8b96fb94502d979e55c2e9750e08794e_internal_vars.bin",
+                "bytes": 260892,
+                "durationMs": 6.325000047683716
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-blockchain-snark-8b96fb94502d979e55c2e9750e08794e_rows_rev.bin",
+                "bytes": 1155562,
+                "durationMs": 8.350000023841858
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_gates.json",
+                "bytes": 8093641,
+                "durationMs": 22.439999997615814
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_internal_vars.bin",
+                "bytes": 345495,
+                "durationMs": 13.195000052452087
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_rows_rev.bin",
+                "bytes": 1173261,
+                "durationMs": 8.754999995231628
+              }
+            ]
+          },
+          "malformedRejected": "Error: IoError(Error { kind: UnexpectedEof, message: \"failed to fill whole buffer\" })",
+          "trailingRejected": "Error: trailing bytes in binprot message",
+          "oversizedRejected": "Error: input exceeds 1 MiB limit or is not an ArrayBuffer",
+          "receiverOversizedRejected": "Error: Error: input exceeds 1 MiB limit or is not an ArrayBuffer\n    at http://127.0.0.1:4228/prover.mjs:71:15",
+          "finalLinearBytes": 2645032960,
+          "terminatedWorkers": 15,
+          "workersAfterRetirement": 0
+        },
+        {
+          "generation": 1,
+          "results": [
+            {
+              "id": 5,
+              "phases": [
+                {
+                  "phase": "decode_input",
+                  "elapsed_ms": 0,
+                  "live_bytes": 890351083,
+                  "peak_bytes": 898634003
+                },
+                {
+                  "phase": "prove_step_and_wrap",
+                  "elapsed_ms": 40099,
+                  "live_bytes": 896763750,
+                  "peak_bytes": 2520514215
+                },
+                {
+                  "phase": "encode_proof",
+                  "elapsed_ms": 0,
+                  "live_bytes": 896785490,
+                  "peak_bytes": 2520514215
+                }
+              ],
+              "intoWasmMs": 0.025000035762786865,
+              "outOfWasmMs": 0.034999966621398926,
+              "inputTransferMs": 0.119873046875,
+              "linearBytes": 2560688128,
+              "stats": {
+                "phase": "snapshot",
+                "elapsed_ms": 0,
+                "live_bytes": 896692214,
+                "peak_bytes": 2520514215
+              },
+              "sentAt": 1792552187789.2,
+              "outputTransferMs": 0.35498046875,
+              "roundTripMs": 40113.625,
+              "postMessageMs": 0.09500002861022949,
+              "inputBytes": 22053,
+              "outputBytes": 11138,
+              "proofNumber": 3
+            }
+          ],
+          "setup": {
+            "id": 1,
+            "instantiateMs": 112.41000002622604,
+            "setupMs": 90529.95999997854,
+            "phases": [
+              {
+                "phase": "prover_srs",
+                "elapsed_ms": 7509,
+                "live_bytes": 28120589,
+                "peak_bytes": 28121663
+              },
+              {
+                "phase": "block_verifier",
+                "elapsed_ms": 9840,
+                "live_bytes": 31948519,
+                "peak_bytes": 33847765
+              },
+              {
+                "phase": "transaction_verifier",
+                "elapsed_ms": 10491,
+                "live_bytes": 35775703,
+                "peak_bytes": 37674943
+              },
+              {
+                "phase": "blobs_and_prover_indexes",
+                "elapsed_ms": 62619,
+                "live_bytes": 884008003,
+                "peak_bytes": 898634003
+              }
+            ],
+            "linearBytes": 911081472,
+            "stats": {
+              "phase": "snapshot",
+              "elapsed_ms": 0,
+              "live_bytes": 884007522,
+              "peak_bytes": 898634003
+            },
+            "resources": [
+              {
+                "name": "/prover.mjs",
+                "bytes": 3820,
+                "durationMs": 2.5149999856948853
+              },
+              {
+                "name": "/workers.mjs",
+                "bytes": 1301,
+                "durationMs": 2.2450000047683716
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 2.560000002384186
+              },
+              {
+                "name": "/pkg/mina_isolated_prover_bg.wasm",
+                "bytes": 15144832,
+                "durationMs": 44.5349999666214
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 2.490000009536743
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 3.2300000190734863
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 4.030000030994415
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 4.344999969005585
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 2.949999988079071
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 3.6299999952316284
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 4.349999964237213
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 2.799999952316284
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 2.5049999952316284
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 5.4549999833106995
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/block_verifier_index.postcard",
+                "bytes": 335,
+                "durationMs": 3.350000023841858
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/transaction_verifier_index.postcard",
+                "bytes": 335,
+                "durationMs": 2.9649999737739563
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-blockchain-snark-step-0-12336df97ce8f76e9ed70f921cb69031_gates.json",
+                "bytes": 22947835,
+                "durationMs": 68.78000003099442
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-blockchain-snark-step-0-12336df97ce8f76e9ed70f921cb69031_internal_vars.bin",
+                "bytes": 1241436,
+                "durationMs": 7.509999990463257
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-blockchain-snark-step-0-12336df97ce8f76e9ed70f921cb69031_rows_rev.bin",
+                "bytes": 2530908,
+                "durationMs": 10.230000019073486
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-blockchain-snark-8b96fb94502d979e55c2e9750e08794e_gates.json",
+                "bytes": 7692346,
+                "durationMs": 35.62000000476837
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-blockchain-snark-8b96fb94502d979e55c2e9750e08794e_internal_vars.bin",
+                "bytes": 260892,
+                "durationMs": 5.084999978542328
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-blockchain-snark-8b96fb94502d979e55c2e9750e08794e_rows_rev.bin",
+                "bytes": 1155562,
+                "durationMs": 16.939999997615814
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_gates.json",
+                "bytes": 8093641,
+                "durationMs": 28.1700000166893
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_internal_vars.bin",
+                "bytes": 345495,
+                "durationMs": 2.5950000286102295
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_rows_rev.bin",
+                "bytes": 1173261,
+                "durationMs": 5.415000021457672
+              }
+            ]
+          },
+          "malformedRejected": "Error: IoError(Error { kind: UnexpectedEof, message: \"failed to fill whole buffer\" })",
+          "trailingRejected": "Error: trailing bytes in binprot message",
+          "oversizedRejected": "Error: input exceeds 1 MiB limit or is not an ArrayBuffer",
+          "receiverOversizedRejected": "Error: Error: input exceeds 1 MiB limit or is not an ArrayBuffer\n    at http://127.0.0.1:4228/prover.mjs:71:15",
+          "finalLinearBytes": 2560688128,
+          "terminatedWorkers": 13,
+          "workersAfterRetirement": 0
+        }
+      ],
+      "setup": {
+        "id": 1,
+        "instantiateMs": 159.19999998807907,
+        "setupMs": 114655.00999999046,
+        "phases": [
+          {
+            "phase": "prover_srs",
+            "elapsed_ms": 9815,
+            "live_bytes": 28120589,
+            "peak_bytes": 28121663
+          },
+          {
+            "phase": "block_verifier",
+            "elapsed_ms": 13133,
+            "live_bytes": 31948519,
+            "peak_bytes": 33847765
+          },
+          {
+            "phase": "transaction_verifier",
+            "elapsed_ms": 13071,
+            "live_bytes": 35775703,
+            "peak_bytes": 37674943
+          },
+          {
+            "phase": "blobs_and_prover_indexes",
+            "elapsed_ms": 78456,
+            "live_bytes": 884008003,
+            "peak_bytes": 898634003
+          }
+        ],
+        "linearBytes": 911081472,
+        "stats": {
+          "phase": "snapshot",
+          "elapsed_ms": 0,
+          "live_bytes": 884007514,
+          "peak_bytes": 898634003
+        },
+        "resources": [
+          {
+            "name": "/prover.mjs",
+            "bytes": 3820,
+            "durationMs": 6.8549999594688416
+          },
+          {
+            "name": "/workers.mjs",
+            "bytes": 1301,
+            "durationMs": 13.514999985694885
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 9.865000009536743
+          },
+          {
+            "name": "/pkg/mina_isolated_prover_bg.wasm",
+            "bytes": 15144832,
+            "durationMs": 80.78999996185303
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 3.6600000262260437
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 6.115000009536743
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 3.6100000143051147
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 6.910000026226044
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 10.060000002384186
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 11.2950000166893
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 13.915000021457672
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 19.15499997138977
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 17.19999998807907
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 4.560000002384186
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/block_verifier_index.postcard",
+            "bytes": 335,
+            "durationMs": 5.180000007152557
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/transaction_verifier_index.postcard",
+            "bytes": 335,
+            "durationMs": 3.3399999737739563
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-blockchain-snark-step-0-12336df97ce8f76e9ed70f921cb69031_gates.json",
+            "bytes": 22947835,
+            "durationMs": 71.82000005245209
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-blockchain-snark-step-0-12336df97ce8f76e9ed70f921cb69031_internal_vars.bin",
+            "bytes": 1241436,
+            "durationMs": 9.314999997615814
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-blockchain-snark-step-0-12336df97ce8f76e9ed70f921cb69031_rows_rev.bin",
+            "bytes": 2530908,
+            "durationMs": 12.02999997138977
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-blockchain-snark-8b96fb94502d979e55c2e9750e08794e_gates.json",
+            "bytes": 7692346,
+            "durationMs": 37.25
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-blockchain-snark-8b96fb94502d979e55c2e9750e08794e_internal_vars.bin",
+            "bytes": 260892,
+            "durationMs": 6.325000047683716
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-blockchain-snark-8b96fb94502d979e55c2e9750e08794e_rows_rev.bin",
+            "bytes": 1155562,
+            "durationMs": 8.350000023841858
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_gates.json",
+            "bytes": 8093641,
+            "durationMs": 22.439999997615814
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_internal_vars.bin",
+            "bytes": 345495,
+            "durationMs": 13.195000052452087
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_rows_rev.bin",
+            "bytes": 1173261,
+            "durationMs": 8.754999995231628
+          }
+        ]
+      },
+      "results": [
+        {
+          "id": 5,
+          "phases": [
+            {
+              "phase": "decode_input",
+              "elapsed_ms": 0,
+              "live_bytes": 890351083,
+              "peak_bytes": 898634003
+            },
+            {
+              "phase": "prove_step_and_wrap",
+              "elapsed_ms": 59409,
+              "live_bytes": 896763750,
+              "peak_bytes": 2554068647
+            },
+            {
+              "phase": "encode_proof",
+              "elapsed_ms": 2,
+              "live_bytes": 896785490,
+              "peak_bytes": 2554068647
+            }
+          ],
+          "intoWasmMs": 0.04000002145767212,
+          "outOfWasmMs": 0.07999998331069946,
+          "inputTransferMs": 0.10498046875,
+          "linearBytes": 2645032960,
+          "stats": {
+            "phase": "snapshot",
+            "elapsed_ms": 0,
+            "live_bytes": 896692214,
+            "peak_bytes": 2554068647
+          },
+          "sentAt": 1792551948881.24,
+          "outputTransferMs": 1.1201171875,
+          "roundTripMs": 59429.68000000715,
+          "postMessageMs": 0.06499999761581421,
+          "inputBytes": 22053,
+          "outputBytes": 11138,
+          "proofNumber": 0
+        },
+        {
+          "id": 6,
+          "phases": [
+            {
+              "phase": "decode_input",
+              "elapsed_ms": 3,
+              "live_bytes": 898839247,
+              "peak_bytes": 2554068647
+            },
+            {
+              "phase": "prove_step_and_wrap",
+              "elapsed_ms": 65584,
+              "live_bytes": 905224714,
+              "peak_bytes": 2514360147
+            },
+            {
+              "phase": "encode_proof",
+              "elapsed_ms": 0,
+              "live_bytes": 905246454,
+              "peak_bytes": 2514360147
+            }
+          ],
+          "intoWasmMs": 0.05500000715255737,
+          "outOfWasmMs": 0.04499995708465576,
+          "inputTransferMs": 0.780029296875,
+          "linearBytes": 2645032960,
+          "stats": {
+            "phase": "snapshot",
+            "elapsed_ms": 0,
+            "live_bytes": 905153186,
+            "peak_bytes": 2514360147
+          },
+          "sentAt": 1792552014496.895,
+          "outputTransferMs": 0.625,
+          "roundTripMs": 65609.20500004292,
+          "postMessageMs": 0.15500003099441528,
+          "inputBytes": 22053,
+          "outputBytes": 11138,
+          "proofNumber": 1
+        },
+        {
+          "id": 7,
+          "phases": [
+            {
+              "phase": "decode_input",
+              "elapsed_ms": 0,
+              "live_bytes": 907300211,
+              "peak_bytes": 2514360147
+            },
+            {
+              "phase": "prove_step_and_wrap",
+              "elapsed_ms": 40426,
+              "live_bytes": 913685678,
+              "peak_bytes": 2537436143
+            },
+            {
+              "phase": "encode_proof",
+              "elapsed_ms": 1,
+              "live_bytes": 913707418,
+              "peak_bytes": 2537436143
+            }
+          ],
+          "intoWasmMs": 0.05500000715255737,
+          "outOfWasmMs": 0.034999966621398926,
+          "inputTransferMs": 0.7900390625,
+          "linearBytes": 2645032960,
+          "stats": {
+            "phase": "snapshot",
+            "elapsed_ms": 0,
+            "live_bytes": 913614142,
+            "peak_bytes": 2537436143
+          },
+          "sentAt": 1792552054962.545,
+          "outputTransferMs": 0.260009765625,
+          "roundTripMs": 40453.014999985695,
+          "postMessageMs": 0.1899999976158142,
+          "inputBytes": 22053,
+          "outputBytes": 11138,
+          "proofNumber": 2
+        },
+        {
+          "id": 5,
+          "phases": [
+            {
+              "phase": "decode_input",
+              "elapsed_ms": 0,
+              "live_bytes": 890351083,
+              "peak_bytes": 898634003
+            },
+            {
+              "phase": "prove_step_and_wrap",
+              "elapsed_ms": 40099,
+              "live_bytes": 896763750,
+              "peak_bytes": 2520514215
+            },
+            {
+              "phase": "encode_proof",
+              "elapsed_ms": 0,
+              "live_bytes": 896785490,
+              "peak_bytes": 2520514215
+            }
+          ],
+          "intoWasmMs": 0.025000035762786865,
+          "outOfWasmMs": 0.034999966621398926,
+          "inputTransferMs": 0.119873046875,
+          "linearBytes": 2560688128,
+          "stats": {
+            "phase": "snapshot",
+            "elapsed_ms": 0,
+            "live_bytes": 896692214,
+            "peak_bytes": 2520514215
+          },
+          "sentAt": 1792552187789.2,
+          "outputTransferMs": 0.35498046875,
+          "roundTripMs": 40113.625,
+          "postMessageMs": 0.09500002861022949,
+          "inputBytes": 22053,
+          "outputBytes": 11138,
+          "proofNumber": 3
+        }
+      ],
+      "deathControls": [
+        {
+          "mode": "iframe",
+          "rejectedMs": 0.940000057220459,
+          "error": "Error: iframe removed",
+          "pendingAfter": 0
+        },
+        {
+          "mode": "worker",
+          "rejectedMs": 7.135000050067902,
+          "error": "Error: worker error: Uncaught Error: I34b worker death control",
+          "pendingAfter": 0
+        }
+      ],
+      "nodeBaseline": 1507328,
+      "nodeFinal": 1507328,
+      "nodeStatsBefore": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 608,
+        "peak_bytes": 608
+      },
+      "nodeStatsAfter": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 608,
+        "peak_bytes": 736
+      },
+      "maxHeartbeatGapMs": 420.14500004053116,
+      "heartbeats": 4170,
+      "isolation": "fresh independent WASM statics per generation; transferred inputs detached; parent memory unchanged",
+      "mode": "isolated",
+      "workersAfterHostRemoval": 0,
+      "remainingWorkers": [],
+      "machine": {
+        "cpu": "AMD Ryzen 9 3950X 16-Core Processor",
+        "chrome": "HeadlessChrome/155.0.8059.84",
+        "startedAt": "2026-10-21T03:02:53.536Z",
+        "loadBefore": [55.69, 48.37, 49.39],
+        "loadAfter": [55.1, 60.64, 55.82]
+      },
+      "artifacts": {
+        "commit": "6be4bc162270b5c20b854fcfb2a0b39c7c4e2398",
+        "dirty": false,
+        "wasmSha256": "66bac06acf9143bf123682930cc9518538e6720819001ed0e221069743f77dc4",
+        "verifierSha256": "832ca5e95d64364bfa7609c30141fcf55e43d621ee01fab89815f9eed4408c84",
+        "fixtureSha256": "f0c0ca655436c245ec02db156a35526dca22303292dfdc2aae7a324ef5acafcf"
+      },
+      "verification": [
+        {
+          "proofSha256": "4d7cc3018d9870e17400530f9e2c909a4f6b1436e31b30e5a1cd5645a1a88519",
+          "status": 0,
+          "stdout": "mainnet block verification passed; previous state and tampered genesis hash rejected; input=22053 proof=11138 bytes\n",
+          "stderr": "verify error=OpenProof\nverify error=OpenProof\n"
+        },
+        {
+          "proofSha256": "999c956a94fd3bb91b52fa068c917d8da063ca306c2d581d826a8ec8681bbcc8",
+          "status": 0,
+          "stdout": "mainnet block verification passed; previous state and tampered genesis hash rejected; input=22053 proof=11138 bytes\n",
+          "stderr": "verify error=OpenProof\nverify error=OpenProof\n"
+        },
+        {
+          "proofSha256": "e961ca2858d25eda0e7885bd0a9dbe31ea9f86e7fff0df929e59f5a74626b09c",
+          "status": 0,
+          "stdout": "mainnet block verification passed; previous state and tampered genesis hash rejected; input=22053 proof=11138 bytes\n",
+          "stderr": "verify error=OpenProof\nverify error=OpenProof\n"
+        },
+        {
+          "proofSha256": "378025f9b5043da9b244767c03c9ba67b3525159bcd13fbac0a8193b185b42aa",
+          "status": 0,
+          "stdout": "mainnet block verification passed; previous state and tampered genesis hash rejected; input=22053 proof=11138 bytes\n",
+          "stderr": "verify error=OpenProof\nverify error=OpenProof\n"
+        }
+      ],
+      "linearSampleCount": 4127,
+      "sampledLinearPeakBytes": 2645032960,
+      "rawDirectory": "/tmp/i34b/eight-final"
+    },
+    {
+      "kind": "block",
+      "threads": 4,
+      "runs": 1,
+      "generations": 1,
+      "proofCount": 1,
+      "instances": [
+        {
+          "generation": 0,
+          "results": [
+            {
+              "id": 5,
+              "phases": [
+                {
+                  "phase": "decode_input",
+                  "elapsed_ms": 0,
+                  "live_bytes": 881946123,
+                  "peak_bytes": 890229043
+                },
+                {
+                  "phase": "prove_step_and_wrap",
+                  "elapsed_ms": 48847,
+                  "live_bytes": 888358790,
+                  "peak_bytes": 2497494223
+                },
+                {
+                  "phase": "encode_proof",
+                  "elapsed_ms": 2,
+                  "live_bytes": 888380530,
+                  "peak_bytes": 2497494223
+                }
+              ],
+              "intoWasmMs": 0.029999971389770508,
+              "outOfWasmMs": 0.09499996900558472,
+              "inputTransferMs": 0.0849609375,
+              "linearBytes": 2534670336,
+              "stats": {
+                "phase": "snapshot",
+                "elapsed_ms": 0,
+                "live_bytes": 888287254,
+                "peak_bytes": 2497494223
+              },
+              "sentAt": 1792552411567.775,
+              "outputTransferMs": 0.30517578125,
+              "roundTripMs": 48866.535000026226,
+              "postMessageMs": 0.05500000715255737,
+              "inputBytes": 22053,
+              "outputBytes": 11138,
+              "proofNumber": 0
+            }
+          ],
+          "setup": {
+            "id": 1,
+            "instantiateMs": 97.16500002145767,
+            "setupMs": 127224.90999996662,
+            "phases": [
+              {
+                "phase": "prover_srs",
+                "elapsed_ms": 6117,
+                "live_bytes": 19715629,
+                "peak_bytes": 19716703
+              },
+              {
+                "phase": "block_verifier",
+                "elapsed_ms": 14150,
+                "live_bytes": 23543559,
+                "peak_bytes": 25442805
+              },
+              {
+                "phase": "transaction_verifier",
+                "elapsed_ms": 15637,
+                "live_bytes": 27370743,
+                "peak_bytes": 29269983
+              },
+              {
+                "phase": "blobs_and_prover_indexes",
+                "elapsed_ms": 91258,
+                "live_bytes": 875603043,
+                "peak_bytes": 890229043
+              }
+            ],
+            "linearBytes": 900726784,
+            "stats": {
+              "phase": "snapshot",
+              "elapsed_ms": 0,
+              "live_bytes": 875602554,
+              "peak_bytes": 890229043
+            },
+            "resources": [
+              {
+                "name": "/prover.mjs",
+                "bytes": 3820,
+                "durationMs": 1.9300000071525574
+              },
+              {
+                "name": "/workers.mjs",
+                "bytes": 1301,
+                "durationMs": 1.8300000429153442
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 2.3700000047683716
+              },
+              {
+                "name": "/pkg/mina_isolated_prover_bg.wasm",
+                "bytes": 15144832,
+                "durationMs": 33.6700000166893
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 1.800000011920929
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 2.1200000047683716
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 1.9350000023841858
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 3.334999978542328
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 2.060000002384186
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 1.7450000047683716
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/block_verifier_index.postcard",
+                "bytes": 335,
+                "durationMs": 2.6550000309944153
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/transaction_verifier_index.postcard",
+                "bytes": 335,
+                "durationMs": 2.0699999928474426
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-blockchain-snark-step-0-12336df97ce8f76e9ed70f921cb69031_gates.json",
+                "bytes": 22947835,
+                "durationMs": 39.80500000715256
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-blockchain-snark-step-0-12336df97ce8f76e9ed70f921cb69031_internal_vars.bin",
+                "bytes": 1241436,
+                "durationMs": 3.7450000047683716
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-blockchain-snark-step-0-12336df97ce8f76e9ed70f921cb69031_rows_rev.bin",
+                "bytes": 2530908,
+                "durationMs": 4.899999976158142
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-blockchain-snark-8b96fb94502d979e55c2e9750e08794e_gates.json",
+                "bytes": 7692346,
+                "durationMs": 34.2150000333786
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-blockchain-snark-8b96fb94502d979e55c2e9750e08794e_internal_vars.bin",
+                "bytes": 260892,
+                "durationMs": 5.564999997615814
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-blockchain-snark-8b96fb94502d979e55c2e9750e08794e_rows_rev.bin",
+                "bytes": 1155562,
+                "durationMs": 11.710000038146973
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_gates.json",
+                "bytes": 8093641,
+                "durationMs": 12.125
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_internal_vars.bin",
+                "bytes": 345495,
+                "durationMs": 2.824999988079071
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_rows_rev.bin",
+                "bytes": 1173261,
+                "durationMs": 4.050000011920929
+              }
+            ]
+          },
+          "malformedRejected": "Error: IoError(Error { kind: UnexpectedEof, message: \"failed to fill whole buffer\" })",
+          "trailingRejected": "Error: trailing bytes in binprot message",
+          "oversizedRejected": "Error: input exceeds 1 MiB limit or is not an ArrayBuffer",
+          "receiverOversizedRejected": "Error: Error: input exceeds 1 MiB limit or is not an ArrayBuffer\n    at http://127.0.0.1:4228/prover.mjs:71:15",
+          "finalLinearBytes": 2534670336,
+          "terminatedWorkers": 9,
+          "workersAfterRetirement": 0
+        }
+      ],
+      "setup": {
+        "id": 1,
+        "instantiateMs": 97.16500002145767,
+        "setupMs": 127224.90999996662,
+        "phases": [
+          {
+            "phase": "prover_srs",
+            "elapsed_ms": 6117,
+            "live_bytes": 19715629,
+            "peak_bytes": 19716703
+          },
+          {
+            "phase": "block_verifier",
+            "elapsed_ms": 14150,
+            "live_bytes": 23543559,
+            "peak_bytes": 25442805
+          },
+          {
+            "phase": "transaction_verifier",
+            "elapsed_ms": 15637,
+            "live_bytes": 27370743,
+            "peak_bytes": 29269983
+          },
+          {
+            "phase": "blobs_and_prover_indexes",
+            "elapsed_ms": 91258,
+            "live_bytes": 875603043,
+            "peak_bytes": 890229043
+          }
+        ],
+        "linearBytes": 900726784,
+        "stats": {
+          "phase": "snapshot",
+          "elapsed_ms": 0,
+          "live_bytes": 875602554,
+          "peak_bytes": 890229043
+        },
+        "resources": [
+          {
+            "name": "/prover.mjs",
+            "bytes": 3820,
+            "durationMs": 1.9300000071525574
+          },
+          {
+            "name": "/workers.mjs",
+            "bytes": 1301,
+            "durationMs": 1.8300000429153442
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 2.3700000047683716
+          },
+          {
+            "name": "/pkg/mina_isolated_prover_bg.wasm",
+            "bytes": 15144832,
+            "durationMs": 33.6700000166893
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 1.800000011920929
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 2.1200000047683716
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 1.9350000023841858
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 3.334999978542328
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 2.060000002384186
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 1.7450000047683716
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/block_verifier_index.postcard",
+            "bytes": 335,
+            "durationMs": 2.6550000309944153
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/transaction_verifier_index.postcard",
+            "bytes": 335,
+            "durationMs": 2.0699999928474426
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-blockchain-snark-step-0-12336df97ce8f76e9ed70f921cb69031_gates.json",
+            "bytes": 22947835,
+            "durationMs": 39.80500000715256
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-blockchain-snark-step-0-12336df97ce8f76e9ed70f921cb69031_internal_vars.bin",
+            "bytes": 1241436,
+            "durationMs": 3.7450000047683716
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-blockchain-snark-step-0-12336df97ce8f76e9ed70f921cb69031_rows_rev.bin",
+            "bytes": 2530908,
+            "durationMs": 4.899999976158142
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-blockchain-snark-8b96fb94502d979e55c2e9750e08794e_gates.json",
+            "bytes": 7692346,
+            "durationMs": 34.2150000333786
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-blockchain-snark-8b96fb94502d979e55c2e9750e08794e_internal_vars.bin",
+            "bytes": 260892,
+            "durationMs": 5.564999997615814
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-blockchain-snark-8b96fb94502d979e55c2e9750e08794e_rows_rev.bin",
+            "bytes": 1155562,
+            "durationMs": 11.710000038146973
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_gates.json",
+            "bytes": 8093641,
+            "durationMs": 12.125
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_internal_vars.bin",
+            "bytes": 345495,
+            "durationMs": 2.824999988079071
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_rows_rev.bin",
+            "bytes": 1173261,
+            "durationMs": 4.050000011920929
+          }
+        ]
+      },
+      "results": [
+        {
+          "id": 5,
+          "phases": [
+            {
+              "phase": "decode_input",
+              "elapsed_ms": 0,
+              "live_bytes": 881946123,
+              "peak_bytes": 890229043
+            },
+            {
+              "phase": "prove_step_and_wrap",
+              "elapsed_ms": 48847,
+              "live_bytes": 888358790,
+              "peak_bytes": 2497494223
+            },
+            {
+              "phase": "encode_proof",
+              "elapsed_ms": 2,
+              "live_bytes": 888380530,
+              "peak_bytes": 2497494223
+            }
+          ],
+          "intoWasmMs": 0.029999971389770508,
+          "outOfWasmMs": 0.09499996900558472,
+          "inputTransferMs": 0.0849609375,
+          "linearBytes": 2534670336,
+          "stats": {
+            "phase": "snapshot",
+            "elapsed_ms": 0,
+            "live_bytes": 888287254,
+            "peak_bytes": 2497494223
+          },
+          "sentAt": 1792552411567.775,
+          "outputTransferMs": 0.30517578125,
+          "roundTripMs": 48866.535000026226,
+          "postMessageMs": 0.05500000715255737,
+          "inputBytes": 22053,
+          "outputBytes": 11138,
+          "proofNumber": 0
+        }
+      ],
+      "deathControls": [
+        {
+          "mode": "iframe",
+          "rejectedMs": 3.435000002384186,
+          "error": "Error: iframe removed",
+          "pendingAfter": 0
+        },
+        {
+          "mode": "worker",
+          "rejectedMs": 5.2200000286102295,
+          "error": "Error: worker error: Uncaught Error: I34b worker death control",
+          "pendingAfter": 0
+        }
+      ],
+      "nodeBaseline": 1507328,
+      "nodeFinal": 1507328,
+      "nodeStatsBefore": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 608,
+        "peak_bytes": 608
+      },
+      "nodeStatsAfter": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 608,
+        "peak_bytes": 736
+      },
+      "maxHeartbeatGapMs": 145.49500000476837,
+      "heartbeats": 1803,
+      "isolation": "fresh independent WASM statics per generation; transferred inputs detached; parent memory unchanged",
+      "mode": "isolated",
+      "workersAfterHostRemoval": 0,
+      "remainingWorkers": [],
+      "machine": {
+        "cpu": "AMD Ryzen 9 3950X 16-Core Processor",
+        "chrome": "HeadlessChrome/155.0.8059.84",
+        "startedAt": "2026-10-21T03:10:35.120Z",
+        "loadBefore": [40.74, 56.24, 54.57],
+        "loadAfter": [30.36, 44.67, 50.37]
+      },
+      "artifacts": {
+        "commit": "6be4bc162270b5c20b854fcfb2a0b39c7c4e2398",
+        "dirty": false,
+        "wasmSha256": "66bac06acf9143bf123682930cc9518538e6720819001ed0e221069743f77dc4",
+        "verifierSha256": "832ca5e95d64364bfa7609c30141fcf55e43d621ee01fab89815f9eed4408c84",
+        "fixtureSha256": "f0c0ca655436c245ec02db156a35526dca22303292dfdc2aae7a324ef5acafcf"
+      },
+      "verification": [
+        {
+          "proofSha256": "48da5da8d7c9595fc1deb18e5dbf848a7bf376917026756e4fd1b18d7510f04b",
+          "status": 0,
+          "stdout": "mainnet block verification passed; previous state and tampered genesis hash rejected; input=22053 proof=11138 bytes\n",
+          "stderr": "verify error=OpenProof\nverify error=OpenProof\n"
+        }
+      ],
+      "linearSampleCount": 1772,
+      "sampledLinearPeakBytes": 2534670336,
+      "rawDirectory": "/tmp/i34b/four"
+    },
+    {
+      "kind": "transaction",
+      "threads": 8,
+      "runs": 1,
+      "generations": 1,
+      "proofCount": 1,
+      "instances": [
+        {
+          "generation": 0,
+          "results": [
+            {
+              "id": 5,
+              "phases": [
+                {
+                  "phase": "decode_input",
+                  "elapsed_ms": 0,
+                  "live_bytes": 753859821,
+                  "peak_bytes": 776851923
+                },
+                {
+                  "phase": "prove_step_and_wrap",
+                  "elapsed_ms": 30322,
+                  "live_bytes": 760266724,
+                  "peak_bytes": 1574350981
+                },
+                {
+                  "phase": "encode_proof",
+                  "elapsed_ms": 2,
+                  "live_bytes": 760287792,
+                  "peak_bytes": 1574350981
+                }
+              ],
+              "intoWasmMs": 0.050000011920928955,
+              "outOfWasmMs": 0.08500003814697266,
+              "inputTransferMs": 0.10498046875,
+              "linearBytes": 1624768512,
+              "stats": {
+                "phase": "snapshot",
+                "elapsed_ms": 0,
+                "live_bytes": 760210002,
+                "peak_bytes": 1574350981
+              },
+              "sentAt": 1792552507311.745,
+              "outputTransferMs": 0.35986328125,
+              "roundTripMs": 30345.00499999523,
+              "postMessageMs": 0.06999999284744263,
+              "inputBytes": 10481,
+              "outputBytes": 10400,
+              "proofNumber": 0
+            }
+          ],
+          "setup": {
+            "id": 1,
+            "instantiateMs": 94.98000001907349,
+            "setupMs": 56179.10500001907,
+            "phases": [
+              {
+                "phase": "prover_srs",
+                "elapsed_ms": 9889,
+                "live_bytes": 28120595,
+                "peak_bytes": 28121669
+              },
+              {
+                "phase": "transaction_verifier",
+                "elapsed_ms": 10477,
+                "live_bytes": 31948531,
+                "peak_bytes": 33847771
+              },
+              {
+                "phase": "blobs_and_prover_indexes",
+                "elapsed_ms": 35736,
+                "live_bytes": 747531275,
+                "peak_bytes": 776851923
+              }
+            ],
+            "linearBytes": 794230784,
+            "stats": {
+              "phase": "snapshot",
+              "elapsed_ms": 0,
+              "live_bytes": 747530802,
+              "peak_bytes": 776851923
+            },
+            "resources": [
+              {
+                "name": "/prover.mjs",
+                "bytes": 3820,
+                "durationMs": 1.9399999976158142
+              },
+              {
+                "name": "/workers.mjs",
+                "bytes": 1301,
+                "durationMs": 2.4200000166893005
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 2
+              },
+              {
+                "name": "/pkg/mina_isolated_prover_bg.wasm",
+                "bytes": 15144832,
+                "durationMs": 32.189999997615814
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 3.0549999475479126
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 2.590000033378601
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 2.909999966621399
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 4.990000009536743
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 4.774999976158142
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 5.14000004529953
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 5.064999997615814
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 4.805000007152557
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 1.3899999856948853
+              },
+              {
+                "name": "/pkg/mina_isolated_prover.js",
+                "bytes": 32100,
+                "durationMs": 1.8149999976158142
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/transaction_verifier_index.postcard",
+                "bytes": 335,
+                "durationMs": 2.9050000309944153
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_gates.json",
+                "bytes": 16114176,
+                "durationMs": 27.819999992847443
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_internal_vars.bin",
+                "bytes": 1061013,
+                "durationMs": 4.430000007152557
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_rows_rev.bin",
+                "bytes": 947126,
+                "durationMs": 3.3600000143051147
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_gates.json",
+                "bytes": 8093641,
+                "durationMs": 14.255000054836273
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_internal_vars.bin",
+                "bytes": 345495,
+                "durationMs": 3.814999997615814
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_rows_rev.bin",
+                "bytes": 1173261,
+                "durationMs": 6.560000002384186
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_gates.json",
+                "bytes": 18839284,
+                "durationMs": 39.30500000715256
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_internal_vars.bin",
+                "bytes": 537693,
+                "durationMs": 5.659999966621399
+              },
+              {
+                "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_rows_rev.bin",
+                "bytes": 2384097,
+                "durationMs": 5.924999952316284
+              }
+            ]
+          },
+          "malformedRejected": "Error: IoError(Error { kind: UnexpectedEof, message: \"failed to fill whole buffer\" })",
+          "trailingRejected": "Error: trailing bytes in binprot message",
+          "oversizedRejected": "Error: input exceeds 1 MiB limit or is not an ArrayBuffer",
+          "receiverOversizedRejected": "Error: Error: input exceeds 1 MiB limit or is not an ArrayBuffer\n    at http://127.0.0.1:4228/prover.mjs:71:15",
+          "finalLinearBytes": 1624768512,
+          "terminatedWorkers": 13,
+          "workersAfterRetirement": 0
+        }
+      ],
+      "setup": {
+        "id": 1,
+        "instantiateMs": 94.98000001907349,
+        "setupMs": 56179.10500001907,
+        "phases": [
+          {
+            "phase": "prover_srs",
+            "elapsed_ms": 9889,
+            "live_bytes": 28120595,
+            "peak_bytes": 28121669
+          },
+          {
+            "phase": "transaction_verifier",
+            "elapsed_ms": 10477,
+            "live_bytes": 31948531,
+            "peak_bytes": 33847771
+          },
+          {
+            "phase": "blobs_and_prover_indexes",
+            "elapsed_ms": 35736,
+            "live_bytes": 747531275,
+            "peak_bytes": 776851923
+          }
+        ],
+        "linearBytes": 794230784,
+        "stats": {
+          "phase": "snapshot",
+          "elapsed_ms": 0,
+          "live_bytes": 747530802,
+          "peak_bytes": 776851923
+        },
+        "resources": [
+          {
+            "name": "/prover.mjs",
+            "bytes": 3820,
+            "durationMs": 1.9399999976158142
+          },
+          {
+            "name": "/workers.mjs",
+            "bytes": 1301,
+            "durationMs": 2.4200000166893005
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 2
+          },
+          {
+            "name": "/pkg/mina_isolated_prover_bg.wasm",
+            "bytes": 15144832,
+            "durationMs": 32.189999997615814
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 3.0549999475479126
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 2.590000033378601
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 2.909999966621399
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 4.990000009536743
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 4.774999976158142
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 5.14000004529953
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 5.064999997615814
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 4.805000007152557
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 1.3899999856948853
+          },
+          {
+            "name": "/pkg/mina_isolated_prover.js",
+            "bytes": 32100,
+            "durationMs": 1.8149999976158142
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/transaction_verifier_index.postcard",
+            "bytes": 335,
+            "durationMs": 2.9050000309944153
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_gates.json",
+            "bytes": 16114176,
+            "durationMs": 27.819999992847443
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_internal_vars.bin",
+            "bytes": 1061013,
+            "durationMs": 4.430000007152557
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_rows_rev.bin",
+            "bytes": 947126,
+            "durationMs": 3.3600000143051147
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_gates.json",
+            "bytes": 8093641,
+            "durationMs": 14.255000054836273
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_internal_vars.bin",
+            "bytes": 345495,
+            "durationMs": 3.814999997615814
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_rows_rev.bin",
+            "bytes": 1173261,
+            "durationMs": 6.560000002384186
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_gates.json",
+            "bytes": 18839284,
+            "durationMs": 39.30500000715256
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_internal_vars.bin",
+            "bytes": 537693,
+            "durationMs": 5.659999966621399
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_rows_rev.bin",
+            "bytes": 2384097,
+            "durationMs": 5.924999952316284
+          }
+        ]
+      },
+      "results": [
+        {
+          "id": 5,
+          "phases": [
+            {
+              "phase": "decode_input",
+              "elapsed_ms": 0,
+              "live_bytes": 753859821,
+              "peak_bytes": 776851923
+            },
+            {
+              "phase": "prove_step_and_wrap",
+              "elapsed_ms": 30322,
+              "live_bytes": 760266724,
+              "peak_bytes": 1574350981
+            },
+            {
+              "phase": "encode_proof",
+              "elapsed_ms": 2,
+              "live_bytes": 760287792,
+              "peak_bytes": 1574350981
+            }
+          ],
+          "intoWasmMs": 0.050000011920928955,
+          "outOfWasmMs": 0.08500003814697266,
+          "inputTransferMs": 0.10498046875,
+          "linearBytes": 1624768512,
+          "stats": {
+            "phase": "snapshot",
+            "elapsed_ms": 0,
+            "live_bytes": 760210002,
+            "peak_bytes": 1574350981
+          },
+          "sentAt": 1792552507311.745,
+          "outputTransferMs": 0.35986328125,
+          "roundTripMs": 30345.00499999523,
+          "postMessageMs": 0.06999999284744263,
+          "inputBytes": 10481,
+          "outputBytes": 10400,
+          "proofNumber": 0
+        }
+      ],
+      "deathControls": [
+        {
+          "mode": "iframe",
+          "rejectedMs": 0.9050000309944153,
+          "error": "Error: iframe removed",
+          "pendingAfter": 0
+        },
+        {
+          "mode": "worker",
+          "rejectedMs": 6.805000007152557,
+          "error": "Error: worker error: Uncaught Error: I34b worker death control",
+          "pendingAfter": 0
+        }
+      ],
+      "nodeBaseline": 1507328,
+      "nodeFinal": 1507328,
+      "nodeStatsBefore": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 608,
+        "peak_bytes": 608
+      },
+      "nodeStatsAfter": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 608,
+        "peak_bytes": 736
+      },
+      "maxHeartbeatGapMs": 134.5799999833107,
+      "heartbeats": 907,
+      "isolation": "fresh independent WASM statics per generation; transferred inputs detached; parent memory unchanged",
+      "mode": "isolated",
+      "workersAfterHostRemoval": 0,
+      "remainingWorkers": [],
+      "machine": {
+        "cpu": "AMD Ryzen 9 3950X 16-Core Processor",
+        "chrome": "HeadlessChrome/155.0.8059.84",
+        "startedAt": "2026-10-21T03:13:40.428Z",
+        "loadBefore": [29.29, 44.21, 50.19],
+        "loadAfter": [28.68, 39.9, 48.09]
+      },
+      "artifacts": {
+        "commit": "6be4bc162270b5c20b854fcfb2a0b39c7c4e2398",
+        "dirty": false,
+        "wasmSha256": "66bac06acf9143bf123682930cc9518538e6720819001ed0e221069743f77dc4",
+        "verifierSha256": "832ca5e95d64364bfa7609c30141fcf55e43d621ee01fab89815f9eed4408c84",
+        "fixtureSha256": "d9ae2b082c782cbc0456be16101b707b14de1194feb1512b118e6331c446de78"
+      },
+      "verification": [
+        {
+          "proofSha256": "579a2ac1b45514aeedca8bbdd9f2c490d89d5523e01cac5e54214682b6153a51",
+          "status": 0,
+          "stdout": "mainnet verification passed; changed SOK rejected; input=10481 proof=10400 bytes\n",
+          "stderr": ""
+        }
+      ],
+      "linearSampleCount": 876,
+      "sampledLinearPeakBytes": 1624768512,
+      "rawDirectory": "/tmp/i34b/payment"
+    }
+  ]
+}

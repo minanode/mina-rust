@@ -1,29 +1,40 @@
 <div class="logo-header w-100 border-bottom fx-row-full-cent">
-  <img ngSrc="assets/images/logo/logo-text.svg" height="40" width="136" />
+  <mina-brand-logo />
 </div>
 <div
   class="data-wrapper border-bottom flex-column w-100 overflow-auto align-center"
 >
   <div class="loading-content h-100 flex-column flex-around align-center">
     <div class="header flex-column align-center pl-10 pr-10 text-center mb-16">
-      <div class="loading-webnode f-500 mb-8">
-        Produce blocks,
-        <span>right in your browser</span>
+      <div class="loading-webnode f-500 mb-8" data-loading-headline>
+        @if (viewOnly) {
+          A Mina {{ network }} node,
+          <span>running in your browser</span>
+        } @else {
+          Produce blocks,
+          <span>right in your browser</span>
+        }
       </div>
+      @if (viewOnly) {
+        <div class="tertiary f-300 mb-8">
+          View-only: it verifies and follows the chain, and holds no keys.
+        </div>
+      }
 
       <div
         class="font-16 tertiary f-300"
-        [class.aware-primary]="hasWarn && !hasError"
         [class.warn-primary]="hasError"
+        [class.success-primary]="synced"
         [@messageChange]="loadingMessage"
+        data-loading-message
       >
-        {{ loadingMessage || downloadingMessage }}
+        {{ loadingMessage }}
       </div>
     </div>
 
     <div #progress class="progress w-100 fx-row-full-cent"></div>
 
-    <div class="mt-16 flex-column pl-10 pr-10">
+    <div class="mt-16 flex-column pl-10 pr-10" data-loading-steps>
       @for (item of loading; track $index) {
         <div class="fx-row-vert-cent h-xl font-16">
           @if (item.status === WebNodeStepStatus.LOADING) {
@@ -45,6 +56,9 @@
             class="ml-8 f-400"
           >
             {{ item.name }}
+            @if (item.detail) {
+              <span class="tertiary f-300">· {{ item.detail }}</span>
+            }
           </div>
         </div>
       }
@@ -55,7 +69,12 @@
   <div class="fx-row-vert-cent mr-10">
     <span class="mina-icon icon-300 selected-primary mr-5">lightbulb</span>
     <div class="selected-primary f-big f-500">
-      You can run the Web Node from your phone
+      Keep this tab open: the node runs in this page.
+      @if (frontendCommit) {
+        <span class="tertiary f-400" data-build-stamp>
+          Build {{ frontendCommit }}
+        </span>
+      }
     </div>
   </div>
   <button

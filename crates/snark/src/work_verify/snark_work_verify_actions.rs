@@ -11,7 +11,7 @@ pub type SnarkWorkVerifyActionWithMetaRef<'a> = redux::ActionWithMeta<&'a SnarkW
 #[derive(Serialize, Deserialize, Debug, Clone, ActionEvent)]
 #[action_event(level = trace, fields(display(req_id), display(error)))]
 pub enum SnarkWorkVerifyAction {
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     Init {
         req_id: SnarkWorkVerifyId,
         batch: Vec<Snark>,
@@ -26,7 +26,7 @@ pub enum SnarkWorkVerifyAction {
         req_id: SnarkWorkVerifyId,
         error: SnarkWorkVerifyError,
     },
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     Success {
         req_id: SnarkWorkVerifyId,
     },

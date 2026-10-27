@@ -173,11 +173,15 @@ impl BinProtWrite for PathPrefix {
 /// # Example
 ///
 /// ```
+/// use mina_p2p::{identity::SecretKey, webrtc::SignalingMethod};
+///
 /// // Direct HTTPS signaling
 /// let method = "/https/signal.example.com/443".parse::<SignalingMethod>()?;
 ///
 /// // P2P relay through an existing peer
+/// let peer_id = SecretKey::rand().public_key().peer_id();
 /// let method = SignalingMethod::P2p { relay_peer_id: peer_id };
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(BinProtWrite, BinProtRead, Eq, PartialEq, Ord, PartialOrd, Debug, Clone)]
 pub enum SignalingMethod {
@@ -262,8 +266,17 @@ impl SignalingMethod {
     /// # Example
     ///
     /// ```
+    /// use mina_p2p::webrtc::{Host, HttpSignalingInfo, SignalingMethod};
+    ///
+    /// let info = HttpSignalingInfo {
+    ///     host: Host::Domain("signal.example.com".into()),
+    ///     port: 443,
+    /// };
     /// let method = SignalingMethod::Https(info);
-    /// let url = method.http_url(); // Some("https://signal.example.com:443/mina/webrtc/signal")
+    /// assert_eq!(
+    ///     method.http_url().as_deref(),
+    ///     Some("https://signal.example.com:443/mina/webrtc/signal"),
+    /// );
     /// ```
     pub fn http_url(&self) -> Option<String> {
         let slash = Cow::Borrowed("/");
@@ -432,7 +445,7 @@ impl FromStr for SignalingMethod {
     /// # Examples
     ///
     /// ```
-    /// use mina::signaling_method::SignalingMethod;
+    /// use mina_p2p::webrtc::SignalingMethod;
     ///
     /// // HTTP signaling
     /// let method: SignalingMethod = "/http/localhost/8080".parse()?;
@@ -442,6 +455,7 @@ impl FromStr for SignalingMethod {
     ///
     /// // HTTPS proxy with cluster ID
     /// let method: SignalingMethod = "/https_proxy/123/proxy.example.com/443".parse()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     ///
     /// # Errors

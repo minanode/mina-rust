@@ -62,7 +62,13 @@ impl Recorder {
                 let initial_state_path = super::initial_state_path(recorder_path);
                 let mut initial_state_f = fs::File::create(initial_state_path)
                     .expect("creating file for mina recorder initial state failed!");
-                initial_state.write_to(&mut initial_state_f).unwrap();
+                if let Err(error) = initial_state.write_to(&mut initial_state_f) {
+                    mina_core::log::inner::warn!(
+                        "initial state recording unavailable; recording disabled: {error}"
+                    );
+                    *self = Self::None;
+                    return;
+                }
                 initial_state_f.sync_all().unwrap();
             }
         }
@@ -113,7 +119,18 @@ impl Recorder {
 
                 let mut writer = BufWriter::new(file);
 
-                let encoded = data.encode().unwrap();
+                let encoded = match data.encode() {
+                    Ok(encoded) => encoded,
+                    Err(error) => {
+                        mina_core::log::inner::warn!(
+                            "action recording unavailable; recording disabled: {error}"
+                        );
+                        drop(writer);
+                        drop(files);
+                        *self = Self::None;
+                        return;
+                    }
+                };
                 // RecordedActionWithMeta::decode(&encoded)
                 //     .expect(&format!("failed to decode encoded message: {:?}", data));
                 writer

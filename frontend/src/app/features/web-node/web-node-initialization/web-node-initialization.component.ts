@@ -13,14 +13,17 @@ import {
   GlobalErrorHandlerService,
   safelyExecuteInBrowser,
 } from '@mina-rust/shared';
-import { NgClass, NgOptimizedImage } from '@angular/common';
+import { NgClass } from '@angular/common';
 import { Router } from '@angular/router';
-import { getFirstFeature } from '@shared/constants/config';
+import { CONFIG, getFirstFeature } from '@shared/constants/config';
 import { animate, style, transition, trigger } from '@angular/animations';
-import { filter, switchMap, timer } from 'rxjs';
+import { catchError, exhaustMap, filter, of, take, timer } from 'rxjs';
 import { LoadingSpinnerComponent } from '@shared/loading-spinner/loading-spinner.component';
 import { FileProgressHelper } from '@core/helpers/file-progress.helper';
+import { freshness } from '@shared/helpers/freshness.helper';
+import { freshnessFields } from '@app/app.service';
 import * as d3 from 'd3';
+import { BrandLogoComponent } from '@shared/components/brand-logo/brand-logo.component';
 
 export enum WebNodeStepStatus {
   DONE,
@@ -30,17 +33,23 @@ export enum WebNodeStepStatus {
 
 export interface WebNodeLoadingStep {
   name: string;
-  loaded: boolean;
+  detail: string;
   status: WebNodeStepStatus;
 }
 
+/**
+ * Start-up as it happens (R26 gap 4): four real milestones, no timer-driven
+ * percentage. The ring shows the download's real byte count, then which of
+ * the four steps are done; it reaches the end only when the node reports
+ * Synced. Messages give elapsed time, not guesses of time left.
+ */
 @Component({
   selector: 'mina-web-node-initialization',
   templateUrl: './web-node-initialization.component.html',
   styleUrls: ['./web-node-initialization.component.scss'],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: { class: 'flex-column h-100 w-100 align-center' },
-  imports: [NgClass, NgOptimizedImage, LoadingSpinnerComponent],
+  imports: [NgClass, LoadingSpinnerComponent, BrandLogoComponent],
   animations: [
     trigger('messageChange', [
       transition('* => *', [
@@ -58,34 +67,36 @@ export class WebNodeInitializationComponent
   implements OnInit, AfterViewInit
 {
   protected readonly WebNodeStepStatus = WebNodeStepStatus;
+  readonly viewOnly: boolean = !CONFIG.controls?.producer;
+  readonly network: string = CONFIG.globalConfig?.webNodeNetwork ?? 'devnet';
+  readonly frontendCommit: string = (CONFIG.frontendCommit ?? '').slice(0, 7);
   readonly loading: WebNodeLoadingStep[] = [
     {
-      name: 'Setting up browser for Web Node',
-      loaded: false,
+      name: 'Download the node',
+      detail: '',
       status: WebNodeStepStatus.LOADING,
     },
+    { name: 'Start the node', detail: '', status: WebNodeStepStatus.PENDING },
     {
-      name: 'Starting the Web Node',
-      loaded: false,
+      name: 'Connect to a peer',
+      detail: '',
       status: WebNodeStepStatus.PENDING,
     },
     {
-      name: 'Connecting directly to Mina network',
-      loaded: false,
+      name: 'Sync the chain (ledgers, then blocks)',
+      detail: '',
       status: WebNodeStepStatus.PENDING,
     },
   ];
   loadingMessage: string = '';
-  downloadingMessage: string = '';
+  /** Continue is offered once connected; the node keeps syncing. */
   ready: boolean = false;
+  synced: boolean = false;
   hasError: boolean = false;
-  hasWarn: boolean = false;
   errors: string[] = [];
 
-  private stepsPercentages: number[];
-  private secondStepInterval: any;
-  private thirdStepInterval: any;
-  private progress: number = 0;
+  private startedAt: number = Date.now();
+  private stepStartedAt: number = Date.now();
   private svg: any;
   private progressBar: any;
   private arc: any;
@@ -108,159 +119,153 @@ export class WebNodeInitializationComponent
     safelyExecuteInBrowser(() => {
       window.dispatchEvent(new CustomEvent('startWebNode'));
     });
-    this.stepsPercentages = this.getStepPercentages();
     if (this.webNodeService.isWebNodeLoaded()) {
-      this.loading.forEach((step: WebNodeLoadingStep) => {
-        step.loaded = true;
-        step.status = WebNodeStepStatus.DONE;
-      });
+      // Back on this page with a node already running.
+      [0, 1, 2].forEach(i => this.done(i));
+      this.loading[3].status = WebNodeStepStatus.LOADING;
       this.ready = true;
-      return;
+    } else {
+      this.loadingMessage = 'Downloading the node';
+      this.fetchProgress();
+      this.checkWebNodeProgress();
+      this.fetchPeersInformation();
     }
-    this.fetchProgress();
     this.listenToErrorIssuing();
-    this.checkWebNodeProgress();
-    this.fetchPeersInformation();
+    this.followSync();
+    timer(1000, 1000)
+      .pipe(untilDestroyed(this))
+      .subscribe(() => this.tick());
   }
 
   ngAfterViewInit(): void {
     this.buildProgressBar();
+    this.render();
   }
+
+  private done(index: number): void {
+    this.loading[index].status = WebNodeStepStatus.DONE;
+    this.stepStartedAt = Date.now();
+  }
+
+  private elapsed(since: number): string {
+    return `${Math.round((Date.now() - since) / 1000)} s`;
+  }
+
+  /** Elapsed time on the running step, refreshed every second. */
+  private tick(): void {
+    const running = this.loading.findIndex(
+      s => s.status === WebNodeStepStatus.LOADING,
+    );
+    if (running > 0 && !this.hasError) {
+      const elapsed = this.elapsed(this.stepStartedAt);
+      this.loading[running].detail =
+        running === 3 && this.syncDoing
+          ? `${this.syncDoing} · ${elapsed}`
+          : elapsed;
+      this.detect();
+    }
+  }
+
+  /** What the sync step is doing, from the node's last status. */
+  private syncDoing: string = '';
 
   private checkWebNodeProgress(): void {
     this.webNodeService.webnodeProgress$
       .pipe(untilDestroyed(this))
       .subscribe((state: string) => {
         if (state === 'Loaded') {
-          this.updateLoadingMessage('~5 seconds left');
-          setTimeout(() => {
-            if (
-              !this.hasError &&
-              this.loading[1].status !== WebNodeStepStatus.DONE
-            ) {
-              this.updateLoadingMessage('Slower than usual');
-              this.hasWarn = true;
-              this.detect();
-            }
-          }, 5000);
-          this.loading[0].loaded = true;
-          this.loading[0].status = WebNodeStepStatus.DONE;
+          this.done(0);
+          this.loading[0].detail = this.downloadedTotal || 'done';
           this.loading[1].status = WebNodeStepStatus.LOADING;
-          this.advanceProgressFor2ndStep();
+          this.updateLoadingMessage('Starting the node');
         } else if (state === 'Started') {
-          this.updateLoadingMessage('~3 seconds left');
-          setTimeout(() => {
-            if (
-              !this.hasError &&
-              this.loading[2].status !== WebNodeStepStatus.DONE
-            ) {
-              this.updateLoadingMessage('Slower than usual');
-              this.hasWarn = true;
-              this.detect();
-            }
-          }, 3500);
-          clearInterval(this.secondStepInterval);
-          this.loading[0].loaded = true;
-          this.loading[1].loaded = true;
-          this.loading[0].status = WebNodeStepStatus.DONE;
-          this.loading[1].status = WebNodeStepStatus.DONE;
+          this.done(0);
+          this.done(1);
+          this.loading[1].detail = `after ${this.elapsed(this.startedAt)}`;
           this.loading[2].status = WebNodeStepStatus.LOADING;
-          this.advanceProgressFor3rdStep();
+          this.updateLoadingMessage('Looking for a peer');
         } else if (state === 'Connected') {
-          this.updateLoadingMessage('Web Node is ready');
-          clearInterval(this.thirdStepInterval);
-          this.loading[0].status = WebNodeStepStatus.DONE;
-          this.loading[1].status = WebNodeStepStatus.DONE;
-          this.loading[2].status = WebNodeStepStatus.DONE;
-          this.loading.forEach(
-            (step: WebNodeLoadingStep) => (step.loaded = true),
+          [0, 1, 2].forEach(i => this.done(i));
+          this.loading[2].detail = `after ${this.elapsed(this.startedAt)}`;
+          this.loading[3].status = WebNodeStepStatus.LOADING;
+          this.updateLoadingMessage(
+            'Connected. Syncing now: continue to the dashboard to watch it.',
           );
-          this.goToEndProgress();
+          this.ready = true;
         }
+        this.render();
         this.detect();
       });
   }
 
-  private getStepPercentages(): number[] {
-    // random between 65 and 80
-    const first = Math.floor(Math.random() * 15) + 65;
-    // random between 15 and 17
-    const second = Math.floor(Math.random() * 2) + 15;
-    const third = 100 - first - second;
-    return [first, second, third];
-  }
-
-  private advanceProgressFor2ndStep(): void {
-    // first step is done, now we are working on the second step.
-    // each second add 1% to the progress.
-    // but the second step is only 10% of the total progress.
-    // so never go above 10%. Stop at 9% if the second step is not done yet.
-    let progress = 0;
-    this.secondStepInterval = setInterval(() => {
-      if (progress < this.stepsPercentages[1] - 1) {
-        progress += 0.125;
-        this.updateProgressBar(this.stepsPercentages[0] + progress);
-      }
-    }, 75);
-  }
-
-  private async advanceProgressFor3rdStep(): Promise<void> {
-    // second step is done, now we are working on the third step.
-    // each second add 1% to the progress.
-    // but the third step is only 10% of the total progress.
-    // so never go above 10%. Stop at 9% if the third step is not done yet.
-
-    const currentProgress = this.progress;
-    const targetProgress =
-      this.stepsPercentages[0] + this.stepsPercentages[1] - 1;
-    // run fast 5 increments to reach the target progress
-    const diff = targetProgress - currentProgress;
-
-    for (let i = 0; i < diff; i++) {
-      await new Promise(resolve => setTimeout(resolve, 25));
-      this.updateProgressBar(currentProgress + i);
-      this.detect();
-    }
-
-    let progress = 0;
-    this.thirdStepInterval = setInterval(() => {
-      if (progress < this.stepsPercentages[2] - 1) {
-        progress += 0.125;
-        this.updateProgressBar(
-          this.stepsPercentages[0] + this.stepsPercentages[1] + progress,
-        );
-      }
-    }, 75);
-  }
-
-  private goToEndProgress(): void {
-    // increase it to 100% to make sure it's done.
-    // make it smooth, do a lot of increases from where it left
-    // to make it look like it's finishing.
-
-    let progress = this.progress;
-    let interval = setInterval(() => {
-      if (progress <= 100) {
-        progress += 1;
-        this.updateProgressBar(progress);
-      } else {
-        clearInterval(interval);
-      }
-    }, 30);
-    setTimeout(() => this.detect(), 500);
+  /** Sync progress from the node itself, every 2 s once it runs. */
+  private followSync(): void {
+    timer(0, 2000)
+      .pipe(
+        filter(() => this.webNodeService.started && !this.synced),
+        exhaustMap(() =>
+          this.webNodeService.status$.pipe(
+            take(1),
+            catchError(() => of(null)),
+          ),
+        ),
+        untilDestroyed(this),
+      )
+      .subscribe((status: any) => {
+        const sync = status?.transition_frontier?.sync;
+        if (!sync || this.loading[3].status === WebNodeStepStatus.PENDING) {
+          return;
+        }
+        // The node says Synced at genesis until a peer's tip arrives: only a
+        // plausible tip counts.
+        const now = Date.now();
+        const synced = freshness(
+          {
+            status: sync.phase,
+            blockHeight: status.transition_frontier.best_tip?.height,
+            ...freshnessFields(status, now),
+          },
+          now,
+        ).synced;
+        if (synced) {
+          this.synced = true;
+          this.done(3);
+          const height = status.transition_frontier.best_tip?.height;
+          this.loading[3].detail = `at #${height} after ${this.elapsed(this.startedAt)}`;
+          this.updateLoadingMessage(`Synced at block #${height}`);
+        } else {
+          const target = sync.target?.height;
+          const doing =
+            sync.phase === 'Catchup'
+              ? 'applying blocks'
+              : sync.phase === 'Bootstrap'
+                ? 'fetching ledgers'
+                : 'waiting for the network’s best tip';
+          this.syncDoing = doing + (target ? ` to #${target}` : '');
+          this.loading[3].detail = `${this.syncDoing} · ${this.elapsed(this.stepStartedAt)}`;
+        }
+        this.render();
+        this.detect();
+      });
   }
 
   private fetchPeersInformation(): void {
+    // peers$ reports the first connected peer as progress 'Connected'.
     timer(0, 1000)
       .pipe(
-        switchMap(() => this.webNodeService.peers$),
+        filter(
+          () =>
+            this.webNodeService.started &&
+            this.loading[2].status !== WebNodeStepStatus.DONE,
+        ),
+        exhaustMap(() => this.webNodeService.peers$.pipe(take(1))),
         untilDestroyed(this),
       )
       .subscribe();
   }
 
   private updateLoadingMessage(message: string): void {
-    if (this.hasError || this.hasWarn) {
+    if (this.hasError) {
       return;
     }
     this.loadingMessage = message;
@@ -277,21 +282,23 @@ export class WebNodeInitializationComponent
         this.loadingMessage = error;
         this.hasError = true;
         this.markErrorOnD3();
-
         this.detect();
       });
   }
+
+  private downloadFraction: number = 0;
+  private downloadedTotal: string = '';
 
   private fetchProgress(): void {
     FileProgressHelper.progress$
       .pipe(filter(Boolean), untilDestroyed(this))
       .subscribe(progress => {
-        this.downloadingMessage = `Downloading ${(progress.downloaded / 1e6).toFixed(1)} of ${(progress.totalSize / 1e6).toFixed(1)} MB`;
-        if (this.svg) {
-          const totalProgress =
-            (progress.progress * this.stepsPercentages[0]) / 100;
-          this.updateProgressBar(totalProgress);
+        this.downloadFraction = Math.min(1, progress.progress / 100);
+        this.downloadedTotal = `${(progress.totalSize / 1e6).toFixed(1)} MB`;
+        if (this.loading[0].status !== WebNodeStepStatus.DONE) {
+          this.loading[0].detail = `${(progress.downloaded / 1e6).toFixed(1)} of ${(progress.totalSize / 1e6).toFixed(1)} MB`;
         }
+        this.render();
         this.detect();
       });
   }
@@ -303,11 +310,26 @@ export class WebNodeInitializationComponent
     this.router.navigate([getFirstFeature()]);
   }
 
+  /** The ring: download bytes first, then the steps done out of four. */
+  private render(): void {
+    if (!this.svg) {
+      return;
+    }
+    const doneSteps = this.loading.filter(
+      s => s.status === WebNodeStepStatus.DONE,
+    ).length;
+    if (doneSteps === 0) {
+      const pct = Math.floor(this.downloadFraction * 100);
+      this.updateProgressBar(this.downloadFraction / 4, `${pct}`, '%');
+    } else {
+      this.updateProgressBar(doneSteps / 4, `${doneSteps}/4`, '');
+    }
+  }
+
   private buildProgressBar(): void {
     const width = this.chartContainer.nativeElement.offsetWidth;
     const height = this.chartContainer.nativeElement.offsetHeight;
     const barWidth = 4;
-    const progress = 0;
 
     this.svg = d3
       .select(this.chartContainer.nativeElement)
@@ -333,7 +355,7 @@ export class WebNodeInitializationComponent
       .innerRadius(radius - barWidth)
       .outerRadius(radius)
       .startAngle(0)
-      .endAngle(Math.PI * 2 * (progress / 100));
+      .endAngle(0);
 
     this.progressBar
       .append('path')
@@ -359,52 +381,61 @@ export class WebNodeInitializationComponent
 
     this.progressBar
       .append('text')
+      .attr('class', 'value')
       .attr('text-anchor', 'middle')
       .attr('alignment-baseline', 'central')
       .attr('dominant-baseline', 'central')
       .attr('font-size', '40px')
       .attr('fill', 'var(--base-primary)')
       .attr('opacity', 0.8)
-      .attr('dx', '-.2em')
-      .text(progress.toFixed(0));
+      .text('0');
     this.progressBar
       .append('text')
       .attr('class', 'symbol')
-      .attr('text-anchor', 'middle')
+      .attr('text-anchor', 'start')
       .attr('alignment-baseline', 'central')
       .attr('dominant-baseline', 'central')
       .attr('font-size', '20px')
       .attr('fill', 'var(--base-tertiary)')
       .attr('opacity', 0.8)
       .attr('dy', '-.3em')
-      .attr('dx', '1.5em')
       .text('%');
+    this.progressBar
+      .append('text')
+      .attr('class', 'caption')
+      .attr('text-anchor', 'middle')
+      .attr('font-size', '13px')
+      .attr('fill', 'var(--base-tertiary)')
+      .attr('dy', '3.2em')
+      .text('downloaded');
   }
 
-  private updateProgressBar(newProgress: number): void {
-    if (newProgress >= 100) {
-      this.ready = true;
-      newProgress = 100;
-      this.detect();
-      setTimeout(() => this.detect(), 500);
-    }
-    this.progress = newProgress;
-    this.arc.endAngle(Math.PI * 2 * (newProgress / 100));
+  private updateProgressBar(
+    fraction: number,
+    value: string,
+    symbol: string,
+  ): void {
+    this.arc.endAngle(Math.PI * 2 * Math.min(1, fraction));
     this.progressBar.select('path').attr('d', this.arc);
-    this.progressBar.select('text').text(newProgress.toFixed(0));
-    const numberOfDigits = newProgress.toFixed(0).length + 1;
+    this.progressBar.select('.value').text(value);
+    // Half the value's width, in the symbol's (half-size) ems.
+    const valueWidth = value.length * 0.55 + 0.1;
     this.progressBar
       .select('.symbol')
-      .attr('dx', `${numberOfDigits * 0.45}em`)
-      .text('%');
+      .attr('dx', `${valueWidth}em`)
+      .text(symbol);
+    this.progressBar
+      .select('.caption')
+      .text(symbol ? 'downloaded' : this.synced ? 'synced' : 'steps done');
   }
 
   private markErrorOnD3(): void {
+    if (!this.progressBar) {
+      return;
+    }
     this.progressBar.select('path').attr('fill', 'var(--warn-primary)');
-    this.progressBar.select('text').attr('fill', 'var(--warn-primary)');
+    this.progressBar.select('.value').attr('fill', 'var(--warn-primary)');
     this.progressBar.select('.symbol').attr('fill', 'var(--warn-primary)');
     this.progressBar.select('path').attr('opacity', 0.4);
-    this.progressBar.select('text').attr('opacity', 0.8);
-    this.progressBar.select('.symbol').attr('opacity', 0.4);
   }
 }

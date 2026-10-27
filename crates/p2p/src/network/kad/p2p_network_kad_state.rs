@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, net::SocketAddr};
+use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
 
 use malloc_size_of_derive::MallocSizeOf;
 use redux::Timestamp;
@@ -10,7 +10,7 @@ use super::{
 };
 use crate::{
     bootstrap::{P2pNetworkKadBootstrapRequestStat, P2pNetworkKadBootstrapStats},
-    is_time_passed, P2pTimeouts, PeerId, StreamId, StreamState,
+    is_time_passed, ConnectionAddr, P2pTimeouts, PeerId, StreamId, StreamState,
 };
 
 /// Kademlia status.
@@ -81,6 +81,55 @@ impl Default for P2pNetworkKadState {
 }
 
 impl P2pNetworkKadState {
+    pub fn can_reserve_partial_frame(&self, peer: &PeerId, extra: usize) -> bool {
+        self.partial_frame_bytes(None).saturating_add(extra) <= 64 * 1024 * 1024
+            && self.partial_frame_bytes(Some(peer)).saturating_add(extra) <= 8 * 1024 * 1024
+    }
+
+    /// Only incomplete frames count: completed messages release their input buffer.
+    pub fn partial_frame_bytes(&self, peer: Option<&PeerId>) -> usize {
+        self.streams
+            .iter()
+            .filter(|(id, _)| peer.is_none_or(|p| p == *id))
+            .flat_map(|(_, streams)| streams.values())
+            .map(|stream| match stream {
+                P2pNetworkKadStreamState::Incoming(
+                    super::stream::P2pNetworkKadIncomingStreamState::PartialRequestReceived {
+                        data,
+                        ..
+                    },
+                ) => data.capacity(),
+                P2pNetworkKadStreamState::Outgoing(
+                    super::stream::P2pNetworkKadOutgoingStreamState::PartialReplyReceived {
+                        data,
+                        ..
+                    },
+                ) => data.capacity(),
+                _ => 0,
+            })
+            .sum()
+    }
+
+    pub fn expired_partial_frames(
+        &self,
+        now: Timestamp,
+    ) -> Vec<(ConnectionAddr, PeerId, StreamId)> {
+        self.streams.iter().flat_map(|(peer_id, streams)| {
+            streams.iter().filter_map(move |(stream_id, stream)| {
+                let (since, addr) = match stream {
+                    P2pNetworkKadStreamState::Incoming(
+                        super::stream::P2pNetworkKadIncomingStreamState::PartialRequestReceived { since, addr, .. },
+                    ) => (since, addr),
+                    P2pNetworkKadStreamState::Outgoing(
+                        super::stream::P2pNetworkKadOutgoingStreamState::PartialReplyReceived { since, addr, .. },
+                    ) => (since, addr),
+                    _ => return None,
+                };
+                is_time_passed(now, *since, Some(Duration::from_secs(30)))
+                    .then_some((*addr, *peer_id, *stream_id))
+            })
+        }).collect()
+    }
     pub fn is_bootstrapped(&self) -> bool {
         matches!(&self.status, P2pNetworkKadStatus::Bootstrapped { .. })
     }
@@ -160,6 +209,15 @@ impl P2pNetworkKadState {
         stream_id: &StreamId,
     ) -> Option<&mut P2pNetworkKadStreamState> {
         self.streams.get_mut(peer_id)?.get_mut(stream_id)
+    }
+
+    pub fn incoming_streams_count(&self, peer_id: &PeerId) -> usize {
+        self.streams.get(peer_id).map_or(0, |streams| {
+            streams
+                .values()
+                .filter(|stream| matches!(stream, P2pNetworkKadStreamState::Incoming(_)))
+                .count()
+        })
     }
 
     pub fn remove_kad_stream_state(&mut self, peer_id: &PeerId, stream_id: &StreamId) -> bool {

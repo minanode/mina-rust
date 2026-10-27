@@ -6,7 +6,7 @@ use mina_p2p_messages::v2::{self};
 use std::{env, io::Write};
 
 use mina_core::NetworkConfig;
-use mina_p2p_messages::v2::PrecomputedBlock;
+use mina_p2p_messages::v2::PrecomputedBlockData;
 use std::net::SocketAddr;
 
 use super::NodeService;
@@ -14,17 +14,25 @@ use super::NodeService;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod aws;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod delivery;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod gcp;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod outbox;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod rpc;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
 
 pub mod config;
 
 use config::ArchiveStorageOptions;
 
-const ARCHIVE_SEND_RETRIES: u8 = 5;
 const MAX_EVENT_COUNT: u64 = 100;
-const RETRY_INTERVAL_MS: u64 = 1000;
+/// How long one delivery may wait for the archive's answer. OCaml's archive
+/// answers when its processor takes the diff, after the blocks before it are
+/// written, so a busy archive can take a while.
+const DEFAULT_SEND_TIMEOUT_SECS: u64 = 120;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -32,6 +40,8 @@ pub enum Error {
     EnvironmentVariableNotSet(String),
     #[error("Failed to upload block to AWS: {0}")]
     UploadError(String),
+    #[error("Archive outbox: {0}")]
+    Outbox(String),
 }
 
 pub struct ArchiveService {
@@ -40,7 +50,7 @@ pub struct ArchiveService {
 
 #[cfg(not(target_arch = "wasm32"))]
 struct ArchiveServiceClients {
-    archiver_address: Option<SocketAddr>,
+    archiver_outbox: Option<delivery::SharedOutbox>,
     aws_client: Option<aws::ArchiveAWSClient>,
     gcp_client: Option<gcp::ArchiveGCPClient>,
     local_path: Option<String>,
@@ -71,7 +81,7 @@ impl ArchiveServiceClients {
             None
         };
 
-        let archiver_address = if options.uses_archiver_process() {
+        let archiver_outbox = if options.uses_archiver_process() {
             let address =
                 std::env::var("MINA_ARCHIVE_ADDRESS").expect("MINA_ARCHIVE_ADDRESS is not set");
             let address = reqwest::Url::parse(&address).expect("Invalid URL");
@@ -81,13 +91,13 @@ impl ArchiveServiceClients {
 
             let socket_addr = socket_addrs.first().expect("No socket address found");
 
-            Some(*socket_addr)
+            Some(start_archiver_outbox(*socket_addr, &work_dir)?)
         } else {
             None
         };
 
         Ok(Self {
-            archiver_address,
+            archiver_outbox,
             aws_client,
             gcp_client,
             local_path,
@@ -96,10 +106,10 @@ impl ArchiveServiceClients {
 
     pub async fn send_block(&self, breadcrumb: BlockApplyResult, options: &ArchiveStorageOptions) {
         if options.uses_archiver_process() {
-            if let Some(socket_addr) = self.archiver_address {
-                Self::handle_archiver_process(&breadcrumb, &socket_addr).await;
+            if let Some(outbox) = &self.archiver_outbox {
+                Self::handle_archiver_process(&breadcrumb, outbox);
             } else {
-                mina_node::core::warn!(summary = "Archiver address not set");
+                mina_node::core::warn!(summary = "Archiver outbox not set");
             }
         }
 
@@ -110,22 +120,25 @@ impl ArchiveServiceClients {
 
             let key = format!("{network_name}-{height}-{state_hash}.json");
 
-            mina_node::core::info!(
+            mina_node::core::debug!(
                 summary = "Uploading precomputed block to archive",
                 key = key.clone()
             );
 
-            let precomputed_block: PrecomputedBlock = match breadcrumb.try_into() {
+            let precomputed_block = match breadcrumb.precomputed_block(scheduled_time_now()) {
                 Ok(block) => block,
-                Err(_) => {
+                Err(e) => {
                     mina_node::core::warn!(
-                        summary = "Failed to convert breadcrumb to precomputed block"
+                        summary = "Failed to convert breadcrumb to precomputed block",
+                        error = e
                     );
                     return;
                 }
             };
 
-            let data = match serde_json::to_vec(&precomputed_block) {
+            let data = match PrecomputedBlockData::from(precomputed_block)
+                .to_ocaml_json(&mina_node::ledger::write::LedgerHashes)
+            {
                 Ok(data) => data,
                 Err(e) => {
                     mina_node::core::warn!(
@@ -182,37 +195,129 @@ impl ArchiveServiceClients {
         }
     }
 
-    async fn handle_archiver_process(breadcrumb: &BlockApplyResult, socket_addr: &SocketAddr) {
-        let mut retries = ARCHIVE_SEND_RETRIES;
-
-        let archive_transition_frontier_diff: v2::ArchiveTransitionFrontierDiff =
-            breadcrumb.clone().try_into().unwrap();
-
-        for _ in 0..ARCHIVE_SEND_RETRIES {
-            match rpc::send_diff(
-                *socket_addr,
-                v2::ArchiveRpc::SendDiff(archive_transition_frontier_diff.clone()),
-            ) {
-                Ok(result) if result.should_retry() => {
-                    mina_node::core::warn!(summary = "Archive closed connection, retrying...");
-                    tokio::time::sleep(tokio::time::Duration::from_millis(RETRY_INTERVAL_MS)).await;
-                }
-                Ok(_) => {
-                    mina_node::core::info!(summary = "Successfully sent diff to archive");
-                    return;
-                }
-                Err(e) => {
-                    mina_node::core::warn!(
-                        summary = "Failed sending diff to archive",
-                        error = e.to_string(),
-                        retries = retries
-                    );
-                    tokio::time::sleep(tokio::time::Duration::from_millis(RETRY_INTERVAL_MS)).await;
-                }
+    /// Puts the block's diff in the outbox; the delivery thread sends it.
+    fn handle_archiver_process(breadcrumb: &BlockApplyResult, outbox: &delivery::SharedOutbox) {
+        let height = breadcrumb.block.height();
+        let state_hash = breadcrumb.block.hash().to_string();
+        let payload = v2::ArchiveTransitionFrontierDiff::try_from(breadcrumb).and_then(|diff| {
+            rpc::encode_payload(&v2::ArchiveRpc::SendDiff(diff)).map_err(|e| e.to_string())
+        });
+        let payload = match payload {
+            Ok(payload) => payload,
+            Err(error) => {
+                mina_node::core::error!(
+                    mina_node::core::log::system_time();
+                    summary = "archive diff not built, block not archived",
+                    height = height,
+                    state_hash = state_hash,
+                    error = error,
+                );
+                return;
             }
-            retries -= 1;
+        };
+        let block = outbox::BlockRef {
+            height,
+            state_hash: state_hash.clone(),
+        };
+        let parent_hash = breadcrumb.block.pred_hash().to_string();
+        match outbox.append(block, &parent_hash, &payload) {
+            Ok(outbox::AppendOutcome::Queued { .. }) => {
+                mina_node::core::debug!(
+                    mina_node::core::log::system_time();
+                    summary = "archive diff queued",
+                    height = height,
+                    state_hash = state_hash,
+                    pending = outbox.pending_len(),
+                );
+            }
+            Ok(outbox::AppendOutcome::AlreadyPending { .. }) => {}
+            Err(e) => {
+                mina_node::core::error!(
+                    mina_node::core::log::system_time();
+                    summary = "archive outbox write failed, block not archived",
+                    height = height,
+                    state_hash = state_hash,
+                    error = e.to_string(),
+                );
+            }
         }
     }
+}
+
+/// Sends outbox entries to an archive process over its `Send_archive_diff`
+/// RPC.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct RpcSink {
+    pub address: SocketAddr,
+    pub timeout: std::time::Duration,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl delivery::ArchiveSink for RpcSink {
+    fn deliver(&mut self, payload: &[u8]) -> Result<(), String> {
+        match rpc::send_payload(self.address, payload, self.timeout) {
+            Ok(rpc::HandleResult::MessageSent) => Ok(()),
+            Ok(_) => Err("archive closed the connection before answering".to_owned()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn env_parse<T: std::str::FromStr>(name: &str) -> Result<Option<T>, Error> {
+    match env::var(name) {
+        Ok(value) => value
+            .parse()
+            .map(Some)
+            .map_err(|_| Error::Outbox(format!("{name}={value} is not a valid number"))),
+        Err(_) => Ok(None),
+    }
+}
+
+/// Opens the archive outbox (`MINA_ARCHIVE_OUTBOX_DIR`, by default
+/// `<work dir>/archive-outbox`) and starts delivering it to `address`.
+#[cfg(not(target_arch = "wasm32"))]
+fn start_archiver_outbox(
+    address: SocketAddr,
+    work_dir: &str,
+) -> Result<delivery::SharedOutbox, Error> {
+    let dir = env::var("MINA_ARCHIVE_OUTBOX_DIR")
+        .unwrap_or_else(|_| format!("{work_dir}/archive-outbox"));
+    let mut config = outbox::OutboxConfig::new(dir);
+    if let Some(max) = env_parse("MINA_ARCHIVE_OUTBOX_MAX_ENTRIES")? {
+        config.max_entries = max;
+    }
+    if let Some(max) = env_parse("MINA_ARCHIVE_OUTBOX_MAX_BYTES")? {
+        config.max_bytes = max;
+    }
+    if let Some(retain) = env_parse("MINA_ARCHIVE_RETAIN_BLOCKS")? {
+        config.retain_blocks = retain;
+    }
+    let timeout = env_parse("MINA_ARCHIVE_SEND_TIMEOUT_SECS")?.unwrap_or(DEFAULT_SEND_TIMEOUT_SECS);
+
+    let opened = outbox::Outbox::open(config.clone()).map_err(|e| Error::Outbox(e.to_string()))?;
+    let stats = opened.stats().clone();
+    mina_node::core::info!(
+        mina_node::core::log::system_time();
+        summary = "archive outbox opened",
+        dir = config.dir.display().to_string(),
+        archive_address = address.to_string(),
+        pending = stats.pending_entries,
+        pending_bytes = stats.pending_bytes,
+        max_entries = config.max_entries,
+        max_bytes = config.max_bytes,
+        gaps_total = stats.gaps_total,
+    );
+    let shared = delivery::SharedOutbox::new(opened, Some(address.to_string()));
+    shared.register_global();
+    shared.spawn_delivery(
+        Box::new(RpcSink {
+            address,
+            timeout: std::time::Duration::from_secs(timeout),
+        }),
+        delivery::Backoff::default(),
+    );
+    Ok(shared)
 }
 
 impl ArchiveService {
@@ -314,6 +419,17 @@ impl mina_node::transition_frontier::archive::archive_service::ArchiveService fo
 // Note: Placeholder for the wasm implementation, if we decide to include an archive mode in the future
 #[cfg(target_arch = "wasm32")]
 mod rpc {}
+
+/// The time OCaml writes as a precomputed block's `scheduled_time`: now.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_lib/mina_subscriptions.ml#L140-L154>
+#[cfg(not(target_arch = "wasm32"))]
+fn scheduled_time_now() -> v2::BlockTimeTimeStableV1 {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64);
+    v2::BlockTimeTimeStableV1(ms.into())
+}
 
 fn write_to_local_storage(base_path: &str, key: &str, data: &[u8]) -> Result<(), Error> {
     use std::{

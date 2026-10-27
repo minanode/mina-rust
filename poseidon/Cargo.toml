@@ -2,6 +2,7 @@
 name = "poseidon"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [lints]
 workspace = true
@@ -13,3 +14,10 @@ mina-curves = { workspace = true }
 o1-utils = { workspace = true }
 once_cell = { workspace = true }
 serde = { workspace = true }
+
+# The tests also run as WASM, in Node through wasm-bindgen-test-runner, where
+# `poseidon_block_cipher` has its fast path (tests/fast_path.rs).
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+getrandom = { workspace = true, features = ["js"] }
+js-sys = { workspace = true }
+wasm-bindgen-test = { workspace = true }

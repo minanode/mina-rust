@@ -5,7 +5,6 @@ use ledger::scan_state::scan_state::{
 use mina_p2p_messages::v2::{
     SnarkWorkerWorkerRpcsVersionedGetWorkV2TResponseA0Instances,
     SnarkWorkerWorkerRpcsVersionedGetWorkV2TResponseA0Single, StateBodyHash,
-    TransactionSnarkScanStateLedgerProofWithSokMessageStableV2,
     TransactionSnarkScanStateTransactionWithWitnessStableV2,
 };
 use serde::{Deserialize, Serialize};
@@ -47,7 +46,7 @@ fn with_merged_statement(
 ) -> Result<SnarkWorkerWorkerRpcsVersionedGetWorkV2TResponseA0Single, SnarkWorkSpecError> {
     match job {
         AvailableJobMessage::Base(TransactionSnarkScanStateTransactionWithWitnessStableV2 {
-            transaction_with_info,
+            transaction_with_status,
             state_hash,
             statement,
             init_stack,
@@ -55,10 +54,8 @@ fn with_merged_statement(
             second_pass_ledger_witness,
             block_global_slot,
         }) => {
-            let (transaction, status) = transaction_with_info.varying.into();
-            let mina_p2p_messages::v2::MinaStateSnarkedLedgerStatePendingCoinbaseStackStateInitStackStableV1::Base(init_stack) = init_stack else {
-                panic!("merge in base transaction");
-            };
+            let (transaction, status) =
+                (transaction_with_status.data, transaction_with_status.status);
             let protocol_state_body = transition_frontier
                 .get_state_body(&state_hash.0)
                 .ok_or_else(|| SnarkWorkSpecError::UnknownStateBodyHash(state_hash.1.clone()))?
@@ -80,14 +77,12 @@ fn with_merged_statement(
             )
         }
         AvailableJobMessage::Merge {
-            left:
-                TransactionSnarkScanStateLedgerProofWithSokMessageStableV2(ledger_proof1, _message1),
-            right:
-                TransactionSnarkScanStateLedgerProofWithSokMessageStableV2(ledger_proof2, _message2),
+            left: ledger_proof1,
+            right: ledger_proof2,
         } => {
             let (Ok(ledger_stmt1), Ok(ledger_stmt2)) = (
-                Statement::<()>::try_from(&ledger_proof1.statement),
-                Statement::<()>::try_from(&ledger_proof2.statement),
+                Statement::<()>::try_from(&ledger_proof1.0.statement),
+                Statement::<()>::try_from(&ledger_proof2.0.statement),
             ) else {
                 return Err(SnarkWorkSpecError::InvalidBigInt);
             };

@@ -30,11 +30,7 @@ impl MultiNodeSync4BlockProducers {
             let (sec_key, _) = block_producers.pop().unwrap();
             runner.add_rust_node(RustNodeTestingConfig {
                 block_producer: Some(RustNodeBlockProducerTestingConfig {
-                    config: BlockProducerConfig {
-                        pub_key: sec_key.public_key().into(),
-                        custom_coinbase_receiver: None,
-                        proposed_protocol_version: None,
-                    },
+                    config: BlockProducerConfig::new(sec_key.public_key().into()),
                     sec_key,
                 }),
                 ..node_config.clone()

@@ -99,7 +99,7 @@ pub mod bw19 {
 }
 
 use ark_ff::One;
-use mina_curves::pasta::{fields::fft::FpParameters as _, Fp};
+use mina_curves::pasta::Fp;
 
 use self::tock::Conic;
 
@@ -112,9 +112,12 @@ fn sqrt_exn<F: FieldWitness>(x: F, w: &mut Witness<F>) -> F {
     w.exists(x.sqrt().unwrap())
 }
 
+/// Euler's criterion, with the modulus of `F` itself. It used to hardcode
+/// `Fp`'s, so every call on `Fq` (the whole wrap side) used the wrong exponent
+/// and `sqrt_exn` then unwrapped the square root of a non-residue. Fix from
+/// youtpout/mina-rust 1adaf7ad.
 fn is_square<F: FieldWitness>(x: F) -> bool {
-    let modulus_minus_one_div_two =
-        mina_curves::pasta::fields::FpParameters::MODULUS_MINUS_ONE_DIV_TWO.0;
+    let modulus_minus_one_div_two = <F as ark_ff::PrimeField>::MODULUS_MINUS_ONE_DIV_TWO;
 
     let s = x.pow(modulus_minus_one_div_two);
     s.is_zero() || s.is_one()
@@ -321,4 +324,27 @@ pub fn to_group(t: Fp, w: &mut Witness<Fp>) -> GroupAffine<Fp> {
     };
 
     wrap(potential_xs, w)
+}
+
+#[cfg(test)]
+mod tests {
+    use mina_curves::pasta::{Fp, Fq};
+
+    use super::*;
+
+    fn is_square_agrees_with_legendre<F: FieldWitness>() {
+        for i in 0u64..512 {
+            let x = F::from(i);
+            assert_eq!(is_square(x), !x.legendre().is_qnr(), "x = {i}");
+        }
+        assert!(non_residue::<F>().legendre().is_qnr());
+    }
+
+    /// Both fields: the wrap side works on `Fq`, which `is_square` got wrong
+    /// when it used `Fp`'s modulus.
+    #[test]
+    fn is_square_matches_legendre_symbol() {
+        is_square_agrees_with_legendre::<Fp>();
+        is_square_agrees_with_legendre::<Fq>();
+    }
 }

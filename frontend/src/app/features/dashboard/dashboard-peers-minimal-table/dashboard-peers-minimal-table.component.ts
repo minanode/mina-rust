@@ -11,6 +11,7 @@ import {
   selectDashboardPeersSort,
 } from '@dashboard/dashboard.state';
 import { filter } from 'rxjs';
+import { formatHeight } from '@shared/helpers/freshness.helper';
 
 @Component({
   selector: 'mina-dashboard-peers-minimal-table',
@@ -22,10 +23,13 @@ import { filter } from 'rxjs';
 })
 export class DashboardPeersMinimalTableComponent extends MinaTableRustWrapper<DashboardPeer> {
   protected readonly DashboardPeerStatus = DashboardPeerStatus;
+  protected readonly formatHeight = formatHeight;
   protected readonly tableHeads: TableColumnList<DashboardPeer> = [
-    { name: 'peer', sort: 'status' },
-    { name: 'datetime', sort: 'timestamp' },
-    { name: 'best tip', sort: 'height' },
+    { name: 'status', sort: 'status' },
+    // When the peer entered that status (connected since, and so on).
+    { name: 'since (UTC)', sort: 'timestamp' },
+    // The tip the peer last advertised to this node (R27 #10).
+    { name: 'peer tip', sort: 'height' },
   ];
 
   override async ngOnInit(): Promise<void> {

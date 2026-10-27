@@ -1,0 +1,31 @@
+[package]
+name = "mina-web-relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Relay Mina blocks from libp2p gossip to browsers over WebSocket"
+
+[dependencies]
+axum = { workspace = true, features = ["ws"] }
+binprot = { workspace = true }
+clap = { workspace = true }
+env_logger = { workspace = true }
+libp2p = { workspace = true, features = [
+  "gossipsub",
+  "kad",
+  "macros",
+  "tokio",
+] }
+log = { workspace = true }
+mina-p2p-messages = { workspace = true }
+mina-transport = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = [
+  "macros",
+  "net",
+  "rt-multi-thread",
+  "sync",
+  "time",
+] }
+tower-http = { workspace = true }

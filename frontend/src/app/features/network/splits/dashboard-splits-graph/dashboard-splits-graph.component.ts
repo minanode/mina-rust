@@ -76,24 +76,6 @@ export class DashboardSplitsGraphComponent
     SVGGElement,
     undefined
   >;
-  private triangles: d3.Selection<
-    SVGPathElement,
-    DashboardSplitsPeerSimulation,
-    SVGGElement,
-    undefined
-  >;
-  private squares: d3.Selection<
-    SVGRectElement,
-    DashboardSplitsPeerSimulation,
-    SVGGElement,
-    undefined
-  >;
-  private diamonds: d3.Selection<
-    SVGPathElement,
-    DashboardSplitsPeerSimulation,
-    SVGGElement,
-    undefined
-  >;
   private hoveredConnectedLinks: d3.Selection<
     SVGLineElement,
     DashboardSplitsLinkSimulation,
@@ -157,6 +139,13 @@ export class DashboardSplitsGraphComponent
         this.fetching = fetching;
         this.peers = peers;
         this.links = links;
+
+        // Render before the asynchronous diagnostics, so an old callback
+        // cannot restore a graph cleared by a node switch.
+        this.renderGraph({ peers, links, sets });
+        if (peers.length < 2) {
+          return;
+        }
 
         // Step 1: Determine the number of vertices
         const addresses: string[] = [
@@ -239,18 +228,18 @@ export class DashboardSplitsGraphComponent
         const spectralGap: number = sortedEigenvalues[1] - sortedEigenvalues[0];
 
         console.log('Spectral Gap:', spectralGap);
-
-        this.renderGraph({ peers, links, sets });
       },
       tap(({ fetching }) => {
         if (fetching) {
           this.fetching = fetching;
+          this.simulation?.stop();
+          this.svg?.selectAll('g').remove();
+          this.tooltip?.style('display', 'none');
+          this.peers = [];
+          this.links = [];
         }
       }),
-      filter(
-        ({ peers, links, fetching }) =>
-          peers.length > 0 && links.length > 0 && this.fetching && !fetching,
-      ),
+      filter(({ fetching }) => this.fetching && !fetching),
     );
   }
 
@@ -291,9 +280,6 @@ export class DashboardSplitsGraphComponent
         );
     };
     addNewColors(this.circles);
-    addNewColors(this.triangles);
-    addNewColors(this.squares);
-    addNewColors(this.diamonds);
     this.clickedConnectedLinks = this.connections.filter(
       (link: DashboardSplitsLinkSimulation) =>
         link.source.address === activePeer.address ||
@@ -327,9 +313,6 @@ export class DashboardSplitsGraphComponent
         );
     };
     addInitialColors(this.circles);
-    addInitialColors(this.triangles);
-    addInitialColors(this.squares);
-    addInitialColors(this.diamonds);
     this.clickedConnectedLinks.attr('stroke', 'var(--base-divider)');
   }
 
@@ -363,6 +346,7 @@ export class DashboardSplitsGraphComponent
     links: DashboardSplitsLink[];
     sets: DashboardSplitsSet[];
   }): void {
+    this.simulation?.stop();
     const nodes: DashboardSplitsPeerSimulation[] = peers.map(peer => ({
       ...peer,
     }));
@@ -396,27 +380,9 @@ export class DashboardSplitsGraphComponent
       .attr('class', d => `link ${d.source.address} ${d.target.address}`)
       .attr('stroke', 'var(--base-divider)');
 
-    const circleNodes = nodes.filter(
-      peer =>
-        !peer.node ||
-        ['node', 'generator'].some(
-          n =>
-            peer.node.toLowerCase().includes(n) &&
-            !peer.node.toLowerCase().includes('webnode'),
-        ),
-    );
-    const webnodeNodes = nodes
-      .filter(p => p.node)
-      .filter(peer => peer.node.toLowerCase().includes('webnode'));
-    const triangleNodes = nodes
-      .filter(p => p.node)
-      .filter(peer => peer.node.toLowerCase().includes('snark'));
-    const squareNodes = nodes
-      .filter(p => p.node)
-      .filter(peer => peer.node.toLowerCase().includes('prod'));
-    const diamondNodes = nodes
-      .filter(p => p.node)
-      .filter(peer => peer.node.toLowerCase().includes('seed'));
+    // The node's own peer list says nothing of a peer's role.
+    const circleNodes = nodes.filter(peer => !peer.self);
+    const webnodeNodes = nodes.filter(peer => peer.self);
 
     this.circles = this.getG('circles', 'circle')
       .attr('class', 'circles')
@@ -472,46 +438,6 @@ export class DashboardSplitsGraphComponent
           this.dispatch(DashboardSplitsSetActivePeer, selectedPeer);
         },
       );
-
-    this.triangles = this.getG('triangles', 'path')
-      .attr('class', 'triangles')
-      .selectAll('path')
-      .data(triangleNodes)
-      .enter()
-      .append('path')
-      .attr(
-        'd',
-        d3
-          .symbol()
-          .type(d3.symbolTriangle2)
-          .size(d => d.radius * 20),
-      );
-    this.addCommonProperties(this.triangles, lines);
-
-    this.squares = this.getG('squares', 'rect')
-      .attr('class', 'squares')
-      .selectAll('rect')
-      .data(squareNodes)
-      .enter()
-      .append('rect')
-      .attr('width', (d: DashboardSplitsPeerSimulation) => d.radius * 2)
-      .attr('height', (d: DashboardSplitsPeerSimulation) => d.radius * 2);
-    this.addCommonProperties(this.squares, lines);
-
-    this.diamonds = this.getG('diamonds', 'path')
-      .attr('class', 'diamonds')
-      .selectAll('path')
-      .data(diamondNodes)
-      .enter()
-      .append('path')
-      .attr(
-        'd',
-        d3
-          .symbol()
-          .type(d3.symbolDiamond2)
-          .size(d => d.radius * 20),
-      );
-    this.addCommonProperties(this.diamonds, lines);
   }
 
   private createSimulation(
@@ -612,17 +538,6 @@ export class DashboardSplitsGraphComponent
       this.webnodeOuterCircles
         .attr('cx', (d: DashboardSplitsPeerSimulation) => d.x)
         .attr('cy', (d: DashboardSplitsPeerSimulation) => d.y);
-      this.triangles.attr(
-        'transform',
-        (d: DashboardSplitsPeerSimulation) => `translate(${d.x}, ${d.y})`,
-      );
-      this.squares
-        .attr('x', (d: DashboardSplitsPeerSimulation) => d.x - d.radius)
-        .attr('y', (d: DashboardSplitsPeerSimulation) => d.y - d.radius);
-      this.diamonds.attr(
-        'transform',
-        (d: DashboardSplitsPeerSimulation) => `translate(${d.x}, ${d.y})`,
-      );
     });
 
     for (let i = 0; i < 20; ++i) {

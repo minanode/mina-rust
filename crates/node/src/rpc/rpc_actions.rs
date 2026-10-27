@@ -18,9 +18,11 @@ use crate::{
 };
 
 use super::{
-    ActionStatsQuery, ConsensusTimeQuery, GetBlockQuery, PooledUserCommandsQuery,
-    PooledZkappsCommandsQuery, RpcId, RpcLedgerAccountDelegatorsGetResponse,
-    RpcLedgerStatusGetResponse, RpcScanStateSummaryGetQuery, RpcScanStateSummaryScanStateJob,
+    ActionStatsQuery, ConsensusTimeQuery, DelegatorsQuery, GetBlockQuery, HardForkBlockSpec,
+    LedgerExportKind, PooledUserCommandsQuery, PooledZkappsCommandsQuery,
+    RpcHardForkExportResponse, RpcId, RpcLedgerAccountDelegatorsGetResponse,
+    RpcLedgerExportResponse, RpcLedgerStatusGetResponse, RpcLightAccountQuery,
+    RpcLightAccountResponse, RpcScanStateSummaryGetQuery, RpcScanStateSummaryScanStateJob,
     SyncStatsQuery,
 };
 
@@ -31,6 +33,12 @@ pub enum RpcAction {
         filter: Option<String>,
     },
     StatusGet {
+        rpc_id: RpcId,
+    },
+    MemoryDebugGet {
+        rpc_id: RpcId,
+    },
+    MetricsGet {
         rpc_id: RpcId,
     },
     HeartbeatGet {
@@ -45,6 +53,16 @@ pub enum RpcAction {
     SyncStatsGet {
         rpc_id: RpcId,
         query: SyncStatsQuery,
+    },
+    VerificationStatsGet {
+        rpc_id: RpcId,
+        query: crate::verification::VerificationQuery,
+    },
+    SnarkWorkCoverageGet {
+        rpc_id: RpcId,
+    },
+    ProofMemoryGet {
+        rpc_id: RpcId,
     },
     BlockProducerStatsGet {
         rpc_id: RpcId,
@@ -141,6 +159,16 @@ pub enum RpcAction {
     SnarkerWorkersGet {
         rpc_id: RpcId,
     },
+    SnarkWorkerControlGet {
+        rpc_id: RpcId,
+    },
+    SnarkWorkerControlSet {
+        rpc_id: RpcId,
+        setting: Option<crate::SnarkerSetting>,
+    },
+    SnarkWorkIncludedGet {
+        rpc_id: RpcId,
+    },
 
     HealthCheck {
         rpc_id: RpcId,
@@ -159,27 +187,27 @@ pub enum RpcAction {
     TransactionPool {
         rpc_id: RpcId,
     },
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     LedgerAccountsGetInit {
         rpc_id: RpcId,
         account_query: AccountQuery,
     },
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     LedgerAccountsGetPending {
         rpc_id: RpcId,
     },
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     LedgerAccountsGetSuccess {
         rpc_id: RpcId,
         accounts: Vec<Account>,
         account_query: AccountQuery,
     },
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     TransactionInjectInit {
         rpc_id: RpcId,
         commands: Vec<MinaBaseUserCommandStableV2>,
     },
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     TransactionInjectPending {
         rpc_id: RpcId,
     },
@@ -198,7 +226,7 @@ pub enum RpcAction {
         rpc_id: RpcId,
         errors: Vec<String>,
     },
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     TransitionFrontierUserCommandsGet {
         rpc_id: RpcId,
     },
@@ -214,6 +242,10 @@ pub enum RpcAction {
     TransactionStatusGet {
         rpc_id: RpcId,
         tx: MinaBaseUserCommandStableV2,
+    },
+    TransactionNonceGet {
+        rpc_id: RpcId,
+        account_id: AccountId,
     },
 
     BlockGet {
@@ -235,20 +267,50 @@ pub enum RpcAction {
         rpc_id: RpcId,
         response: RpcLedgerStatusGetResponse,
     },
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     LedgerAccountDelegatorsGetInit {
         rpc_id: RpcId,
-        ledger_hash: LedgerHash,
+        query: DelegatorsQuery,
         account_id: AccountId,
     },
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     LedgerAccountDelegatorsGetPending {
         rpc_id: RpcId,
     },
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     LedgerAccountDelegatorsGetSuccess {
         rpc_id: RpcId,
         response: RpcLedgerAccountDelegatorsGetResponse,
+    },
+
+    #[action_event(level = debug)]
+    LedgerExportInit {
+        rpc_id: RpcId,
+        kind: LedgerExportKind,
+    },
+    #[action_event(level = debug)]
+    LedgerExportPending {
+        rpc_id: RpcId,
+    },
+    #[action_event(level = info)]
+    LedgerExportSuccess {
+        rpc_id: RpcId,
+        response: RpcLedgerExportResponse,
+    },
+
+    #[action_event(level = info)]
+    HardForkConfigInit {
+        rpc_id: RpcId,
+        spec: HardForkBlockSpec,
+    },
+    #[action_event(level = info)]
+    HardForkConfigPending {
+        rpc_id: RpcId,
+    },
+    #[action_event(level = info)]
+    HardForkConfigSuccess {
+        rpc_id: RpcId,
+        response: RpcHardForkExportResponse,
     },
 
     PooledUserCommands {
@@ -263,6 +325,29 @@ pub enum RpcAction {
         rpc_id: RpcId,
     },
 
+    #[action_event(level = trace)]
+    LightBestTipGet {
+        rpc_id: RpcId,
+    },
+    #[action_event(level = trace)]
+    LightAccountInit {
+        rpc_id: RpcId,
+        query: RpcLightAccountQuery,
+    },
+    #[action_event(level = trace)]
+    LightAccountPending {
+        rpc_id: RpcId,
+    },
+    #[action_event(level = trace)]
+    LightAccountSuccess {
+        rpc_id: RpcId,
+        response: RpcLightAccountResponse,
+    },
+    /// Answers light requests the ledger read quota held back past
+    /// [`super::LIGHT_REQUEST_TIMEOUT`] and drops them.
+    #[action_event(level = trace)]
+    LightAccountsExpire,
+
     Finish {
         rpc_id: RpcId,
     },
@@ -274,17 +359,27 @@ pub enum AccountQuery {
     SinglePublicKey(AccountPublicKey),
     MultipleIds(Vec<AccountId>),
     PubKeyWithTokenId(AccountPublicKey, TokenIdKeyHash),
+    /// The account that owns a token: the one whose id derives it.
+    TokenOwner(TokenIdKeyHash),
+    /// Accounts of the best tip's staking epoch ledger, the one its epoch's
+    /// stake comes from, rather than of its ledger.
+    StakingEpochIds(Vec<AccountId>),
 }
 
 impl redux::EnablingCondition<crate::State> for RpcAction {
-    fn is_enabled(&self, state: &crate::State, _time: redux::Timestamp) -> bool {
+    fn is_enabled(&self, state: &crate::State, time: redux::Timestamp) -> bool {
         match self {
             RpcAction::GlobalStateGet { .. } => true,
             RpcAction::StatusGet { .. } => true,
+            RpcAction::MemoryDebugGet { .. } => true,
+            RpcAction::MetricsGet { .. } => true,
             RpcAction::HeartbeatGet { .. } => true,
             RpcAction::ActionStatsGet { .. } => true,
             RpcAction::SyncStatsGet { .. } => true,
             RpcAction::BlockProducerStatsGet { .. } => true,
+            RpcAction::VerificationStatsGet { .. } => true,
+            RpcAction::SnarkWorkCoverageGet { .. } => true,
+            RpcAction::ProofMemoryGet { .. } => true,
             RpcAction::MessageProgressGet { .. } => true,
             RpcAction::PeersGet { .. } => true,
             RpcAction::P2pConnectionOutgoingInit { rpc_id, .. } => {
@@ -353,6 +448,9 @@ impl redux::EnablingCondition<crate::State> for RpcAction {
             RpcAction::SnarkerJobCommit { .. } => true,
             RpcAction::SnarkerJobSpec { .. } => true,
             RpcAction::SnarkerWorkersGet { .. } => true,
+            RpcAction::SnarkWorkerControlGet { .. } => true,
+            RpcAction::SnarkWorkerControlSet { .. } => true,
+            RpcAction::SnarkWorkIncludedGet { .. } => true,
             RpcAction::HealthCheck { .. } => true,
             RpcAction::ReadinessCheck { .. } => true,
             RpcAction::DiscoveryRoutingTable { .. } => true,
@@ -361,6 +459,7 @@ impl redux::EnablingCondition<crate::State> for RpcAction {
             RpcAction::ConsensusConstantsGet { .. } => true,
             RpcAction::BestChain { .. } => state.transition_frontier.best_tip().is_some(),
             RpcAction::TransactionStatusGet { .. } => true,
+            RpcAction::TransactionNonceGet { .. } => true,
             RpcAction::PooledUserCommands { .. } => true,
             RpcAction::PooledZkappCommands { .. } => true,
             RpcAction::GenesisBlock { .. } => true,
@@ -426,6 +525,47 @@ impl redux::EnablingCondition<crate::State> for RpcAction {
                 .requests
                 .get(rpc_id)
                 .is_some_and(|v| v.status.is_pending()),
+            RpcAction::LedgerExportInit { .. } => state.transition_frontier.best_tip().is_some(),
+            RpcAction::LedgerExportPending { rpc_id } => state
+                .rpc
+                .requests
+                .get(rpc_id)
+                .is_some_and(|v| v.status.is_init()),
+            RpcAction::LedgerExportSuccess { rpc_id, .. } => state
+                .rpc
+                .requests
+                .get(rpc_id)
+                .is_some_and(|v| v.status.is_pending()),
+            RpcAction::HardForkConfigInit { .. } => state.transition_frontier.best_tip().is_some(),
+            RpcAction::HardForkConfigPending { rpc_id } => state
+                .rpc
+                .requests
+                .get(rpc_id)
+                .is_some_and(|v| v.status.is_init()),
+            RpcAction::HardForkConfigSuccess { rpc_id, .. } => state
+                .rpc
+                .requests
+                .get(rpc_id)
+                .is_some_and(|v| v.status.is_pending()),
+            RpcAction::LightBestTipGet { .. } => true,
+            // A retry after the ledger read quota was full finds it in Init.
+            RpcAction::LightAccountInit { rpc_id, .. } => state
+                .rpc
+                .requests
+                .get(rpc_id)
+                .is_none_or(|v| v.status.is_init()),
+            RpcAction::LightAccountPending { rpc_id } => state
+                .rpc
+                .requests
+                .get(rpc_id)
+                .is_some_and(|v| v.status.is_init()),
+            // From Init too: a query that names no ledger is answered at once.
+            RpcAction::LightAccountSuccess { rpc_id, .. } => state
+                .rpc
+                .requests
+                .get(rpc_id)
+                .is_some_and(|v| !v.status.is_finished()),
+            RpcAction::LightAccountsExpire => state.rpc.light_expired(time).next().is_some(),
             RpcAction::Finish { rpc_id } => state
                 .rpc
                 .requests

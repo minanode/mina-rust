@@ -1,0 +1,127 @@
+/*
+ * Entry stylesheet for apps that use the design system. Import it once, from
+ * the app's own CSS:
+ *
+ *   @import "@minanode/design-system/styles.css";
+ *
+ * It loads Tailwind, the self-hosted fonts and the tokens, and tells Tailwind
+ * to scan this package's components for class names.
+ */
+
+@import "tailwindcss";
+@import "./fonts.css";
+@import "./tokens.css";
+
+@source "../";
+
+/* `dark:` follows the nearest theme class, for apps that need it. The
+   components themselves take theme differences from the tokens. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Hover, focus and active states can be forced with `data-preview`, so the
+   design-system page can show every state without a pointer. */
+@custom-variant hover {
+  @media (hover: hover) {
+    &:hover {
+      @slot;
+    }
+  }
+  &[data-preview~="hover"] {
+    @slot;
+  }
+}
+@custom-variant focus-visible {
+  &:focus-visible {
+    @slot;
+  }
+  &[data-preview~="focus"] {
+    @slot;
+  }
+}
+@custom-variant active {
+  &:active {
+    @slot;
+  }
+  &[data-preview~="active"] {
+    @slot;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-background font-sans text-foreground antialiased;
+    font-feature-settings: "cv11", "ss03";
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--color-teal-500) 35%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  [id] {
+    scroll-margin-top: 5.5rem;
+  }
+
+  code,
+  kbd,
+  samp,
+  pre {
+    @apply font-mono;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+/* Respect reduced motion everywhere: no animation, near-instant transitions. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Brand utilities. */
+@utility text-gradient-brand {
+  background-image: linear-gradient(
+    100deg,
+    var(--gradient-from) 10%,
+    var(--gradient-to) 90%
+  );
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+@utility bg-hero-glow {
+  background-image:
+    radial-gradient(60% 55% at 50% 0%, var(--glow), transparent 72%),
+    radial-gradient(40% 35% at 85% 10%, color-mix(in oklab, var(--glow) 60%, transparent), transparent 70%);
+}
+
+@utility bg-grid {
+  background-image:
+    linear-gradient(to right, color-mix(in oklab, var(--border) 55%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--border) 55%, transparent) 1px, transparent 1px);
+  background-size: 48px 48px;
+}

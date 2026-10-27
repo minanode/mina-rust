@@ -40,6 +40,12 @@ use std::{io::Cursor, str::FromStr, sync::Arc};
 
 use super::common::*;
 
+/// Number of field elements of on-chain zkApp state. Mesa (MIP-7) raised it
+/// from 8 to 32.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/zkapp_state.ml#L3>
+pub const ZKAPP_STATE_SIZE: usize = 32;
+
 /// Mina_numbers.Txn_version.current
 pub const TXN_VERSION_CURRENT: TxnVersion =
     TxnVersion::from_u32(PROTOCOL_VERSION.transaction.as_u64() as u32);
@@ -508,7 +514,7 @@ impl ToInputs for VerificationKey {
 }
 
 impl VerificationKey {
-    /// <https://github.com/MinaProtocol/mina/blob/436023ba41c43a50458a551b7ef7a9ae61670b25/src/lib/pickles/side_loaded_verification_key.ml#L310>
+    /// <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/pickles/side_loaded_verification_key.ml#L330-L347>
     pub fn dummy() -> Arc<Self> {
         static VK: OnceCell<Arc<VerificationKey>> = OnceCell::new();
 
@@ -781,7 +787,7 @@ impl VerificationKeyWire {
 // <https://github.com/MinaProtocol/mina/blob/develop/src/lib/mina_base/zkapp_account.ml#L148-L170>
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ZkAppAccount {
-    pub app_state: [Fp; 8],
+    pub app_state: [Fp; ZKAPP_STATE_SIZE],
     pub verification_key: Option<VerificationKeyWire>,
     // pub verification_key: Option<WithHash<VerificationKey>>, // TODO
     pub zkapp_version: u32,
@@ -874,7 +880,7 @@ impl Check<Fp> for ZkAppAccount {
 impl Default for ZkAppAccount {
     fn default() -> Self {
         Self {
-            app_state: [Fp::zero(); 8],
+            app_state: [Fp::zero(); ZKAPP_STATE_SIZE],
             verification_key: None,
             zkapp_version: 0,
             action_state: {
@@ -1704,16 +1710,7 @@ impl Account {
             zkapp: if rng.gen() {
                 Some(
                     ZkAppAccount {
-                        app_state: [
-                            Fp::rand(rng),
-                            Fp::rand(rng),
-                            Fp::rand(rng),
-                            Fp::rand(rng),
-                            Fp::rand(rng),
-                            Fp::rand(rng),
-                            Fp::rand(rng),
-                            Fp::rand(rng),
-                        ],
+                        app_state: std::array::from_fn(|_| Fp::rand(rng)),
                         verification_key: if rng.gen() {
                             Some(VerificationKeyWire::gen())
                         } else {
@@ -1878,17 +1875,16 @@ mod tests {
         }
     }
 
+    /// The expected roots are OCaml 4.0.2's `mina ledger hash` of a ledger
+    /// holding only that account, mainnet profile (depth 35).
     #[test]
     fn test_hash_account() {
+        use crate::database::ledger_root_b58;
+
         let acc = Account::create();
-        let hash = acc.hash();
-
-        elog!("account_hash={}", hash);
-        elog!("account_hash={}", hash.to_hex());
-
         assert_eq!(
-            hash.to_hex(),
-            "7018596b7a10344908c7582482b1401a3cbdd40212beb428baf629b84ceb7f0b"
+            ledger_root_b58(35, [acc]),
+            "jxwqr9HpSsaM8zoMoszLFooftiQpejdKWqc3vVPzgGgpfyPZCBT"
         );
 
         let acc = Account {
@@ -1909,13 +1905,17 @@ mod tests {
         };
 
         assert_eq!(
-            acc.hash().to_hex(),
-            "8cb53d374b844227d4c63b2dcf198312f8fcb4b60392fee5b165243508d16e32"
+            ledger_root_b58(35, [acc]),
+            "jwkZzzLTUELjHokfKR1tM7h1MKxHCPss5Pxqfq1rFASCSQsBvg7"
         );
     }
 
+    /// The expected root is OCaml 4.0.2's `mina ledger hash` of a ledger
+    /// holding only this account, mainnet profile (depth 35).
     #[test]
     fn test_hash_genesis_winner_account() {
+        use crate::database::ledger_root_b58;
+
         let acc = Account {
             public_key: CompressedPubKey::from_address(
                 "B62qiy32p8kAKnny8ZFwoMhYpBppM1DWVCqAPBYNcXnsAHhnfAAuXgg",
@@ -1961,11 +1961,9 @@ mod tests {
             zkapp: None,
         };
 
-        println!("{:?}", acc);
-
         assert_eq!(
-            mina_p2p_messages::v2::LedgerHash::from_fp(acc.hash()).to_string(),
-            "jwnEz6CjzSYowUsvw5gKpuTkRjBY5dEtc6YmQj1U5d2k5KZzTmc"
+            ledger_root_b58(35, [acc]),
+            "jxcG6Fo1NP7PCY7peDX2qwXCaJ9H31qwhp6woPBj5tyeBm3nxvL"
         );
     }
 

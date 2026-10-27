@@ -332,6 +332,19 @@ impl AuthRequired {
             x => *x,
         }
     }
+
+    /// Mesa lets a signature access an account whose permissions predate the
+    /// current transaction version, where they asked for a proof.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/permissions.ml#L75-L79>
+    pub fn access_perm_fallback_to_signature_with_older_version(&self) -> Self {
+        use AuthRequired::*;
+
+        match self {
+            Proof => Signature,
+            x => *x,
+        }
+    }
 }
 
 impl AuthRequiredEncoded<bool> {

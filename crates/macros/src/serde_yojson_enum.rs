@@ -18,7 +18,14 @@ pub fn serde_yojson_enum_derive(input: TokenStream) -> TokenStream {
 
     let binary_variants = data.variants.iter().map(|variant| {
         let variant_ident = &variant.ident;
-        let fields = &variant.fields;
+        let mut fields = variant.fields.clone();
+        // The shadow enum derives only serde, so bin_prot's field-reader
+        // attribute belongs exclusively to the original enum.
+        for field in fields.iter_mut() {
+            field
+                .attrs
+                .retain(|attr| !attr.path().is_ident("binprot_read_with"));
+        }
 
         match fields {
             Fields::Named(_) | Fields::Unnamed(_) | Fields::Unit => {

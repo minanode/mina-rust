@@ -13,6 +13,23 @@ import {
 import { NodesOverviewNode } from '@shared/types/nodes/dashboard/nodes-overview-node.type';
 import { NodesOverviewService } from '@nodes/overview/nodes-overview.service';
 
+/**
+ * When a peer entered its current status, in UTC like the block and check
+ * times on the dashboard: "18:37:19" today, "21 Oct 18:37" before.
+ */
+function sinceUtc(ms: number): string {
+  const iso = new Date(ms).toISOString();
+  if (iso.slice(0, 10) === new Date().toISOString().slice(0, 10)) {
+    return iso.slice(11, 19);
+  }
+  const day = new Date(ms).toLocaleDateString('en-GB', {
+    timeZone: 'UTC',
+    day: 'numeric',
+    month: 'short',
+  });
+  return `${day} ${iso.slice(11, 16)}`;
+}
+
 @Injectable({ providedIn: 'root' })
 export class DashboardService {
   constructor(
@@ -33,7 +50,7 @@ export class DashboardService {
                 ? toReadableDate(peer.best_tip_timestamp / ONE_MILLION)
                 : '-',
               bestTipTimestamp: peer.best_tip_timestamp,
-              datetime: toReadableDate(peer.time / ONE_MILLION),
+              datetime: peer.time ? sinceUtc(peer.time / ONE_MILLION) : '-',
               timestamp: peer.time,
               height: peer.best_tip_height,
               status: peer.connection_status,

@@ -16,7 +16,10 @@ use crate::{
         P2pAction,
     },
     snark::SnarkAction,
-    transition_frontier::candidate::TransitionFrontierCandidateAction,
+    transition_frontier::{
+        candidate::TransitionFrontierCandidateAction,
+        sync::{SyncPhase, TransitionFrontierSyncAction},
+    },
     Action, ActionWithMetaRef, BlockProducerAction, Service, Store, TransitionFrontierAction,
 };
 
@@ -99,6 +102,20 @@ pub fn logger_effects<S: Service>(store: &Store<S>, action: ActionWithMetaRef<'_
                             addr = display(addr)
                         );
                     }
+                    // So are connections the peer closed: peers come and go
+                    // all the time (O1).
+                    P2pNetworkSchedulerAction::Error {
+                        error: error @ P2pNetworkConnectionError::RemoteClosed,
+                        addr,
+                    } => {
+                        mina_core::action_debug!(
+                            context,
+                            kind = "P2pNetworkSchedulerError",
+                            summary = "Fatal connection error",
+                            addr = display(addr),
+                            error = display(error)
+                        );
+                    }
                     action => action.action_event(&context),
                 },
                 P2pNetworkAction::Pnet(action) => action.action_event(&context),
@@ -129,7 +146,7 @@ pub fn logger_effects<S: Service>(store: &Store<S>, action: ActionWithMetaRef<'_
             TransitionFrontierAction::Candidate(
                 TransitionFrontierCandidateAction::BlockReceived { block, chain_proof },
             ) => {
-                mina_core::action_info!(
+                mina_core::action_debug!(
                     context,
                     kind = action.kind().to_string(),
                     summary = "candidate block received",
@@ -154,9 +171,33 @@ pub fn logger_effects<S: Service>(store: &Store<S>, action: ActionWithMetaRef<'_
                 mina_core::action_info!(
                     context,
                     kind = action.kind().to_string(),
-                    summary = "transition frontier synced",
-                    block_hash = tip.hash().to_string(),
+                    summary = "new best tip",
                     block_height = tip.height(),
+                    block_hash = tip.hash().to_string(),
+                    peers = super::status::ready_peers(store.state()),
+                );
+            }
+            // A new target while the ledgers sync is a bootstrap step; once
+            // they are synced, each new block is one, and its line is the
+            // `TransitionFrontierSynced` above (O1).
+            TransitionFrontierAction::Sync(TransitionFrontierSyncAction::BestTipUpdate {
+                best_tip,
+                root_block,
+                ..
+            }) if matches!(
+                store.state().transition_frontier.sync.sync_phase(),
+                SyncPhase::Bootstrap
+            ) =>
+            {
+                mina_core::action_info!(
+                    context,
+                    kind = action.kind().to_string(),
+                    summary = "sync target moved to a new best tip",
+                    new_best_tip_hash = display(&best_tip.hash),
+                    new_best_tip_height = best_tip.height(),
+                    new_root_block_hash = display(&root_block.hash),
+                    new_root_snarked_ledger_hash = display(root_block.snarked_ledger_hash()),
+                    new_root_staged_ledger_hash = display(root_block.merkle_root_hash()),
                 );
             }
             TransitionFrontierAction::SyncFailed { best_tip, error } => {

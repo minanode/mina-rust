@@ -1,3 +1,8 @@
+// Fp fields use a field-specific reader; unannotated BigInts use Fq's bound.
+// OCaml 4.0.2: crypto/kimchi_pasta_snarky_backend/field.ml:180-189.
+// Wrap proof coordinates are Tick.Field (Fp), but its evaluations and scalars
+// are Tock.Field (Fq): crypto/pickles/wrap_wire_proof.ml:17-84,175-194.
+// Keep these annotations when regenerating the wire types.
 use super::manual::*;
 use crate::{array::ArrayN16, list::List, pseq::PaddedSeq};
 use binprot_derive::{BinProtRead, BinProtWrite};
@@ -104,7 +109,7 @@ pub struct NetworkPeerPeerStableV1 {
     pub peer_id: NetworkPeerPeerIdStableV1,
 }
 
-/// **OCaml name**: `Transaction_snark_scan_state.Stable.V2`
+/// **OCaml name**: `Transaction_snark_scan_state.Stable.V3`
 ///
 /// Gid: `1058`
 /// Location: [src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml:160:4](https://github.com/MinaProtocol/mina/blob/1551e2faaa/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L160)
@@ -161,7 +166,9 @@ pub struct MinaStateProtocolStateValueStableV2 {
 /// Args: MerkleAddressBinableArgStableV1
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite)]
 pub enum MinaLedgerSyncLedgerQueryStableV1 {
-    WhatChildHashes(MerkleAddressBinableArgStableV1),
+    /// Hashes at the given depth below the address: depth 1 asks for the two
+    /// children (`Sync_ledger.Query.Stable.V2`).
+    WhatChildHashes(MerkleAddressBinableArgStableV1, crate::number::UInt64),
     WhatContents(MerkleAddressBinableArgStableV1),
     NumAccounts,
 }
@@ -177,7 +184,8 @@ pub enum MinaLedgerSyncLedgerQueryStableV1 {
 /// Args: LedgerHash , MinaBaseAccountBinableArgStableV2
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite)]
 pub enum MinaLedgerSyncLedgerAnswerStableV2 {
-    ChildHashesAre(LedgerHash, LedgerHash),
+    /// The hashes at the requested depth, left to right (`Sync_ledger.Answer.Stable.V4`).
+    ChildHashesAre(crate::array::ArrayN4000<LedgerHash>),
     ContentsAre(List<MinaBaseAccountBinableArgStableV2>),
     NumAccounts(crate::number::UInt64, LedgerHash),
 }
@@ -347,7 +355,9 @@ pub enum MinaBaseUserCommandVerifiableStableV2 {
 /// Args: crate :: bigint :: BigInt
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite)]
 pub struct MinaBaseZkappStatementStableV2 {
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub account_update: crate::bigint::BigInt,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub calls: crate::bigint::BigInt,
 }
 
@@ -358,7 +368,7 @@ pub struct MinaBaseZkappStatementStableV2 {
 /// Args: crate :: bigint :: BigInt
 #[derive(Clone, Debug, PartialEq, BinProtRead, BinProtWrite)]
 pub enum PicklesProofProofsVerified2ReprStableV2StatementFp {
-    ShiftedValue(crate::bigint::BigInt),
+    ShiftedValue(#[binprot_read_with("crate::bigint::read_fp")] crate::bigint::BigInt),
 }
 
 /// Derived name: `Pickles__Proof.Proofs_verified_2.Repr.Stable.V2.statement.proof_state.deferred_values.plonk.feature_flags`
@@ -390,6 +400,7 @@ pub struct PicklesProofProofsVerified2ReprStableV2StatementProofStateDeferredVal
     Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, SexpOf, OfSexp,
 )]
 pub struct PicklesProofProofsVerified2ReprStableV2PrevEvalsEvalsEvals {
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub w: PaddedSeq<
         (
             ArrayN16<crate::bigint::BigInt>,
@@ -397,6 +408,7 @@ pub struct PicklesProofProofsVerified2ReprStableV2PrevEvalsEvalsEvals {
         ),
         15,
     >,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub coefficients: PaddedSeq<
         (
             ArrayN16<crate::bigint::BigInt>,
@@ -404,10 +416,12 @@ pub struct PicklesProofProofsVerified2ReprStableV2PrevEvalsEvalsEvals {
         ),
         15,
     >,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub z: (
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     ),
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub s: PaddedSeq<
         (
             ArrayN16<crate::bigint::BigInt>,
@@ -415,62 +429,77 @@ pub struct PicklesProofProofsVerified2ReprStableV2PrevEvalsEvalsEvals {
         ),
         6,
     >,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub generic_selector: (
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     ),
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub poseidon_selector: (
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     ),
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub complete_add_selector: (
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     ),
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub mul_selector: (
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     ),
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub emul_selector: (
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     ),
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub endomul_scalar_selector: (
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     ),
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub range_check0_selector: Option<(
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     )>,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub range_check1_selector: Option<(
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     )>,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub foreign_field_add_selector: Option<(
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     )>,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub foreign_field_mul_selector: Option<(
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     )>,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub xor_selector: Option<(
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     )>,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub rot_selector: Option<(
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     )>,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub lookup_aggregation: Option<(
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     )>,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub lookup_table: Option<(
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     )>,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub lookup_sorted: PaddedSeq<
         Option<(
             ArrayN16<crate::bigint::BigInt>,
@@ -478,26 +507,32 @@ pub struct PicklesProofProofsVerified2ReprStableV2PrevEvalsEvalsEvals {
         )>,
         5,
     >,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub runtime_lookup_table: Option<(
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     )>,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub runtime_lookup_table_selector: Option<(
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     )>,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub xor_lookup_selector: Option<(
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     )>,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub lookup_gate_lookup_selector: Option<(
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     )>,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub range_check_lookup_selector: Option<(
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
     )>,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub foreign_field_mul_lookup_selector: Option<(
         ArrayN16<crate::bigint::BigInt>,
         ArrayN16<crate::bigint::BigInt>,
@@ -513,6 +548,7 @@ pub struct PicklesProofProofsVerified2ReprStableV2PrevEvalsEvalsEvals {
     Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, SexpOf, OfSexp,
 )]
 pub struct PicklesProofProofsVerified2ReprStableV2PrevEvalsEvals {
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub public_input: (crate::bigint::BigInt, crate::bigint::BigInt),
     pub evals: PicklesProofProofsVerified2ReprStableV2PrevEvalsEvalsEvals,
 }
@@ -527,6 +563,7 @@ pub struct PicklesProofProofsVerified2ReprStableV2PrevEvalsEvals {
 )]
 pub struct PicklesProofProofsVerified2ReprStableV2PrevEvals {
     pub evals: PicklesProofProofsVerified2ReprStableV2PrevEvalsEvals,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub ft_eval1: crate::bigint::BigInt,
 }
 
@@ -545,13 +582,16 @@ impl MallocSizeOf for PicklesProofProofsVerified2ReprStableV2PrevEvals {
     Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, SexpOf, OfSexp,
 )]
 pub struct PicklesWrapWireProofStableV1Bulletproof {
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub lr: ArrayN16<(
         (crate::bigint::BigInt, crate::bigint::BigInt),
         (crate::bigint::BigInt, crate::bigint::BigInt),
     )>,
     pub z_1: crate::bigint::BigInt,
     pub z_2: crate::bigint::BigInt,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub delta: (crate::bigint::BigInt, crate::bigint::BigInt),
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub challenge_polynomial_commitment: (crate::bigint::BigInt, crate::bigint::BigInt),
 }
 
@@ -564,13 +604,21 @@ pub struct PicklesWrapWireProofStableV1Bulletproof {
     Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, MallocSizeOf,
 )]
 pub struct MinaBaseVerificationKeyWireStableV1WrapIndex {
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub sigma_comm: PaddedSeq<(crate::bigint::BigInt, crate::bigint::BigInt), 7>,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub coefficients_comm: PaddedSeq<(crate::bigint::BigInt, crate::bigint::BigInt), 15>,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub generic_comm: (crate::bigint::BigInt, crate::bigint::BigInt),
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub psm_comm: (crate::bigint::BigInt, crate::bigint::BigInt),
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub complete_add_comm: (crate::bigint::BigInt, crate::bigint::BigInt),
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub mul_comm: (crate::bigint::BigInt, crate::bigint::BigInt),
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub emul_comm: (crate::bigint::BigInt, crate::bigint::BigInt),
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub endomul_scalar_comm: (crate::bigint::BigInt, crate::bigint::BigInt),
 }
 
@@ -679,9 +727,9 @@ pub enum PicklesBaseProofsVerifiedStableV1 {
 ///
 /// Gid: `125`
 /// Location: [src/int64.ml:6:6](https://github.com/MinaProtocol/mina/blob/1551e2faaa/src/int64.ml#L6)
-#[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, Deref, MallocSizeOf,
-)]
+///
+/// `BinProtRead` is in `v2::manual`: an OCaml `Int64`, read as such.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtWrite, Deref, MallocSizeOf)]
 pub struct LimbVectorConstantHex64StableV1(pub crate::number::UInt64);
 
 /// **OCaml name**: `Composition_types__Branch_data.Make_str.Domain_log2.Stable.V1`
@@ -887,8 +935,11 @@ pub struct PicklesProofProofsVerified2ReprStableV2Statement {
     Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, SexpOf, OfSexp,
 )]
 pub struct PicklesWrapWireProofCommitmentsStableV1 {
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub w_comm: PaddedSeq<(crate::bigint::BigInt, crate::bigint::BigInt), 15>,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub z_comm: (crate::bigint::BigInt, crate::bigint::BigInt),
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub t_comm: PaddedSeq<(crate::bigint::BigInt, crate::bigint::BigInt), 7>,
 }
 
@@ -952,6 +1003,7 @@ impl MallocSizeOf for PicklesWrapWireProofStableV1 {
 pub struct PicklesProofProofsVerified2ReprStableV2MessagesForNextStepProof {
     #[serde(deserialize_with = "always_unit")]
     pub app_state: (),
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub challenge_polynomial_commitments: List<(crate::bigint::BigInt, crate::bigint::BigInt)>,
     pub old_bulletproof_challenges: List<
         PaddedSeq<PicklesReducedMessagesForNextProofOverSameFieldWrapChallengesVectorStableV2A, 16>,
@@ -983,9 +1035,9 @@ pub struct PicklesReducedMessagesForNextProofOverSameFieldWrapChallengesVectorSt
 /// Gid: `519`
 /// Location: [src/lib/pickles_base/side_loaded_verification_key.ml:130:6](https://github.com/MinaProtocol/mina/blob/1551e2faaa/src/lib/pickles_base/side_loaded_verification_key.ml#L130)
 /// Args: (crate :: bigint :: BigInt , crate :: bigint :: BigInt ,)
-#[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, MallocSizeOf,
-)]
+///
+/// `Deserialize` is implemented manually to also accept the OCaml JSON forms.
+#[derive(Clone, Debug, PartialEq, Serialize, BinProtRead, BinProtWrite, MallocSizeOf)]
 pub struct MinaBaseVerificationKeyWireStableV1 {
     pub max_proofs_verified: PicklesBaseProofsVerifiedStableV1,
     pub actual_wrap_domain_size: PicklesBaseProofsVerifiedStableV1,
@@ -1058,6 +1110,7 @@ pub struct PicklesProofProofsVerifiedMaxStableV2 {
     MallocSizeOf,
 )]
 pub struct NonZeroCurvePointUncompressedStableV1 {
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub x: crate::bigint::BigInt,
     pub is_odd: bool,
 }
@@ -1077,7 +1130,9 @@ pub struct SignatureLibPrivateKeyStableV1(pub crate::bigint::BigInt);
 ///
 /// Gid: `125`
 /// Location: [src/int64.ml:6:6](https://github.com/MinaProtocol/mina/blob/1551e2faaa/src/int64.ml#L6)
-#[derive(Clone, Copy, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, Deref)]
+///
+/// `BinProtRead` is in `v2::manual`: an OCaml `Int64`, read as such.
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize, BinProtWrite, Deref)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct UnsignedExtendedUInt64Int64ForVersionTagsStableV1(pub crate::number::UInt64);
 
@@ -1220,6 +1275,7 @@ pub struct CurrencyBalanceStableV1(pub CurrencyAmountStableV1);
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite)]
 pub struct MinaBaseZkappCommandVerifiableStableV1AccountUpdatesDataA {
     pub data: MinaBaseVerificationKeyWireStableV1,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub hash: crate::bigint::BigInt,
 }
 
@@ -1241,7 +1297,9 @@ pub struct MinaBaseZkappCommandVerifiableStableV1AccountUpdatesDataA {
     Deref,
     MallocSizeOf,
 )]
-pub struct DataHashLibStateHashStableV1(pub crate::bigint::BigInt);
+pub struct DataHashLibStateHashStableV1(
+    #[binprot_read_with("crate::bigint::read_fp")] pub crate::bigint::BigInt,
+);
 
 /// Derived name: `Mina_base__Sparse_ledger_base.Stable.V2.tree`
 ///
@@ -1303,7 +1361,9 @@ pub struct BlockTimeTimeStableV1(pub UnsignedExtendedUInt64Int64ForVersionTagsSt
     MallocSizeOf,
 )]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct MinaBaseAccountIdDigestStableV1(pub crate::bigint::BigInt);
+pub struct MinaBaseAccountIdDigestStableV1(
+    #[binprot_read_with("crate::bigint::read_fp")] pub crate::bigint::BigInt,
+);
 
 /// **OCaml name**: `Mina_base__Account_id.Make_str.Stable.V2`
 ///
@@ -1346,17 +1406,33 @@ pub enum MinaBaseAccountTimingStableV2 {
 #[derive(
     Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, MallocSizeOf,
 )]
-pub struct MinaBaseSignatureStableV1(pub crate::bigint::BigInt, pub crate::bigint::BigInt);
+pub struct MinaBaseSignatureStableV1(
+    #[binprot_read_with("crate::bigint::read_fp")] pub crate::bigint::BigInt,
+    pub crate::bigint::BigInt,
+);
 
 /// **OCaml name**: `Mina_base__Control.Stable.V2`
 ///
 /// Gid: `683`
 /// Location: [src/lib/mina_base/control.ml:11:4](https://github.com/MinaProtocol/mina/blob/1551e2faaa/src/lib/mina_base/control.ml#L11)
-#[derive(Clone, Debug, PartialEq, SerdeYojsonEnum, BinProtRead, BinProtWrite, MallocSizeOf)]
+#[derive(Clone, Debug, PartialEq, SerdeYojsonEnum, BinProtRead, BinProtWrite)]
 pub enum MinaBaseControlStableV2 {
-    Proof(Box<PicklesProofProofsVerifiedMaxStableV2>),
+    /// Shared (PC1) with the ledger's `Control::Proof`, so a block, the scan
+    /// states and the transaction pool hold one copy. Binprot and serde see
+    /// the value.
+    Proof(crate::ProofRef<PicklesProofProofsVerifiedMaxStableV2>),
     Signature(Signature),
     NoneGiven,
+}
+
+impl MallocSizeOf for MinaBaseControlStableV2 {
+    fn size_of(&self, ops: &mut malloc_size_of::MallocSizeOfOps) -> usize {
+        match self {
+            Self::Proof(proof) => proof.size_of(ops),
+            Self::Signature(signature) => signature.size_of(ops),
+            Self::NoneGiven => 0,
+        }
+    }
 }
 
 /// **OCaml name**: `Mina_base__Token_id.Stable.V2`
@@ -1413,7 +1489,9 @@ pub struct MinaBasePaymentPayloadStableV2 {
     Deref,
     MallocSizeOf,
 )]
-pub struct MinaBaseLedgerHash0StableV1(pub crate::bigint::BigInt);
+pub struct MinaBaseLedgerHash0StableV1(
+    #[binprot_read_with("crate::bigint::read_fp")] pub crate::bigint::BigInt,
+);
 
 /// **OCaml name**: `Mina_base__Permissions.Auth_required.Stable.V2`
 ///
@@ -1650,7 +1728,9 @@ pub struct MinaBaseSignedCommandStableV2 {
 #[derive(
     Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, Deref, MallocSizeOf,
 )]
-pub struct MinaBaseReceiptChainHashStableV1(pub crate::bigint::BigInt);
+pub struct MinaBaseReceiptChainHashStableV1(
+    #[binprot_read_with("crate::bigint::read_fp")] pub crate::bigint::BigInt,
+);
 
 /// **OCaml name**: `Mina_base__State_body_hash.Stable.V1`
 ///
@@ -1659,7 +1739,9 @@ pub struct MinaBaseReceiptChainHashStableV1(pub crate::bigint::BigInt);
 #[derive(
     Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, Deref, MallocSizeOf,
 )]
-pub struct MinaBaseStateBodyHashStableV1(pub crate::bigint::BigInt);
+pub struct MinaBaseStateBodyHashStableV1(
+    #[binprot_read_with("crate::bigint::read_fp")] pub crate::bigint::BigInt,
+);
 
 /// Derived name: `Mina_base__Account_update.Update.Stable.V1.timing`
 ///
@@ -1723,7 +1805,7 @@ pub enum MinaBaseAccountUpdateUpdateStableV1VotingFor {
 /// Args: crate :: bigint :: BigInt
 #[derive(Clone, Debug, PartialEq, SerdeYojsonEnum, BinProtRead, BinProtWrite, MallocSizeOf)]
 pub enum MinaBaseAccountUpdateUpdateStableV1AppStateA {
-    Set(crate::bigint::BigInt),
+    Set(#[binprot_read_with("crate::bigint::read_fp")] crate::bigint::BigInt),
     Keep,
 }
 
@@ -1743,9 +1825,7 @@ pub enum MinaBaseAccountUpdateUpdateStableV1ZkappUri {
 /// Gid: `766`
 /// Location: [src/lib/mina_base/zkapp_basic.ml:100:6](https://github.com/MinaProtocol/mina/blob/1551e2faaa/src/lib/mina_base/zkapp_basic.ml#L100)
 /// Args: crate :: string :: TokenSymbol
-#[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, MallocSizeOf,
-)]
+#[derive(Clone, Debug, PartialEq, SerdeYojsonEnum, BinProtRead, BinProtWrite, MallocSizeOf)]
 pub enum MinaBaseAccountUpdateUpdateStableV1TokenSymbol {
     Set(crate::string::TokenSymbol),
     Keep,
@@ -1824,7 +1904,7 @@ pub enum MinaBaseZkappPreconditionAccountStableV2ProvedState {
 /// Args: crate :: bigint :: BigInt
 #[derive(Clone, Debug, PartialEq, SerdeYojsonEnum, BinProtRead, BinProtWrite, MallocSizeOf)]
 pub enum MinaBaseZkappPreconditionAccountStableV2StateA {
-    Check(crate::bigint::BigInt),
+    Check(#[binprot_read_with("crate::bigint::read_fp")] crate::bigint::BigInt),
     Ignore,
 }
 
@@ -1840,7 +1920,9 @@ pub enum MinaBaseZkappPreconditionAccountStableV2StateA {
 #[derive(
     Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, Deref, Default,
 )]
-pub struct MinaBaseZkappStateValueStableV1(pub PaddedSeq<crate::bigint::BigInt, 8>);
+pub struct MinaBaseZkappStateValueStableV1(
+    #[binprot_read_with("crate::bigint::read_fp")] pub PaddedSeq<crate::bigint::BigInt, 32>,
+);
 
 /// **OCaml name**: `Mina_base__Zkapp_account.Stable.V2`
 ///
@@ -1856,6 +1938,7 @@ pub struct MinaBaseZkappAccountStableV2 {
     pub app_state: MinaBaseZkappStateValueStableV1,
     pub verification_key: Option<MinaBaseVerificationKeyWireStableV1>,
     pub zkapp_version: MinaNumbersNatMake32StableV1,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub action_state: PaddedSeq<crate::bigint::BigInt, 5>,
     pub last_action_slot: MinaNumbersGlobalSlotSinceGenesisMStableV1,
     pub proved_state: bool,
@@ -1915,7 +1998,9 @@ pub struct MinaBaseEpochLedgerValueStableV1 {
 #[derive(
     Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, Deref, MallocSizeOf,
 )]
-pub struct MinaBaseEpochSeedStableV1(pub crate::bigint::BigInt);
+pub struct MinaBaseEpochSeedStableV1(
+    #[binprot_read_with("crate::bigint::read_fp")] pub crate::bigint::BigInt,
+);
 
 /// Derived name: `Mina_base__Zkapp_precondition.Protocol_state.Stable.V1.amount.a`
 ///
@@ -2045,7 +2130,7 @@ pub struct MinaBaseZkappPreconditionAccountStableV2 {
     pub nonce: MinaBaseZkappPreconditionProtocolStateStableV1Length,
     pub receipt_chain_hash: MinaBaseZkappPreconditionAccountStableV2ReceiptChainHash,
     pub delegate: MinaBaseZkappPreconditionAccountStableV2Delegate,
-    pub state: PaddedSeq<MinaBaseZkappPreconditionAccountStableV2StateA, 8>,
+    pub state: PaddedSeq<MinaBaseZkappPreconditionAccountStableV2StateA, 32>,
     pub action_state: MinaBaseZkappPreconditionAccountStableV2StateA,
     pub proved_state: MinaBaseZkappPreconditionAccountStableV2ProvedState,
     pub is_new: MinaBaseZkappPreconditionAccountStableV2ProvedState,
@@ -2100,7 +2185,7 @@ pub struct MinaBaseZkappPreconditionProtocolStateStableV1 {
 #[derive(Clone, Debug, PartialEq, SerdeYojsonEnum, BinProtRead, BinProtWrite)]
 pub enum MinaBaseAccountUpdateAuthorizationKindStableV1 {
     Signature,
-    Proof(crate::bigint::BigInt),
+    Proof(#[binprot_read_with("crate::bigint::read_fp")] crate::bigint::BigInt),
     NoneGiven,
 }
 
@@ -2142,7 +2227,7 @@ impl MallocSizeOf for MinaBaseAccountUpdateUpdateTimingInfoStableV1 {
     Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, MallocSizeOf,
 )]
 pub struct MinaBaseAccountUpdateUpdateStableV1 {
-    pub app_state: PaddedSeq<MinaBaseAccountUpdateUpdateStableV1AppStateA, 8>,
+    pub app_state: PaddedSeq<MinaBaseAccountUpdateUpdateStableV1AppStateA, 32>,
     pub delegate: MinaBaseAccountUpdateUpdateStableV1Delegate,
     pub verification_key: MinaBaseAccountUpdateUpdateStableV1VerificationKey,
     pub permissions: MinaBaseAccountUpdateUpdateStableV1Permissions,
@@ -2193,7 +2278,10 @@ pub struct MinaBaseAccountUpdatePreconditionsStableV1 {
 #[derive(
     Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, Deref, MallocSizeOf,
 )]
-pub struct MinaBaseAccountUpdateBodyEventsStableV1(pub List<ArrayN16<crate::bigint::BigInt>>);
+pub struct MinaBaseAccountUpdateBodyEventsStableV1(
+    #[binprot_read_with("crate::bigint::read_fp")]
+    pub  List<crate::array::ArrayN1024<crate::bigint::BigInt>>,
+);
 
 /// **OCaml name**: `Mina_base__Account_update.Body.Stable.V1`
 ///
@@ -2211,6 +2299,7 @@ pub struct MinaBaseAccountUpdateBodyStableV1 {
     pub increment_nonce: bool,
     pub events: MinaBaseAccountUpdateBodyEventsStableV1,
     pub actions: MinaBaseAccountUpdateBodyEventsStableV1,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub call_data: crate::bigint::BigInt,
     pub preconditions: MinaBaseAccountUpdatePreconditionsStableV1,
     pub use_full_commitment: bool,
@@ -2406,7 +2495,7 @@ pub struct MinaBaseZkappCommandTStableV1WireStableV1AccountUpdatesAA {
 /// Location: [src/lib/mina_base/zkapp_command.ml:224:10](https://github.com/MinaProtocol/mina/blob/1551e2faaa/src/lib/mina_base/zkapp_command.ml#L224)
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, Deref)]
 pub struct MinaBaseZkappCommandCallForestMakeDigestStrAccountUpdateStableV1(
-    pub crate::bigint::BigInt,
+    #[binprot_read_with("crate::bigint::read_fp")] pub crate::bigint::BigInt,
 );
 
 /// **OCaml name**: `Mina_base__Zkapp_command.Call_forest.Make_digest_str.Forest.Stable.V1`
@@ -2414,7 +2503,9 @@ pub struct MinaBaseZkappCommandCallForestMakeDigestStrAccountUpdateStableV1(
 /// Gid: `822`
 /// Location: [src/lib/mina_base/zkapp_command.ml:253:10](https://github.com/MinaProtocol/mina/blob/1551e2faaa/src/lib/mina_base/zkapp_command.ml#L253)
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, Deref)]
-pub struct MinaBaseZkappCommandCallForestMakeDigestStrForestStableV1(pub crate::bigint::BigInt);
+pub struct MinaBaseZkappCommandCallForestMakeDigestStrForestStableV1(
+    #[binprot_read_with("crate::bigint::read_fp")] pub crate::bigint::BigInt,
+);
 
 /// **OCaml name**: `Mina_base__Zkapp_command.T.Stable.V1.Wire.Stable.V1`
 ///
@@ -2541,7 +2632,9 @@ pub struct MinaBasePendingCoinbaseStackIdStableV1(pub crate::number::UInt64);
 #[derive(
     Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, Deref, MallocSizeOf,
 )]
-pub struct MinaBasePendingCoinbaseCoinbaseStackStableV1(pub crate::bigint::BigInt);
+pub struct MinaBasePendingCoinbaseCoinbaseStackStableV1(
+    #[binprot_read_with("crate::bigint::read_fp")] pub crate::bigint::BigInt,
+);
 
 /// **OCaml name**: `Mina_base__Pending_coinbase.Make_str.Stack_hash.Stable.V1`
 ///
@@ -2550,7 +2643,9 @@ pub struct MinaBasePendingCoinbaseCoinbaseStackStableV1(pub crate::bigint::BigIn
 #[derive(
     Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, Deref, MallocSizeOf,
 )]
-pub struct MinaBasePendingCoinbaseStackHashStableV1(pub crate::bigint::BigInt);
+pub struct MinaBasePendingCoinbaseStackHashStableV1(
+    #[binprot_read_with("crate::bigint::read_fp")] pub crate::bigint::BigInt,
+);
 
 /// **OCaml name**: `Mina_base__Pending_coinbase.Make_str.State_stack.Stable.V1`
 ///
@@ -2586,7 +2681,9 @@ pub struct MinaBasePendingCoinbaseStateStackStableV1 {
     Ord,
     Eq,
 )]
-pub struct MinaBasePendingCoinbaseHashBuilderStableV1(pub crate::bigint::BigInt);
+pub struct MinaBasePendingCoinbaseHashBuilderStableV1(
+    #[binprot_read_with("crate::bigint::read_fp")] pub crate::bigint::BigInt,
+);
 
 /// **OCaml name**: `Mina_base__Pending_coinbase.Make_str.Update.Action.Stable.V1`
 ///
@@ -2747,7 +2844,9 @@ pub struct MinaBaseStagedLedgerHashStableV1 {
 #[derive(
     Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, Deref, MallocSizeOf,
 )]
-pub struct MinaBaseStackFrameStableV1(pub crate::bigint::BigInt);
+pub struct MinaBaseStackFrameStableV1(
+    #[binprot_read_with("crate::bigint::read_fp")] pub crate::bigint::BigInt,
+);
 
 /// **OCaml name**: `Mina_base__Sok_message.Make_str.Stable.V1`
 ///
@@ -2804,7 +2903,9 @@ pub struct MinaBasePendingCoinbaseWitnessStableV2 {
 #[derive(
     Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, Deref, MallocSizeOf,
 )]
-pub struct MinaBaseCallStackDigestStableV1(pub crate::bigint::BigInt);
+pub struct MinaBaseCallStackDigestStableV1(
+    #[binprot_read_with("crate::bigint::read_fp")] pub crate::bigint::BigInt,
+);
 
 /// **OCaml name**: `Mina_base__Fee_with_prover.Stable.V1`
 ///
@@ -2854,7 +2955,9 @@ pub enum MinaTransactionTransactionStableV2 {
 pub struct MinaTransactionLogicZkappCommandLogicLocalStateValueStableV1 {
     pub stack_frame: MinaBaseStackFrameStableV1,
     pub call_stack: MinaBaseCallStackDigestStableV1,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub transaction_commitment: crate::bigint::BigInt,
+    #[binprot_read_with("crate::bigint::read_fp")]
     pub full_transaction_commitment: crate::bigint::BigInt,
     pub excess: SignedAmount,
     pub supply_increase: SignedAmount,
@@ -3224,12 +3327,18 @@ pub struct TransactionSnarkProofStableV2(pub PicklesProofProofsVerified2ReprStab
 ///
 /// Gid: `1012`
 /// Location: [src/lib/transaction_snark/transaction_snark.ml:80:6](https://github.com/MinaProtocol/mina/blob/1551e2faaa/src/lib/transaction_snark/transaction_snark.ml#L80)
-#[derive(
-    Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite, MallocSizeOf,
-)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite)]
 pub struct TransactionSnarkStableV2 {
     pub statement: MinaStateSnarkedLedgerStateWithSokStableV2,
-    pub proof: TransactionSnarkProofStableV2,
+    /// Shared (PC1): a block's completed works, the scan states and the
+    /// snark pool hold one copy of a proof. Binprot and serde see the value.
+    pub proof: crate::ProofRef<TransactionSnarkProofStableV2>,
+}
+
+impl MallocSizeOf for TransactionSnarkStableV2 {
+    fn size_of(&self, ops: &mut malloc_size_of::MallocSizeOfOps) -> usize {
+        self.proof.size_of(ops) + self.statement.size_of(ops)
+    }
 }
 
 /// **OCaml name**: `Ledger_proof.Prod.Stable.V2`
@@ -3479,11 +3588,11 @@ pub enum TransactionSnarkScanStateStableV2ScanStateTreesABaseT1 {
 ///
 /// Gid: `1047`
 /// Location: [src/lib/parallel_scan/parallel_scan.ml:112:8](https://github.com/MinaProtocol/mina/blob/1551e2faaa/src/lib/parallel_scan/parallel_scan.ml#L112)
-/// Args: TransactionSnarkScanStateLedgerProofWithSokMessageStableV2
+/// Args: LedgerProofProdStableV2 (Mesa; Berkeley carried a sok message too)
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite)]
 pub struct TransactionSnarkScanStateStableV2ScanStateTreesAMergeT1Full {
-    pub left: TransactionSnarkScanStateLedgerProofWithSokMessageStableV2,
-    pub right: TransactionSnarkScanStateLedgerProofWithSokMessageStableV2,
+    pub left: LedgerProofProdStableV2,
+    pub right: LedgerProofProdStableV2,
     pub seq_no: ParallelScanSequenceNumberStableV1,
     pub status: ParallelScanJobStatusStableV1,
 }
@@ -3492,11 +3601,11 @@ pub struct TransactionSnarkScanStateStableV2ScanStateTreesAMergeT1Full {
 ///
 /// Gid: `1048`
 /// Location: [src/lib/parallel_scan/parallel_scan.ml:130:8](https://github.com/MinaProtocol/mina/blob/1551e2faaa/src/lib/parallel_scan/parallel_scan.ml#L130)
-/// Args: TransactionSnarkScanStateLedgerProofWithSokMessageStableV2
+/// Args: LedgerProofProdStableV2 (Mesa; Berkeley carried a sok message too)
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite)]
 pub enum TransactionSnarkScanStateStableV2ScanStateTreesAMergeT1 {
     Empty,
-    Part(Box<TransactionSnarkScanStateLedgerProofWithSokMessageStableV2>),
+    Part(Box<LedgerProofProdStableV2>),
     Full(Box<TransactionSnarkScanStateStableV2ScanStateTreesAMergeT1Full>),
 }
 
@@ -3504,7 +3613,7 @@ pub enum TransactionSnarkScanStateStableV2ScanStateTreesAMergeT1 {
 ///
 /// Gid: `1055`
 /// Location: [src/lib/parallel_scan/parallel_scan.ml:803:8](https://github.com/MinaProtocol/mina/blob/1551e2faaa/src/lib/parallel_scan/parallel_scan.ml#L803)
-/// Args: TransactionSnarkScanStateLedgerProofWithSokMessageStableV2 , TransactionSnarkScanStateTransactionWithWitnessStableV2
+/// Args: LedgerProofProdStableV2 , TransactionSnarkScanStateTransactionWithWitnessStableV2
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite)]
 pub struct TransactionSnarkScanStateStableV2ScanState {
     pub trees: (
@@ -3512,7 +3621,7 @@ pub struct TransactionSnarkScanStateStableV2ScanState {
         List<TransactionSnarkScanStateStableV2ScanStateTreesA>,
     ),
     pub acc: Option<(
-        TransactionSnarkScanStateLedgerProofWithSokMessageStableV2,
+        LedgerProofProdStableV2,
         List<TransactionSnarkScanStateTransactionWithWitnessStableV2>,
     )>,
     pub curr_job_seq_no: crate::number::UInt64,
@@ -3520,19 +3629,29 @@ pub struct TransactionSnarkScanStateStableV2ScanState {
     pub delay: crate::number::UInt64,
 }
 
-/// **OCaml name**: `Transaction_snark_scan_state.Transaction_with_witness.Stable.V2`
+/// **OCaml name**: `Transaction_snark_scan_state.Transaction_with_witness.Stable.V3`
 ///
-/// Gid: `1056`
-/// Location: [src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml:40:6](https://github.com/MinaProtocol/mina/blob/1551e2faaa/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L40)
+/// Mesa replaced Berkeley's applied transaction (`transaction_with_info`) with
+/// the transaction and its status, and `init_stack` is now the stack itself.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L21-L46>
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite)]
 pub struct TransactionSnarkScanStateTransactionWithWitnessStableV2 {
-    pub transaction_with_info: MinaTransactionLogicTransactionAppliedStableV2,
+    pub transaction_with_status:
+        TransactionSnarkScanStateTransactionWithWitnessStableV2TransactionWithStatus,
     pub state_hash: (StateHash, StateBodyHash),
     pub statement: MinaStateSnarkedLedgerStateStableV2,
-    pub init_stack: MinaStateSnarkedLedgerStatePendingCoinbaseStackStateInitStackStableV1,
+    pub init_stack: MinaBasePendingCoinbaseStackVersionedStableV1,
     pub first_pass_ledger_witness: MinaBaseSparseLedgerBaseStableV2,
     pub second_pass_ledger_witness: MinaBaseSparseLedgerBaseStableV2,
     pub block_global_slot: MinaNumbersGlobalSlotSinceGenesisMStableV1,
+}
+
+/// `Mina_transaction.Transaction.Stable.V3.t With_status.Stable.V2.t`
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite)]
+pub struct TransactionSnarkScanStateTransactionWithWitnessStableV2TransactionWithStatus {
+    pub data: MinaTransactionTransactionStableV2,
+    pub status: MinaBaseTransactionStatusStableV2,
 }
 
 /// **OCaml name**: `Transaction_snark_scan_state.Ledger_proof_with_sok_message.Stable.V2`

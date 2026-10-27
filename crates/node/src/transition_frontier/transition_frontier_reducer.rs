@@ -1,6 +1,8 @@
 use super::{
+    genesis_effectful::TransitionFrontierGenesisEffectfulAction,
     sync::{SyncError, TransitionFrontierSyncState},
-    TransitionFrontierAction, TransitionFrontierActionWithMetaRef, TransitionFrontierState,
+    GenesisLedgersState, TransitionFrontierAction, TransitionFrontierActionWithMetaRef,
+    TransitionFrontierState,
 };
 use mina_core::block::AppliedBlock;
 
@@ -20,6 +22,7 @@ impl TransitionFrontierState {
         state.chain_diff.take();
 
         match action {
+            TransitionFrontierAction::VerificationRecorded { .. } => {}
             TransitionFrontierAction::Genesis(a) => {
                 super::genesis::TransitionFrontierGenesisState::reducer(
                     mina_core::Substate::from_compatible_substate(state_context),
@@ -63,6 +66,34 @@ impl TransitionFrontierState {
                 );
             }
             TransitionFrontierAction::Sync(a) => {
+                use super::sync::{PeerBlockFetchError, TransitionFrontierSyncAction as Sync};
+                match a {
+                    Sync::BlocksPeerQueryError {
+                        peer_id,
+                        rpc_id,
+                        error,
+                    } => {
+                        // A local proof read failure is not the peer's: up
+                        // to a bound, it doesn't back the peer off (BP-SAFE).
+                        let hash = matches!(error, PeerBlockFetchError::LocalProofUnavailable(_))
+                            .then(|| {
+                                state
+                                    .sync
+                                    .blocks_iter()
+                                    .find(|b| b.is_fetch_pending_from_peer(peer_id, *rpc_id))
+                                    .map(|b| b.block_hash().clone())
+                            })
+                            .flatten();
+                        let spared = hash.is_some_and(|hash| state.block_local_check_failed(&hash));
+                        if !spared {
+                            state.block_peer_query_failed(*peer_id, meta.time());
+                        }
+                    }
+                    Sync::BlocksPeerQuerySuccess { response, .. } => {
+                        state.block_local_check_errors.remove(&response.hash);
+                    }
+                    _ => {}
+                }
                 let best_chain = state.best_chain.clone();
                 super::sync::TransitionFrontierSyncState::reducer(
                     mina_core::Substate::from_compatible_substate(state_context),
@@ -70,6 +101,17 @@ impl TransitionFrontierState {
                     &best_chain,
                 );
             }
+            TransitionFrontierAction::Persist(a) => {
+                let best_chain = state.best_chain.clone();
+                let config = state.config.persist.clone();
+                super::persist::TransitionFrontierPersistState::reducer(
+                    mina_core::Substate::from_compatible_substate(state_context),
+                    meta.with_action(a),
+                    &best_chain,
+                    &config,
+                );
+            }
+            TransitionFrontierAction::PersistEffect(_) => {}
             TransitionFrontierAction::Synced {
                 needed_protocol_states: needed_protocol_state_hashes,
             } => {
@@ -113,6 +155,12 @@ impl TransitionFrontierState {
                         > tip.height()
                 });
                 state.chain_diff = state.maybe_make_chain_diff(&new_chain);
+                if let Some(root) = new_chain.first() {
+                    if let Err(error) = root.cache_proofs() {
+                        mina_core::log::inner::warn!("root proof cache: {error}");
+                    }
+                    state.root_history.advance(&state.best_chain, &root.block);
+                }
                 state.best_chain = new_chain;
                 state.sync = TransitionFrontierSyncState::Synced { time: meta.time() };
             }
@@ -121,8 +169,30 @@ impl TransitionFrontierState {
                     SyncError::BlockApplyFailed(block, _) => {
                         state.blacklist.insert(block.hash().clone(), block.height());
                     }
+                    // Our store's fault, not the block's (R20 D5).
+                    SyncError::RestoredBlockApplyFailed(..) => {}
                 }
                 state.sync = TransitionFrontierSyncState::Synced { time: meta.time() };
+            }
+            TransitionFrontierAction::GenesisLedgersLoadInit => {
+                let Some(config) = state.config.genesis_ledgers_deferred.clone() else {
+                    return;
+                };
+                let expected = state.config.genesis.clone();
+                state.genesis_ledgers = GenesisLedgersState::Pending { time: meta.time() };
+                let dispatcher = state_context.into_dispatcher();
+                dispatcher.push(TransitionFrontierGenesisEffectfulAction::LedgersLoadInit {
+                    config,
+                    expected,
+                });
+            }
+            TransitionFrontierAction::GenesisLedgersLoadSuccess => {
+                state.genesis_ledgers = GenesisLedgersState::Loaded;
+            }
+            TransitionFrontierAction::GenesisLedgersLoadError { error } => {
+                state.genesis_ledgers = GenesisLedgersState::Error {
+                    error: error.clone(),
+                };
             }
         }
     }

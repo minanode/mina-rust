@@ -610,13 +610,36 @@ mod scalars {
         pub joint_combiner: Option<F>,
     }
 
+    /// A `ConstantExpr` is itself a tree of operations, so a combination of
+    /// constant atoms is constant. Challenges are not: they are only known at
+    /// proving time and have to be witnessed. Fix from youtpout/mina-rust
+    /// 1adaf7ad.
+    fn is_const_expr<F: FieldWitness>(e: &ConstantExpr<F, BerkeleyChallengeTerm>) -> bool {
+        match e {
+            Operations::Atom(ConstantExprInner::Constant(_)) => true,
+            Operations::Atom(ConstantExprInner::Challenge(_)) => false,
+            Operations::Add(x, y) | Operations::Mul(x, y) | Operations::Sub(x, y) => {
+                is_const_expr(x) && is_const_expr(y)
+            }
+            Operations::Double(x) | Operations::Square(x) | Operations::Pow(x, _) => {
+                is_const_expr(x)
+            }
+            Operations::Cache(..) | Operations::IfFeature(..) => false,
+        }
+    }
+
     // TODO: Use cvar instead
     fn is_const<F: FieldWitness>(e: &Expr<ConstantExpr<F, BerkeleyChallengeTerm>, Column>) -> bool {
         match e {
-            Expr::Atom(ExprInner::Constant(Operations::Atom(ConstantExprInner::Constant(_)))) => {
-                true
-            }
+            Expr::Atom(ExprInner::Constant(c)) => is_const_expr(c),
             Expr::Pow(x, _) => is_const(x),
+            // The 2025-09 proof-systems bump replaced `Expr::BinOp(_, x, y)`
+            // with separate `Add`, `Mul` and `Sub` variants and dropped this
+            // recursion, so a combination of constants stopped being
+            // recognised as constant, and `eval` took its witness-allocating
+            // branch for it (youtpout/mina-rust 1adaf7ad).
+            Expr::Add(x, y) | Expr::Mul(x, y) | Expr::Sub(x, y) => is_const(x) && is_const(y),
+            Expr::Double(x) | Expr::Square(x) => is_const(x),
             _ => false,
         }
     }
@@ -638,7 +661,19 @@ mod scalars {
                     ctx.env.unnormalized_lagrange_basis.as_ref().unwrap();
                 unnormalized_lagrange_basis(*row_offset, ctx.w)
             }
-            Operations::Atom(ExprInner::Constant(c)) => sub_eval(c, ctx),
+            Operations::Atom(ExprInner::Constant(c)) => {
+                // A `ConstantExpr` depends only on constants and challenges,
+                // so it is evaluated out of circuit and only its top-level
+                // `Mul` is witnessed, as before the 2025-09 proof-systems bump.
+                // Evaluating it with the witness-allocating arithmetic instead
+                // pushed a value at every `Mul`, `Square` and `Pow` of the
+                // tree (youtpout/mina-rust 1adaf7ad).
+                let v = const_eval(c, &ctx.challenges());
+                if let Operations::Mul(_, _) = c {
+                    ctx.w.exists_no_check(v);
+                };
+                v
+            }
             Operations::Pow(x, p) => {
                 let p = *p;
                 let v = eval(x, ctx);
@@ -704,84 +739,79 @@ mod scalars {
         }
     }
 
-    /// This function use to look like following
-    /// but `x.value` has changed to accept list of challenges
+    /// The challenges a `ConstantExpr` can refer to.
+    pub struct Challenges<F: 'static> {
+        pub alpha: F,
+        pub beta: F,
+        pub gamma: F,
+        pub joint_combiner: Option<F>,
+        pub constants: Constants<F>,
+    }
+
+    impl<F: FieldWitness> EvalContext<'_, F> {
+        fn challenges(&self) -> Challenges<F> {
+            Challenges {
+                alpha: self.alpha,
+                beta: self.beta,
+                gamma: self.gamma,
+                joint_combiner: self.joint_combiner,
+                constants: Constants {
+                    endo_coefficient: self.constants.endo_coefficient,
+                    mds: self.constants.mds,
+                    zk_rows: self.constants.zk_rows,
+                },
+            }
+        }
+    }
+
+    /// Evaluates a `ConstantExpr` out of circuit: no witness value is pushed
+    /// anywhere in the tree. Before the 2025-09 proof-systems bump this was
+    /// `ConstantExpr::value(constants)`; youtpout/mina-rust 1adaf7ad restored
+    /// it, after the bump had replaced it with witness-allocating arithmetic.
     ///
-    /// let v = x.value(ctx.constants);
-    /// if let ConstantExpr::Mul(_, _) = x {
-    ///    ctx.w.exists_no_check(v);
-    /// };
-    /// v
-    pub fn sub_eval<F: FieldWitness>(
-        e: &Operations<ConstantExprInner<F, BerkeleyChallengeTerm>>,
-        ctx: &mut EvalContext<F>,
+    /// `Cache` is evaluated through, as kimchi's own `ConstantExpr::value`
+    /// does: it only memoises, and nothing here pushes witness values.
+    ///
+    /// `IfFeature` is unreachable, and this panics rather than return an
+    /// error: the expressions come from kimchi's linearization, fixed by the
+    /// kimchi revision and the feature flags `compute` passes (none for `Fp`,
+    /// all off for `Fq`), and never from a proof or a peer. Neither
+    /// linearization has an `IfFeature` or a `Cache` inside a constant
+    /// (`linearization_constants_are_closed_forms` checks both), and kimchi's
+    /// `ConstantExpr::value` has a `todo!()` there too. A kimchi bump that
+    /// changes this fails that test, and would panic on the first
+    /// verification, not on some input.
+    pub fn const_eval<F: FieldWitness>(
+        e: &ConstantExpr<F, BerkeleyChallengeTerm>,
+        c: &Challenges<F>,
     ) -> F {
-        use Operations;
+        use kimchi::circuits::expr::ConstantTerm;
+
         match e {
-            Operations::Atom(a) => match a {
-                ConstantExprInner::Challenge(term) => match term {
-                    BerkeleyChallengeTerm::Alpha => ctx.alpha,
-                    BerkeleyChallengeTerm::Beta => ctx.beta,
-                    BerkeleyChallengeTerm::Gamma => ctx.gamma,
-                    BerkeleyChallengeTerm::JointCombiner => ctx.joint_combiner.expect("Unexcepted"),
-                },
-                ConstantExprInner::Constant(constant_term) => match constant_term {
-                    kimchi::circuits::expr::ConstantTerm::EndoCoefficient => {
-                        ctx.constants.endo_coefficient
-                    }
-                    kimchi::circuits::expr::ConstantTerm::Mds { row, col } => {
-                        ctx.constants.mds[*row][*col]
-                    }
-                    kimchi::circuits::expr::ConstantTerm::Literal(literal) => *literal,
-                },
+            Operations::Atom(ConstantExprInner::Challenge(term)) => match term {
+                BerkeleyChallengeTerm::Alpha => c.alpha,
+                BerkeleyChallengeTerm::Beta => c.beta,
+                BerkeleyChallengeTerm::Gamma => c.gamma,
+                // One without lookups, as OCaml: only an `IfFeature` branch
+                // that is not taken reads it then.
+                // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/pickles/plonk_checks/plonk_checks.ml#L307>
+                BerkeleyChallengeTerm::JointCombiner => c.joint_combiner.unwrap_or_else(F::one),
             },
-            Operations::Pow(x, p) => {
-                let p = *p;
-                let v = sub_eval(x, ctx);
-
-                pow(v, p, ctx.w)
-            }
-            Operations::Add(x, y) => {
-                let y = sub_eval(y, ctx);
-                let x = sub_eval(x, ctx);
-                x + y
-            }
-            Operations::Mul(x, y) => {
-                let y = sub_eval(y, ctx);
-                let x = sub_eval(x, ctx);
-                field::mul(x, y, ctx.w)
-            }
-            Operations::Sub(x, y) => {
-                let x = sub_eval(x, ctx);
-                let y = sub_eval(y, ctx);
-                x - y
-            }
-            Operations::Double(x) => {
-                let x = sub_eval(x, ctx);
-                x.double()
-            }
-            Operations::Square(x) => {
-                let x = sub_eval(x, ctx);
-                field::mul(x, x, ctx.w)
-            }
-            Operations::Cache(id, _e) => ctx.cache.get(id).copied().unwrap(),
-            Operations::IfFeature(feature, e1, e2) => match ctx.env.feature_flags.as_ref() {
-                None => sub_eval(e2, ctx),
-                Some(feature_flags) => {
-                    let is_feature_enabled = match get_feature_flag(feature_flags, feature, ctx.w) {
-                        None => return sub_eval(e2, ctx),
-                        Some(enabled) => enabled,
-                    };
-
-                    let on_false = sub_eval(e2, ctx);
-                    let on_true = sub_eval(e1, ctx);
-
-                    ctx.w.exists_no_check(match is_feature_enabled {
-                        Boolean::True => on_true,
-                        Boolean::False => on_false,
-                    })
-                }
+            Operations::Atom(ConstantExprInner::Constant(term)) => match term {
+                ConstantTerm::EndoCoefficient => c.constants.endo_coefficient,
+                ConstantTerm::Mds { row, col } => c.constants.mds[*row][*col],
+                ConstantTerm::Literal(literal) => *literal,
             },
+            Operations::Pow(x, p) => pow_const(const_eval(x, c), *p),
+            Operations::Add(x, y) => const_eval(x, c) + const_eval(y, c),
+            Operations::Mul(x, y) => const_eval(x, c) * const_eval(y, c),
+            Operations::Sub(x, y) => const_eval(x, c) - const_eval(y, c),
+            Operations::Double(x) => const_eval(x, c).double(),
+            Operations::Square(x) => const_eval(x, c).square(),
+            Operations::Cache(_, x) => const_eval(x, c),
+            Operations::IfFeature(feature, _, _) => {
+                unreachable!("const_eval: IfFeature({feature:?}) in a constant expression")
+            }
         }
     }
 
@@ -843,6 +873,10 @@ mod scalars {
         pub lookup: Option<F>,
     }
 
+    type TermsMap<F> = BTreeMap<Column, Expr<ConstantExpr<F, BerkeleyChallengeTerm>, Column>>;
+    type Const<F> = Expr<ConstantExpr<F, BerkeleyChallengeTerm>, Column>;
+    type Terms<F> = Rc<(Const<F>, TermsMap<F>)>;
+
     pub fn compute<F: FieldWitness>(
         gate: Option<GateType>,
         minimal: &MinimalForScalar<F>,
@@ -850,55 +884,8 @@ mod scalars {
         env: &ScalarsEnv<F>,
         w: &mut Witness<F>,
     ) -> F {
-        let (constant_term, index_terms) = &*{
-            type TermsMap<F> =
-                BTreeMap<Column, Expr<ConstantExpr<F, BerkeleyChallengeTerm>, Column>>;
-            type Const<F> = Expr<ConstantExpr<F, BerkeleyChallengeTerm>, Column>;
-            type Terms<F> = Rc<(Const<F>, TermsMap<F>)>;
-            cache! {
-                Terms::<F>, {
-                    // No features for `Fp`:
-                    // <https://github.com/MinaProtocol/mina/blob/4af0c229548bc96d76678f11b6842999de5d3b0b/src/lib/crypto/kimchi_bindings/stubs/src/linearization.rs>
-                    let is_fp = std::any::TypeId::of::<F>() == std::any::TypeId::of::<Fp>();
-
-                    let features = if is_fp {
-                        None
-                    } else {
-                        Some(FeatureFlags {
-                            range_check0: false,
-                            range_check1: false,
-                            foreign_field_add: false,
-                            foreign_field_mul: false,
-                            xor: false,
-                            rot: false,
-                            lookup_features: LookupFeatures {
-                                patterns: LookupPatterns {
-                                    xor: false,
-                                    lookup: false,
-                                    range_check: false,
-                                    foreign_field_mul: false,
-                                },
-                                joint_lookup_used: false,
-                                uses_runtime_tables: false,
-                            },
-                        })
-                    };
-
-                    let evaluated_cols =
-                        kimchi::linearization::linearization_columns::<F>(features.as_ref());
-                    let (linearization, _powers_of_alpha) =
-                        kimchi::linearization::constraints_expr::<F>(features.as_ref(), true);
-
-                    let kimchi::circuits::expr::Linearization {
-                        constant_term,
-                        index_terms,
-                    } = linearization.linearize(evaluated_cols).unwrap();
-
-                    let index_terms = index_terms.into_iter().collect::<TermsMap<F>>();
-                    Rc::new((constant_term, index_terms))
-                }
-            }
-        };
+        let terms = linearization::<F>();
+        let (constant_term, index_terms) = &*terms;
 
         // Moved internally
         let constants = kimchi::circuits::expr::Constants::<F> {
@@ -934,6 +921,261 @@ mod scalars {
 
         // Eval the rest
         eval(term, &mut ctx)
+    }
+
+    /// Kimchi's linearization (constant term and index terms) for the
+    /// feature flags OCaml's verifier uses: none for `Fp`, all off for `Fq`.
+    /// It depends only on the kimchi revision, and is built once per field.
+    fn linearization<F: FieldWitness>() -> Terms<F> {
+        cache! {
+            Terms::<F>, {
+                // No features for `Fp`:
+                // <https://github.com/MinaProtocol/mina/blob/4af0c229548bc96d76678f11b6842999de5d3b0b/src/lib/crypto/kimchi_bindings/stubs/src/linearization.rs>
+                let is_fp = std::any::TypeId::of::<F>() == std::any::TypeId::of::<Fp>();
+
+                let features = if is_fp {
+                    None
+                } else {
+                    Some(FeatureFlags {
+                        range_check0: false,
+                        range_check1: false,
+                        foreign_field_add: false,
+                        foreign_field_mul: false,
+                        xor: false,
+                        rot: false,
+                        lookup_features: LookupFeatures {
+                            patterns: LookupPatterns {
+                                xor: false,
+                                lookup: false,
+                                range_check: false,
+                                foreign_field_mul: false,
+                            },
+                            joint_lookup_used: false,
+                            uses_runtime_tables: false,
+                        },
+                    })
+                };
+
+                let evaluated_cols =
+                    kimchi::linearization::linearization_columns::<F>(features.as_ref());
+                let (linearization, _powers_of_alpha) =
+                    kimchi::linearization::constraints_expr::<F>(features.as_ref(), true);
+
+                let kimchi::circuits::expr::Linearization {
+                    constant_term,
+                    index_terms,
+                } = linearization.linearize(evaluated_cols).unwrap();
+
+                let index_terms = index_terms.into_iter().collect::<TermsMap<F>>();
+                Rc::new((constant_term, index_terms))
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use kimchi::circuits::berkeley_columns::BerkeleyChallenges;
+
+        use super::*;
+
+        /// Every `ConstantExpr` inside an expression, outermost first.
+        fn constants_of<'a, F: FieldWitness>(
+            e: &'a Const<F>,
+            out: &mut Vec<&'a ConstantExpr<F, BerkeleyChallengeTerm>>,
+        ) {
+            match e {
+                Operations::Atom(ExprInner::Constant(c)) => out.push(c),
+                Operations::Atom(_) => {}
+                Operations::Pow(x, _)
+                | Operations::Double(x)
+                | Operations::Square(x)
+                | Operations::Cache(_, x) => constants_of(x, out),
+                Operations::Add(x, y) | Operations::Mul(x, y) | Operations::Sub(x, y) => {
+                    constants_of(x, out);
+                    constants_of(y, out);
+                }
+                Operations::IfFeature(_, x, y) => {
+                    constants_of(x, out);
+                    constants_of(y, out);
+                }
+            }
+        }
+
+        fn closed_form<F: FieldWitness>(e: &ConstantExpr<F, BerkeleyChallengeTerm>) -> bool {
+            match e {
+                Operations::Atom(_) => true,
+                Operations::Pow(x, _) | Operations::Double(x) | Operations::Square(x) => {
+                    closed_form(x)
+                }
+                Operations::Add(x, y) | Operations::Mul(x, y) | Operations::Sub(x, y) => {
+                    closed_form(x) && closed_form(y)
+                }
+                Operations::Cache(..) | Operations::IfFeature(..) => false,
+            }
+        }
+
+        fn all_constants<F: FieldWitness>(
+            terms: &Terms<F>,
+        ) -> Vec<&ConstantExpr<F, BerkeleyChallengeTerm>> {
+            let (constant_term, index_terms) = &**terms;
+            let mut out = vec![];
+            constants_of(constant_term, &mut out);
+            for term in index_terms.values() {
+                constants_of(term, &mut out);
+            }
+            out
+        }
+
+        fn check_linearization<F: FieldWitness>() {
+            let terms = linearization::<F>();
+            let constants = all_constants(&terms);
+            assert!(!constants.is_empty());
+            let open: Vec<_> = constants.iter().filter(|c| !closed_form(c)).collect();
+            assert!(
+                open.is_empty(),
+                "{} of {} constant expressions hold an IfFeature or a Cache: \
+                 const_eval would panic on {:?}",
+                open.len(),
+                constants.len(),
+                open.first()
+            );
+        }
+
+        /// `const_eval`'s `IfFeature` arm is unreachable for the pinned
+        /// kimchi: no constant of either linearization has one.
+        #[test]
+        fn linearization_constants_are_closed_forms() {
+            check_linearization::<Fp>();
+            check_linearization::<Fq>();
+        }
+
+        /// The September 2025 migration recursively witnessed arithmetic inside
+        /// `ConstantExpr`, shifting the October #1350 block witness by 372 cells.
+        /// OCaml evaluates this subtree outside the circuit and seals only a
+        /// top-level product. Literal arithmetic also stays constant when it is
+        /// multiplied by a witness. These are allocation rules, not golden values
+        /// generated by the Rust prover.
+        /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/pickles/plonk_checks/scalars.ml>
+        fn check_constant_expression_allocations<F: FieldWitness>() {
+            use kimchi::circuits::expr::ConstantTerm;
+
+            let minimal = PlonkMinimal::<F> {
+                alpha: F::from(3),
+                beta: F::from(5),
+                gamma: F::from(7),
+                zeta: F::from(11),
+                joint_combiner: None,
+                alpha_bytes: [3, 0],
+                beta_bytes: [5, 0],
+                gamma_bytes: [7, 0],
+                zeta_bytes: [11, 0],
+                joint_combiner_bytes: None,
+                feature_flags: crate::proofs::step::FeatureFlags::empty_bool(),
+            };
+            let env = crate::proofs::verification::make_scalars_env(&minimal, 4, 16, 3);
+            let evals =
+                ProofEvaluations::dummy_with_witness_evaluations([F::one(); 15], [F::one(); 15]);
+            let constants = Constants::<F> {
+                endo_coefficient: endos::<F>().0,
+                mds: &<F::OtherCurve>::sponge_params().mds,
+                zk_rows: 3,
+            };
+            let mut w = Witness::empty();
+            let mut ctx = EvalContext {
+                evals: &evals,
+                constants: &constants,
+                cache: BTreeMap::new(),
+                env: &env,
+                w: &mut w,
+                alpha: minimal.alpha,
+                beta: minimal.beta,
+                gamma: minimal.gamma,
+                joint_combiner: None,
+            };
+            let alpha =
+                Operations::Atom(ConstantExprInner::Challenge(BerkeleyChallengeTerm::Alpha));
+            let beta = Operations::Atom(ConstantExprInner::Challenge(BerkeleyChallengeTerm::Beta));
+            let power = Operations::Pow(Box::new(alpha.clone()), 7);
+            let expr = Operations::Atom(ExprInner::Constant(power.clone()));
+            assert_eq!(eval(&expr, &mut ctx), minimal.alpha.pow([7]));
+            assert!(
+                ctx.w.aux().is_empty(),
+                "a constant-expression power must not allocate"
+            );
+
+            let product = Operations::Mul(Box::new(power), Box::new(beta));
+            let expr = Operations::Atom(ExprInner::Constant(product));
+            let value = minimal.alpha.pow([7]) * minimal.beta;
+            assert_eq!(eval(&expr, &mut ctx), value);
+            assert_eq!(
+                ctx.w.aux(),
+                &[value],
+                "only the top-level product is sealed"
+            );
+
+            let literal = |n| {
+                Operations::Atom(ExprInner::Constant(Operations::Atom(
+                    ConstantExprInner::Constant(ConstantTerm::Literal(F::from(n))),
+                )))
+            };
+            let constant = Operations::Add(Box::new(literal(2u64)), Box::new(literal(3)));
+            let expr = Operations::Mul(
+                Box::new(constant),
+                Box::new(Operations::Atom(ExprInner::Constant(alpha))),
+            );
+            assert_eq!(eval(&expr, &mut ctx), F::from(5) * minimal.alpha);
+            assert_eq!(
+                ctx.w.aux(),
+                &[value],
+                "multiplication by a constant must not allocate"
+            );
+        }
+
+        #[test]
+        fn p1350_constant_expression_witness_layout() {
+            check_constant_expression_allocations::<Fp>();
+            check_constant_expression_allocations::<Fq>();
+        }
+
+        fn check_const_eval<F: FieldWitness>() {
+            let terms = linearization::<F>();
+            let constants = Constants::<F> {
+                endo_coefficient: endos::<F>().0,
+                mds: &<F::OtherCurve>::sponge_params().mds,
+                zk_rows: 3,
+            };
+            let (alpha, beta, gamma, joint_combiner) =
+                (F::from(3u64), F::from(5u64), F::from(7u64), F::from(11u64));
+            let challenges = Challenges {
+                alpha,
+                beta,
+                gamma,
+                joint_combiner: Some(joint_combiner),
+                constants: Constants { ..constants },
+            };
+            let kimchi_challenges = BerkeleyChallenges {
+                alpha,
+                beta,
+                gamma,
+                joint_combiner,
+            };
+            for c in all_constants(&terms) {
+                assert_eq!(
+                    const_eval(c, &challenges),
+                    c.value(&constants, &kimchi_challenges)
+                );
+            }
+        }
+
+        /// `const_eval` gives kimchi's own value for every constant in both
+        /// linearizations, including the lookup terms behind an `IfFeature`
+        /// that `eval` reaches only when a feature is known (hence a joint
+        /// combiner here).
+        #[test]
+        fn const_eval_matches_kimchi() {
+            check_const_eval::<Fp>();
+            check_const_eval::<Fq>();
+        }
     }
 }
 

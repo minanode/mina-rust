@@ -1,0 +1,23 @@
+{
+  "data": {
+    "version": 1,
+    "peer_id": "12D3KooWBRp84j2BaaddgbMTWjxBL3cHubUb9aE9JZanQriLP5f5",
+    "ip_address": "127.0.0.1",
+    "public_key": null,
+    "commit_hash": "84b8d96954b218f372b93f65a071abf528e6bb61",
+    "chain_id": "r43e1-schema-example",
+    "contact_info": null,
+    "hardware_info": null,
+    "timestamp": "2026-10-21T00:00:00Z",
+    "id": "00000000-0000-4000-8000-000000000001",
+    "error": {
+      "message": "Synthetic offline schema fixture; not a daemon failure capture"
+    },
+    "catchup_job_states": null,
+    "sync_status": "Connecting",
+    "block_height_at_best_tip": null,
+    "max_observed_block_height": 0,
+    "max_observed_unvalidated_block_height": 0,
+    "uptime_of_node": "1s"
+  }
+}

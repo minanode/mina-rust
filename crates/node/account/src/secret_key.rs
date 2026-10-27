@@ -85,7 +85,9 @@ impl AccountSecretKey {
         path: impl AsRef<Path>,
         password: &str,
     ) -> Result<Self, EncryptionError> {
-        Self::from_encrypted_reader(fs::File::open(path)?, password)
+        let file = fs::File::open(path)?;
+        mina_core::reject_public_key_file(&file)?;
+        Self::from_encrypted_reader(file, password)
     }
 
     pub fn from_encrypted_reader(
@@ -105,17 +107,28 @@ impl AccountSecretKey {
             .map_err(|err| EncryptionError::Other(err.to_string()))
     }
 
+    /// Encrypts the key with `password` and writes it to a new file at `path`
+    /// that only its owner can read or write (mode 0600 on Unix), as OCaml's
+    /// `Secret_file.write` does. Fails, without touching it, if `path`
+    /// already exists.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/secrets/secret_file.ml#L73-L85>
     pub fn to_encrypted_file(
         &self,
         path: impl AsRef<Path>,
         password: &str,
     ) -> Result<(), EncryptionError> {
-        if path.as_ref().exists() {
-            panic!("File {} already exists", path.as_ref().display())
-        }
-
-        let f = fs::File::create(path)?;
         let encrypted = Self::try_encrypt(&self.to_bytes(), password)?;
+
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let f = options.open(path)?;
+        // The mode above is filtered by the umask; set it exactly, as OCaml
+        // does with `chmod`.
+        #[cfg(unix)]
+        f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
 
         serde_json::to_writer(f, &encrypted)?;
         Ok(())

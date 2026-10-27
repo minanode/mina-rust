@@ -13,8 +13,19 @@ impl TransitionFrontierGenesisEffectfulAction {
             TransitionFrontierGenesisEffectfulAction::LedgerLoadInit { config } => {
                 store.service.load_genesis(config.clone());
             }
-            TransitionFrontierGenesisEffectfulAction::ProveInit { block_hash, input } => {
-                store.service.prove(block_hash.clone(), input.clone());
+            TransitionFrontierGenesisEffectfulAction::LedgersLoadInit { config, expected } => {
+                store
+                    .service
+                    .load_genesis_ledgers(config.clone(), expected.clone());
+            }
+            TransitionFrontierGenesisEffectfulAction::ProveInit {
+                block_hash,
+                input,
+                deadline,
+            } => {
+                store
+                    .service
+                    .prove(block_hash.clone(), input.clone(), *deadline);
             }
         }
     }

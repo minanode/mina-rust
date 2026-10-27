@@ -24,6 +24,10 @@ import {
 } from '@shared/types/app/app-node-details.type';
 import { untilDestroyed } from '@ngneat/until-destroy';
 import { isBrowser } from '@mina-rust/shared';
+import {
+  restoreHeadline,
+  RestoreSummary,
+} from '@shared/helpers/restore.helper';
 
 @Component({
   selector: 'mina-dashboard',
@@ -42,6 +46,8 @@ export class DashboardComponent
   connectedProgress: number = 0;
   ledgerProgress: number = 0;
   blockSyncProgress: number = 0;
+  /** The node restarted from saved state: no ledger steps to show. */
+  restored: RestoreSummary | null = null;
 
   private connected: boolean = false;
   timer: Subscription;
@@ -102,6 +108,11 @@ export class DashboardComponent
     this.select(
       selectDashboardPeersStats,
       (stats: DashboardPeersStats) => {
+        if (this.restored) {
+          // The header says how the node restarted (listenToNodesChanges).
+          this.connected = stats.connected > 0;
+          return;
+        }
         if ((this.connected && stats.connected === 0) || !this.connected) {
           if (stats.connected > 0) {
             this.updateAction = 'Downloading Staking Epoch Ledger';
@@ -129,7 +140,10 @@ export class DashboardComponent
     this.select(
       selectDashboardNodesAndRpcStats,
       ([nodes, rpcStats]: [NodesOverviewNode[], DashboardRpcStats]) => {
-        if (nodes.length !== 0) {
+        this.restored = nodes[0]?.restored ?? null;
+        if (this.restored) {
+          this.showRestore(nodes[0]);
+        } else if (nodes.length !== 0) {
           const ledgers = nodes[0].ledgers;
 
           let stakingProgress =
@@ -218,6 +232,36 @@ export class DashboardComponent
         this.detect();
       },
     );
+  }
+
+  /**
+   * A restart from saved state (F-dash3): the ledgers came from the store, so
+   * the header says so instead of walking through the ledger downloads, and
+   * the bar follows the replay of the stored blocks.
+   */
+  private showRestore(node: NodesOverviewNode): void {
+    this.updateAction = restoreHeadline(this.restored);
+    this.updateDetail = '';
+    if (this.restored.failed) {
+      // The node syncs from the network now, its next record a bootstrap.
+      this.connectedProgress = this.connected ? 33 : 0;
+      this.ledgerProgress = 0;
+      this.blockSyncProgress = 0;
+      return;
+    }
+    this.connectedProgress = 33;
+    this.ledgerProgress = 33;
+    if (this.restored.done) {
+      this.blockSyncProgress = 34;
+      return;
+    }
+    const blocks = node.blocks;
+    const applied = blocks.filter(
+      b => b.status === NodesOverviewNodeBlockStatus.APPLIED,
+    ).length;
+    this.blockSyncProgress = blocks.length
+      ? Math.floor((applied * 34) / blocks.length)
+      : 0;
   }
 
   override ngOnDestroy(): void {

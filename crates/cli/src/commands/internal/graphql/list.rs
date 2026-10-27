@@ -3,8 +3,14 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, clap::Args)]
 pub struct List {
-    /// GraphQL server URL
-    #[arg(long, default_value = "http://localhost:3000/graphql")]
+    /// The node's HTTP base URL (its `--port`). Requests go to
+    /// `<URL>/graphql`.
+    #[arg(
+        long,
+        default_value = "http://localhost:3000",
+        env = "MINA_NODE_URL",
+        value_name = "URL"
+    )]
     pub node: String,
 }
 
@@ -51,7 +57,7 @@ impl List {
         // Make the introspection request
         let client = reqwest::blocking::Client::new();
         let response = client
-            .post(&self.node)
+            .post(crate::commands::node_api::graphql_url(&self.node))
             .json(&request)
             .send()
             .map_err(|e| anyhow!("Failed to connect to GraphQL server: {}", e))?;
@@ -175,7 +181,7 @@ impl List {
         }
 
         // Display example curl command
-        let node_url = &self.node;
+        let node_url = crate::commands::node_api::graphql_url(&self.node);
         println!(
             "\nExample: curl -s -X POST {} -H 'Content-Type: application/json' \\",
             node_url

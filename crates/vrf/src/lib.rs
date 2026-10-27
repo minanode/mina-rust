@@ -11,7 +11,7 @@ use thiserror::Error;
 
 use mina_curves::pasta::curves::pallas::Pallas as CurvePoint;
 use mina_signer::Keypair;
-use threshold::Threshold;
+pub use threshold::Threshold;
 
 mod message;
 pub mod output;
@@ -120,7 +120,7 @@ fn calculate_vrf(
     let vrf_message_hash_curve_point = vrf_message.to_group()?;
 
     let scaled_message_hash = vrf_message_hash_curve_point
-        .mul(producer_key.secret.clone().into_scalar())
+        .mul(*producer_key.secret_key().scalar())
         .into_affine();
 
     Ok(VrfOutput::new(vrf_message, scaled_message_hash))
@@ -138,16 +138,39 @@ pub fn evaluate_vrf(vrf_input: VrfEvaluationInput) -> VrfResult<VrfEvaluationOut
         account_pub_key,
     } = vrf_input;
 
-    let vrf_output = calculate_vrf(&producer_key, epoch_seed, global_slot, &delegator_index)?;
-
-    let value = vrf_output.truncated().into_bigint();
     let threshold = Threshold::new(delegated_stake, total_currency);
+    evaluate_vrf_precomputed(
+        &producer_key,
+        global_slot,
+        &epoch_seed,
+        &account_pub_key,
+        delegator_index,
+        &threshold,
+    )
+}
+
+/// Evaluate against an epoch's precomputed threshold without copying the key.
+pub fn evaluate_vrf_precomputed(
+    producer_key: &Keypair,
+    global_slot: u32,
+    epoch_seed: &EpochSeed,
+    account_pub_key: &AccountPublicKey,
+    delegator_index: AccountIndex,
+    threshold: &Threshold,
+) -> VrfResult<VrfEvaluationOutput> {
+    let vrf_output = calculate_vrf(
+        producer_key,
+        epoch_seed.clone(),
+        global_slot,
+        &delegator_index,
+    )?;
+    let value = vrf_output.truncated().into_bigint();
 
     if threshold.threshold_met(value) {
         Ok(VrfEvaluationOutput::SlotWon(VrfWonSlot {
-            producer: producer_key.public.into(),
+            producer: producer_key.public.clone().into(),
             vrf_output: Box::new(vrf_output),
-            winner_account: account_pub_key,
+            winner_account: account_pub_key.clone(),
             global_slot,
             account_index: delegator_index,
             value_with_threshold: None.or_else(|| {
@@ -186,6 +209,50 @@ mod test {
     use crate::{genesis_vrf, keypair_from_bs58_string, VrfEvaluationInput, VrfEvaluationOutput};
 
     use super::evaluate_vrf;
+
+    #[test]
+    #[ignore]
+    fn profile_vrf_parts() {
+        use ark_ec::CurveGroup;
+        use std::{hint::black_box, ops::Mul, time::Instant};
+
+        let key = mina_signer::Keypair::rand(&mut rand::thread_rng()).unwrap();
+        let seed = EpochSeed::from(MinaBaseEpochSeedStableV1(MinaBigInt::zero()));
+        let total = BigInt::from(1_000_000_000_000_000u64);
+        let cold_start = Instant::now();
+        black_box(super::Threshold::new(
+            BigInt::from(1_000_000_000u64),
+            total.clone(),
+        ));
+        let cold_threshold = cold_start.elapsed();
+        let start = Instant::now();
+        for i in 0..128u64 {
+            black_box(super::Threshold::new(
+                BigInt::from(1_000_000_000u64 + i * 100_000),
+                total.clone(),
+            ));
+        }
+        let threshold = start.elapsed();
+        let mut hash_to_curve = std::time::Duration::ZERO;
+        let mut scalar_multiplication = std::time::Duration::ZERO;
+        let mut hashing = std::time::Duration::ZERO;
+        for i in 0..128u64 {
+            let message = super::message::VrfMessage::new(100_000 + i as u32, seed.clone(), i);
+            let start = Instant::now();
+            let point = message.to_group().unwrap();
+            hash_to_curve += start.elapsed();
+            let start = Instant::now();
+            let scaled = point.mul(*key.secret_key().scalar()).into_affine();
+            scalar_multiplication += start.elapsed();
+            let start = Instant::now();
+            let output = super::output::VrfOutput::new(message, scaled);
+            black_box(output.truncated());
+            hashing += start.elapsed();
+        }
+        println!(
+            "BP1 profile/128: cold_threshold={cold_threshold:?}, warm_threshold={threshold:?}, hash_to_curve={hash_to_curve:?}, scalar_multiplication={scalar_multiplication:?}, output_hashing={hashing:?}"
+        );
+    }
 
     #[test]
     fn test_genesis_vrf() {

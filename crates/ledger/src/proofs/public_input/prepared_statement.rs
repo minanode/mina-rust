@@ -200,8 +200,8 @@ impl PreparedStatement {
                                     zeta_to_srs_length,
                                     zeta_to_domain_size,
                                     perm,
-                                    lookup: _,
-                                    feature_flags: _,
+                                    lookup,
+                                    feature_flags,
                                 },
                             combined_inner_product,
                             b,
@@ -287,17 +287,38 @@ impl PreparedStatement {
             fields.push(bits(10, Fq::from(branch_data)));
         }
 
-        // TODO: Find out how this padding works, it's probably related to features/lookup
         let zero = Fq::zero();
-        let circuit_var = match hack_feature_flags {
+        match hack_feature_flags {
             OptFlag::Yes => todo!(),
-            OptFlag::No => CircuitVar::Constant,
-            OptFlag::Maybe => CircuitVar::Var,
-        };
-        while fields.len() < npublic_input - 1 {
-            fields.push(Packed::PackedBits(circuit_var(zero), 1));
+            // TODO: Find out how this padding works, it's probably related to features/lookup
+            OptFlag::No => {
+                while fields.len() < npublic_input - 1 {
+                    fields.push(Packed::PackedBits(CircuitVar::Constant(zero), 1));
+                }
+                fields.push(Packed::PackedBits(CircuitVar::Constant(zero), 128));
+            }
+            // A side-loaded proof's feature flags, then its joint combiner as
+            // an `Opt.Maybe`: the flag and the challenge, or the dummy zero.
+            // They are the witnessed ones, so a zkApp circuit using custom
+            // gates and lookups has its own (ZK1). `to_public_input` packs
+            // the same values for the proof's oracle.
+            // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/pickles/composition_types/composition_types.ml#L746-L841>
+            OptFlag::Maybe => {
+                let mut flags = Vec::with_capacity(8);
+                feature_flags.to_field_elements(&mut flags);
+                fields.extend(flags.into_iter().map(|flag: Fq| bits(1, flag)));
+                fields.push(bits(1, Fq::from(lookup.is_some())));
+                fields.push(bits(
+                    128,
+                    lookup.as_ref().map_or(zero, two_u64_to_field::<Fq, _>),
+                ));
+                anyhow::ensure!(
+                    fields.len() == npublic_input,
+                    "side-loaded statement packs {} public inputs, not {npublic_input}",
+                    fields.len()
+                );
+            }
         }
-        fields.push(Packed::PackedBits(circuit_var(zero), 128));
 
         Ok(fields)
     }

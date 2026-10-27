@@ -1,0 +1,20 @@
+{
+  "genesis": {
+    "genesis_state_timestamp": "2026-10-21T00:00:00Z"
+  },
+  "proof": {
+    "level": "none",
+    "block_window_duration_ms": 2000
+  },
+  "ledger": {
+    "accounts": [
+      {
+        "pk": "B62qkuPFuEYSC15BECptoEKXQKuBhzYpKKfhF99UQ4MVxqhGjyvPeY9",
+        "balance": "1000"
+      }
+    ]
+  },
+  "daemon": {
+    "network_id": "r43e1-offline-fixture-only"
+  }
+}

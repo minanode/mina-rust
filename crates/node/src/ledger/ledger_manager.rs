@@ -4,7 +4,13 @@ use super::{
     LedgerCtx, LedgerService,
 };
 use crate::{
-    account::AccountPublicKey, ledger::LedgerAddress, rpc::AccountQuery,
+    account::AccountPublicKey,
+    ledger::LedgerAddress,
+    persist::{
+        ledger_codec::FullPart,
+        writer::{PersistInsert, PersistInserter},
+    },
+    rpc::AccountQuery,
     transition_frontier::sync::ledger::snarked::TransitionFrontierSyncLedgerSnarkedService,
 };
 use ledger::{
@@ -27,12 +33,14 @@ use std::collections::BTreeMap;
     reason = "This is storing large messages, but size difference is only 2x between largest and second-largest variants"
 )]
 pub(super) enum LedgerRequest {
+    MemoryDebug,
     Write(LedgerWriteRequest),
     Read(LedgerReadId, LedgerReadRequest),
     /// expected response: `LedgerHash`
     AccountsSet {
         snarked_ledger_hash: LedgerHash,
         parent: LedgerAddress,
+        expected_hash: LedgerHash,
         accounts: Vec<MinaBaseAccountBinableArgStableV2>,
     },
     /// expected response: `Vec<Account>`
@@ -44,10 +52,14 @@ pub(super) enum LedgerRequest {
     ChildHashesGet {
         snarked_ledger_hash: LedgerHash,
         parent: LedgerAddress,
+        depth: usize,
     },
     /// expected response: `Success`
     ComputeSnarkedLedgerHashes {
         snarked_ledger_hash: LedgerHash,
+    },
+    ContainsSnarkedLedger {
+        hash: LedgerHash,
     },
     /// expected response: `SnarkedLedgerContentsCopied`
     CopySnarkedLedgerContentsForSync {
@@ -67,17 +79,32 @@ pub(super) enum LedgerRequest {
     InsertGenesisLedger {
         mask: Mask,
     },
-    StagedLedgerReconstructResult {
-        staged_ledger_hash: LedgerHash,
-        result: Result<StagedLedger, String>,
+    /// From the store thread: a piece of a ledger pinned for a checkpoint.
+    /// expected response: `PersistRead`
+    PersistRead {
+        pin: u64,
+        part: FullPart,
     },
+    /// From the store thread, when a checkpoint is done: releases its pins.
+    PersistUnpin {
+        pins: Vec<u64>,
+    },
+    /// From the store thread, a load's ledgers for a restore (I5d1).
+    /// expected response: `PersistInserted`
+    PersistInsert {
+        insert: PersistInsert,
+    },
+    /// PC1: the proofs this thread holds.
+    /// expected response: `ProofMemory`
+    ProofMemory,
 }
 
 #[derive(Debug)]
 pub enum LedgerResponse {
+    MemoryDebug(serde_json::Value),
     Write(LedgerWriteResponse),
     Read(LedgerReadId, LedgerReadResponse),
-    ChildHashes(Option<(LedgerHash, LedgerHash)>),
+    ChildHashes(Option<Vec<LedgerHash>>),
     AccountsSet(Result<LedgerHash, String>),
     AccountsGet(Result<Vec<Account>, String>),
     LedgerMask(Option<(Mask, bool)>),
@@ -86,52 +113,50 @@ pub enum LedgerResponse {
         Option<BTreeMap<AccountPublicKey, Vec<(ledger::AccountIndex, AccountPublicKey, u64)>>>,
     ),
     SnarkedLedgerContentsCopied(Result<bool, String>),
+    ContainsSnarkedLedger(bool),
+    /// The bytes of a piece of a pinned ledger, and the time taken.
+    PersistRead(Result<(Vec<u8>, f64), String>),
+    /// A load's ledgers were taken, in this many milliseconds.
+    PersistInserted(f64),
+    ProofMemory(Box<crate::proof_memory::LedgerProofMemory>),
     Success, // operation was performed and result stored; nothing to return.
 }
 
 impl LedgerRequest {
-    fn handle(
-        self,
-        ledger_ctx: &mut LedgerCtx,
-        caller: &LedgerCaller,
-        force_sync: bool,
-    ) -> LedgerResponse {
+    #[cfg(test)]
+    pub(super) fn read_for_tests(
+        ctx: &mut LedgerCtx,
+        request: LedgerReadRequest,
+    ) -> LedgerReadResponse {
+        let (sender, _receiver) = mpsc::tracked_unbounded_channel();
+        match Self::Read(LedgerReadId::new_unchecked(0, 0), request)
+            .handle(ctx, &LedgerCaller(sender))
+        {
+            LedgerResponse::Read(_, response) => response,
+            _ => unreachable!(),
+        }
+    }
+
+    fn handle(self, ledger_ctx: &mut LedgerCtx, caller: &LedgerCaller) -> LedgerResponse {
         match self {
+            Self::MemoryDebug => LedgerResponse::MemoryDebug(ledger_ctx.memory_debug()),
             Self::Write(request) => LedgerResponse::Write(match request {
                 LedgerWriteRequest::StagedLedgerReconstruct {
                     snarked_ledger_hash,
                     parts,
                 } => {
-                    if !force_sync {
-                        let caller = caller.clone();
-                        let cb = move |staged_ledger_hash, result| {
-                            caller.call(LedgerRequest::StagedLedgerReconstructResult {
-                                staged_ledger_hash,
-                                result,
-                            })
-                        };
-                        if let Err(e) =
-                            ledger_ctx.staged_ledger_reconstruct(snarked_ledger_hash, parts, cb)
-                        {
-                            mina_core::log::inner::error!(
-                                "Failed to reconstruct staged ledger: {:?}",
-                                e
-                            );
-                            // TODO: Handle the error in the state machine
-                        }
-                        return LedgerResponse::Success;
-                    } else {
-                        let (staged_ledger_hash, result) = match ledger_ctx
-                            .staged_ledger_reconstruct_sync(snarked_ledger_hash, parts)
-                        {
-                            Ok(result) => result,
-                            Err(e) => (v2::LedgerHash::zero(), Err(String::from(e))),
-                        };
+                    // On this thread: the staged ledger is a mask over the
+                    // snarked ledger this thread serves (R38).
+                    let (staged_ledger_hash, result) = match ledger_ctx
+                        .staged_ledger_reconstruct_sync(snarked_ledger_hash, parts)
+                    {
+                        Ok(result) => result,
+                        Err(e) => (v2::LedgerHash::zero(), Err(String::from(e))),
+                    };
 
-                        LedgerWriteResponse::StagedLedgerReconstruct {
-                            staged_ledger_hash,
-                            result,
-                        }
+                    LedgerWriteResponse::StagedLedgerReconstruct {
+                        staged_ledger_hash,
+                        result,
                     }
                 }
                 LedgerWriteRequest::StagedLedgerDiffCreate {
@@ -168,6 +193,7 @@ impl LedgerRequest {
                     block,
                     pred_block,
                     skip_verification,
+                    restored,
                 } => {
                     let block_hash = block.hash().clone();
                     let skip_verification = if skip_verification {
@@ -175,10 +201,12 @@ impl LedgerRequest {
                     } else {
                         None
                     };
-                    let result = ledger_ctx.block_apply(block, pred_block, skip_verification);
+                    let result =
+                        ledger_ctx.block_apply_with(block, pred_block, skip_verification, restored);
                     LedgerWriteResponse::BlockApply { block_hash, result }
                 }
                 LedgerWriteRequest::Commit {
+                    root_history,
                     ledgers_to_keep,
                     root_snarked_ledger_updates,
                     needed_protocol_states,
@@ -187,6 +215,7 @@ impl LedgerRequest {
                 } => {
                     let best_tip_hash = new_best_tip.hash().clone();
                     let result = ledger_ctx.commit(
+                        root_history,
                         ledgers_to_keep,
                         root_snarked_ledger_updates,
                         needed_protocol_states,
@@ -198,31 +227,29 @@ impl LedgerRequest {
                         result,
                     }
                 }
+                LedgerWriteRequest::PersistCheckpoint(request) => {
+                    let root = request.checkpoint.root.clone();
+                    let result = ledger_ctx.persist_checkpoint(*request, caller);
+                    LedgerWriteResponse::PersistCheckpoint { root, result }
+                }
             }),
             Self::Read(id, request) => LedgerResponse::Read(
                 id,
                 match request {
                     LedgerReadRequest::DelegatorTable(ledger_hash, producer) => {
-                        let res = ledger_ctx
-                            .producers_with_delegates(&ledger_hash, |pub_key| {
-                                AccountPublicKey::from(pub_key.clone()) == producer
-                            })
-                            .and_then(|list| list.into_iter().next())
-                            .map(|(_, table)| {
-                                table
-                                    .into_iter()
-                                    .map(|(index, pub_key, balance)| (index, (pub_key, balance)))
-                                    .collect()
-                            });
-
+                        let res = ledger_ctx.producer_delegator_table(&ledger_hash, &producer);
                         LedgerReadResponse::DelegatorTable(res)
                     }
                     LedgerReadRequest::GetNumAccounts(ledger_hash) => {
                         let res = ledger_ctx.get_num_accounts(ledger_hash);
                         LedgerReadResponse::GetNumAccounts(res)
                     }
-                    LedgerReadRequest::GetChildHashesAtAddr(ledger_hash, addr) => {
-                        let res = ledger_ctx.get_child_hashes(ledger_hash, addr);
+                    LedgerReadRequest::GetChildHashesAtAddr(ledger_hash, addr, depth) => {
+                        // Network answers must come from a complete ledger.
+                        // The synchronous ChildHashesGet path also reads our
+                        // partial mask to compare it with validated peer hashes.
+                        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/sync_handler/sync_handler.ml#L53-L115>
+                        let res = ledger_ctx.get_child_hashes_for_serving(ledger_hash, addr, depth);
                         LedgerReadResponse::GetChildHashesAtAddr(res)
                     }
                     LedgerReadRequest::GetChildAccountsAtAddr(ledger_hash, addr) => {
@@ -231,10 +258,22 @@ impl LedgerRequest {
                     }
                     LedgerReadRequest::GetStagedLedgerAuxAndPendingCoinbases(data) => {
                         let res = ledger_ctx.staged_ledger_aux_and_pending_coinbase(
+                            &data.block_hash,
                             &data.ledger_hash,
                             data.protocol_states,
                         );
                         LedgerReadResponse::GetStagedLedgerAuxAndPendingCoinbases(res)
+                    }
+                    LedgerReadRequest::SnarkPoolProver(request) => {
+                        LedgerReadResponse::SnarkPoolProver(
+                            ledger_ctx.snark_pool_prover_account(
+                                &request.ledger_hash,
+                                &request.work.snarker,
+                            ),
+                        )
+                    }
+                    LedgerReadRequest::WorkCoverage(request) => {
+                        LedgerReadResponse::WorkCoverage(ledger_ctx.work_coverage(*request))
                     }
                     LedgerReadRequest::ScanStateSummary(ledger_hash) => {
                         let res = ledger_ctx.scan_state_summary(&ledger_hash);
@@ -250,13 +289,33 @@ impl LedgerRequest {
                             AccountQuery::SinglePublicKey(public_key) => ledger_ctx
                                 .get_accounts_for_rpc(ledger_hash, Some(public_key.clone())),
                             AccountQuery::PubKeyWithTokenId(public_key, token_id_key_hash) => {
-                                let id = AccountId {
-                                    public_key: public_key.clone().try_into().unwrap(),
-                                    token_id: token_id_key_hash.clone().into(),
-                                };
-                                ledger_ctx.get_accounts(ledger_hash, vec![id])
+                                // Values outside the field are no account id.
+                                match (
+                                    public_key.clone().try_into(),
+                                    ledger::TokenId::try_from(token_id_key_hash),
+                                ) {
+                                    (Ok(public_key), Ok(token_id)) => ledger_ctx.get_accounts(
+                                        ledger_hash,
+                                        vec![AccountId {
+                                            public_key,
+                                            token_id,
+                                        }],
+                                    ),
+                                    _ => vec![],
+                                }
                             }
                             AccountQuery::MultipleIds(ids) => {
+                                ledger_ctx.get_accounts(ledger_hash, ids.clone())
+                            }
+                            AccountQuery::TokenOwner(token_id) => {
+                                match ledger::TokenId::try_from(token_id) {
+                                    Ok(token_id) => {
+                                        ledger_ctx.token_owner_for_rpc(ledger_hash, token_id)
+                                    }
+                                    Err(_) => vec![],
+                                }
+                            }
+                            AccountQuery::StakingEpochIds(ids) => {
                                 ledger_ctx.get_accounts(ledger_hash, ids.clone())
                             }
                         };
@@ -273,26 +332,42 @@ impl LedgerRequest {
 
                         LedgerReadResponse::GetLedgerStatus(rpc_id, res)
                     }
-                    LedgerReadRequest::GetAccountDelegators(rpc_id, ledger_hash, account_id) => {
-                        let res = ledger_ctx.get_account_delegators(&ledger_hash, &account_id);
+                    LedgerReadRequest::GetAccountDelegators(rpc_id, query, account_id) => {
+                        let res = ledger_ctx.delegators_for_rpc(&query, &account_id);
                         LedgerReadResponse::GetAccountDelegators(rpc_id, res)
+                    }
+                    LedgerReadRequest::LedgerExport(rpc_id, request) => {
+                        let res = ledger_ctx.export_ledger(&request).map(std::sync::Arc::new);
+                        LedgerReadResponse::LedgerExport(rpc_id, res)
+                    }
+                    LedgerReadRequest::HardForkExport(rpc_id, request) => {
+                        let res = ledger_ctx
+                            .export_hard_fork(&request)
+                            .map(std::sync::Arc::new);
+                        LedgerReadResponse::HardForkExport(rpc_id, res)
+                    }
+                    LedgerReadRequest::LightAccount(rpc_id, request) => {
+                        LedgerReadResponse::LightAccount(rpc_id, ledger_ctx.light_account(&request))
                     }
                 },
             ),
             LedgerRequest::AccountsSet {
                 snarked_ledger_hash,
                 parent,
+                expected_hash,
                 accounts,
             } => LedgerResponse::AccountsSet(ledger_ctx.accounts_set(
                 snarked_ledger_hash,
                 &parent,
+                &expected_hash,
                 accounts,
             )),
             LedgerRequest::ChildHashesGet {
                 snarked_ledger_hash,
                 parent,
+                depth,
             } => {
-                let res = ledger_ctx.get_child_hashes(snarked_ledger_hash, parent);
+                let res = ledger_ctx.get_child_hashes(snarked_ledger_hash, parent, depth);
                 LedgerResponse::ChildHashes(res)
             }
             LedgerRequest::ComputeSnarkedLedgerHashes {
@@ -303,23 +378,17 @@ impl LedgerRequest {
                     .unwrap();
                 LedgerResponse::Success
             }
+            LedgerRequest::ContainsSnarkedLedger { hash } => {
+                LedgerResponse::ContainsSnarkedLedger(ledger_ctx.contains_snarked_ledger(&hash))
+            }
             LedgerRequest::CopySnarkedLedgerContentsForSync {
                 origin_snarked_ledger_hash,
                 target_snarked_ledger_hash,
                 overwrite,
             } => {
-                let origin_snarked_ledger_hash = origin_snarked_ledger_hash
-                    .iter()
-                    .find(|hash| ledger_ctx.contains_snarked_ledger(hash))
-                    .unwrap_or_else(|| {
-                        origin_snarked_ledger_hash
-                            .first()
-                            .expect("origin_snarked_ledger_hash cannot be empty")
-                    })
-                    .clone();
-
+                // The candidates come closest to the target first.
                 let res = ledger_ctx.copy_snarked_ledger_contents_for_sync(
-                    origin_snarked_ledger_hash,
+                    &origin_snarked_ledger_hash,
                     target_snarked_ledger_hash,
                     overwrite,
                 );
@@ -339,28 +408,30 @@ impl LedgerRequest {
                 ledger_ctx.insert_genesis_ledger(mask);
                 LedgerResponse::Success
             }
-            LedgerRequest::StagedLedgerReconstructResult {
-                staged_ledger_hash,
-                result,
-            } => {
-                let result = match result {
-                    Err(err) => Err(err),
-                    Ok(ledger) => {
-                        ledger_ctx.staged_ledger_reconstruct_result_store(ledger);
-                        Ok(())
-                    }
-                };
-                LedgerResponse::Write(LedgerWriteResponse::StagedLedgerReconstruct {
-                    staged_ledger_hash,
-                    result,
-                })
-            }
             LedgerRequest::AccountsGet {
                 ledger_hash,
                 account_ids,
             } => {
-                let res = ledger_ctx.get_accounts(ledger_hash, account_ids);
-                LedgerResponse::AccountsGet(Ok(res))
+                // Synchronous consumers must distinguish an unavailable
+                // ledger from an available ledger with no matching accounts.
+                let res = ledger_ctx
+                    .mask(&ledger_hash)
+                    .ok_or_else(|| "Ledger unavailable".to_owned())
+                    .map(|_| ledger_ctx.get_accounts(ledger_hash, account_ids));
+                LedgerResponse::AccountsGet(res)
+            }
+            LedgerRequest::PersistRead { pin, part } => {
+                LedgerResponse::PersistRead(ledger_ctx.persist_read(pin, part))
+            }
+            LedgerRequest::PersistUnpin { pins } => {
+                ledger_ctx.persist_unpin(&pins);
+                LedgerResponse::Success
+            }
+            LedgerRequest::PersistInsert { insert } => {
+                LedgerResponse::PersistInserted(ledger_ctx.persist_insert(insert))
+            }
+            LedgerRequest::ProofMemory => {
+                LedgerResponse::ProofMemory(Box::new(ledger_ctx.proof_memory()))
             }
         }
     }
@@ -379,7 +450,25 @@ pub struct LedgerManager {
 #[derive(Clone)]
 pub(super) struct LedgerCaller(mpsc::TrackedUnboundedSender<LedgerRequestWithChan>);
 
+/// A handle for querying ledger cache sizes from a diagnostic worker.
+#[derive(Clone)]
+pub struct LedgerMemoryDebugHandle(LedgerCaller);
+
+impl LedgerMemoryDebugHandle {
+    pub fn read(&self) -> Option<serde_json::Value> {
+        match self.0.try_call_sync(LedgerRequest::MemoryDebug).ok()? {
+            LedgerResponse::MemoryDebug(value) => Some(value),
+            _ => None,
+        }
+    }
+}
+
 impl LedgerManager {
+    /// Clone a handle for a worker to query ledger sizes off the state thread.
+    pub fn memory_debug_handle(&self) -> LedgerMemoryDebugHandle {
+        LedgerMemoryDebugHandle(self.caller.clone())
+    }
+
     pub fn spawn(mut ledger_ctx: LedgerCtx) -> LedgerManager {
         let (sender, mut receiver) = mpsc::tracked_unbounded_channel();
         let caller = LedgerCaller(sender);
@@ -388,7 +477,7 @@ impl LedgerManager {
         let ledger_manager_loop = move || {
             while let Some(msg) = receiver.blocking_recv() {
                 let LedgerRequestWithChan { request, responder } = msg.0;
-                let response = request.handle(&mut ledger_ctx, &ledger_caller, responder.is_some());
+                let response = request.handle(&mut ledger_ctx, &ledger_caller);
                 match (response, responder) {
                     (LedgerResponse::Write(resp), None) => {
                         ledger_ctx.send_write_response(resp);
@@ -430,10 +519,7 @@ impl LedgerManager {
         self.caller.call(request)
     }
 
-    pub(super) fn call_sync(
-        &self,
-        request: LedgerRequest,
-    ) -> Result<LedgerResponse, std::sync::mpsc::RecvError> {
+    pub(super) fn call_sync(&self, request: LedgerRequest) -> LedgerResponse {
         self.caller.call_sync(request)
     }
 
@@ -445,12 +531,44 @@ impl LedgerManager {
         self.call(LedgerRequest::InsertGenesisLedger { mask });
     }
 
+    /// Inserts genesis ledgers from another thread (I5d2: the genesis ledgers
+    /// a node loads only if it bootstraps). Requests made after an insert
+    /// are handled after it.
+    pub fn genesis_ledger_inserter(&self) -> impl Fn(Mask) + Send + 'static {
+        let caller = self.caller.clone();
+        move |mask| caller.call(LedgerRequest::InsertGenesisLedger { mask })
+    }
+
+    /// How the store thread hands a load's ledgers to this ledger thread
+    /// (I5d1): it waits for the answer, so that they are in place before the
+    /// node hears of the load. A stopped ledger thread is an error, not the
+    /// end of the process (the store thread must not exit the node).
+    pub fn persist_inserter(&self) -> PersistInserter {
+        let caller = self.caller.clone();
+        Box::new(move |insert| {
+            match caller.try_call_sync(LedgerRequest::PersistInsert { insert }) {
+                Ok(LedgerResponse::PersistInserted(ms)) => Ok(ms),
+                Ok(other) => Err(format_response_error("persist_insert", other)),
+                Err(phase) => Err(format!("ledger thread stopped ({phase})")),
+            }
+        })
+    }
+
     pub fn get_mask(&self, ledger_hash: &LedgerHash) -> Option<(Mask, bool)> {
         match self.call_sync(LedgerRequest::GetMask {
             ledger_hash: ledger_hash.clone(),
         }) {
-            Ok(LedgerResponse::LedgerMask(mask)) => mask,
+            LedgerResponse::LedgerMask(mask) => mask,
             _ => panic!("get_mask failed"),
+        }
+    }
+
+    /// PC1: the proofs the ledger thread holds, for
+    /// [`crate::proof_memory::ProofMemoryReport`]. It waits for the thread.
+    pub fn proof_memory(&self) -> crate::proof_memory::LedgerProofMemory {
+        match self.call_sync(LedgerRequest::ProofMemory) {
+            LedgerResponse::ProofMemory(report) => *report,
+            _ => Default::default(),
         }
     }
 
@@ -464,8 +582,8 @@ impl LedgerManager {
             ledger_hash: ledger_hash.clone(),
             account_ids,
         }) {
-            Ok(LedgerResponse::AccountsGet(result)) => result,
-            _ => panic!("get_accounts failed"),
+            LedgerResponse::AccountsGet(result) => result,
+            response => Err(format_response_error("get_accounts", response)),
         }
     }
 
@@ -480,10 +598,24 @@ impl LedgerManager {
             ledger_hash: ledger_hash.clone(),
             filter,
         }) {
-            Ok(LedgerResponse::ProducersWithDelegatesMap(map)) => map,
+            LedgerResponse::ProducersWithDelegatesMap(map) => map,
             _ => panic!("producers_with_delegates failed"),
         }
     }
+}
+
+// A closed request channel or dropped reply means the ledger worker is gone.
+// Continuing would leave reducer requests pending or lose writes. Exit the
+// entire native node, even when the caller is a reconstruction callback thread.
+#[cold]
+fn ledger_worker_stopped(phase: &str) -> ! {
+    use std::io::Write;
+
+    let message = format!("Fatal: ledger-manager worker stopped ({phase}); the node cannot continue; exiting with status 1");
+    mina_core::log::inner::error!("{message}");
+    // Keep the diagnostic visible even when no tracing subscriber is installed.
+    let _ = writeln!(std::io::stderr().lock(), "{message}");
+    std::process::exit(1);
 }
 
 impl LedgerCaller {
@@ -493,21 +625,68 @@ impl LedgerCaller {
                 request,
                 responder: None,
             })
-            .unwrap();
+            .unwrap_or_else(|_| ledger_worker_stopped("request channel closed"));
     }
 
-    fn call_sync(
+    /// As [`Self::call`], but a stopped ledger thread is not fatal: for
+    /// requests that only release something, such as the store thread's
+    /// unpin, which may come while the node shuts down.
+    pub(super) fn try_call(&self, request: LedgerRequest) -> bool {
+        self.0
+            .tracked_send(LedgerRequestWithChan {
+                request,
+                responder: None,
+            })
+            .is_ok()
+    }
+
+    pub(super) fn call_sync(&self, request: LedgerRequest) -> LedgerResponse {
+        self.try_call_sync(request)
+            .unwrap_or_else(|phase| ledger_worker_stopped(phase))
+    }
+
+    /// As [`Self::call_sync`], but a stopped ledger thread is an error, not
+    /// the end of the process: for the frontier store's thread, which must
+    /// not be able to exit the node. It turns persistence off instead.
+    pub(super) fn try_call_sync(
         &self,
         request: LedgerRequest,
-    ) -> Result<LedgerResponse, std::sync::mpsc::RecvError> {
+    ) -> Result<LedgerResponse, &'static str> {
         let (responder, receiver) = std::sync::mpsc::sync_channel(0);
         self.0
             .tracked_send(LedgerRequestWithChan {
                 request,
                 responder: Some(responder),
             })
-            .unwrap();
-        receiver.recv()
+            .map_err(|_| "request channel closed")?;
+        receiver.recv().map_err(|_| "reply channel closed")
+    }
+
+    /// A caller of a ledger thread that has stopped: before it took the
+    /// request (`before_request`), or after, without answering.
+    #[cfg(test)]
+    pub(super) fn stopped(before_request: bool) -> Self {
+        let (sender, mut receiver) = mpsc::tracked_unbounded_channel();
+        if before_request {
+            drop(receiver);
+        } else {
+            thread::spawn(move || while receiver.blocking_recv().is_some() {});
+        }
+        Self(sender)
+    }
+
+    /// A caller whose requests the test takes itself, without a ledger
+    /// thread: the function gives the next one sent, if any.
+    #[cfg(test)]
+    pub(super) fn queued() -> (Self, impl FnMut() -> Option<LedgerRequest>) {
+        let (sender, mut receiver) = mpsc::tracked_unbounded_channel();
+        let next = move || {
+            receiver
+                .try_recv()
+                .ok()
+                .map(|message: mpsc::Tracked<LedgerRequestWithChan>| message.0.request)
+        };
+        (Self(sender), next)
     }
 }
 
@@ -516,22 +695,26 @@ fn format_response_error(method: &str, res: LedgerResponse) -> String {
 }
 
 impl<T: LedgerService> TransitionFrontierSyncLedgerSnarkedService for T {
+    fn contains_snarked_ledger(&self, hash: &LedgerHash) -> bool {
+        matches!(
+            self.ledger_manager()
+                .call_sync(LedgerRequest::ContainsSnarkedLedger { hash: hash.clone() }),
+            LedgerResponse::ContainsSnarkedLedger(true)
+        )
+    }
+
     fn compute_snarked_ledger_hashes(
         &self,
         snarked_ledger_hash: &LedgerHash,
     ) -> Result<(), String> {
-        self.ledger_manager()
+        match self
+            .ledger_manager()
             .call_sync(LedgerRequest::ComputeSnarkedLedgerHashes {
                 snarked_ledger_hash: snarked_ledger_hash.clone(),
-            })
-            .map_err(|_| "compute_snarked_ledger_hashes responder dropped".to_owned())
-            .and_then(|res| {
-                if let LedgerResponse::Success = res {
-                    Ok(())
-                } else {
-                    Err(format_response_error("compute_snarked_ledger_hashes", res))
-                }
-            })
+            }) {
+            LedgerResponse::Success => Ok(()),
+            res => Err(format_response_error("compute_snarked_ledger_hashes", res)),
+        }
     }
 
     fn copy_snarked_ledger_contents_for_sync(
@@ -540,64 +723,207 @@ impl<T: LedgerService> TransitionFrontierSyncLedgerSnarkedService for T {
         target_snarked_ledger_hash: LedgerHash,
         overwrite: bool,
     ) -> Result<bool, String> {
-        self.ledger_manager()
+        match self
+            .ledger_manager()
             .call_sync(LedgerRequest::CopySnarkedLedgerContentsForSync {
                 origin_snarked_ledger_hash,
                 target_snarked_ledger_hash,
                 overwrite,
-            })
-            .map_err(|_| "copy_snarked_ledger_contents_for_sync responder dropped".to_owned())
-            .and_then(|res| {
-                if let LedgerResponse::SnarkedLedgerContentsCopied(copied) = res {
-                    copied
-                } else {
-                    Err(format_response_error(
-                        "copy_snarked_ledger_contents_for_sync",
-                        res,
-                    ))
-                }
-            })
+            }) {
+            LedgerResponse::SnarkedLedgerContentsCopied(copied) => copied,
+            res => Err(format_response_error(
+                "copy_snarked_ledger_contents_for_sync",
+                res,
+            )),
+        }
     }
 
     fn child_hashes_get(
         &self,
         snarked_ledger_hash: LedgerHash,
         parent: &LedgerAddress,
-    ) -> Result<(LedgerHash, LedgerHash), String> {
-        self.ledger_manager()
+        depth: usize,
+    ) -> Result<Vec<LedgerHash>, String> {
+        match self
+            .ledger_manager()
             .call_sync(LedgerRequest::ChildHashesGet {
                 snarked_ledger_hash,
                 parent: parent.clone(),
-            })
-            .map_err(|_| "child_hashes_get responder dropped".to_owned())
-            .and_then(|res| {
-                if let LedgerResponse::ChildHashes(Some(res)) = res {
-                    Ok(res)
-                } else {
-                    Err(format_response_error("child_hashes_get", res))
-                }
-            })
+                depth,
+            }) {
+            LedgerResponse::ChildHashes(Some(res)) => Ok(res),
+            res => Err(format_response_error("child_hashes_get", res)),
+        }
     }
 
     fn accounts_set(
         &self,
         snarked_ledger_hash: LedgerHash,
         parent: &LedgerAddress,
+        expected_hash: &LedgerHash,
         accounts: Vec<MinaBaseAccountBinableArgStableV2>,
     ) -> Result<LedgerHash, String> {
-        self.ledger_manager()
-            .call_sync(LedgerRequest::AccountsSet {
-                snarked_ledger_hash,
-                parent: parent.clone(),
-                accounts,
-            })
-            .map_err(|_| "accounts_set responder dropped".to_owned())
-            .and_then(|res| {
-                if let LedgerResponse::AccountsSet(res) = res {
-                    res
-                } else {
-                    Err(format_response_error("accounts_set", res))
+        match self.ledger_manager().call_sync(LedgerRequest::AccountsSet {
+            snarked_ledger_hash,
+            parent: parent.clone(),
+            expected_hash: expected_hash.clone(),
+            accounts,
+        }) {
+            LedgerResponse::AccountsSet(res) => res,
+            res => Err(format_response_error("accounts_set", res)),
+        }
+    }
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_reads_distinguish_an_unavailable_ledger_from_empty() {
+        use ledger::BaseLedger;
+        let mut ctx = LedgerCtx::default();
+        let (sender, _receiver) = mpsc::tracked_unbounded_channel();
+        let caller = LedgerCaller(sender);
+        let mut mask = Mask::new_unattached(super::super::LEDGER_DEPTH);
+        let hash: LedgerHash = mask.merkle_root().into();
+        let read = |hash| LedgerRequest::AccountsGet {
+            ledger_hash: hash,
+            account_ids: vec![],
+        };
+        assert!(matches!(read(hash.clone()).handle(&mut ctx, &caller),
+            LedgerResponse::AccountsGet(Err(error)) if error == "Ledger unavailable"));
+        ctx.insert_genesis_ledger(mask);
+        assert!(matches!(read(hash).handle(&mut ctx, &caller),
+            LedgerResponse::AccountsGet(Ok(accounts)) if accounts.is_empty()));
+    }
+
+    /// An account query whose token id is no field element (one built in
+    /// code rather than decoded, which the decoder refuses) answers no
+    /// accounts instead of stopping the ledger thread.
+    #[test]
+    fn account_queries_with_an_out_of_field_token_id_answer_nothing() {
+        use ledger::BaseLedger;
+        use mina_core::requests::RpcId;
+        use mina_p2p_messages::{
+            bigint::BigInt,
+            v2::{MinaBaseAccountIdDigestStableV1, TokenIdKeyHash},
+        };
+        let mut ctx = LedgerCtx::default();
+        let mut mask = Mask::new_unattached(super::super::LEDGER_DEPTH);
+        let hash: LedgerHash = mask.merkle_root().into();
+        ctx.insert_genesis_ledger(mask);
+        let token = TokenIdKeyHash::from(MinaBaseAccountIdDigestStableV1(BigInt::from_bytes(
+            [0xff; 32],
+        )));
+        let key: AccountPublicKey = "B62qkAhMYM7NWh2M5MABFwpNoqgzoweHr3bv6srWM43bwQMh2pVG82U"
+            .parse()
+            .unwrap();
+        for query in [
+            AccountQuery::TokenOwner(token.clone()),
+            AccountQuery::PubKeyWithTokenId(key, token.clone()),
+        ] {
+            let response = LedgerRequest::read_for_tests(
+                &mut ctx,
+                LedgerReadRequest::AccountsForRpc(RpcId::new_unchecked(0, 0), hash.clone(), query),
+            );
+            assert!(matches!(
+                response,
+                LedgerReadResponse::AccountsForRpc(_, accounts, _) if accounts.is_empty()
+            ));
+        }
+    }
+
+    #[test]
+    fn dead_ledger_worker_exits() {
+        const MODE: &str = "MINA_I36_DEAD_LEDGER_TEST";
+        if let Ok(mode) = std::env::var(MODE) {
+            let (sender, mut receiver) = mpsc::tracked_unbounded_channel();
+            let caller = LedgerCaller(sender);
+            if mode == "reply" {
+                std::thread::spawn(move || {
+                    drop(receiver.blocking_recv().unwrap());
+                });
+            } else {
+                drop(receiver);
+            }
+            match mode.as_str() {
+                "async" => caller.call(LedgerRequest::GetMask {
+                    ledger_hash: LedgerHash::zero(),
+                }),
+                "sync" | "reply" => {
+                    caller.call_sync(LedgerRequest::GetMask {
+                        ledger_hash: LedgerHash::zero(),
+                    });
                 }
-            })
+                "accounts" => {
+                    let manager = LedgerManager {
+                        caller,
+                        join_handle: thread::spawn(LedgerCtx::default),
+                    };
+                    let _ = manager.get_accounts(&LedgerHash::zero(), vec![]);
+                }
+                _ => panic!("unknown child test mode"),
+            }
+            panic!("dead ledger worker call returned");
+        }
+
+        for mode in ["async", "sync", "reply", "accounts"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "ledger::ledger_manager::tests::dead_ledger_worker_exits",
+                    "--nocapture",
+                ])
+                .env(MODE, mode)
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(1), "{mode}: {stderr}");
+            assert!(
+                stderr.contains("Fatal: ledger-manager worker stopped"),
+                "{mode}: {stderr}"
+            );
+            let phase = if mode == "reply" {
+                "reply channel closed"
+            } else {
+                "request channel closed"
+            };
+            assert!(stderr.contains(phase), "{mode}: {stderr}");
+            assert!(!stderr.contains("panicked"), "{mode}: {stderr}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod sync_query_tests {
+    use super::*;
+
+    #[test]
+    fn network_child_hashes_refuse_partial_sync_masks() {
+        let mut ctx = LedgerCtx::default();
+        let target = LedgerHash::zero();
+        ctx.copy_snarked_ledger_contents_for_sync(&[], target.clone(), false)
+            .unwrap();
+        let (sender, _receiver) = mpsc::tracked_unbounded_channel();
+        let caller = LedgerCaller(sender);
+        // The local comparison path needs these hashes while syncing.
+        assert!(matches!(
+            LedgerRequest::ChildHashesGet {
+                snarked_ledger_hash: target.clone(),
+                parent: LedgerAddress::root(),
+                depth: 1,
+            }
+            .handle(&mut ctx, &caller),
+            LedgerResponse::ChildHashes(Some(_))
+        ));
+        assert!(matches!(
+            LedgerRequest::Read(
+                LedgerReadId::new_unchecked(0, 0),
+                LedgerReadRequest::GetChildHashesAtAddr(target, LedgerAddress::root(), 1,)
+            )
+            .handle(&mut ctx, &caller),
+            LedgerResponse::Read(_, LedgerReadResponse::GetChildHashesAtAddr(None))
+        ));
     }
 }

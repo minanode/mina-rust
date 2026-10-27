@@ -16,3 +16,4 @@ pub mod utils;
 pub use futures;
 pub use lazy_static;
 pub use libp2p;
+pub use libp2p_rpc_behaviour;

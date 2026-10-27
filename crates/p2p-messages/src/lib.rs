@@ -23,7 +23,10 @@ pub mod utils;
 pub mod versioned;
 pub mod hash;
 mod hash_input;
+pub mod proof_cache;
+pub mod proof_ref;
 pub mod pseq;
+pub use proof_ref::ProofRef;
 #[allow(clippy::all)]
 pub mod v2;
 

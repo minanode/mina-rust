@@ -16,6 +16,9 @@ pub use ledger_state::*;
 
 mod ledger_reducer;
 
+mod delegate_index;
+mod epoch_delegatees;
+
 mod ledger_service;
 pub use ledger_service::*;
 
@@ -66,15 +69,16 @@ pub fn complete_height_tree_with_empties(
     Ok(v2::LedgerHash::from_fp(computed_hash))
 }
 
-/// Returns the minimum tree height required for storing `num_accounts` accounts.
+/// Returns the minimum tree height required for storing `num_accounts` accounts:
+/// `Int.ceil_log2 num_accounts`, so 0 for a single account, whose subtree is
+/// its leaf. It sizes both the `Num_accounts` answer and its check.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/syncable_ledger/syncable_ledger.ml#L281-L292>
 pub fn tree_height_for_num_accounts(num_accounts: u64) -> usize {
-    if num_accounts == 1 {
-        1
-    } else if num_accounts.is_power_of_two() {
-        num_accounts.ilog2() as usize
-    } else {
-        num_accounts.next_power_of_two().ilog2() as usize
-    }
+    // A peer's answer can claim any count; above 2^63 the height is 64.
+    num_accounts
+        .checked_next_power_of_two()
+        .map_or(64, |n| n.ilog2() as usize)
 }
 
 /// Given the hash of the subtree containing `num_accounts` accounts
@@ -110,19 +114,53 @@ pub fn hash_node_at_depth(
     ledger::V2::hash_node(height, left, right)
 }
 
+/// Hash of the node at `depth` whose descendants some levels below are
+/// `hashes`, left to right. Their number must be a power of two, at least 2.
+pub fn hash_subtree_at_depth(
+    depth: usize,
+    mut hashes: Vec<mina_curves::pasta::Fp>,
+) -> Option<mina_curves::pasta::Fp> {
+    if hashes.len() < 2 || !hashes.len().is_power_of_two() {
+        return None;
+    }
+    let levels = hashes.len().trailing_zeros() as usize;
+    for level in (0..levels).rev() {
+        hashes = hashes
+            .chunks(2)
+            .map(|pair| hash_node_at_depth(depth + level, pair[0], pair[1]))
+            .collect();
+    }
+    hashes.pop()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn test_hash_subtree_at_depth() {
+        let empty = |depth: usize| ledger_empty_hash_at_depth(depth).to_field().unwrap();
+        for (depth, levels) in [(0, 1), (16, 6), (28, 1), (27, 8)] {
+            let hashes = vec![empty(depth + levels); 1 << levels];
+            assert_eq!(hash_subtree_at_depth(depth, hashes), Some(empty(depth)));
+        }
+        assert_eq!(hash_subtree_at_depth(3, vec![empty(4)]), None);
+        assert_eq!(hash_subtree_at_depth(3, vec![empty(5); 3]), None);
+    }
+
+    // Both hashes are OCaml 4.0.2's `mina ledger hash` of the same 1000
+    // accounts: with the dev profile, whose ledgers have depth 10, that is the
+    // subtree of height 10 holding every account; with the mainnet profile it
+    // is the root at depth 35. mina-tree's `test_ledger_root_1000_accounts`
+    // builds those accounts.
+    const CONTENTS_HASH_HEIGHT_10: &str = "jxkpJJb18Gd4x4cphdnUG3KMNU1Ykm7UMjMKgVwfRBzvp3FHXsW";
+    const ROOT_HASH_1000_ACCOUNTS: &str = "jxyeaYyGz8REJMbG9QXuooAEndFVF4yaSNbD6DPC2bmkAbTW8cv";
+
+    #[test]
     fn test_complete_with_empties() {
-        let subtree_height = 14;
-        let expected_hash: v2::LedgerHash = "jwxdRe86RJV99CZbxZzb4JoDwEnvNQbc6Ha8iPx7pr3FxYpjHBG"
-            .parse()
-            .unwrap();
-        let contents_hash = "jwav4pBszibQqek634VUQEc5WZAbF3CnT7sMyhqXe3vucyXdjJs"
-            .parse()
-            .unwrap();
+        let subtree_height = 10;
+        let expected_hash: v2::LedgerHash = ROOT_HASH_1000_ACCOUNTS.parse().unwrap();
+        let contents_hash = CONTENTS_HASH_HEIGHT_10.parse().unwrap();
 
         let actual_hash =
             complete_height_tree_with_empties(&contents_hash, subtree_height).unwrap();
@@ -132,17 +170,46 @@ mod tests {
 
     #[test]
     fn test_complete_with_empties_with_num_accounts() {
-        let subtree_height = 8517;
-        let expected_hash: v2::LedgerHash = "jwxdRe86RJV99CZbxZzb4JoDwEnvNQbc6Ha8iPx7pr3FxYpjHBG"
-            .parse()
-            .unwrap();
-        let contents_hash = "jwav4pBszibQqek634VUQEc5WZAbF3CnT7sMyhqXe3vucyXdjJs"
-            .parse()
-            .unwrap();
+        let num_accounts = 1000;
+        assert_eq!(tree_height_for_num_accounts(num_accounts), 10);
+        let expected_hash: v2::LedgerHash = ROOT_HASH_1000_ACCOUNTS.parse().unwrap();
+        let contents_hash = CONTENTS_HASH_HEIGHT_10.parse().unwrap();
 
         let actual_hash =
-            complete_num_accounts_tree_with_empties(&contents_hash, subtree_height).unwrap();
+            complete_num_accounts_tree_with_empties(&contents_hash, num_accounts).unwrap();
 
         assert_eq!(expected_hash, actual_hash);
+    }
+
+    /// OCaml sizes the `Num_accounts` subtree with `Int.ceil_log2`.
+    #[test]
+    fn test_tree_height_for_num_accounts() {
+        for (num_accounts, height) in [
+            (1, 0),
+            (2, 1),
+            (3, 2),
+            (4, 2),
+            (5, 3),
+            (1000, 10),
+            (1024, 10),
+            (1025, 11),
+            (1 << 35, 35),
+            (u64::MAX, 64),
+        ] {
+            assert_eq!(
+                tree_height_for_num_accounts(num_accounts),
+                height,
+                "{num_accounts} accounts"
+            );
+        }
+    }
+
+    /// OCaml 4.0.2's `mina ledger hash` of an empty ledger, mainnet profile.
+    #[test]
+    fn test_ledger_empty_hash_at_depth() {
+        assert_eq!(
+            ledger_empty_hash_at_depth(0).to_string(),
+            "jwkaDMeSMeL94hwJg6EYtSRD6gxB1BHpXnGKnZ1VW6jthKzgcef"
+        );
     }
 }

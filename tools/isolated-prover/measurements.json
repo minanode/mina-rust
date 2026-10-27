@@ -1,0 +1,1060 @@
+{
+  "description": "I34 public Mesa payment; two proofs per full case. First two isolated cases failed teardown only; all returned proofs verified. The teardown-only case produces no proof.",
+  "wasmSha256": "05179a119ca5ef3433f51f6cdb14c69fd6455086a693d323a68120c52a999c23",
+  "fixtureSha256": "d9ae2b082c782cbc0456be16101b707b14de1194feb1512b118e6331c446de78",
+  "wasmBytes": 14115002,
+  "baseRevision": "a6a07b8edb391d509b052813146f308b55e0757f",
+  "finalImplementationRevision": "1977d4a8",
+  "inputSizes": {
+    "blockchain_proof_bytes": 11138,
+    "blockchain_state_bytes": 1003,
+    "empty_depth_5_pending_coinbase_bytes": 4195,
+    "payment_first_pass_sparse_ledger_bytes": 3925,
+    "payment_input_bytes": 10481,
+    "payment_second_pass_sparse_ledger_bytes": 3925,
+    "payment_statement_bytes": 795,
+    "protocol_state_bytes": 1544,
+    "public_block_height": 563978
+  },
+  "records": [
+    {
+      "malformedRejected": true,
+      "threads": 8,
+      "runs": 2,
+      "setup": {
+        "id": 1,
+        "instantiateMs": 117.99000000953674,
+        "setupMs": 54167.74000000954,
+        "phases": [
+          {
+            "phase": "prover_srs",
+            "elapsed_ms": 9019,
+            "live_bytes": 28120268,
+            "peak_bytes": 28121342
+          },
+          {
+            "phase": "transaction_verifier",
+            "elapsed_ms": 9164,
+            "live_bytes": 31948204,
+            "peak_bytes": 33847444
+          },
+          {
+            "phase": "blobs_and_prover_indexes",
+            "elapsed_ms": 35792,
+            "live_bytes": 747530948,
+            "peak_bytes": 776851596
+          }
+        ],
+        "linearBytes": 794230784,
+        "stats": {
+          "phase": "snapshot",
+          "elapsed_ms": 0,
+          "live_bytes": 747530538,
+          "peak_bytes": 776851596
+        },
+        "circuitResources": [
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_gates.json",
+            "bytes": 16114176,
+            "durationMs": 24.419999957084656
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_internal_vars.bin",
+            "bytes": 1061013,
+            "durationMs": 4.2700000405311584
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_rows_rev.bin",
+            "bytes": 947126,
+            "durationMs": 4.0200000405311584
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_gates.json",
+            "bytes": 8093641,
+            "durationMs": 21.055000007152557
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_internal_vars.bin",
+            "bytes": 345495,
+            "durationMs": 4.195000052452087
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_rows_rev.bin",
+            "bytes": 1173261,
+            "durationMs": 5.344999969005585
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_gates.json",
+            "bytes": 18839284,
+            "durationMs": 24.125
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_internal_vars.bin",
+            "bytes": 537693,
+            "durationMs": 3.615000009536743
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_rows_rev.bin",
+            "bytes": 2384097,
+            "durationMs": 5.524999976158142
+          }
+        ],
+        "circuitBytes": 49495786,
+        "circuitFetchDurationSumMs": 96.57000005245209
+      },
+      "results": [
+        {
+          "id": 3,
+          "phases": [
+            {
+              "phase": "decode_input",
+              "elapsed_ms": 2,
+              "live_bytes": 751761241,
+              "peak_bytes": 776851596
+            },
+            {
+              "phase": "prove_step_and_wrap",
+              "elapsed_ms": 33442,
+              "live_bytes": 758168144,
+              "peak_bytes": 1572252401
+            },
+            {
+              "phase": "encode_proof",
+              "elapsed_ms": 2,
+              "live_bytes": 758189212,
+              "peak_bytes": 1572252401
+            }
+          ],
+          "intoWasmMs": 0.030000030994415283,
+          "outOfWasmMs": 0.06499999761581421,
+          "inputTransferMs": 0.10498046875,
+          "linearBytes": 1602420736,
+          "stats": {
+            "phase": "snapshot",
+            "elapsed_ms": 0,
+            "live_bytes": 758111422,
+            "peak_bytes": 1572252401
+          },
+          "sentAt": 1792544670646.235,
+          "outputTransferMs": 0.27490234375,
+          "roundTripMs": 33458.700000047684,
+          "postMessageMs": 0.08500003814697266,
+          "inputBytes": 10481,
+          "outputBytes": 10400
+        },
+        {
+          "id": 4,
+          "phases": [
+            {
+              "phase": "decode_input",
+              "elapsed_ms": 0,
+              "live_bytes": 760243889,
+              "peak_bytes": 1572252401
+            },
+            {
+              "phase": "prove_step_and_wrap",
+              "elapsed_ms": 18908,
+              "live_bytes": 765260156,
+              "peak_bytes": 1565057841
+            },
+            {
+              "phase": "encode_proof",
+              "elapsed_ms": 1,
+              "live_bytes": 765281224,
+              "peak_bytes": 1565057841
+            }
+          ],
+          "intoWasmMs": 0.15999996662139893,
+          "outOfWasmMs": 0.030000030994415283,
+          "inputTransferMs": 2.594970703125,
+          "linearBytes": 1627783168,
+          "stats": {
+            "phase": "snapshot",
+            "elapsed_ms": 0,
+            "live_bytes": 765203434,
+            "peak_bytes": 1565057841
+          },
+          "sentAt": 1792544689602.44,
+          "outputTransferMs": 0.22998046875,
+          "roundTripMs": 18946.459999978542,
+          "postMessageMs": 0.45499998331069946,
+          "inputBytes": 10481,
+          "outputBytes": 10400
+        }
+      ],
+      "nodeBaseline": 1507328,
+      "nodeFinal": 1507328,
+      "nodeStatsBefore": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 584,
+        "peak_bytes": 584
+      },
+      "nodeStatsAfter": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 584,
+        "peak_bytes": 712
+      },
+      "maxHeartbeatGapMs": 174.25499999523163,
+      "heartbeats": 1067,
+      "isolation": "distinct WASM memories; transferred inputs detached; node memory unchanged",
+      "mode": "isolated",
+      "workersAfterHostRemoval": 8,
+      "machine": {
+        "cpu": "AMD Ryzen 9 3950X 16-Core Processor",
+        "chrome": "HeadlessChrome/155.0.8059.84",
+        "startedAt": "2026-10-21T01:03:02.368Z",
+        "loadBefore": [60.43, 35.04, 25.21],
+        "loadAfter": [50, 39.61, 27.94]
+      },
+      "verification": [
+        {
+          "status": 0,
+          "stdout": "mainnet verification passed; changed SOK rejected; input=10481 proof=10400 bytes\n",
+          "stderr": ""
+        },
+        {
+          "status": 0,
+          "stdout": "mainnet verification passed; changed SOK rejected; input=10481 proof=10400 bytes\n",
+          "stderr": ""
+        }
+      ],
+      "sampleCount": 1067,
+      "sampledLinearPeakBytes": 1627783168,
+      "label": "initial-isolated",
+      "rawFileOnDevelopmentMachine": "/tmp/i34/run1/result.json"
+    },
+    {
+      "threads": 8,
+      "runs": 2,
+      "setup": {
+        "instantiateMs": 69.12999999523163,
+        "setupMs": 43036.314999997616,
+        "phases": [
+          {
+            "phase": "prover_srs",
+            "elapsed_ms": 6582,
+            "live_bytes": 28120268,
+            "peak_bytes": 28121342
+          },
+          {
+            "phase": "transaction_verifier",
+            "elapsed_ms": 7559,
+            "live_bytes": 31948204,
+            "peak_bytes": 33847444
+          },
+          {
+            "phase": "blobs_and_prover_indexes",
+            "elapsed_ms": 28825,
+            "live_bytes": 747530948,
+            "peak_bytes": 776851596
+          }
+        ],
+        "linearBytes": 794230784,
+        "stats": {
+          "phase": "snapshot",
+          "elapsed_ms": 0,
+          "live_bytes": 747530538,
+          "peak_bytes": 776851596
+        }
+      },
+      "results": [
+        {
+          "phases": [
+            {
+              "phase": "decode_input",
+              "elapsed_ms": 6,
+              "live_bytes": 749662997,
+              "peak_bytes": 776851596
+            },
+            {
+              "phase": "prove_step_and_wrap",
+              "elapsed_ms": 25562,
+              "live_bytes": 756069900,
+              "peak_bytes": 1578542765
+            },
+            {
+              "phase": "encode_proof",
+              "elapsed_ms": 2,
+              "live_bytes": 756090968,
+              "peak_bytes": 1578542765
+            }
+          ],
+          "intoWasmMs": 0.19999998807907104,
+          "outOfWasmMs": 0.07500004768371582,
+          "roundTripMs": 25595.084999978542,
+          "inputBytes": 10481,
+          "outputBytes": 10400,
+          "linearBytes": 1607532544,
+          "stats": {
+            "phase": "snapshot",
+            "elapsed_ms": 0,
+            "live_bytes": 756013178,
+            "peak_bytes": 1578542765
+          }
+        },
+        {
+          "phases": [
+            {
+              "phase": "decode_input",
+              "elapsed_ms": 0,
+              "live_bytes": 758145645,
+              "peak_bytes": 1578542765
+            },
+            {
+              "phase": "prove_step_and_wrap",
+              "elapsed_ms": 19926,
+              "live_bytes": 763161912,
+              "peak_bytes": 1587011053
+            },
+            {
+              "phase": "encode_proof",
+              "elapsed_ms": 0,
+              "live_bytes": 763182980,
+              "peak_bytes": 1587011053
+            }
+          ],
+          "intoWasmMs": 0.06500005722045898,
+          "outOfWasmMs": 0.019999980926513672,
+          "roundTripMs": 19945.62000000477,
+          "inputBytes": 10481,
+          "outputBytes": 10400,
+          "linearBytes": 1632894976,
+          "stats": {
+            "phase": "snapshot",
+            "elapsed_ms": 0,
+            "live_bytes": 763105190,
+            "peak_bytes": 1587011053
+          }
+        }
+      ],
+      "nodeBaseline": 1507328,
+      "nodeFinal": 1632894976,
+      "nodeStatsBefore": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 584,
+        "peak_bytes": 584
+      },
+      "nodeStatsAfter": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 763105114,
+        "peak_bytes": 1587011053
+      },
+      "isolation": "control: prover and page use one WASM memory",
+      "mode": "control",
+      "workersAfterHostRemoval": 0,
+      "machine": {
+        "cpu": "AMD Ryzen 9 3950X 16-Core Processor",
+        "chrome": "HeadlessChrome/155.0.8059.84",
+        "startedAt": "2026-10-21T01:04:54.600Z",
+        "loadBefore": [49.12, 39.6, 28],
+        "loadAfter": [40.35, 37.85, 28.38]
+      },
+      "verification": [
+        {
+          "status": 0,
+          "stdout": "mainnet verification passed; changed SOK rejected; input=10481 proof=10400 bytes\n",
+          "stderr": ""
+        },
+        {
+          "status": 0,
+          "stdout": "mainnet verification passed; changed SOK rejected; input=10481 proof=10400 bytes\n",
+          "stderr": ""
+        }
+      ],
+      "sampleCount": 885,
+      "sampledLinearPeakBytes": 1632894976,
+      "label": "initial-control",
+      "rawFileOnDevelopmentMachine": "/tmp/i34/run1/control/result.json"
+    },
+    {
+      "malformedRejected": true,
+      "threads": 8,
+      "runs": 2,
+      "setup": {
+        "id": 1,
+        "instantiateMs": 68.375,
+        "setupMs": 45374.160000026226,
+        "phases": [
+          {
+            "phase": "prover_srs",
+            "elapsed_ms": 5491,
+            "live_bytes": 28120268,
+            "peak_bytes": 28121342
+          },
+          {
+            "phase": "transaction_verifier",
+            "elapsed_ms": 7172,
+            "live_bytes": 31948204,
+            "peak_bytes": 33847444
+          },
+          {
+            "phase": "blobs_and_prover_indexes",
+            "elapsed_ms": 32645,
+            "live_bytes": 747530948,
+            "peak_bytes": 776851596
+          }
+        ],
+        "linearBytes": 794230784,
+        "stats": {
+          "phase": "snapshot",
+          "elapsed_ms": 0,
+          "live_bytes": 747530538,
+          "peak_bytes": 776851596
+        },
+        "circuitResources": [
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_gates.json",
+            "bytes": 16114176,
+            "durationMs": 22.334999978542328
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_internal_vars.bin",
+            "bytes": 1061013,
+            "durationMs": 3.3899999856948853
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_rows_rev.bin",
+            "bytes": 947126,
+            "durationMs": 3.2300000190734863
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_gates.json",
+            "bytes": 8093641,
+            "durationMs": 13.600000023841858
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_internal_vars.bin",
+            "bytes": 345495,
+            "durationMs": 3.165000021457672
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_rows_rev.bin",
+            "bytes": 1173261,
+            "durationMs": 3.199999988079071
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_gates.json",
+            "bytes": 18839284,
+            "durationMs": 43.42500001192093
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_internal_vars.bin",
+            "bytes": 537693,
+            "durationMs": 2.8799999952316284
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_rows_rev.bin",
+            "bytes": 2384097,
+            "durationMs": 4.8549999594688416
+          }
+        ],
+        "circuitBytes": 49495786,
+        "circuitFetchDurationSumMs": 100.0799999833107
+      },
+      "results": [
+        {
+          "id": 3,
+          "phases": [
+            {
+              "phase": "decode_input",
+              "elapsed_ms": 0,
+              "live_bytes": 751761241,
+              "peak_bytes": 776851596
+            },
+            {
+              "phase": "prove_step_and_wrap",
+              "elapsed_ms": 28313,
+              "live_bytes": 758168144,
+              "peak_bytes": 1572252401
+            },
+            {
+              "phase": "encode_proof",
+              "elapsed_ms": 1,
+              "live_bytes": 758189212,
+              "peak_bytes": 1572252401
+            }
+          ],
+          "intoWasmMs": 0.034999966621398926,
+          "outOfWasmMs": 0.06999999284744263,
+          "inputTransferMs": 0.739990234375,
+          "linearBytes": 1610809344,
+          "stats": {
+            "phase": "snapshot",
+            "elapsed_ms": 0,
+            "live_bytes": 758111422,
+            "peak_bytes": 1572252401
+          },
+          "sentAt": 1792544878484.85,
+          "outputTransferMs": 0.2548828125,
+          "roundTripMs": 28327.139999985695,
+          "postMessageMs": 0.07499998807907104,
+          "inputBytes": 10481,
+          "outputBytes": 10400
+        },
+        {
+          "id": 4,
+          "phases": [
+            {
+              "phase": "decode_input",
+              "elapsed_ms": 0,
+              "live_bytes": 760243889,
+              "peak_bytes": 1572252401
+            },
+            {
+              "phase": "prove_step_and_wrap",
+              "elapsed_ms": 25428,
+              "live_bytes": 765260156,
+              "peak_bytes": 1572332081
+            },
+            {
+              "phase": "encode_proof",
+              "elapsed_ms": 0,
+              "live_bytes": 765281224,
+              "peak_bytes": 1572332081
+            }
+          ],
+          "intoWasmMs": 0.050000011920928955,
+          "outOfWasmMs": 0.02499997615814209,
+          "inputTransferMs": 2.905029296875,
+          "linearBytes": 1619263488,
+          "stats": {
+            "phase": "snapshot",
+            "elapsed_ms": 0,
+            "live_bytes": 765203434,
+            "peak_bytes": 1572332081
+          },
+          "sentAt": 1792544903946.04,
+          "outputTransferMs": 0.26513671875,
+          "roundTripMs": 25455.644999980927,
+          "postMessageMs": 0.16500002145767212,
+          "inputBytes": 10481,
+          "outputBytes": 10400
+        }
+      ],
+      "nodeBaseline": 1507328,
+      "nodeFinal": 1507328,
+      "nodeStatsBefore": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 584,
+        "peak_bytes": 584
+      },
+      "nodeStatsAfter": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 584,
+        "peak_bytes": 712
+      },
+      "maxHeartbeatGapMs": 158.31999999284744,
+      "heartbeats": 992,
+      "isolation": "distinct WASM memories; transferred inputs detached; node memory unchanged",
+      "terminatedWorkers": 13,
+      "mode": "isolated",
+      "workersAfterHostRemoval": 8,
+      "machine": {
+        "cpu": "AMD Ryzen 9 3950X 16-Core Processor",
+        "chrome": "HeadlessChrome/155.0.8059.84",
+        "startedAt": "2026-10-21T01:06:44.531Z",
+        "loadBefore": [35.72, 37.01, 28.3],
+        "loadAfter": [51.43, 39.81, 30.06]
+      },
+      "verification": [
+        {
+          "status": 0,
+          "stdout": "mainnet verification passed; changed SOK rejected; input=10481 proof=10400 bytes\n",
+          "stderr": ""
+        },
+        {
+          "status": 0,
+          "stdout": "mainnet verification passed; changed SOK rejected; input=10481 proof=10400 bytes\n",
+          "stderr": ""
+        }
+      ],
+      "sampleCount": 992,
+      "sampledLinearPeakBytes": 1619263488,
+      "label": "immediate-detach-isolated",
+      "rawFileOnDevelopmentMachine": "/tmp/i34/run2/result.json"
+    },
+    {
+      "malformedRejected": true,
+      "threads": 8,
+      "runs": 0,
+      "setup": {
+        "id": 1,
+        "instantiateMs": 63.535000026226044,
+        "setupMs": 52451.39499998093,
+        "phases": [
+          {
+            "phase": "prover_srs",
+            "elapsed_ms": 7877,
+            "live_bytes": 28120268,
+            "peak_bytes": 28121342
+          },
+          {
+            "phase": "transaction_verifier",
+            "elapsed_ms": 9228,
+            "live_bytes": 31948204,
+            "peak_bytes": 33847444
+          },
+          {
+            "phase": "blobs_and_prover_indexes",
+            "elapsed_ms": 35283,
+            "live_bytes": 747530948,
+            "peak_bytes": 776851596
+          }
+        ],
+        "linearBytes": 794230784,
+        "stats": {
+          "phase": "snapshot",
+          "elapsed_ms": 0,
+          "live_bytes": 747530538,
+          "peak_bytes": 776851596
+        },
+        "circuitResources": [
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_gates.json",
+            "bytes": 16114176,
+            "durationMs": 29.569999992847443
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_internal_vars.bin",
+            "bytes": 1061013,
+            "durationMs": 7.6700000166893005
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_rows_rev.bin",
+            "bytes": 947126,
+            "durationMs": 3.7850000262260437
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_gates.json",
+            "bytes": 8093641,
+            "durationMs": 52.00999999046326
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_internal_vars.bin",
+            "bytes": 345495,
+            "durationMs": 12.169999957084656
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_rows_rev.bin",
+            "bytes": 1173261,
+            "durationMs": 6.405000030994415
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_gates.json",
+            "bytes": 18839284,
+            "durationMs": 43.22500002384186
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_internal_vars.bin",
+            "bytes": 537693,
+            "durationMs": 2.6549999713897705
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_rows_rev.bin",
+            "bytes": 2384097,
+            "durationMs": 6.89000004529953
+          }
+        ],
+        "circuitBytes": 49495786,
+        "circuitFetchDurationSumMs": 164.38000005483627
+      },
+      "results": [],
+      "nodeBaseline": 1507328,
+      "nodeFinal": 1507328,
+      "nodeStatsBefore": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 584,
+        "peak_bytes": 584
+      },
+      "nodeStatsAfter": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 584,
+        "peak_bytes": 712
+      },
+      "maxHeartbeatGapMs": 130.35000002384186,
+      "heartbeats": 525,
+      "isolation": "distinct WASM memories; transferred inputs detached; node memory unchanged",
+      "terminatedWorkers": 11,
+      "mode": "isolated",
+      "workersAfterHostRemoval": 0,
+      "remainingWorkers": [],
+      "machine": {
+        "cpu": "AMD Ryzen 9 3950X 16-Core Processor",
+        "chrome": "HeadlessChrome/155.0.8059.84",
+        "startedAt": "2026-10-21T01:10:41.284Z",
+        "loadBefore": [37.19, 39.36, 31.3],
+        "loadAfter": [40.6, 39.66, 31.85]
+      },
+      "verification": [],
+      "sampleCount": 525,
+      "sampledLinearPeakBytes": 794230784,
+      "label": "teardown-only",
+      "rawFileOnDevelopmentMachine": "/tmp/i34/teardown-check/result.json"
+    },
+    {
+      "malformedRejected": true,
+      "threads": 8,
+      "runs": 2,
+      "setup": {
+        "id": 1,
+        "instantiateMs": 66.75999999046326,
+        "setupMs": 55976.1400000453,
+        "phases": [
+          {
+            "phase": "prover_srs",
+            "elapsed_ms": 8054,
+            "live_bytes": 28120268,
+            "peak_bytes": 28121342
+          },
+          {
+            "phase": "transaction_verifier",
+            "elapsed_ms": 9593,
+            "live_bytes": 31948204,
+            "peak_bytes": 33847444
+          },
+          {
+            "phase": "blobs_and_prover_indexes",
+            "elapsed_ms": 38264,
+            "live_bytes": 747530948,
+            "peak_bytes": 776851596
+          }
+        ],
+        "linearBytes": 794230784,
+        "stats": {
+          "phase": "snapshot",
+          "elapsed_ms": 0,
+          "live_bytes": 747530538,
+          "peak_bytes": 776851596
+        },
+        "circuitResources": [
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_gates.json",
+            "bytes": 16114176,
+            "durationMs": 41.3850000500679
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_internal_vars.bin",
+            "bytes": 1061013,
+            "durationMs": 6.25
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-transaction-0-b421ac835a0e73935f3d3569ff87f484_rows_rev.bin",
+            "bytes": 947126,
+            "durationMs": 6.365000009536743
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_gates.json",
+            "bytes": 8093641,
+            "durationMs": 13.030000030994415
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_internal_vars.bin",
+            "bytes": 345495,
+            "durationMs": 2.6600000262260437
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/wrap-wrap-proving-key-transaction-snark-ae6b76daa712964c032f5261e18a72e1_rows_rev.bin",
+            "bytes": 1173261,
+            "durationMs": 3.3949999809265137
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_gates.json",
+            "bytes": 18839284,
+            "durationMs": 62.325000047683716
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_internal_vars.bin",
+            "bytes": 537693,
+            "durationMs": 6.214999973773956
+          },
+          {
+            "name": "/assets/webnode/circuit-blobs/4.0.2mainnet/step-step-proving-key-transaction-snark-merge-1-f970ffc5f94017c2d8b47516c890c21f_rows_rev.bin",
+            "bytes": 2384097,
+            "durationMs": 14.735000014305115
+          }
+        ],
+        "circuitBytes": 49495786,
+        "circuitFetchDurationSumMs": 156.3600001335144
+      },
+      "results": [
+        {
+          "id": 3,
+          "phases": [
+            {
+              "phase": "decode_input",
+              "elapsed_ms": 2,
+              "live_bytes": 751761241,
+              "peak_bytes": 776851596
+            },
+            {
+              "phase": "prove_step_and_wrap",
+              "elapsed_ms": 29401,
+              "live_bytes": 758168144,
+              "peak_bytes": 1572252401
+            },
+            {
+              "phase": "encode_proof",
+              "elapsed_ms": 2,
+              "live_bytes": 758189212,
+              "peak_bytes": 1572252401
+            }
+          ],
+          "intoWasmMs": 0.06999999284744263,
+          "outOfWasmMs": 0.06999999284744263,
+          "inputTransferMs": 0.919921875,
+          "linearBytes": 1615134720,
+          "stats": {
+            "phase": "snapshot",
+            "elapsed_ms": 0,
+            "live_bytes": 758111422,
+            "peak_bytes": 1572252401
+          },
+          "sentAt": 1792545221219.7249,
+          "outputTransferMs": 0.2099609375,
+          "roundTripMs": 29421.269999980927,
+          "postMessageMs": 0.10500001907348633,
+          "inputBytes": 10481,
+          "outputBytes": 10400
+        },
+        {
+          "id": 4,
+          "phases": [
+            {
+              "phase": "decode_input",
+              "elapsed_ms": 0,
+              "live_bytes": 760243889,
+              "peak_bytes": 1572252401
+            },
+            {
+              "phase": "prove_step_and_wrap",
+              "elapsed_ms": 22492,
+              "live_bytes": 765260156,
+              "peak_bytes": 1565057081
+            },
+            {
+              "phase": "encode_proof",
+              "elapsed_ms": 1,
+              "live_bytes": 765281224,
+              "peak_bytes": 1565057081
+            }
+          ],
+          "intoWasmMs": 0.050000011920928955,
+          "outOfWasmMs": 0.050000011920928955,
+          "inputTransferMs": 0.744873046875,
+          "linearBytes": 1615134720,
+          "stats": {
+            "phase": "snapshot",
+            "elapsed_ms": 0,
+            "live_bytes": 765203442,
+            "peak_bytes": 1565057081
+          },
+          "sentAt": 1792545243728.39,
+          "outputTransferMs": 0.195068359375,
+          "roundTripMs": 22504.819999992847,
+          "postMessageMs": 0.1499999761581421,
+          "inputBytes": 10481,
+          "outputBytes": 10400
+        }
+      ],
+      "nodeBaseline": 1507328,
+      "nodeFinal": 1507328,
+      "nodeStatsBefore": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 584,
+        "peak_bytes": 584
+      },
+      "nodeStatsAfter": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 584,
+        "peak_bytes": 712
+      },
+      "maxHeartbeatGapMs": 211.56500005722046,
+      "heartbeats": 1079,
+      "isolation": "distinct WASM memories; transferred inputs detached; node memory unchanged",
+      "terminatedWorkers": 13,
+      "mode": "isolated",
+      "workersAfterHostRemoval": 0,
+      "remainingWorkers": [],
+      "machine": {
+        "cpu": "AMD Ryzen 9 3950X 16-Core Processor",
+        "chrome": "HeadlessChrome/155.0.8059.84",
+        "startedAt": "2026-10-21T01:12:15.385Z",
+        "loadBefore": [43.71, 40.72, 32.54],
+        "loadAfter": [50.52, 44.32, 34.77]
+      },
+      "verification": [
+        {
+          "status": 0,
+          "stdout": "mainnet verification passed; changed SOK rejected; input=10481 proof=10400 bytes\n",
+          "stderr": ""
+        },
+        {
+          "status": 0,
+          "stdout": "mainnet verification passed; changed SOK rejected; input=10481 proof=10400 bytes\n",
+          "stderr": ""
+        }
+      ],
+      "sampleCount": 1079,
+      "sampledLinearPeakBytes": 1615134720,
+      "label": "final-isolated",
+      "rawFileOnDevelopmentMachine": "/tmp/i34/final/result.json"
+    },
+    {
+      "threads": 8,
+      "runs": 2,
+      "setup": {
+        "instantiateMs": 166.6050000190735,
+        "setupMs": 49729.18000000715,
+        "phases": [
+          {
+            "phase": "prover_srs",
+            "elapsed_ms": 6853,
+            "live_bytes": 28120268,
+            "peak_bytes": 28121342
+          },
+          {
+            "phase": "transaction_verifier",
+            "elapsed_ms": 8968,
+            "live_bytes": 31948204,
+            "peak_bytes": 33847444
+          },
+          {
+            "phase": "blobs_and_prover_indexes",
+            "elapsed_ms": 33713,
+            "live_bytes": 747530948,
+            "peak_bytes": 776851596
+          }
+        ],
+        "linearBytes": 794230784,
+        "stats": {
+          "phase": "snapshot",
+          "elapsed_ms": 0,
+          "live_bytes": 747530538,
+          "peak_bytes": 776851596
+        }
+      },
+      "results": [
+        {
+          "phases": [
+            {
+              "phase": "decode_input",
+              "elapsed_ms": 2,
+              "live_bytes": 749662997,
+              "peak_bytes": 776851596
+            },
+            {
+              "phase": "prove_step_and_wrap",
+              "elapsed_ms": 25365,
+              "live_bytes": 756069900,
+              "peak_bytes": 1561765549
+            },
+            {
+              "phase": "encode_proof",
+              "elapsed_ms": 1,
+              "live_bytes": 756090968,
+              "peak_bytes": 1561765549
+            }
+          ],
+          "intoWasmMs": 0.20499998331069946,
+          "outOfWasmMs": 0.050000011920928955,
+          "roundTripMs": 25400.649999976158,
+          "inputBytes": 10481,
+          "outputBytes": 10400,
+          "linearBytes": 1590165504,
+          "stats": {
+            "phase": "snapshot",
+            "elapsed_ms": 0,
+            "live_bytes": 756013178,
+            "peak_bytes": 1561765549
+          }
+        },
+        {
+          "phases": [
+            {
+              "phase": "decode_input",
+              "elapsed_ms": 0,
+              "live_bytes": 758145645,
+              "peak_bytes": 1561765549
+            },
+            {
+              "phase": "prove_step_and_wrap",
+              "elapsed_ms": 15056,
+              "live_bytes": 763161912,
+              "peak_bytes": 1562958837
+            },
+            {
+              "phase": "encode_proof",
+              "elapsed_ms": 0,
+              "live_bytes": 763182980,
+              "peak_bytes": 1562958837
+            }
+          ],
+          "intoWasmMs": 0.06499999761581421,
+          "outOfWasmMs": 0.030000030994415283,
+          "roundTripMs": 15067.689999997616,
+          "inputBytes": 10481,
+          "outputBytes": 10400,
+          "linearBytes": 1615527936,
+          "stats": {
+            "phase": "snapshot",
+            "elapsed_ms": 0,
+            "live_bytes": 763105190,
+            "peak_bytes": 1562958837
+          }
+        }
+      ],
+      "nodeBaseline": 1507328,
+      "nodeFinal": 1615527936,
+      "nodeStatsBefore": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 584,
+        "peak_bytes": 584
+      },
+      "nodeStatsAfter": {
+        "phase": "snapshot",
+        "elapsed_ms": 0,
+        "live_bytes": 763105114,
+        "peak_bytes": 1562958837
+      },
+      "isolation": "control: prover and page use one WASM memory",
+      "terminatedWorkers": 12,
+      "mode": "control",
+      "workersAfterHostRemoval": 0,
+      "remainingWorkers": [],
+      "machine": {
+        "cpu": "AMD Ryzen 9 3950X 16-Core Processor",
+        "chrome": "HeadlessChrome/155.0.8059.84",
+        "startedAt": "2026-10-21T01:14:11.023Z",
+        "loadBefore": [47.67, 43.83, 34.66],
+        "loadAfter": [29.75, 39.45, 34.04]
+      },
+      "verification": [
+        {
+          "status": 0,
+          "stdout": "mainnet verification passed; changed SOK rejected; input=10481 proof=10400 bytes\n",
+          "stderr": ""
+        },
+        {
+          "status": 0,
+          "stdout": "mainnet verification passed; changed SOK rejected; input=10481 proof=10400 bytes\n",
+          "stderr": ""
+        }
+      ],
+      "sampleCount": 902,
+      "sampledLinearPeakBytes": 1615527936,
+      "label": "final-control",
+      "rawFileOnDevelopmentMachine": "/tmp/i34/final/control/result.json"
+    }
+  ]
+}

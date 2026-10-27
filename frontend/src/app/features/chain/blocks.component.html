@@ -1,0 +1,190 @@
+<mina-freshness />
+@if (!publicApi) {
+  <mina-verification-panel />
+}
+<div class="page-heading">
+  <div>
+    <h1>Recent blocks</h1>
+    <p class="secondary">
+      The latest 20 blocks in this node’s best chain · Refreshes every 10
+      seconds · Slots count from the hard fork, as on every page here
+    </p>
+  </div>
+  <a class="btn-primary" routerLink="/accounts" queryParamsHandling="preserve">
+    Look up an account
+  </a>
+</div>
+@if (vm$ | async; as vm) {
+  @if (vm.loading) {
+    <p class="empty" role="status">Loading recent blocks…</p>
+  }
+  @if (vm.error) {
+    <div class="notice error" role="alert">
+      {{ vm.error }}
+      @if (vm.error !== noGraphQL) {
+        Retrying every 10 seconds.
+      }
+      @if (vm.data) {
+        <strong>
+          Showing the last successful response; this list is stale.
+        </strong>
+      }
+    </div>
+  }
+  @if (vm.data; as blocks) {
+    @if (blocks.length) {
+      <div class="summary">
+        <div>
+          <span class="secondary">Best height</span>
+          <strong>
+            {{ blocks[0].protocolState.consensusState.blockHeight | number }}
+          </strong>
+        </div>
+        <div
+          [title]="
+            'Slot since genesis, across forks: ' +
+            (blocks[0].protocolState.consensusState.slotSinceGenesis | number)
+          "
+        >
+          <span class="secondary">Slot since hard fork</span>
+          <strong data-slot>
+            {{ forkSlot(blocks[0].protocolState.consensusState) | number }}
+          </strong>
+        </div>
+        <div data-best-tip-age>
+          <span class="secondary">Best tip age</span>
+          <strong>
+            @if (now$ | async; as now) {
+              {{
+                formatAge(
+                  now - +blocks[0].protocolState.blockchainState.utcDate
+                )
+              }}
+            }
+          </strong>
+        </div>
+        <div>
+          <span class="secondary">Blocks shown</span>
+          <strong>{{ blocks.length }}</strong>
+        </div>
+        <div>
+          <span class="secondary">Last refreshed (UTC)</span>
+          <strong>
+            {{ vm.updatedAt | date: 'HH:mm:ss' : 'UTC' }}
+            @if (now$ | async; as now) {
+              <small class="secondary">
+                {{ formatAge(now - vm.updatedAt) }} ago
+              </small>
+            }
+          </strong>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="blocks-table">
+          <thead>
+            <tr>
+              <th>
+                Height /
+                <br />
+                slot since fork
+              </th>
+              <th>Time (UTC)</th>
+              <th>State hash</th>
+              <th>Producer</th>
+              <th>Coinbase receiver</th>
+              <th class="numeric">
+                Payments /
+                <br />
+                delegations
+              </th>
+              <th class="numeric">zkApps</th>
+              <th class="numeric">
+                SNARK
+                <br />
+                works
+              </th>
+              <th class="numeric">
+                Total fees
+                <br />
+                (MINA)
+              </th>
+              <th>Verification</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (block of blocks; track block.stateHash) {
+              <tr [attr.data-state-hash]="block.stateHash">
+                <td>
+                  <a
+                    class="height"
+                    [routerLink]="['/blocks', block.stateHash]"
+                    queryParamsHandling="preserve"
+                  >
+                    {{
+                      block.protocolState.consensusState.blockHeight | number
+                    }}
+                  </a>
+                  <small data-slot>
+                    {{ forkSlot(block.protocolState.consensusState) | number }}
+                  </small>
+                </td>
+                <td>
+                  {{
+                    +block.protocolState.blockchainState.utcDate
+                      | date: 'HH:mm:ss' : 'UTC'
+                  }}
+                  <small>
+                    {{
+                      +block.protocolState.blockchainState.utcDate
+                        | date: 'MMM d, y' : 'UTC'
+                    }}
+                  </small>
+                </td>
+                <td>
+                  <mina-chain-value [value]="block.stateHash" kind="block" />
+                </td>
+                <td>
+                  <mina-chain-value [value]="block.creator" kind="account" />
+                </td>
+                <td data-coinbase-receiver>
+                  @if (
+                    block.transactions.coinbaseReceiverAccount;
+                    as receiver
+                  ) {
+                    <mina-chain-value
+                      [value]="receiver.publicKey"
+                      kind="account"
+                    />
+                  } @else {
+                    <span class="secondary">No coinbase</span>
+                  }
+                </td>
+                <td class="numeric">
+                  {{ counts(block).payments }} / {{ counts(block).delegations }}
+                </td>
+                <td class="numeric">{{ counts(block).zkapps }}</td>
+                <td class="numeric">{{ counts(block).works }}</td>
+                <td class="numeric" data-fees>{{ fees(block) }}</td>
+                <td>
+                  <mina-verification-receipt [stateHash]="block.stateHash" />
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="footnote">
+        Total fees include payments, delegations and zkApp fee payers. Recent
+        blocks can change during a chain reorganization.
+      </p>
+    } @else {
+      <div class="empty" role="status">
+        <h2>No best-chain blocks yet</h2>
+        <p>
+          Blocks appear here after the node applies them. This page refreshes
+          automatically.
+        </p>
+      </div>
+    }
+  }
+}

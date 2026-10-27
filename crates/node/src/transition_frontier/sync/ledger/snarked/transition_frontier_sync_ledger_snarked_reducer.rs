@@ -16,10 +16,11 @@ use crate::{
 };
 
 use super::{
-    LedgerAddressQueryPending, PeerLedgerQueryResponse, PeerRpcState,
+    child_hashes_query_depth,
+    transition_frontier_sync_ledger_snarked_actions::check_peer_available,
+    LedgerAddressQueryPending, PeerLedgerQueryError, PeerLedgerQueryResponse, PeerRpcState,
     TransitionFrontierSyncLedgerSnarkedAction,
     TransitionFrontierSyncLedgerSnarkedActionWithMetaRef, TransitionFrontierSyncLedgerSnarkedState,
-    ACCOUNT_SUBTREE_HEIGHT,
 };
 
 impl TransitionFrontierSyncLedgerSnarkedState {
@@ -42,9 +43,43 @@ impl TransitionFrontierSyncLedgerSnarkedState {
                 dispatcher.push(TransitionFrontierSyncLedgerSnarkedAction::PeersQuery);
             }
             TransitionFrontierSyncLedgerSnarkedAction::PeersQuery => {
-                let mut retry_addresses: Vec<_> = state.sync_address_retry_iter().collect();
+                let mut retry_addresses: Vec<_> =
+                    state.sync_address_retry_iter(meta.time()).collect();
                 let mut addresses: Vec<_> = state.sync_address_query_iter().collect();
                 let is_num_accounts_pending = matches!(state, Self::NumAccountsPending { .. });
+
+                let all_connected_excluded = {
+                    let global_state = state_context.unsafe_get_state();
+                    let sync = &global_state.transition_frontier.sync;
+                    let Some((ledger, best_tip)) =
+                        sync.ledger().and_then(|l| l.snarked()).zip(sync.best_tip())
+                    else {
+                        return;
+                    };
+                    let eligible: Vec<_> = global_state
+                        .p2p
+                        .ready_peers_iter()
+                        .filter(|(_, peer)| {
+                            peer.channels.rpc.can_send_request()
+                                && check_peer_available(
+                                    peer,
+                                    ledger.target(),
+                                    best_tip,
+                                    sync.root_block(),
+                                )
+                        })
+                        .map(|(id, _)| *id)
+                        .collect();
+                    !eligible.is_empty() && eligible.iter().all(|id| ledger.peer_unavailable(id))
+                };
+                if all_connected_excluded {
+                    if let Ok(Self::MerkleTreeSyncPending {
+                        unavailable_peers, ..
+                    }) = state_context.get_substate_mut()
+                    {
+                        unavailable_peers.clear();
+                    }
+                }
 
                 let (dispatcher, global_state) = state_context.into_dispatcher_and_state();
 
@@ -211,9 +246,14 @@ impl TransitionFrontierSyncLedgerSnarkedState {
                             },
                         );
                     }
-                    // TODO(tizoc): These shouldn't happen, log some warning or something
-                    PeerLedgerQueryResponse::ChildHashes(_, _) => {}
-                    PeerLedgerQueryResponse::ChildAccounts(_) => {}
+                    _ => {
+                        dispatcher.push(
+                            TransitionFrontierSyncLedgerSnarkedAction::NumAccountsRejected {
+                                num_accounts: 0,
+                                sender: *peer_id,
+                            },
+                        );
+                    }
                 }
             }
             TransitionFrontierSyncLedgerSnarkedAction::NumAccountsReceived {
@@ -282,6 +322,21 @@ impl TransitionFrontierSyncLedgerSnarkedState {
                 );
             }
             TransitionFrontierSyncLedgerSnarkedAction::NumAccountsRejected { sender, .. } => {
+                if let Self::NumAccountsPending {
+                    pending_num_accounts,
+                    ..
+                } = state
+                {
+                    if let Some(attempt) = pending_num_accounts.attempts.get_mut(sender) {
+                        if let Some(rpc_id) = attempt.rpc_id() {
+                            *attempt = PeerRpcState::Error {
+                                time: meta.time(),
+                                rpc_id,
+                                error: PeerLedgerQueryError::InvalidResponse,
+                            };
+                        }
+                    }
+                }
                 let dispatcher = state_context.into_dispatcher();
                 dispatcher.push(
                     P2pDisconnectionAction::Init { peer_id: *sender, reason: P2pDisconnectionReason::TransitionFrontierSyncLedgerSnarkedNumAccountsRejected }
@@ -292,17 +347,56 @@ impl TransitionFrontierSyncLedgerSnarkedState {
                 num_accounts,
                 contents_hash,
             } => {
-                let Self::NumAccountsPending { target, .. } = state else {
+                let Self::NumAccountsPending {
+                    target,
+                    pending_num_accounts,
+                    ..
+                } = state
+                else {
                     return;
                 };
 
                 let target = target.clone();
-
+                let unavailable_peers = pending_num_accounts
+                    .attempts
+                    .iter()
+                    .filter_map(|(id, attempt)| {
+                        matches!(
+                            attempt,
+                            PeerRpcState::Error {
+                                error: PeerLedgerQueryError::LedgerUnavailable
+                                    | PeerLedgerQueryError::DataUnavailable,
+                                ..
+                            }
+                        )
+                        .then_some(*id)
+                    })
+                    .collect();
+                let peer_query_errors = pending_num_accounts
+                    .attempts
+                    .iter()
+                    .filter_map(|(id, attempt)| match attempt {
+                        PeerRpcState::Error {
+                            time,
+                            error:
+                                PeerLedgerQueryError::LedgerUnavailable
+                                | PeerLedgerQueryError::DataUnavailable
+                                | PeerLedgerQueryError::InvalidResponse,
+                            ..
+                        } => Some((*id, *time)),
+                        _ => None,
+                    })
+                    .collect();
+                let Ok(state) = state_context.get_substate_mut() else {
+                    return;
+                };
                 *state = Self::NumAccountsSuccess {
                     time: meta.time(),
                     target,
                     num_accounts: *num_accounts,
                     contents_hash: contents_hash.clone(),
+                    unavailable_peers,
+                    peer_query_errors,
                 };
 
                 // Dispatch
@@ -315,6 +409,8 @@ impl TransitionFrontierSyncLedgerSnarkedState {
                     target,
                     num_accounts,
                     contents_hash,
+                    unavailable_peers,
+                    peer_query_errors,
                     ..
                 } = state
                 else {
@@ -336,6 +432,8 @@ impl TransitionFrontierSyncLedgerSnarkedState {
                     synced_hashes_count: 0,
                     queue: iter::once(first_query).collect(),
                     pending_addresses: Default::default(),
+                    unavailable_peers: std::mem::take(unavailable_peers),
+                    peer_query_errors: std::mem::take(peer_query_errors),
                 };
 
                 // Dispatch
@@ -455,6 +553,31 @@ impl TransitionFrontierSyncLedgerSnarkedState {
                     error: error.clone(),
                 };
 
+                if matches!(
+                    error,
+                    PeerLedgerQueryError::LedgerUnavailable
+                        | PeerLedgerQueryError::DataUnavailable
+                        | PeerLedgerQueryError::InvalidResponse
+                ) {
+                    if let Self::MerkleTreeSyncPending {
+                        unavailable_peers,
+                        peer_query_errors,
+                        ..
+                    } = state
+                    {
+                        peer_query_errors.insert(*peer_id, meta.time());
+                        if matches!(
+                            error,
+                            PeerLedgerQueryError::LedgerUnavailable
+                                | PeerLedgerQueryError::DataUnavailable
+                        ) {
+                            unavailable_peers.insert(*peer_id);
+                        }
+                    }
+                }
+                // PeersQuery clears exclusions only after a full eligible-peer
+                // pass. The per-peer delay survives that clearing.
+
                 // Dispatch
                 let dispatcher = state_context.into_dispatcher();
                 dispatcher.push(TransitionFrontierSyncLedgerSnarkedAction::PeersQuery);
@@ -484,11 +607,11 @@ impl TransitionFrontierSyncLedgerSnarkedState {
                 };
 
                 match response {
-                    PeerLedgerQueryResponse::ChildHashes(left, right) => {
+                    PeerLedgerQueryResponse::ChildHashes(hashes) => {
                         dispatcher.push(
                             TransitionFrontierSyncLedgerSnarkedAction::ChildHashesReceived {
                                 address,
-                                hashes: (left.clone(), right.clone()),
+                                hashes: hashes.clone(),
                                 sender: *peer_id,
                             },
                         );
@@ -502,8 +625,15 @@ impl TransitionFrontierSyncLedgerSnarkedState {
                             },
                         );
                     }
-                    // TODO(tizoc): This shouldn't happen, log some warning or something
-                    PeerLedgerQueryResponse::NumAccounts(_, _) => {}
+                    PeerLedgerQueryResponse::NumAccounts(_, _) => {
+                        dispatcher.push(
+                            TransitionFrontierSyncLedgerSnarkedAction::ChildHashesRejected {
+                                address,
+                                hashes: vec![],
+                                sender: *peer_id,
+                            },
+                        );
+                    }
                 }
             }
             TransitionFrontierSyncLedgerSnarkedAction::ChildHashesReceived { .. } => {}
@@ -526,33 +656,30 @@ impl TransitionFrontierSyncLedgerSnarkedState {
                 // Once hashes are accepted, we can consider this query fulfilled
                 pending.remove(address);
 
-                let (left, right) = hashes;
-                let (previous_left, previous_right) = previous_hashes;
-
                 // TODO(tizoc): for non-stale hashes, we can consider the full subtree
                 // as accepted. Given the value of `num_accounts` and the position
                 // in the tree we could estimate how many accounts and hashes
                 // from that subtree will be skipped and add them to the count.
 
+                // The hashes are a full level of descendants, left to right.
+                let levels = hashes.len().trailing_zeros() as usize;
+                let depth = address.length().checked_add(levels).expect("overflow");
                 // Empty node hashes are not counted in the stats.
-                let empty =
-                    ledger_empty_hash_at_depth(address.length().checked_add(1).expect("overflow"));
+                let empty = ledger_empty_hash_at_depth(depth);
 
-                if *left != empty {
-                    *num_hashes_accepted = num_hashes_accepted.checked_add(1).expect("overflow")
-                }
-
-                if *right != empty {
-                    *num_hashes_accepted = num_hashes_accepted.checked_add(1).expect("overflow")
-                }
-
-                if left != previous_left {
-                    let previous = queue.insert(address.child_left(), left.clone());
-                    debug_assert!(previous.is_none());
-                }
-                if right != previous_right {
-                    let previous = queue.insert(address.child_right(), right.clone());
-                    debug_assert!(previous.is_none());
+                let descendants = address.iter_children(depth);
+                for (descendant, (hash, previous_hash)) in
+                    descendants.zip(hashes.iter().zip(previous_hashes))
+                {
+                    if *hash != empty {
+                        *num_hashes_accepted =
+                            num_hashes_accepted.checked_add(1).expect("overflow");
+                    }
+                    // Only subtrees that differ from ours need fetching.
+                    if hash != previous_hash {
+                        let previous = queue.insert(descendant, hash.clone());
+                        debug_assert!(previous.is_none());
+                    }
                 }
 
                 // Dispatch
@@ -566,9 +693,12 @@ impl TransitionFrontierSyncLedgerSnarkedState {
                         .push(TransitionFrontierSyncLedgerSnarkedAction::MerkleTreeSyncSuccess);
                 }
             }
-            TransitionFrontierSyncLedgerSnarkedAction::ChildHashesRejected { .. } => {
-                // TODO(tizoc): should this be reflected in the state somehow?
-                // TODO(tizoc): we do nothing here, but the peer must be punished somehow
+            TransitionFrontierSyncLedgerSnarkedAction::ChildHashesRejected {
+                address,
+                sender,
+                ..
+            } => {
+                state.reject_address_answer(address, sender, meta.time());
                 let dispatcher = state_context.into_dispatcher();
                 dispatcher.push(TransitionFrontierSyncLedgerSnarkedAction::PeersQuery);
             }
@@ -602,9 +732,11 @@ impl TransitionFrontierSyncLedgerSnarkedState {
                         .push(TransitionFrontierSyncLedgerSnarkedAction::MerkleTreeSyncSuccess);
                 }
             }
-            TransitionFrontierSyncLedgerSnarkedAction::ChildAccountsRejected { .. } => {
-                // TODO(tizoc): should this be reflected in the state somehow?
-                // TODO(tizoc): we do nothing here, but the peer must be punished somehow
+            TransitionFrontierSyncLedgerSnarkedAction::ChildAccountsRejected {
+                address,
+                sender,
+            } => {
+                state.reject_address_answer(address, sender, meta.time());
                 let dispatcher = state_context.into_dispatcher();
                 dispatcher.push(TransitionFrontierSyncLedgerSnarkedAction::PeersQuery);
             }
@@ -676,10 +808,14 @@ fn peer_query_address_init(
         return;
     };
 
-    let query = if address.length() >= LEDGER_DEPTH - ACCOUNT_SUBTREE_HEIGHT {
-        MinaLedgerSyncLedgerQueryStableV1::WhatContents(address.clone().into())
-    } else {
-        MinaLedgerSyncLedgerQueryStableV1::WhatChildHashes(address.clone().into())
+    // Several levels at once, but not below the account subtrees, which are
+    // fetched whole.
+    let query = match child_hashes_query_depth(address.length()) {
+        Some(depth) => MinaLedgerSyncLedgerQueryStableV1::WhatChildHashes(
+            address.clone().into(),
+            (depth as u64).into(),
+        ),
+        None => MinaLedgerSyncLedgerQueryStableV1::WhatContents(address.clone().into()),
     };
 
     dispatcher.push(P2pChannelsRpcAction::RequestSend {
@@ -694,7 +830,9 @@ fn peer_query_address_init(
                     unreachable!()
                 };
                 let address = match query {
-                    MinaLedgerSyncLedgerQueryStableV1::WhatChildHashes(address) => address.into(),
+                    MinaLedgerSyncLedgerQueryStableV1::WhatChildHashes(address, _) => {
+                        address.into()
+                    }
                     MinaLedgerSyncLedgerQueryStableV1::WhatContents(address) => address.into(),
                     MinaLedgerSyncLedgerQueryStableV1::NumAccounts => unreachable!(),
                 };

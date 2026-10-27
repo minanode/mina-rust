@@ -1,0 +1,34 @@
+[package]
+name = "wasm-poseidon-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Standalone benchmarks of Pasta Fp arithmetic and Poseidon, native and WASM (research task R8)"
+
+# Not a member of the main workspace: this crate has its own lock file and
+# target directory, and nothing in the node depends on it.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "native-bench"
+path = "src/bin/native_bench.rs"
+
+[dependencies]
+# The same versions the node uses (root Cargo.toml).
+ark-ff = { version = "0.5.0", features = ["std"] }
+ark-std = { version = "0.5.0", features = ["std"] }
+mina-curves = { git = "https://github.com/o1-labs/proof-systems", rev = "ab84160fa2c22290a8506a7742ac1378879fc386", default-features = false }
+poseidon = { path = "../../poseidon" }
+
+# `rand` (through ark-std) pulls in getrandom. The benchmarks never ask for
+# randomness; a custom backend keeps the module free of JS imports.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["custom"] }
+
+# The node's release profile is cargo's default (no LTO, 16 codegen units);
+# keep it so the baseline numbers match what the web node runs.
+[profile.release]
+panic = "abort"

@@ -25,7 +25,7 @@ pub type TransactionPoolActionWithMeta = redux::ActionWithMeta<TransactionPoolAc
 pub type TransactionPoolActionWithMetaRef<'a> = redux::ActionWithMeta<&'a TransactionPoolAction>;
 
 #[derive(Serialize, Deserialize, Debug, Clone, ActionEvent)]
-#[action_event(level = info)]
+#[action_event(level = debug)]
 pub enum TransactionPoolAction {
     Candidate(TransactionPoolCandidateAction),
     StartVerify {
@@ -44,6 +44,14 @@ pub enum TransactionPoolAction {
     #[action_event(level = warn, fields(debug(errors)))]
     VerifyError {
         errors: Vec<String>,
+        from_source: TransactionPoolMessageSource,
+    },
+    /// The ledger couldn't give the accounts a pending action needs.
+    #[action_event(level = warn, fields(debug(error)))]
+    FetchAccountsFailed {
+        pending_id: Option<PendingId>,
+        from_source: TransactionPoolMessageSource,
+        error: String,
     },
     BestTipChanged {
         best_tip_hash: v2::LedgerHash,
@@ -88,11 +96,17 @@ impl redux::EnablingCondition<crate::State> for TransactionPoolAction {
     fn is_enabled(&self, state: &crate::State, time: redux::Timestamp) -> bool {
         match self {
             TransactionPoolAction::Candidate(a) => a.is_enabled(state, time),
-            TransactionPoolAction::StartVerify { commands, .. } => {
+            TransactionPoolAction::StartVerify {
+                commands,
+                from_source,
+            } => {
+                // A local submission of pooled commands goes on, to be
+                // answered (OCaml treats it as a rebroadcast request, P6h).
                 !commands.is_empty()
-                    && commands
-                        .iter()
-                        .any(|cmd| !state.transaction_pool.contains(cmd.hash()))
+                    && (from_source.is_sender_local()
+                        || commands
+                            .iter()
+                            .any(|cmd| !state.transaction_pool.contains(cmd.hash())))
             }
             TransactionPoolAction::P2pSendAll => true,
             TransactionPoolAction::P2pSend { peer_id } => state
@@ -129,7 +143,7 @@ impl redux::EnablingCondition<crate::State> for TransactionPoolAction {
 }
 
 type TransactionPoolEffectfulActionCallback = Callback<(
-    BTreeMap<AccountId, Account>,
+    Result<BTreeMap<AccountId, Account>, String>,
     Option<PendingId>,
     TransactionPoolMessageSource,
 )>;

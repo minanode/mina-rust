@@ -170,6 +170,7 @@ where
         .unwrap()
         .with_behaviour(|_| behaviour)
         .unwrap()
+        .with_swarm_config(|c| c.with_idle_connection_timeout(std::time::Duration::from_secs(300)))
         .build();
 
     for addr in listen_on {

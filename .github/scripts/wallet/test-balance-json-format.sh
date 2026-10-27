@@ -26,7 +26,7 @@ fi
 echo "Test: Verify JSON format output structure"
 JSON_OUTPUT=$(./target/release/mina wallet balance \
     --address "B62qkiqPXFDayJV8JutYvjerERZ35EKrdmdcXh3j1rDUHRs1bJkFFcX" \
-    --endpoint "$MINA_NODE_ENDPOINT" \
+    --node "$MINA_NODE_ENDPOINT" \
     --format json 2>&1 || true)
 
 echo "JSON format output:"

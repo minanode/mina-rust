@@ -1,3 +1,4 @@
+use crate::{TXN_VERSION_CURRENT, ZKAPP_STATE_SIZE};
 use mina_core::constants::constraint_constants;
 use mina_curves::pasta::Fp;
 use mina_signer::CompressedPubKey;
@@ -812,11 +813,26 @@ where
     };
     Z::Account::make_zkapp(&mut a);
     // Check that the account can be accessed with the given authorization.
-    // local state
+    // Since Mesa, accounts whose permissions predate the current transaction
+    // version may be accessed with a signature where they asked for a proof.
+    //
+    // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_logic/zkapp_command_logic.ml#L1553-L1568>
     {
         let has_permission = {
-            let access = &a.get().permissions.access;
-            Z::Controller::check(proof_verifies, signature_verifies, access, &single_data, w)?
+            let access = a.get().permissions.access;
+            let txn_version = a.get().permissions.set_verification_key.txn_version;
+            let older_than_current_version = Z::TxnVersion::older_than_current(txn_version, w);
+            let auth = {
+                let on_true = Z::Branch::make(w, |w| {
+                    Z::Controller::access_perm_fallback_to_signature_with_older_version(&access, w)
+                });
+                let on_false = Z::Branch::make(w, |_| access);
+                w.on_if(
+                    older_than_current_version,
+                    BranchParam { on_true, on_false },
+                )
+            };
+            Z::Controller::check(proof_verifies, signature_verifies, &auth, &single_data, w)?
         };
         Z::LocalState::add_check(
             local_state,
@@ -830,11 +846,12 @@ where
     let (_a, _local_state) = {
         let app_state = &account_update.body().update.app_state;
         let keeping_app_state = {
-            let is_all_keep: [_; 8] = app_state.each_ref().map(Z::SetOrKeep::is_keep);
+            let is_all_keep: [_; ZKAPP_STATE_SIZE] =
+                app_state.each_ref().map(Z::SetOrKeep::is_keep);
             Z::Bool::all(&is_all_keep, w)
         };
         let changing_entire_app_state = {
-            let is_all_set: [_; 8] = app_state.each_ref().map(Z::SetOrKeep::is_set);
+            let is_all_set: [_; ZKAPP_STATE_SIZE] = app_state.each_ref().map(Z::SetOrKeep::is_set);
             Z::Bool::all(&is_all_set, w)
         };
         let proved_state = {
@@ -876,7 +893,7 @@ where
             w,
         );
         // We use `rev()` and `reverse()` here to match OCaml `Pickles_types.Vector.map2`
-        let mut app_state: [Fp; 8] = app_state
+        let mut app_state: [Fp; ZKAPP_STATE_SIZE] = app_state
             .iter()
             .rev()
             .zip(a.app_state().into_iter().rev())
@@ -947,6 +964,11 @@ where
             SetOrKeep::Keep => zkapp.verification_key.clone(),
         };
         a.zkapp_mut().verification_key = verification_key;
+        // Every account update moves the account's permissions to the current
+        // transaction version, whether or not it sets a verification key.
+        //
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_logic/zkapp_command_logic.ml#L1644-L1645>
+        a.get_mut().permissions.set_verification_key.txn_version = TXN_VERSION_CURRENT;
         ((), ())
     };
 

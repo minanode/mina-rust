@@ -2,20 +2,39 @@
 
 .header {
   height: 56px;
-
-  .mina-svg {
-    height: 32px;
-  }
-}
-
-::ng-deep body.light .header {
-  filter: invert(1);
 }
 
 .content {
   height: calc(100% - 56px);
   max-width: 391px;
   padding: 0 8px;
+
+  &:has(.choices.two) {
+    max-width: 806px;
+  }
+
+  .choices {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 24px;
+    width: 100%;
+
+    main {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 340px;
+    }
+
+    h3 {
+      font-size: 16px;
+      font-weight: 500;
+      margin: 0;
+    }
+
+    .buttons-container {
+      margin-top: auto;
+    }
+  }
 
   h2 {
     font-size: 20px;

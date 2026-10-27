@@ -652,11 +652,11 @@ impl Resources {
             Ok(match cb {
                 AtMostTwo::Zero => AtMostTwo::One(None),
                 AtMostTwo::One(None) => {
-                    eprintln!("Coinbase one(none) to two");
+                    mina_core::debug!("Coinbase one(none) to two");
                     AtMostTwo::Two(None)
                 }
                 AtMostTwo::One(Some(ft)) => {
-                    eprintln!("Coinbase one(some) to two {:?}", ft);
+                    mina_core::debug!("Coinbase one(some) to two {:?}", ft);
                     AtMostTwo::Two(Some((ft.clone(), None)))
                 }
                 AtMostTwo::Two(_) => {
@@ -698,7 +698,7 @@ impl Resources {
         };
 
         if let Err(e) = apply(self) {
-            eprintln!("Error when increasing coinbase: {:?}", e);
+            mina_core::warn!("Error when increasing coinbase: {:?}", e);
         };
     }
 }

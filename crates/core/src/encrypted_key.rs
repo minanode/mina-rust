@@ -159,11 +159,26 @@ pub struct EncryptedSecretKeyFile {
 impl EncryptedSecretKeyFile {
     pub fn new(path: impl AsRef<Path>) -> Result<Self, EncryptionError> {
         let file = fs::File::open(path)?;
+        reject_public_key_file(&file)?;
         Ok(serde_json::from_reader(file)?)
     }
 }
 
+/// The most expensive derivation a key file may ask for: 1 GiB of memory
+/// and 64 iterations. Our own files use 128 MiB and 6 (`PW_DIFF`); the
+/// bounds leave room for stronger future parameters while keeping a
+/// tampered file from making every start pay an unbounded cost before
+/// the password is even tried.
+const MAX_PWDIFF: (u32, u32) = (1024 * 1024 * 1024, 64);
+
 fn setup_argon(pwdiff: (u32, u32)) -> Result<Argon2<'static>, EncryptionError> {
+    if pwdiff.0 > MAX_PWDIFF.0 || pwdiff.1 > MAX_PWDIFF.1 {
+        return Err(EncryptionError::Other(format!(
+            "key file asks for an unreasonably expensive derivation \
+             ({} bytes, {} iterations)",
+            pwdiff.0, pwdiff.1
+        )));
+    }
     let params = argon2::Params::new(
         pwdiff.0 / 1024,
         pwdiff.1,
@@ -176,6 +191,32 @@ fn setup_argon(pwdiff: (u32, u32)) -> Result<Argon2<'static>, EncryptionError> {
         Default::default(),
         params,
     ))
+}
+
+/// Refuses a key file that other users could read, as OCaml's Secret_file
+/// does for the file itself (OCaml also demands a 0700 directory, which we
+/// deliberately do not, to keep operators' existing key locations
+/// working). Checked on the open file's metadata, not on the path, so the
+/// file checked is the file read.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/secrets/secret_file.ml#L99-L106>
+#[cfg(unix)]
+pub fn reject_public_key_file(file: &fs::File) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let permissions = file.metadata()?.permissions();
+    if permissions.mode() & 0o077 != 0 {
+        return Err(std::io::Error::other(format!(
+            "key file permissions are too open ({:o}); they should be 0600. \
+             Hint: chmod 600 the file",
+            permissions.mode() & 0o777
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn reject_public_key_file(_file: &fs::File) -> std::io::Result<()> {
+    Ok(())
 }
 
 pub trait EncryptedSecretKey {
@@ -323,5 +364,32 @@ pub trait EncryptedSecretKey {
             pwdiff: (argon2.params().m_cost() * 1024, argon2.params().t_cost()),
             ciphertext: Base58String::new(&ciphertext, Self::ENCRYPTION_DATA_VERSION_BYTE),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::setup_argon;
+
+    /// The cost parameters come from the key file, so they are not trusted
+    /// without limit: a file that asks for an unreasonably expensive
+    /// derivation is refused before any of it runs. The caps leave room
+    /// above our own parameters (128 MiB, 6 iterations).
+    #[test]
+    fn unreasonably_expensive_derivation_is_refused() {
+        for pwdiff in [
+            (u32::MAX, u32::MAX),
+            (1024 * 1024 * 1024 + 1024, 6),
+            (134_217_728, 65),
+        ] {
+            let error = match setup_argon(pwdiff) {
+                Err(error) => error,
+                Ok(_) => panic!("accepted {pwdiff:?}"),
+            };
+            let message = error.to_string();
+            assert!(message.contains("expensive"), "{pwdiff:?}: {message}");
+        }
+        // Our own files' parameters still build the derivation.
+        assert!(setup_argon((134_217_728, 6)).is_ok());
     }
 }

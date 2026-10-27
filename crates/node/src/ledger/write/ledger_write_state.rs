@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{LedgerWriteRequest, LedgerWriteResponse};
+use super::{LedgerWriteKind, LedgerWriteRequest};
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub enum LedgerWriteState {
@@ -16,18 +16,19 @@ pub enum LedgerWriteState {
     },
     Success {
         time: redux::Timestamp,
-        request: LedgerWriteRequest,
-        response: LedgerWriteResponse,
+        /// Completion is recorded for diagnostics only. Follow-up actions
+        /// receive the response directly; retaining it or the request here
+        /// would keep blocks, scan states and checkpoint inputs alive.
+        kind: LedgerWriteKind,
     },
 }
 
 impl LedgerWriteState {
-    pub fn request(&self) -> Option<&LedgerWriteRequest> {
+    pub fn kind(&self) -> Option<LedgerWriteKind> {
         match self {
             Self::Idle => None,
-            Self::Init { request, .. }
-            | Self::Pending { request, .. }
-            | Self::Success { request, .. } => Some(request),
+            Self::Init { request, .. } | Self::Pending { request, .. } => Some(request.kind()),
+            Self::Success { kind, .. } => Some(*kind),
         }
     }
 

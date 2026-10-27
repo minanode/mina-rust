@@ -68,6 +68,7 @@ use super::{
     fee_excess::FeeExcess,
     fee_rate::FeeRate,
     scan_state::transaction_snark::OneOrTwo,
+    GENESIS_CONSTANT,
 };
 use crate::{
     scan_state::transaction_logic::{
@@ -523,6 +524,11 @@ impl Coinbase {
 #[derive(Clone, PartialEq)]
 pub struct Memo(pub [u8; 34]);
 
+/// A memo longer than the 32 bytes a memo holds.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("memo is {0} bytes; a memo holds at most 32")]
+pub struct MemoTooLong(pub usize);
+
 impl std::fmt::Debug for Memo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::staged_ledger::hash::OCamlString;
@@ -608,6 +614,17 @@ impl Memo {
 
     pub fn as_slice(&self) -> &[u8] {
         self.0.as_slice()
+    }
+
+    /// A memo holding `s`, or an error when `s` is longer than 32 bytes.
+    /// `FromStr` silently truncates instead, possibly inside a character.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/signed_command_memo.ml#L130-L138>
+    pub fn create_from_str_checked(s: &str) -> Result<Self, MemoTooLong> {
+        if s.len() > Self::MAX_INPUT_LENGTH {
+            return Err(MemoTooLong(s.len()));
+        }
+        Ok(s.parse().expect("Memo::from_str doesn't fail"))
     }
 
     /// OCaml: <https://github.com/MinaProtocol/mina/blob/5da42ccd72e791f164d4d200cf1ce300262873b3/src/lib/mina_base/signed_command_memo.ml#L156-L156>
@@ -903,10 +920,9 @@ impl UserCommand {
             .collect()
     }
 
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/user_command.ml#L289>
     fn has_insufficient_fee(&self) -> bool {
-        /// `minimum_user_command_fee`
-        const MINIMUM_USER_COMMAND_FEE: Fee = Fee::from_u64(1000000);
-        self.fee() < MINIMUM_USER_COMMAND_FEE
+        self.fee() < GENESIS_CONSTANT.minimum_user_command_fee
     }
 
     fn has_zero_vesting_period(&self) -> bool {
@@ -1047,7 +1063,7 @@ impl GenericTransaction for Transaction {
 /// [`MinaTransactionTransactionStableV2`].
 ///
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/5da42ccd72e791f164d4d200cf1ce300262873b3/src/lib/transaction/transaction.ml#L8-L11>
-#[derive(Clone, Debug, derive_more::From)]
+#[derive(Clone, Debug, PartialEq, derive_more::From)]
 pub enum Transaction {
     /// User-initiated transaction: signed command or zkApp command
     Command(UserCommand),

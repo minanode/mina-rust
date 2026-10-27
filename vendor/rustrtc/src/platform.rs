@@ -1,0 +1,1012 @@
+//! Platform seams for the no_std build (WP2, growing slice by slice).
+//!
+//! - [`time`]: monotonic-ish instant for inactivity/expiry accounting.
+//! - [`net`]: UDP socket abstraction (data-plane send/recv).
+//! - [`task`] / [`sync`] / [`select`]: spawn + timers + channel seams used
+//!   by the ICE transport.
+//!
+//! std build: the seams alias tokio types, so existing call sites keep
+//! working unchanged. no_std build: spin-lock channels and an injected
+//! task spawner (`task::set_spawn_fn`) — the WP3 embassy pass replaces
+//! the placeholders with embassy-time primitives.
+
+pub mod net;
+
+/// Crypto seam for the DTLS transport (ECDSA-P256 + ECDH-P256). Backends:
+/// the built-in p256 reference (`crypto-p256` feature) or an injected
+/// implementation (`crypto::set_crypto`) — e.g. hardware-accelerated.
+pub mod crypto;
+#[cfg(feature = "crypto-p256")]
+pub mod crypto_p256;
+
+/// 64-bit atomic counters that degrade gracefully on targets without 64-bit
+/// atomics (ESP32-S3 etc.): backed by `AtomicU32`, values wrap at 2^32.
+pub mod atomic64 {
+    #[cfg(target_has_atomic = "64")]
+    pub use core::sync::atomic::AtomicU64;
+
+    #[cfg(not(target_has_atomic = "64"))]
+    #[derive(Debug, Default)]
+    pub struct AtomicU64(core::sync::atomic::AtomicU32);
+
+    #[cfg(not(target_has_atomic = "64"))]
+    impl AtomicU64 {
+        pub const fn new(v: u64) -> Self {
+            Self(core::sync::atomic::AtomicU32::new(v as u32))
+        }
+        pub fn load(&self, o: core::sync::atomic::Ordering) -> u64 {
+            self.0.load(o) as u64
+        }
+        pub fn store(&self, v: u64, o: core::sync::atomic::Ordering) {
+            self.0.store(v as u32, o)
+        }
+        pub fn fetch_add(&self, v: u64, o: core::sync::atomic::Ordering) -> u64 {
+            self.0.fetch_add(v as u32, o) as u64
+        }
+        pub fn fetch_sub(&self, v: u64, o: core::sync::atomic::Ordering) -> u64 {
+            self.0.fetch_sub(v as u32, o) as u64
+        }
+        pub fn swap(&self, v: u64, o: core::sync::atomic::Ordering) -> u64 {
+            self.0.swap(v as u32, o) as u64
+        }
+    }
+}
+
+/// Randomness seam. std: OS RNG (`rand`). no_std: the embedder MUST
+/// inject a fill function (e.g. the esp-hal hardware RNG) via
+/// [`rng::set_fill_fn`] before any key material is generated; until then
+/// [`rng::fill`] panics — deliberately never returning zeros, since SDES
+/// keys or STUN transaction ids derived from a constant would be a
+/// critical vulnerability.
+pub mod rng {
+    use crate::platform::sync::Mutex;
+
+    type FillFn = fn(&mut [u8]);
+
+    static FILL_FN: Mutex<Option<FillFn>> = Mutex::new(None);
+
+    /// Installs the embedder's CSPRNG (no_std only; std uses the OS RNG).
+    /// Must be called before any SRTP/SDES key generation.
+    pub fn set_fill_fn(f: FillFn) {
+        *FILL_FN.lock() = Some(f);
+    }
+
+    /// Fills `buf` with cryptographically secure random bytes.
+    pub fn fill(buf: &mut [u8]) {
+        #[cfg(feature = "std")]
+        {
+            use rand::Rng;
+            rand::rng().fill_bytes(buf);
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            let fill =
+                (*FILL_FN.lock()).expect("platform::rng: set_fill_fn not called before fill");
+            fill(buf);
+        }
+    }
+
+    // getrandom's "custom" backend requires this symbol on targets without an
+    // OS implementation (xtensa). Route into the platform RNG seam so any
+    // accidental rand_core::OsRng use stays CSPRNG-backed instead of failing
+    // to link.
+    #[cfg(target_arch = "xtensa")]
+    #[unsafe(no_mangle)]
+    unsafe fn __getrandom_custom(dest: *mut u8, len: usize) -> u32 {
+        let slice = unsafe { core::slice::from_raw_parts_mut(dest, len) };
+        fill(slice);
+        0
+    }
+}
+
+/// DNS resolver seam. std: tokio's `lookup_host`. no_std: IP literals resolve
+/// locally and hostnames go through the embedder's [`DnsResolver`]
+/// implementation (e.g. embassy-net DNS) so ICE STUN/TURN server hostnames
+/// (`stun:stun.l.google.com:19302`) can be resolved on-device.
+pub mod dns {
+    use crate::errors::{RtcError, RtcResult};
+    use alloc::boxed::Box;
+    use alloc::sync::Arc;
+    use alloc::vec::Vec;
+    use core::net::SocketAddr;
+    use core::sync::atomic::{AtomicPtr, Ordering};
+
+    /// Backend for resolving ICE STUN/TURN server hostnames.
+    ///
+    /// Mirrors the other platform seams ([`crate::platform::crypto::DtlsCrypto`],
+    /// [`crate::platform::net::UdpSocket`]): the trait lives here and the
+    /// embedder implements it — e.g. rtcembed over embassy-net DNS — then
+    /// installs it with [`set_resolver`]. std falls back to tokio when none is
+    /// installed.
+    #[async_trait::async_trait]
+    pub trait DnsResolver: Send + Sync {
+        /// Resolves `host:port` (e.g. `stun.l.google.com:19302`) to one or
+        /// more socket addresses.
+        async fn resolve(&self, target: &str) -> RtcResult<Vec<SocketAddr>>;
+    }
+
+    static RESOLVER: AtomicPtr<Arc<dyn DnsResolver>> = AtomicPtr::new(core::ptr::null_mut());
+
+    /// Injects the DNS resolver (thread-safe, leak-once). Call once during
+    /// startup, before any ICE gathering that uses STUN/TURN hostnames.
+    pub fn set_resolver(resolver: Arc<dyn DnsResolver>) {
+        let leaked = Box::leak(Box::new(resolver));
+        RESOLVER.store(leaked as *mut Arc<dyn DnsResolver>, Ordering::Release);
+    }
+
+    /// The injected resolver, if any.
+    pub fn resolver() -> Option<&'static dyn DnsResolver> {
+        let ptr = RESOLVER.load(Ordering::Acquire);
+        if ptr.is_null() {
+            return None;
+        }
+        // SAFETY: only `set_resolver` writes, and it leaks the value, so the
+        // pointer stays valid for the lifetime of the process.
+        Some(unsafe { &**ptr })
+    }
+
+    /// Resolves `host:port` to a list of socket addresses.
+    pub async fn lookup_host(host: &str) -> RtcResult<Vec<SocketAddr>> {
+        // An IP literal needs no resolver on any backend.
+        if let Ok(addr) = host.parse::<SocketAddr>() {
+            return Ok(alloc::vec![addr]);
+        }
+        if let Some(resolver) = resolver() {
+            return resolver.resolve(host).await;
+        }
+        #[cfg(feature = "std")]
+        {
+            let addrs = tokio::net::lookup_host(host)
+                .await
+                .map_err(|e| RtcError::Internal(alloc::format!("dns: {e}")))?;
+            Ok(addrs.collect())
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            Err(RtcError::Internal(alloc::string::String::from(
+                "dns: no resolver wired (platform::dns::set_resolver)",
+            )))
+        }
+    }
+}
+
+#[cfg(not(feature = "std"))]
+pub mod sync_embedded;
+
+/// 64-bit atomic counters that degrade gracefully on targets without 64-bit
+/// atomics (ESP32-S3 etc.): backed by `AtomicU32`, values wrap at 2^32 —
+/// fine for diagnostics counters and a 2^32 ms logical clock.
+///
+/// Backend-agnostic racing combinators (replace `tokio::select!` at the
+/// drive-loop sites). Poll-based and unbiased: all arms polled on every
+/// wake; first completion wins. Futures must be `Unpin` (callers pass
+/// `core::pin::pin!(..)` bindings for `!Unpin` futures).
+pub mod select {
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll};
+
+    /// Turns [`Either`] into a future: polls the live branch. This is the
+    /// building block for conditional `select!` arms (`expr, if cond`):
+    /// `Either::A(real_future)` / `Either::B(pending())` disables the arm.
+    impl<A, B> Future for Either<A, B>
+    where
+        A: Future + Unpin,
+        B: Future<Output = A::Output> + Unpin,
+    {
+        type Output = A::Output;
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            match self.get_mut() {
+                Either::A(a) => Pin::new(a).poll(cx),
+                Either::B(b) => Pin::new(b).poll(cx),
+            }
+        }
+    }
+
+    /// `FutureExt::poll_unpin` without the dependency: `Unpin` futures can
+    /// be polled through `Pin::new`.
+    #[inline]
+    fn poll_unpin<F: Future + Unpin>(fut: &mut F, cx: &mut Context<'_>) -> Poll<F::Output> {
+        Pin::new(fut).poll(cx)
+    }
+
+    /// Two-arm race output.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Either<A, B> {
+        A(A),
+        B(B),
+    }
+
+    /// Three-arm race output.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Which3<A, B, C> {
+        A(A),
+        B(B),
+        C(C),
+    }
+
+    /// Four-arm race output.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Which4<A, B, C, D> {
+        A(A),
+        B(B),
+        C(C),
+        D(D),
+    }
+
+    /// Races two futures.
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    pub struct Select2<A: Future, B: Future> {
+        a: A,
+        b: B,
+    }
+
+    /// Races two futures.
+    pub fn select2<A: Future, B: Future>(a: A, b: B) -> Select2<A, B> {
+        Select2 { a, b }
+    }
+
+    impl<A: Future + Unpin, B: Future + Unpin> Future for Select2<A, B> {
+        type Output = Either<A::Output, B::Output>;
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let this = self.get_mut();
+            if let Poll::Ready(v) = poll_unpin(&mut this.a, cx) {
+                return Poll::Ready(Either::A(v));
+            }
+            if let Poll::Ready(v) = poll_unpin(&mut this.b, cx) {
+                return Poll::Ready(Either::B(v));
+            }
+            Poll::Pending
+        }
+    }
+
+    /// Five-arm race output.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Which5<A, B, C, D, E> {
+        A(A),
+        B(B),
+        C(C),
+        D(D),
+        E(E),
+    }
+
+    /// Races three futures.
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    pub struct Select3<A: Future, B: Future, C: Future> {
+        a: A,
+        b: B,
+        c: C,
+    }
+
+    /// Races three futures.
+    pub fn select3<A: Future, B: Future, C: Future>(a: A, b: B, c: C) -> Select3<A, B, C> {
+        Select3 { a, b, c }
+    }
+
+    impl<A: Future + Unpin, B: Future + Unpin, C: Future + Unpin> Future for Select3<A, B, C> {
+        type Output = Which3<A::Output, B::Output, C::Output>;
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let this = self.get_mut();
+            if let Poll::Ready(v) = poll_unpin(&mut this.a, cx) {
+                return Poll::Ready(Which3::A(v));
+            }
+            if let Poll::Ready(v) = poll_unpin(&mut this.b, cx) {
+                return Poll::Ready(Which3::B(v));
+            }
+            if let Poll::Ready(v) = poll_unpin(&mut this.c, cx) {
+                return Poll::Ready(Which3::C(v));
+            }
+            Poll::Pending
+        }
+    }
+
+    /// Races five futures.
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    pub struct Select5<A: Future, B: Future, C: Future, D: Future, E: Future> {
+        a: A,
+        b: B,
+        c: C,
+        d: D,
+        e: E,
+    }
+
+    /// Races five futures.
+    pub fn select5<A: Future, B: Future, C: Future, D: Future, E: Future>(
+        a: A,
+        b: B,
+        c: C,
+        d: D,
+        e: E,
+    ) -> Select5<A, B, C, D, E> {
+        Select5 { a, b, c, d, e }
+    }
+
+    impl<
+        A: Future + Unpin,
+        B: Future + Unpin,
+        C: Future + Unpin,
+        D: Future + Unpin,
+        E: Future + Unpin,
+    > Future for Select5<A, B, C, D, E>
+    {
+        type Output = Which5<A::Output, B::Output, C::Output, D::Output, E::Output>;
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let this = self.get_mut();
+            if let Poll::Ready(v) = poll_unpin(&mut this.a, cx) {
+                return Poll::Ready(Which5::A(v));
+            }
+            if let Poll::Ready(v) = poll_unpin(&mut this.b, cx) {
+                return Poll::Ready(Which5::B(v));
+            }
+            if let Poll::Ready(v) = poll_unpin(&mut this.c, cx) {
+                return Poll::Ready(Which5::C(v));
+            }
+            if let Poll::Ready(v) = poll_unpin(&mut this.d, cx) {
+                return Poll::Ready(Which5::D(v));
+            }
+            if let Poll::Ready(v) = poll_unpin(&mut this.e, cx) {
+                return Poll::Ready(Which5::E(v));
+            }
+            Poll::Pending
+        }
+    }
+
+    /// Races four futures.
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    pub struct Select4<A: Future, B: Future, C: Future, D: Future> {
+        a: A,
+        b: B,
+        c: C,
+        d: D,
+    }
+
+    /// Races four futures.
+    pub fn select4<A: Future, B: Future, C: Future, D: Future>(
+        a: A,
+        b: B,
+        c: C,
+        d: D,
+    ) -> Select4<A, B, C, D> {
+        Select4 { a, b, c, d }
+    }
+
+    impl<A: Future + Unpin, B: Future + Unpin, C: Future + Unpin, D: Future + Unpin> Future
+        for Select4<A, B, C, D>
+    {
+        type Output = Which4<A::Output, B::Output, C::Output, D::Output>;
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let this = self.get_mut();
+            if let Poll::Ready(v) = poll_unpin(&mut this.a, cx) {
+                return Poll::Ready(Which4::A(v));
+            }
+            if let Poll::Ready(v) = poll_unpin(&mut this.b, cx) {
+                return Poll::Ready(Which4::B(v));
+            }
+            if let Poll::Ready(v) = poll_unpin(&mut this.c, cx) {
+                return Poll::Ready(Which4::C(v));
+            }
+            if let Poll::Ready(v) = poll_unpin(&mut this.d, cx) {
+                return Poll::Ready(Which4::D(v));
+            }
+            Poll::Pending
+        }
+    }
+}
+
+pub mod time {
+    #[cfg(not(feature = "std"))]
+    use crate::platform::atomic64::AtomicU64;
+    #[cfg(not(feature = "std"))]
+    use core::sync::atomic::Ordering;
+
+    /// Minimal instant used for inactivity/expiry accounting.
+    ///
+    /// - std: monotonic milliseconds (`CLOCK_MONOTONIC`, measured from a
+    ///   lazily-initialized anchor). Immune to wall-clock steps: NTP
+    ///   adjustments can no longer make `elapsed()` shrink or `Ord` invert,
+    ///   which is what caused the `Duration` underflow in #64/#65.
+    /// - no_std: logical milliseconds from a global counter. The embedder
+    ///   advances it via [`advance_ms`].
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct Instant {
+        ms: u64,
+    }
+
+    /// std only: first-use anchor for the monotonic clock. All `Instant`
+    /// values are offsets from it, so comparisons stay relative and the
+    /// anchor's absolute position never leaks.
+    #[cfg(feature = "std")]
+    static MONO_ANCHOR: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+    /// std only: monotonic milliseconds since first use. `CLOCK_MONOTONIC`
+    /// never steps (unlike the `SystemTime` source this replaces).
+    #[cfg(feature = "std")]
+    fn monotonic_ms() -> u64 {
+        MONO_ANCHOR
+            .get_or_init(std::time::Instant::now)
+            .elapsed()
+            .as_millis() as u64
+    }
+
+    impl Instant {
+        pub fn now() -> Self {
+            #[cfg(feature = "std")]
+            {
+                Self { ms: monotonic_ms() }
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                Self {
+                    ms: NOW_MS.load(Ordering::Relaxed),
+                }
+            }
+        }
+
+        /// Duration elapsed since this instant.
+        /// std: monotonic delta. no_std: logical-clock delta
+        /// (advances only when [`advance_ms`]/[`set_now_ms`] run).
+        pub fn elapsed(&self) -> core::time::Duration {
+            #[cfg(feature = "std")]
+            {
+                core::time::Duration::from_millis(monotonic_ms().saturating_sub(self.ms))
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                core::time::Duration::from_millis(
+                    NOW_MS.load(Ordering::Relaxed).saturating_sub(self.ms),
+                )
+            }
+        }
+
+        /// Duration elapsed since `earlier` (saturating at zero).
+        pub fn duration_since(&self, earlier: Self) -> core::time::Duration {
+            core::time::Duration::from_millis(self.ms.saturating_sub(earlier.ms))
+        }
+
+        /// Instant arithmetic (std `Instant` parity): `instant + duration`.
+        /// Milliseconds saturate at `u64::MAX` (no overflow panic on the
+        /// logical clock).
+        pub fn checked_add_ms(&self, dur: core::time::Duration) -> Self {
+            Self {
+                ms: self.ms.saturating_add(dur.as_millis() as u64),
+            }
+        }
+
+        /// Instant arithmetic (std `Instant` parity): `instant - duration`,
+        /// saturating at zero.
+        pub fn checked_sub_ms(&self, dur: core::time::Duration) -> Self {
+            Self {
+                ms: self.ms.saturating_sub(dur.as_millis() as u64),
+            }
+        }
+    }
+
+    impl core::ops::Add<core::time::Duration> for Instant {
+        type Output = Instant;
+        fn add(self, rhs: core::time::Duration) -> Instant {
+            self.checked_add_ms(rhs)
+        }
+    }
+
+    impl core::ops::Sub<core::time::Duration> for Instant {
+        type Output = Instant;
+        fn sub(self, rhs: core::time::Duration) -> Instant {
+            self.checked_sub_ms(rhs)
+        }
+    }
+
+    impl core::ops::Sub<Instant> for Instant {
+        type Output = core::time::Duration;
+        fn sub(self, rhs: Instant) -> core::time::Duration {
+            self.duration_since(rhs)
+        }
+    }
+    #[cfg(not(feature = "std"))]
+    static NOW_MS: AtomicU64 = AtomicU64::new(0);
+
+    /// no_std only: advances the logical clock. The platform task calls this
+    /// periodically (WP3 wires embassy-time here).
+    #[cfg(not(feature = "std"))]
+    pub fn advance_ms(ms: u64) {
+        NOW_MS.fetch_add(ms.max(1), Ordering::Relaxed);
+    }
+
+    /// no_std only: sets the logical clock outright.
+    #[cfg(not(feature = "std"))]
+    pub fn set_now_ms(ms: u64) {
+        NOW_MS.store(ms, Ordering::Relaxed);
+    }
+
+    /// Unix epoch milliseconds when a wall clock exists. std: real clock.
+    /// no_std: `None` (targets without an RTC battery report no wall time;
+    /// callers fall back to monotonic counters or omit wall-clock fields).
+    #[cfg(feature = "std")]
+    pub fn unix_ms() -> Option<u64> {
+        Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+        )
+    }
+
+    /// no_std counterpart: no wall clock is assumed.
+    #[cfg(not(feature = "std"))]
+    pub fn unix_ms() -> Option<u64> {
+        None
+    }
+
+    /// no_std: races the future against the injected sleep factory.
+    #[cfg(not(feature = "std"))]
+    pub async fn with_timeout<F: Future>(
+        dur: core::time::Duration,
+        fut: F,
+    ) -> core::result::Result<F::Output, ()> {
+        use crate::platform::select::{Either, select2};
+        let mut fut = core::pin::pin!(fut);
+        let timer = alloc::boxed::Box::pin(super::task::sleep(dur));
+        match select2(timer, &mut fut).await {
+            Either::A(_) => Err(()),
+            Either::B(out) => Ok(out),
+        }
+    }
+
+    /// std: tokio-backed timeout.
+    #[cfg(feature = "std")]
+    pub async fn with_timeout<F: core::future::Future>(
+        dur: core::time::Duration,
+        fut: F,
+    ) -> core::result::Result<F::Output, tokio::time::error::Elapsed> {
+        tokio::time::timeout(dur, fut).await
+    }
+}
+
+/// Task seams: spawn (std: tokio runtime; no_std: injected spawner via
+/// [`task::set_spawn_fn`]) and timers (std: tokio time; no_std WP3:
+/// embassy-time).
+#[cfg(feature = "std")]
+pub mod task {
+    use core::future::Future;
+
+    /// Spawns a detached task.
+    pub fn spawn<F>(fut: F) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        tokio::spawn(fut)
+    }
+
+    /// Sleeps for `dur`.
+    pub async fn sleep(dur: core::time::Duration) {
+        tokio::time::sleep(dur).await;
+    }
+
+    /// Yields the current task once (tokio parity).
+    pub async fn yield_now() {
+        tokio::task::yield_now().await;
+    }
+
+    /// Periodic ticker firing every `period`, first tick after `delay`.
+    /// std: tokio `Interval`. no_std (WP3): embassy Ticker-based equivalent.
+    pub struct Interval(tokio::time::Interval);
+
+    impl Interval {
+        pub async fn tick(&mut self) {
+            self.0.tick().await;
+        }
+
+        /// Tokio parity passthrough (no_std: ticks never bunch up, so the
+        /// behavior setting is a no-op).
+        pub fn set_missed_tick_behavior(&mut self, behavior: MissedTickBehavior) {
+            self.0.set_missed_tick_behavior(match behavior {
+                MissedTickBehavior::Burst => tokio::time::MissedTickBehavior::Burst,
+                MissedTickBehavior::Delay => tokio::time::MissedTickBehavior::Delay,
+                MissedTickBehavior::Skip => tokio::time::MissedTickBehavior::Skip,
+            });
+        }
+    }
+
+    /// Missed-tick policy (tokio parity enum).
+    #[derive(Debug, Clone, Copy)]
+    pub enum MissedTickBehavior {
+        Burst,
+        Delay,
+        Skip,
+    }
+
+    /// Creates a ticker that fires `period` apart, first after `delay`.
+    pub fn interval_after(delay: core::time::Duration, period: core::time::Duration) -> Interval {
+        Interval(tokio::time::interval_at(
+            tokio::time::Instant::now() + delay,
+            period,
+        ))
+    }
+}
+
+#[cfg(not(feature = "std"))]
+pub mod task {
+    use alloc::boxed::Box;
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll};
+
+    /// A task the embedder's executor must run. rtcembed passes these to its
+    /// embassy/esp-rtos spawner adapter.
+    pub type BoxedTask = Box<dyn Future<Output = ()> + Send>;
+
+    /// Injected task spawner. Either a plain `fn` (see [`set_spawn_fn`]) or
+    /// a `&'static dyn Fn` (see [`set_spawner`]) — the latter lets the
+    /// embedder's executor adapter capture its handle in a static.
+    enum Spawner {
+        Fn(fn(BoxedTask)),
+        Dyn(&'static (dyn Fn(BoxedTask) + Send + Sync)),
+    }
+
+    static SPAWN_FN: crate::platform::sync::Mutex<Option<Spawner>> =
+        crate::platform::sync::Mutex::new(None);
+
+    /// Installs the task spawner (fn-pointer form). Must be called before
+    /// any task spawn.
+    pub fn set_spawn_fn(f: fn(BoxedTask)) {
+        *SPAWN_FN.lock() = Some(Spawner::Fn(f));
+    }
+
+    /// Installs the task spawner (closure form — e.g. an executor adapter
+    /// holding the embassy `Spawner` in a static). Must be called before
+    /// any task spawn.
+    pub fn set_spawner(f: &'static (dyn Fn(BoxedTask) + Send + Sync)) {
+        *SPAWN_FN.lock() = Some(Spawner::Dyn(f));
+    }
+
+    /// Spawns a detached task through the injected spawner. Panics if the
+    /// embedder never installed one.
+    pub fn spawn<F>(fut: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let spawner = SPAWN_FN.lock();
+        let Some(spawner) = spawner.as_ref() else {
+            panic!("platform::task::set_spawn_fn not called");
+        };
+        match spawner {
+            Spawner::Fn(f) => f(Box::new(fut)),
+            Spawner::Dyn(f) => f(Box::new(fut)),
+        }
+    }
+
+    /// Injected timer factory: turns a duration into a sleep future driven
+    /// by the embedder's timer wheel (e.g. `embassy_time::Timer::after`).
+    /// Set once at boot via [`set_sleep_fn`].
+    type SleepFn = fn(core::time::Duration) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+
+    static SLEEP_FN: crate::platform::sync::Mutex<Option<SleepFn>> =
+        crate::platform::sync::Mutex::new(None);
+
+    /// Installs the sleep factory. Must be called before any timer use
+    /// (`sleep` / `Interval` / `time::with_timeout`).
+    pub fn set_sleep_fn(f: SleepFn) {
+        *SLEEP_FN.lock() = Some(f);
+    }
+
+    /// Waits at least `dur` through the injected timer factory. Panics if
+    /// the embedder never installed one (mirrors `platform::rng::fill`).
+    pub async fn sleep(dur: core::time::Duration) {
+        let fut = {
+            let f = SLEEP_FN
+                .lock()
+                .expect("platform::task::set_sleep_fn not called");
+            f(dur)
+        };
+        fut.await;
+    }
+
+    /// Yields once: pends a single poll with a self-wake so the executor
+    /// can run other tasks before resuming this one (tokio parity).
+    pub async fn yield_now() {
+        struct YieldNow(bool);
+        impl Future for YieldNow {
+            type Output = ();
+            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+                if self.0 {
+                    Poll::Ready(())
+                } else {
+                    self.0 = true;
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            }
+        }
+        YieldNow(false).await;
+    }
+
+    /// Sequential ticker over the injected sleep factory: the first tick
+    /// waits `delay`, later ticks wait `period` after the previous tick
+    /// completes — so ticks never bunch up (implicit `Skip`).
+    ///
+    /// The in-flight sleep is **retained** across calls to [`tick`]. Callers
+    /// (the DTLS/ICE/RTCP loops) create a fresh `tick()` future every
+    /// `select!` iteration; without this retention an interleaved packet would
+    /// drop the sleep and restart it, so a peer that sends faster than `period`
+    /// would starve the tick forever (e.g. DTLS retransmission never firing,
+    /// stalling the handshake).
+    pub struct Interval {
+        first: Option<core::time::Duration>,
+        period: core::time::Duration,
+        pending: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    }
+
+    impl Interval {
+        pub async fn tick(&mut self) {
+            if self.pending.is_none() {
+                let dur = self.first.take().unwrap_or(self.period);
+                self.pending = Some(sleep_boxed(dur));
+            }
+            if let Some(fut) = self.pending.as_mut() {
+                fut.as_mut().await;
+            }
+            self.pending = None;
+        }
+
+        /// Accepted for tokio parity; sequential ticks already skip missed
+        /// intervals by construction.
+        pub fn set_missed_tick_behavior(&mut self, _behavior: MissedTickBehavior) {}
+    }
+
+    /// A boxed sleep from the injected timer factory.
+    fn sleep_boxed(dur: core::time::Duration) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        let f = SLEEP_FN
+            .lock()
+            .expect("platform::task::set_sleep_fn not called");
+        f(dur)
+    }
+
+    /// Missed-tick policy (tokio parity enum; the sequential ticker
+    /// implicitly skips).
+    #[derive(Debug, Clone, Copy)]
+    pub enum MissedTickBehavior {
+        Burst,
+        Delay,
+        Skip,
+    }
+
+    /// Creates a ticker that fires `period` apart, first after `delay`.
+    pub fn interval_after(delay: core::time::Duration, period: core::time::Duration) -> Interval {
+        Interval {
+            first: Some(delay),
+            period,
+            pending: None,
+        }
+    }
+}
+
+/// Backend-agnostic `tokio::join!` replacements (fixed arities): wait for
+/// ALL futures, polling each on every wake. Unbiased; futures must be
+/// `Unpin` (callers `core::pin::pin!` `!Unpin` futures).
+pub mod join {
+    use core::future::Future;
+    use core::pin::Pin;
+    use core::task::{Context, Poll};
+
+    /// Joins two futures.
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    pub struct Join2<A: Future, B: Future> {
+        a: Option<A>,
+        b: Option<B>,
+        a_out: Option<A::Output>,
+        b_out: Option<B::Output>,
+    }
+
+    /// Joins two futures.
+    pub fn join2<A: Future, B: Future>(a: A, b: B) -> Join2<A, B> {
+        Join2 {
+            a: Some(a),
+            b: Some(b),
+            a_out: None,
+            b_out: None,
+        }
+    }
+
+    impl<A: Future + Unpin, B: Future + Unpin> Future for Join2<A, B> {
+        type Output = (A::Output, B::Output);
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            // SAFETY: no structural pinning — `a`/`b` are polled through
+            // `Pin::new` (they are `Unpin`); the buffered outputs are only
+            // moved out on completion.
+            let this = unsafe { self.get_unchecked_mut() };
+            if this.a_out.is_none()
+                && let Some(a) = this.a.as_mut()
+                && let Poll::Ready(v) = Pin::new(a).poll(cx)
+            {
+                this.a_out = Some(v);
+                this.a = None;
+            }
+            if this.b_out.is_none()
+                && let Some(b) = this.b.as_mut()
+                && let Poll::Ready(v) = Pin::new(b).poll(cx)
+            {
+                this.b_out = Some(v);
+                this.b = None;
+            }
+            match (this.a_out.take(), this.b_out.take()) {
+                (Some(a), Some(b)) => Poll::Ready((a, b)),
+                (a, b) => {
+                    this.a_out = a;
+                    this.b_out = b;
+                    Poll::Pending
+                }
+            }
+        }
+    }
+
+    /// Joins three futures.
+    #[must_use = "futures do nothing unless you `.await` or poll them"]
+    pub struct Join3<A: Future, B: Future, C: Future> {
+        a: Option<A>,
+        b: Option<B>,
+        c: Option<C>,
+        a_out: Option<A::Output>,
+        b_out: Option<B::Output>,
+        c_out: Option<C::Output>,
+    }
+
+    /// Joins three futures.
+    pub fn join3<A: Future, B: Future, C: Future>(a: A, b: B, c: C) -> Join3<A, B, C> {
+        Join3 {
+            a: Some(a),
+            b: Some(b),
+            c: Some(c),
+            a_out: None,
+            b_out: None,
+            c_out: None,
+        }
+    }
+
+    impl<A: Future + Unpin, B: Future + Unpin, C: Future + Unpin> Future for Join3<A, B, C> {
+        type Output = (A::Output, B::Output, C::Output);
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            // SAFETY: see [`Join2::poll`].
+            let this = unsafe { self.get_unchecked_mut() };
+            if this.a_out.is_none()
+                && let Some(a) = this.a.as_mut()
+                && let Poll::Ready(v) = Pin::new(a).poll(cx)
+            {
+                this.a_out = Some(v);
+                this.a = None;
+            }
+            if this.b_out.is_none()
+                && let Some(b) = this.b.as_mut()
+                && let Poll::Ready(v) = Pin::new(b).poll(cx)
+            {
+                this.b_out = Some(v);
+                this.b = None;
+            }
+            if this.c_out.is_none()
+                && let Some(c) = this.c.as_mut()
+                && let Poll::Ready(v) = Pin::new(c).poll(cx)
+            {
+                this.c_out = Some(v);
+                this.c = None;
+            }
+            match (this.a_out.take(), this.b_out.take(), this.c_out.take()) {
+                (Some(a), Some(b), Some(c)) => Poll::Ready((a, b, c)),
+                (a, b, c) => {
+                    this.a_out = a;
+                    this.b_out = b;
+                    this.c_out = c;
+                    Poll::Pending
+                }
+            }
+        }
+    }
+}
+
+/// Channel seams for the ICE transport. std aliases tokio so existing call
+/// sites typecheck unchanged; the no_std backend lives in
+/// [`sync_embedded`] (spin-lock based).
+#[cfg(feature = "std")]
+pub mod sync {
+    pub mod watch {
+        pub use tokio::sync::watch::{Receiver, Sender, channel, error::RecvError};
+    }
+    pub mod mpsc {
+        pub use tokio::sync::mpsc::error::{SendError, TrySendError};
+        pub use tokio::sync::mpsc::{
+            Receiver, Sender, UnboundedReceiver, UnboundedSender, channel, unbounded_channel,
+        };
+    }
+    pub mod oneshot {
+        pub use tokio::sync::oneshot::{Receiver, Sender, channel};
+    }
+    pub mod broadcast {
+        pub use tokio::sync::broadcast::error::TryRecvError;
+        pub use tokio::sync::broadcast::{Receiver, Sender, channel, error::RecvError};
+    }
+    /// Lock primitives. std: parking_lot (non-poisoning, matches the
+    /// guard API used across the codebase). no_std (WP3): critical-section
+    /// mutex + embassy RwLock.
+    pub use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+    pub use std::sync::OnceLock;
+    /// Async mutex (held across `.await`). std: tokio. no_std (WP3): embassy.
+    pub use tokio::sync::Mutex as AsyncMutex;
+    /// Async notification (permit semantics). std: tokio. no_std: see
+    /// `sync_embedded::Notify`.
+    pub use tokio::sync::Notify;
+}
+
+#[cfg(not(feature = "std"))]
+pub mod sync {
+    pub use crate::platform::sync_embedded::Notify;
+    pub use crate::platform::sync_embedded::OnceLock;
+    pub use crate::platform::sync_embedded::broadcast;
+    pub use crate::platform::sync_embedded::mpsc;
+    pub use crate::platform::sync_embedded::oneshot;
+    pub use crate::platform::sync_embedded::watch;
+    pub use crate::platform::sync_embedded::{AsyncMutex, Mutex, MutexGuard};
+    pub use crate::platform::sync_embedded::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+}
+
+/// Regression guard for the wall→monotonic `time::Instant` switch on std
+/// (the #64/#65 class): the clock source must never step, so successive
+/// reads can neither go backward nor produce a shrinking `elapsed()`.
+#[cfg(all(test, feature = "std"))]
+mod time_instant_tests {
+    use super::time::Instant;
+    use core::time::Duration;
+
+    #[test]
+    fn instant_reads_never_go_backward() {
+        let mut prev = Instant::now();
+        for _ in 0..10_000 {
+            let now = Instant::now();
+            assert!(now >= prev, "Instant::now() went backward");
+            // Two `elapsed()` reads taken from the *same* instant must not
+            // shrink: the second re-reads the clock, which only moves
+            // forward. (Comparing `elapsed()` across different instants is
+            // racy on the ms-resolution clock — the reference point differs.)
+            let first = now.elapsed();
+            let second = now.elapsed();
+            assert!(second >= first, "elapsed() shrank between two reads");
+            prev = now;
+        }
+    }
+
+    #[test]
+    fn elapsed_tracks_real_time() {
+        let start = Instant::now();
+        std::thread::sleep(Duration::from_millis(20));
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(15),
+            "elapsed too small after 20ms sleep: {elapsed:?}"
+        );
+        assert!(
+            elapsed <= Duration::from_secs(5),
+            "elapsed unreasonably large after 20ms sleep: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn arithmetic_saturates_instead_of_panicking() {
+        let now = Instant::now();
+        // `Instant - huge Duration` must saturate, not panic (the #64 panic
+        // class), and `duration_since` must clamp at zero.
+        let past = now - Duration::from_secs(u64::MAX / 2000);
+        let _ = past.elapsed();
+        assert_eq!(now.duration_since(now), Duration::ZERO);
+        assert_eq!(past.duration_since(now), Duration::ZERO);
+        // `Instant + Duration` must not panic either.
+        let future = now + Duration::from_secs(u64::MAX / 2000);
+        assert!(future >= now);
+        // checked_sub_ms mirrors Sub<Duration>.
+        assert!(now.checked_sub_ms(Duration::from_secs(u64::MAX / 2000)) <= now);
+    }
+
+    #[test]
+    fn ordering_follows_creation() {
+        let a = Instant::now();
+        let b = Instant::now();
+        assert!(b >= a);
+        assert!(b.duration_since(a) <= Duration::from_secs(1));
+    }
+}

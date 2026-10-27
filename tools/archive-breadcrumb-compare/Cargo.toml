@@ -1,4 +1,5 @@
 [package]
+license.workspace = true
 name = "mina-archive-breadcrumb-compare"
 version.workspace = true
 edition.workspace = true

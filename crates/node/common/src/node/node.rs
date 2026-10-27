@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use mina_node::{Effects, EventSourceAction, Service, State, Store};
+use mina_node::{logger::StatusLog, Effects, EventSourceAction, Service, State, Store};
 
 use crate::{
     rpc::{RpcReceiver, RpcSender},
@@ -9,6 +9,8 @@ use crate::{
 
 pub struct Node<Serv> {
     store: Store<Serv>,
+    /// The operator's status lines (O1).
+    status_log: StatusLog,
 }
 
 impl<Serv: Service + AsMut<NodeService>> Node<Serv> {
@@ -35,7 +37,10 @@ impl<Serv: Service + AsMut<NodeService>> Node<Serv> {
             initial_state,
         );
 
-        Self { store }
+        Self {
+            store,
+            status_log: StatusLog::new(),
+        }
     }
 
     pub fn store(&self) -> &Store<Serv> {
@@ -92,6 +97,9 @@ impl<Serv: Service + AsMut<NodeService>> Node<Serv> {
                     while self.event_receiver().has_next() {
                         self.store_mut().dispatch(EventSourceAction::ProcessEvents);
                     }
+                    // No event waits, so RPC requests owe events nothing,
+                    // and the wait ahead isn't a request's.
+                    self.service_common_mut().rpc.events_drained();
                 }
                 req = rpc_req_fut => {
                     self.service_common_mut().process_rpc_request(req);
@@ -100,6 +108,8 @@ impl<Serv: Service + AsMut<NodeService>> Node<Serv> {
                     self.store_mut().dispatch(EventSourceAction::WaitTimeout);
                 }
             }
+
+            self.status_log.update(self.store.state.get());
         }
     }
 
@@ -115,6 +125,7 @@ where
     fn clone(&self) -> Self {
         Self {
             store: self.store.clone(),
+            status_log: StatusLog::new(),
         }
     }
 }

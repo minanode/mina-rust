@@ -71,6 +71,7 @@ impl SoloNodeSyncToGenesisCustom {
             libp2p_port: None,
             recorder: Default::default(),
             peer_discovery: true,
+            libp2p_target_peers: None,
         });
 
         runner

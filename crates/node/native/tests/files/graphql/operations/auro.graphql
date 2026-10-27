@@ -1,0 +1,268 @@
+# The daemon queries the Auro wallet extension sends, from
+# aurowallet/auro-wallet-browser-extension src/background/api/gqlparams.ts at
+# f3d0362d (2026-09-20). Its archive queries (transactions, zkapps,
+# fullTransactions), its Zeko fee query and its send mutations (P6) are not
+# here. The batch balance query is shown for two accounts. Its getFetchAccountBody
+# is left out: it selects `setVerificationKey` without subfields, which OCaml
+# rejects too.
+
+query txStatus($paymentId: ID!) {
+  transactionStatus(payment: $paymentId)
+}
+
+query pendingTx($publicKey: PublicKey) {
+  pooledUserCommands(publicKey: $publicKey) {
+    id
+    nonce
+    memo
+    isDelegation
+    kind
+    hash
+    from
+    feeToken
+    fee
+    amount
+    to
+  }
+}
+
+query batchBalance($account0: PublicKey!, $account1: PublicKey!) {
+  account0: account(publicKey: $account0) {
+    balance {
+      total
+    }
+    publicKey
+  }
+  account1: account(publicKey: $account1) {
+    balance {
+      total
+    }
+    publicKey
+  }
+}
+
+query daemonStatus {
+  daemonStatus {
+    stateHash
+    blockchainLength
+    consensusConfiguration {
+      epochDuration
+      slotDuration
+      slotsPerEpoch
+    }
+  }
+}
+
+query blockInfo($stateHash: String) {
+  block(stateHash: $stateHash) {
+    protocolState {
+      consensusState {
+        epoch
+        slot
+      }
+    }
+  }
+}
+
+query delegationInfo($publicKey: PublicKey!) {
+  account(publicKey: $publicKey) {
+    delegate
+  }
+}
+
+query pendingZkTx($publicKey: PublicKey) {
+  pooledZkappCommands(publicKey: $publicKey) {
+    hash
+    failureReason {
+      index
+      failures
+    }
+    zkappCommand {
+      feePayer {
+        body {
+          publicKey
+          fee
+          validUntil
+          nonce
+        }
+        authorization
+      }
+      accountUpdates {
+        body {
+          publicKey
+          tokenId
+          update {
+            appState
+            delegate
+            verificationKey {
+              data
+              hash
+            }
+            permissions {
+              editState
+              access
+              send
+              receive
+              setDelegate
+              setPermissions
+              setVerificationKey {
+                auth
+                txnVersion
+              }
+              setZkappUri
+              editActionState
+              setTokenSymbol
+              incrementNonce
+              setVotingFor
+              setTiming
+            }
+            zkappUri
+            tokenSymbol
+            timing {
+              initialMinimumBalance
+              cliffTime
+              cliffAmount
+              vestingPeriod
+              vestingIncrement
+            }
+            votingFor
+          }
+          balanceChange {
+            magnitude
+            sgn
+          }
+          incrementNonce
+          events
+          actions
+          callData
+          callDepth
+          preconditions {
+            network {
+              snarkedLedgerHash
+              blockchainLength {
+                lower
+                upper
+              }
+              minWindowDensity {
+                lower
+                upper
+              }
+              totalCurrency {
+                lower
+                upper
+              }
+              globalSlotSinceGenesis {
+                lower
+                upper
+              }
+              stakingEpochData {
+                ledger {
+                  hash
+                  totalCurrency {
+                    lower
+                    upper
+                  }
+                }
+                seed
+                startCheckpoint
+                lockCheckpoint
+                epochLength {
+                  lower
+                  upper
+                }
+              }
+              nextEpochData {
+                ledger {
+                  hash
+                  totalCurrency {
+                    lower
+                    upper
+                  }
+                }
+                seed
+                startCheckpoint
+                lockCheckpoint
+                epochLength {
+                  lower
+                  upper
+                }
+              }
+            }
+            account {
+              balance {
+                lower
+                upper
+              }
+              nonce {
+                lower
+                upper
+              }
+              receiptChainHash
+              delegate
+              state
+              actionState
+              provedState
+              isNew
+            }
+            validWhile {
+              lower
+              upper
+            }
+          }
+          useFullCommitment
+          implicitAccountCreationFee
+          mayUseToken {
+            parentsOwnToken
+            inheritFromParent
+          }
+          authorizationKind {
+            isSigned
+            isProved
+            verificationKeyHash
+          }
+        }
+        authorization {
+          proof
+          signature
+        }
+      }
+      memo
+    }
+  }
+}
+
+query myQuery {
+  networkID
+}
+
+query tokenQueryBody($publicKey: PublicKey!) {
+  accounts(publicKey: $publicKey) {
+    balance {
+      total
+      liquid
+    }
+    inferredNonce
+    delegateAccount {
+      publicKey
+    }
+    tokenId
+    publicKey
+    zkappUri
+  }
+}
+
+query tokenInfo {
+  wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf: tokenOwner(tokenId: "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf") {
+    publicKey
+    tokenSymbol
+    zkappState
+  }
+}
+
+query tokenState($publicKey: PublicKey!, $tokenId: TokenId!) {
+  account(publicKey: $publicKey, token: $tokenId) {
+    balance {
+      total
+    }
+  }
+}

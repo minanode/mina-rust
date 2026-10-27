@@ -18,6 +18,28 @@ use super::{
 /// instead of fetching intermediary hashes.
 pub const ACCOUNT_SUBTREE_HEIGHT: usize = 6;
 
+/// How many levels of hashes to ask for at once above the account subtrees:
+/// at most 2^7 = 128 hashes per query. OCaml mainnet nodes ask for 6 but
+/// serve up to 8 (`sync_ledger_max_subtree_depth`). With mainnet's 290,000
+/// or so accounts, the content root is 13 levels above the account
+/// subtrees: 7 + 6 takes two rounds of hash queries, where 6 + 6 + 1 took
+/// three, the last of them returning only 2 hashes each.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/node_config/profiled/mainnet.ml#L55-L57>
+pub const SYNC_LEDGER_QUERY_DEPTH: usize = 7;
+
+/// How many levels of child hashes to ask for at an address this deep, and
+/// the most an answer may hold: [`SYNC_LEDGER_QUERY_DEPTH`], but not below
+/// the account subtrees. `None` at and below them: they are fetched whole.
+///
+/// The request and the answer check must both use this. An answer deeper
+/// than the check allows is rejected, and its address is then never asked
+/// again, so the sync stalls.
+pub fn child_hashes_query_depth(address_depth: usize) -> Option<usize> {
+    let above_accounts = (LEDGER_DEPTH - ACCOUNT_SUBTREE_HEIGHT).checked_sub(address_depth)?;
+    Some(SYNC_LEDGER_QUERY_DEPTH.min(above_accounts)).filter(|depth| *depth > 0)
+}
+
 pub type TransitionFrontierSyncLedgerSnarkedActionWithMeta =
     redux::ActionWithMeta<TransitionFrontierSyncLedgerSnarkedAction>;
 pub type TransitionFrontierSyncLedgerSnarkedActionWithMetaRef<'a> =
@@ -96,20 +118,22 @@ pub enum TransitionFrontierSyncLedgerSnarkedAction {
         rpc_id: P2pRpcId,
         response: PeerLedgerQueryResponse,
     },
+    /// `hashes` are the descendants of `address` some levels below it, left
+    /// to right.
     ChildHashesReceived {
         address: LedgerAddress,
-        hashes: (LedgerHash, LedgerHash),
+        hashes: Vec<LedgerHash>,
         sender: PeerId,
     },
     ChildHashesAccepted {
         address: LedgerAddress,
-        hashes: (LedgerHash, LedgerHash),
-        previous_hashes: (LedgerHash, LedgerHash),
+        hashes: Vec<LedgerHash>,
+        previous_hashes: Vec<LedgerHash>,
         sender: PeerId,
     },
     ChildHashesRejected {
         address: LedgerAddress,
-        hashes: (LedgerHash, LedgerHash),
+        hashes: Vec<LedgerHash>,
         sender: PeerId,
     },
     ChildAccountsReceived {
@@ -127,14 +151,14 @@ pub enum TransitionFrontierSyncLedgerSnarkedAction {
         sender: PeerId,
     },
 
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     MerkleTreeSyncSuccess,
-    #[action_event(level = info)]
+    #[action_event(level = debug)]
     Success,
 }
 
 impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncLedgerSnarkedAction {
-    fn is_enabled(&self, state: &crate::State, _time: redux::Timestamp) -> bool {
+    fn is_enabled(&self, state: &crate::State, time: redux::Timestamp) -> bool {
         match self {
             TransitionFrontierSyncLedgerSnarkedAction::Pending => state
                 .transition_frontier
@@ -175,9 +199,18 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncLedgerSnar
                     );
 
                     let peer = state.p2p.get_ready_peer(peer_id)?;
-                    let check_peer_available = check_peer_available(peer, target, target_best_tip);
+                    let peer_available = check_peer_available(
+                        peer,
+                        target,
+                        target_best_tip,
+                        state.transition_frontier.sync.root_block(),
+                    );
 
-                    Some(check_num_accounts && check_peer_available)
+                    let not_attempted = ledger
+                        .num_accounts_pending()
+                        .is_some_and(|s| !s.attempts.contains_key(peer_id));
+
+                    Some(check_num_accounts && peer_available && not_attempted)
                 })
                 .unwrap_or(false),
             TransitionFrontierSyncLedgerSnarkedAction::PeerQueryNumAccountsPending {
@@ -207,9 +240,48 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncLedgerSnar
                     );
 
                     let peer = state.p2p.get_ready_peer(peer_id)?;
-                    let check_peer_available = check_peer_available(peer, target, target_best_tip);
+                    let peer_available = check_peer_available(
+                        peer,
+                        target,
+                        target_best_tip,
+                        state.transition_frontier.sync.root_block(),
+                    );
 
-                    Some(check_num_accounts && check_peer_available)
+                    let unavailable_answer = ledger
+                        .num_accounts_pending()
+                        .and_then(|s| s.attempts.get(peer_id))
+                        .is_some_and(|attempt| {
+                            matches!(
+                                attempt,
+                                PeerRpcState::Error {
+                                    error: PeerLedgerQueryError::LedgerUnavailable
+                                        | PeerLedgerQueryError::DataUnavailable,
+                                    ..
+                                }
+                            )
+                        });
+                    let other_untried = ledger.num_accounts_pending().is_some_and(|pending| {
+                        state.p2p.ready_peers_iter().any(|(other_id, other)| {
+                            other_id != peer_id
+                                && other.channels.rpc.can_send_request()
+                                && check_peer_available(
+                                    other,
+                                    target,
+                                    target_best_tip,
+                                    state.transition_frontier.sync.root_block(),
+                                )
+                                && !pending.attempts.contains_key(other_id)
+                        })
+                    });
+                    // After a full pass, retry a connected peer: a snapshot
+                    // may become available as its root advances.
+                    let retry_allowed = (!unavailable_answer || !other_untried)
+                        && ledger
+                            .num_accounts_pending()
+                            .and_then(|pending| pending.attempts.get(peer_id))
+                            .is_some_and(|attempt| attempt.retry_ready(time));
+
+                    Some(check_num_accounts && peer_available && retry_allowed)
                 })
                 .unwrap_or(false)
             }
@@ -306,9 +378,19 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncLedgerSnar
                     };
 
                     let peer = state.p2p.get_ready_peer(peer_id)?;
-                    let check_peer_available = check_peer_available(peer, target, target_best_tip);
+                    let check_peer_available = check_peer_available(
+                        peer,
+                        target,
+                        target_best_tip,
+                        state.transition_frontier.sync.root_block(),
+                    );
 
-                    Some(check_next_addr && check_peer_available)
+                    Some(
+                        check_next_addr
+                            && check_peer_available
+                            && !ledger.peer_unavailable(peer_id)
+                            && ledger.peer_query_retry_ready(peer_id, time),
+                    )
                 })
                 .unwrap_or(false)
             }
@@ -330,16 +412,25 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncLedgerSnar
                         .and_then(|s| {
                             let found = s
                                 .snarked()?
-                                .sync_address_retry_iter()
+                                .sync_address_retry_iter(time)
                                 .any(|addr| &addr == address);
                             Some(found)
                         })
                         .unwrap_or(false);
 
                     let peer = state.p2p.get_ready_peer(peer_id)?;
-                    let check_peer_available = check_peer_available(peer, target, target_best_tip);
-
-                    Some(check_next_addr && check_peer_available)
+                    let check_peer_available = check_peer_available(
+                        peer,
+                        target,
+                        target_best_tip,
+                        state.transition_frontier.sync.root_block(),
+                    );
+                    Some(
+                        check_next_addr
+                            && check_peer_available
+                            && !ledger.peer_unavailable(peer_id)
+                            && ledger.peer_query_retry_ready(peer_id, time),
+                    )
                 })
                 .unwrap_or(false)
             }
@@ -426,20 +517,19 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncLedgerSnar
                 .and_then(|s| s.snarked()?.fetch_pending()?.get(address))
                 .and_then(|s| s.attempts.get(sender))
                 .is_some_and(|s| s.is_success()),
+            // An empty range is accepted when its hash is the expected one;
+            // refusing it left the attempt `Success` with nothing to follow.
             TransitionFrontierSyncLedgerSnarkedAction::ChildAccountsAccepted {
                 address,
-                count,
+                count: _,
                 sender,
-            } => {
-                *count > 0
-                    && state
-                        .transition_frontier
-                        .sync
-                        .ledger()
-                        .and_then(|s| s.snarked()?.fetch_pending()?.get(address))
-                        .and_then(|s| s.attempts.get(sender))
-                        .is_some_and(|s| s.is_success())
-            }
+            } => state
+                .transition_frontier
+                .sync
+                .ledger()
+                .and_then(|s| s.snarked()?.fetch_pending()?.get(address))
+                .and_then(|s| s.attempts.get(sender))
+                .is_some_and(|s| s.is_success()),
             TransitionFrontierSyncLedgerSnarkedAction::Success => state
                 .transition_frontier
                 .sync
@@ -455,12 +545,13 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncLedgerSnar
     }
 }
 
-fn check_peer_available(
+pub(super) fn check_peer_available(
     peer: &crate::p2p::P2pPeerStatusReady,
     target: &crate::transition_frontier::sync::ledger::SyncLedgerTarget,
     target_best_tip: &mina_core::block::BlockWithHash<
         std::sync::Arc<mina_p2p_messages::v2::MinaBlockBlockStableV2>,
     >,
+    root_block: Option<&mina_core::block::ArcBlockWithHash>,
 ) -> bool {
     None.or_else(|| {
         let peer_best_tip = peer.best_tip.as_ref()?;
@@ -474,11 +565,32 @@ fn check_peer_available(
             &target.snarked_ledger_hash == peer_best_tip.snarked_ledger_hash()
                 || &target.snarked_ledger_hash == peer_best_tip.staking_epoch_ledger_hash()
                 || &target.snarked_ledger_hash == peer_best_tip.next_epoch_ledger_hash()
+                || unadvertised_staking_ledger(peer, target, root_block)
         };
 
         Some(available)
     })
     .unwrap_or(false)
+}
+
+/// Before the root enters the new epoch, OCaml keeps the old staking
+/// snapshot and answers ledger queries for its hash (sync_handler.ml,
+/// get_ledger_by_hash). The peer's newer best tip need not advertise it.
+pub(super) fn unadvertised_staking_ledger(
+    peer: &crate::p2p::P2pPeerStatusReady,
+    target: &crate::transition_frontier::sync::ledger::SyncLedgerTarget,
+    root_block: Option<&mina_core::block::ArcBlockWithHash>,
+) -> bool {
+    matches!(
+        target.kind,
+        crate::transition_frontier::sync::ledger::SyncLedgerTargetKind::StakingEpoch
+    ) && root_block
+        .is_some_and(|root| root.staking_epoch_ledger_hash() == &target.snarked_ledger_hash)
+        && peer.best_tip.as_ref().is_some_and(|tip| {
+            tip.staking_epoch_ledger_hash() != &target.snarked_ledger_hash
+                && tip.next_epoch_ledger_hash() != &target.snarked_ledger_hash
+                && tip.snarked_ledger_hash() != &target.snarked_ledger_hash
+        })
 }
 
 use crate::transition_frontier::{
@@ -493,5 +605,135 @@ impl From<TransitionFrontierSyncLedgerSnarkedAction> for crate::Action {
                 value,
             )),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ledger::tree_height_for_num_accounts;
+
+    use super::*;
+
+    /// Queries to sync a ledger of `num_accounts` from empty, where every
+    /// subtree holding an account differs and is asked for: hash queries down
+    /// to the account subtrees, then one query per account subtree.
+    fn full_ledger_queries(num_accounts: u64) -> u64 {
+        let mut depth = LEDGER_DEPTH - tree_height_for_num_accounts(num_accounts);
+        let mut queries = 0;
+        loop {
+            let subtree_accounts = 1u64 << (LEDGER_DEPTH - depth);
+            queries += num_accounts.div_ceil(subtree_accounts);
+            match child_hashes_query_depth(depth) {
+                Some(levels) => depth += levels,
+                None => return queries,
+            }
+        }
+    }
+
+    #[test]
+    fn child_hashes_query_depth_stops_at_the_account_subtrees() {
+        let accounts_depth = LEDGER_DEPTH - ACCOUNT_SUBTREE_HEIGHT;
+        assert_eq!(child_hashes_query_depth(0), Some(SYNC_LEDGER_QUERY_DEPTH));
+        assert_eq!(child_hashes_query_depth(accounts_depth - 7), Some(7));
+        assert_eq!(child_hashes_query_depth(accounts_depth - 1), Some(1));
+        assert_eq!(child_hashes_query_depth(accounts_depth), None);
+        assert_eq!(child_hashes_query_depth(LEDGER_DEPTH), None);
+    }
+
+    /// Mainnet's ledgers hold about 290,450 accounts, so the sync starts 13
+    /// levels above the account subtrees. Asking for 6 levels at a time took
+    /// 16 -> 22 -> 28, then a 2-hash query at depth 28 for every pair of
+    /// account subtrees: 6,846 queries in R4's runs. 7 levels take 16 -> 23 ->
+    /// 29, and about 4,600 queries.
+    #[test]
+    fn a_mainnet_size_ledger_takes_two_rounds_of_hash_queries() {
+        let num_accounts = 290_450;
+        let content_root_depth = LEDGER_DEPTH - tree_height_for_num_accounts(num_accounts);
+        assert_eq!(content_root_depth, 16);
+        assert_eq!(child_hashes_query_depth(16), Some(7));
+        assert_eq!(child_hashes_query_depth(23), Some(6));
+        assert_eq!(child_hashes_query_depth(29), None);
+        // 1 + 71 hash queries, 4,539 account subtrees.
+        assert_eq!(full_ledger_queries(num_accounts), 4_611);
+    }
+
+    use ledger::{
+        scan_state::currency::{Amount, Balance, Nonce, Slot, SlotSpan, TxnVersion},
+        Account, Timing, TokenSymbol, VerificationKeyWire, ZkAppAccount, ZkAppUri,
+    };
+    use mina_p2p_messages::{binprot::BinProtWrite, v2};
+
+    use crate::p2p::P2pLimits;
+
+    /// The largest account in bin_prot: every number at its largest, a token
+    /// symbol of the 6 characters OCaml allows, a delegate, a vesting
+    /// schedule, and a zkApp with a verification key and a URI of the 255
+    /// bytes OCaml allows. Field elements are 32 bytes whatever their value.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/account.ml#L92>
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/zkapp_account.ml#L165>
+    fn largest_account() -> Account {
+        let mut account = Account::empty();
+        account.delegate = Some(account.public_key.clone());
+        account.token_symbol = TokenSymbol(b"ABCDEF".to_vec());
+        account.balance = Balance::max();
+        account.nonce = Nonce::max();
+        account.timing = Timing::Timed {
+            initial_minimum_balance: Balance::max(),
+            cliff_time: Slot::max(),
+            cliff_amount: Amount::max(),
+            vesting_period: SlotSpan::max(),
+            vesting_increment: Amount::max(),
+        };
+        account.permissions.set_verification_key.txn_version = TxnVersion::max();
+        account.zkapp = Some(Box::new(ZkAppAccount {
+            verification_key: Some(VerificationKeyWire::dummy()),
+            zkapp_version: u32::MAX,
+            last_action_slot: Slot::max(),
+            proved_state: true,
+            zkapp_uri: ZkAppUri::from(vec![b'x'; 255]),
+            ..ZkAppAccount::default()
+        }));
+        account
+    }
+
+    /// A peer answers an account query with the accounts of a subtree of
+    /// height [`ACCOUNT_SUBTREE_HEIGHT`]: the answer must fit the RPC size
+    /// limit even if they are all as large as accounts can be. With the
+    /// former 200 KB limit, a devnet node never synced the 5 subtrees of the
+    /// devnet staking ledger over 200 KB (P1c).
+    #[test]
+    fn largest_account_query_answer_fits_the_rpc_limit() {
+        let account = v2::MinaBaseAccountBinableArgStableV2::from(&largest_account());
+        let mut account_bytes = Vec::new();
+        account.binprot_write(&mut account_bytes).unwrap();
+
+        let answer = v2::MinaLedgerSyncLedgerAnswerStableV2::ContentsAre(
+            std::iter::repeat_n(account, 1 << ACCOUNT_SUBTREE_HEIGHT).collect(),
+        );
+        let mut answer_bytes = Vec::new();
+        answer.binprot_write(&mut answer_bytes).unwrap();
+        // The RPC response around it, its header, query id, result tag and
+        // length, takes a few bytes more.
+        let message_len = answer_bytes.len() + 64;
+
+        let limit = P2pLimits::default().rpc_answer_sync_ledger_query();
+        println!(
+            "{} accounts of {} bytes: {message_len} bytes, limit {limit:?}",
+            1 << ACCOUNT_SUBTREE_HEIGHT,
+            account_bytes.len()
+        );
+        assert!(
+            message_len > 200_000,
+            "{} accounts of {} bytes: {message_len} bytes",
+            1 << ACCOUNT_SUBTREE_HEIGHT,
+            account_bytes.len()
+        );
+        assert!(
+            limit >= message_len,
+            "{} accounts of {} bytes: {message_len} bytes, over the limit {limit:?}",
+            1 << ACCOUNT_SUBTREE_HEIGHT,
+            account_bytes.len()
+        );
     }
 }

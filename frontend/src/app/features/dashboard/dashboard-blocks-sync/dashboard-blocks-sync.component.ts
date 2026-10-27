@@ -6,9 +6,9 @@ import { NodesOverviewNodeBlockStatus } from '@shared/types/nodes/dashboard/node
 import { isDesktop, lastItem, ONE_MILLION } from '@mina-rust/shared';
 import { DashboardPeer } from '@shared/types/dashboard/dashboard.peer';
 import { AppActions } from '@app/app.actions';
+import { formatHeight } from '@shared/helpers/freshness.helper';
 
 const PENDING = 'Pending';
-const SYNCED = 'Synced';
 
 @Component({
   selector: 'mina-dashboard-blocks-sync',
@@ -34,6 +34,7 @@ export class DashboardBlocksSyncComponent
   isDesktop: boolean = isDesktop();
   remaining: number;
   lengthWithoutRoot: number = null;
+  readonly formatHeight = formatHeight;
 
   constructor() {
     super();
@@ -115,23 +116,34 @@ export class DashboardBlocksSyncComponent
 
     if (blocks.length > 0) {
       this.bestTipBlock = blocks[0].height;
-      this.bestTipBlockSyncedText =
-        'Fetched ' +
-        this.calculateProgressTime(
-          nodes[0].bestTipReceivedTimestamp * ONE_MILLION,
-        ).slice(7);
-      this.syncProgress = this.bestTipBlockSyncedText.slice(8);
+      // When the best tip arrived (or was applied, below), not when it was
+      // made: the block's own age is in the freshness panel.
+      const received = this.calculateProgressTime(
+        nodes[0].bestTipReceivedTimestamp * ONE_MILLION,
+      );
+      this.bestTipBlockSyncedText = this.cardHint('Received', received);
+      this.syncProgress = received;
       if (lastItem(blocks).status !== NodesOverviewNodeBlockStatus.APPLIED) {
-        this.syncProgress = 'Pending';
+        this.syncProgress = PENDING;
       }
     }
 
-    if (blocks.length === 291) {
-      this.root = lastItem(blocks).height;
-      this.rootText = this.calculateProgressTime(lastItem(blocks).applyEnd);
-      if (blocks[0].status === NodesOverviewNodeBlockStatus.APPLIED) {
-        this.bestTipBlockSyncedText =
-          SYNCED + ' ' + this.bestTipBlockSyncedText.slice(7);
+    // k + 1 blocks from the best tip back to the root. A restore from saved
+    // state replays a few more, from an older stored root (F-dash3).
+    if (blocks.length >= 291) {
+      const root = blocks[290];
+      this.root = root.height;
+      this.rootText = root.applyEnd
+        ? 'Applied ' + this.calculateProgressTime(root.applyEnd)
+        : PENDING;
+      if (
+        blocks[0].status === NodesOverviewNodeBlockStatus.APPLIED &&
+        blocks[0].applyEnd
+      ) {
+        this.bestTipBlockSyncedText = this.cardHint(
+          'Applied',
+          this.calculateProgressTime(blocks[0].applyEnd),
+        );
       }
     } else {
       this.root = null;
@@ -159,9 +171,15 @@ export class DashboardBlocksSyncComponent
     );
   }
 
+  /** "Applied 3m ago"; the age alone on a phone, where the card is narrow. */
+  private cardHint(event: string, age: string): string {
+    return this.isDesktop && age !== PENDING ? `${event} ${age}` : age;
+  }
+
+  /** "3m ago", or Pending without a time. Says nothing about sync. */
   private calculateProgressTime(timestamp: number): string {
     if (!timestamp) {
-      return 'Pending';
+      return PENDING;
     }
     timestamp = Math.ceil(timestamp / ONE_MILLION);
     const millisecondsAgo = Date.now() - timestamp;
@@ -170,13 +188,13 @@ export class DashboardBlocksSyncComponent
     const daysAgo = Math.floor(hoursAgo / 24);
 
     if (daysAgo > 0) {
-      return `${SYNCED} ${daysAgo}d ago`;
+      return `${daysAgo}d ago`;
     } else if (hoursAgo > 0) {
-      return `${SYNCED} ${hoursAgo}h ago`;
+      return `${hoursAgo}h ago`;
     } else if (minutesAgo > 0) {
-      return `${SYNCED} ${minutesAgo}m ago`;
+      return `${minutesAgo}m ago`;
     } else {
-      return `${SYNCED} <1m ago`;
+      return `<1m ago`;
     }
   }
 }

@@ -265,6 +265,184 @@ updated to check for latest circuits
      https://github.com/o1-labs/circuit-blobs
    - Released as GitHub releases for versioning and distribution
 
+### Mesa circuits
+
+No circuit-blobs release has the Mesa (OCaml 4.0.2) mainnet circuits, which
+mainnet's `CircuitsConfig` names in the `4.0.2mainnet` directory. The official
+4.0.2 binary dumps them offline, in about a minute, with no source build:
+
+```bash
+tools/mesa-circuits/generate.sh /tmp/mesa-blobs
+export MINA_CIRCUIT_BLOBS_BASE_DIR=/tmp/mesa-blobs/circuit-blobs
+```
+
+The script runs the binary with `MINA_DUMP_CIRCUIT_DATA=1`, checks that it wrote
+all 8 circuits and that the blockchain wrap key is the live one, and links the
+24 files into `circuit-blobs/4.0.2mainnet`. The output is deterministic. The
+prover looks there first, then in the crate directory, `~/.mina/circuit-blobs`
+and `/usr/local/lib/mina/circuit-blobs`, before trying a release.
+
+With the blobs in place, the Mesa prover tests, ignored by default, prove and
+verify one real mainnet base job of each non-zkApp kind: a payment, a
+delegation, a failed payment and a failed delegation, fee transfers to one and
+two receivers, and coinbases with and without a fee transfer. Each proof must
+verify with the mainnet transaction verifier and fail with another sok digest:
+
+```bash
+cargo test --release -p mina-tree --lib -- --ignored proofs::transaction::mesa_tests
+```
+
+The same tests merge proofs with the merge circuit: OCaml's two base proofs of
+the first merge job on Mesa mainnet, OCaml's two merge proofs of the first merge
+one level up, one of those OCaml base proofs next to a Rust one, and two Rust
+base proofs. Each merge must verify with the mainnet transaction verifier, and
+fail with another sok digest or a tampered statement.
+
+The fixtures, `crates/ledger/src/proofs/data/mesa_mainnet_*_base_job.bin`, are
+inputs a snark worker gets, not proofs. The merge fixtures,
+`mesa_mainnet_merge_of_*_job.bin`, hold the two OCaml proofs to merge. Two
+examples of `mina-block-replay` write both kinds from a replay of Mesa mainnet:
+`mesa_base_job_fixtures` and `mesa_merge_job_fixtures`.
+
+zkApp commands are proved in segments, one or two account updates each, with the
+three zkApp step circuits (`opt_signed-opt_signed`, `opt_signed` and `proved`),
+and the segments' proofs merged into one. Their ignored tests prove real Mesa
+zkApp command base jobs this way: mainnet ones with signature pairs, a proof and
+a single signature (block 548185), with two proofs in a row (548186, a token
+mint) and with signatures only (548945). Each segment's witness must satisfy its
+circuit, a changed signature or target ledger must not, and the merged proof
+must have the statement, sok digest included, of OCaml's snark work for the job,
+verify with the mainnet transaction verifier, and fail with another sok digest
+or the devnet key:
+
+```bash
+cargo test --release -p mina-tree --lib -- --ignored --test-threads=1 \
+  proofs::zkapp::mesa_tests --skip mesa_devnet
+```
+
+Their fixtures, `mesa_mainnet_zkapp_*_base_job.bin` with OCaml's work for each
+in `mesa_mainnet_zkapp_*_ocaml_work.bin`, come from the
+`mesa_zkapp_job_fixtures` example of `mina-block-replay`, which also replays
+devnet from a staged ledger dump. `zkapp_prove_from_env` and
+`zkapp_segments_constraints_from_env` prove, or only check against the circuits,
+any job written by it (`MINA_ZKAPP_JOB`, `MINA_ZKAPP_WORK`,
+`MINA_ZKAPP_NETWORK`); `MINA_WITNESS_TRACE_AT` prints the code that pushed given
+witness values, as named in the failing rows.
+
+The block circuits have their own ignored tests, on the base case: the genesis
+transition of Mesa mainnet, as the node proves its genesis block. The block step
+witness must have the Mesa `AUX_LEN` and satisfy the circuit, and fail it when
+the ledger statement changes without a ledger proof (the constraint Mesa added).
+The genesis block must prove, step and wrap, and verify with the mainnet
+blockchain verifier, the live key, for the genesis state only:
+
+```bash
+cargo test --release -p mina-tree --lib -- --ignored proofs::block::mesa_tests
+```
+
+Their fixture, `mesa_mainnet_genesis_block_input.bin`, is the block prover's
+input, written by the `mesa_genesis_block_input` example from the prebuilt
+genesis config. The `prove_block` example proves such an input outside the tests
+and writes the state and proof in OCaml's JSON (a proof is the base64 of its
+S-expression); with `--verify` it checks a block in that JSON, such as one that
+OCaml's `internal test-genesis-block-generation` printed, with the mainnet
+verifier.
+
+The same tests prove blocks after genesis, on the previous block's proof. A real
+Mesa mainnet block can't be proved again: the block step evaluates the VRF in
+the circuit with the producer's private key. So the `mesa_offline_chain` example
+produces a chain whose genesis is Mesa mainnet's but for the staking epoch
+ledger, where the genesis winner, whose private key is public, holds most of the
+stake. Each block carries the user commands of the real block at its height and
+is built by the node's block producer code, then proved and checked with the
+mainnet verifier:
+
+```bash
+cargo run --release -p mina-block-replay --example mesa_offline_chain -- \
+  --genesis mesa-mainnet.bin --chain blocks/chain.txt --blocks blocks \
+  --count 30 --out offline-chain
+```
+
+It writes each block's prover input to `offline-chain/inputs`, and the blocks
+with their proofs to `offline-chain/blocks.json`, which `prove_block --verify`
+checks. Two of the inputs are fixtures, `mesa_offline_chain_548148_input.bin`
+and `mesa_offline_chain_548149_input.bin`: their witnesses must satisfy the
+block step, and the second block's proof must verify for its state only. With
+`--repeat <n>`, `prove_block` proves an input n times in one process and keeps
+kimchi's error or the rejected proof of every failed attempt: a stress test for
+intermittent block proof failures.
+
+A real transition can still be checked against the block step, all but its VRF.
+The `mesa_real_transition_check` example rebuilds the block prover's input of a
+real Mesa mainnet block from the precomputed blocks and a replay, with OCaml's
+proof of the parent and the ledger proof the block emits, puts the genesis
+winner's key in place of the producer's, and lists every constraint the witness
+fails: only those that depend on the key must fail. The fixture
+`mesa_mainnet_548415_block_input.bin`, the first Mesa block with a ledger proof,
+pins the seven checks it fails.
+
+The node checks its own block proofs the same way before broadcasting a block,
+and proves the block a second time if the prover fails or the proof does not
+verify. After two failures it drops the block and discards the won slot
+(`BlockProducerAction::BlockProveError`), which it does not take again. With
+proof verification off (`--proof-level none`) it proves once, without the check.
+The check is what keeps a proof that peers would reject off the network: a
+broken copy constraint, such as a block proved on the wrong previous proof,
+fails every time, so the second attempt only helps with a failure that does not
+follow from the input.
+
+### Mesa devnet circuits
+
+Devnet has its own set, in the `4.0.2devnet` directory that devnet's
+`CircuitsConfig` names. The same script dumps it with the devnet profile and the
+Mesa devnet fork config:
+
+```bash
+MINA_PROFILE=devnet tools/mesa-circuits/generate.sh /tmp/mesa-devnet-blobs \
+  tools/mesa-circuits/mesa-devnet-fork.json
+export MINA_CIRCUIT_BLOBS_BASE_DIR=/tmp/mesa-devnet-blobs/circuit-blobs
+```
+
+The 24 files must have the hashes in `tools/mesa-circuits/devnet-blobs.sha256`,
+from the dump made with the OCaml 4.0.2 binary (commit `84b8d969`):
+
+```bash
+(cd /tmp/mesa-devnet-blobs/circuit-blobs/4.0.2devnet &&
+  sha256sum --check --strict --quiet "$OLDPWD/tools/mesa-circuits/devnet-blobs.sha256")
+```
+
+Use another output directory than mainnet's; to have both sets under one base
+directory, link `4.0.2mainnet` and `4.0.2devnet` into one `circuit-blobs`
+directory. The devnet circuits have the mainnet circuits' gates, wiring and
+sizes; seven of the eight differ in a few constants (the testnet signature
+prefix, devnet's fork constants, and the step keys the wrap circuits embed), and
+the merge circuit is mainnet's. So a proof made with one set verifies with that
+network's key only. The devnet indexes built from the blobs match the embedded
+devnet keys, the live blockchain key and OCaml's transaction key, field by
+field:
+
+```bash
+cargo run --release -p mina-tree --example mesa_circuit_blobs -- --network devnet \
+  /tmp/mesa-devnet-blobs/tmp/coda_cache_dir data/vk/devnet-mesa-blockchain-vk.json
+```
+
+The devnet prover tests are in the same modules and run with the devnet blobs,
+one network per test process, as the network config is global:
+
+```bash
+cargo test --release -p mina-tree --lib -- --ignored --test-threads=1 mesa_devnet
+```
+
+They prove a real devnet payment, merges of OCaml's and Rust's devnet base
+proofs, zkApp commands (one with a recursive zkApp's proof, whose key has wrap
+domain 2^14, and two signed ones sent through our node and our web node, blocks
+577969 and 578035), and blocks of an offline chain from the Mesa devnet genesis
+(`mesa_offline_chain --network devnet`), whose block 545436 carries a real
+devnet payment. Each proof must verify with the devnet key and fail with the
+mainnet key, and the mainnet tests check the converse. The examples
+`mesa_offline_chain`, `prove_block` and `mesa_real_transition_check` take
+`--network devnet`.
+
 ### Circuit Components
 
 Each circuit consists of multiple components that are loaded and cached

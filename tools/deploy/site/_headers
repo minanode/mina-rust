@@ -1,0 +1,12 @@
+# Cloudflare Pages and Netlify (the same format): the headers of the web
+# node's pages, copied into the bundle by build.sh here. Cross-origin
+# isolation (COOP and COEP) gives the node SharedArrayBuffer, and with it
+# threads; without it the node doesn't start. The hosts' default
+# Cache-Control (revalidate) suits every file here. A WASM on an asset host
+# (WASM_URL) gets its caching there.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin

@@ -1,0 +1,277 @@
+@use 'mina-rust';
+
+:host {
+  display: block;
+  height: 100%;
+  overflow: auto;
+  padding: 24px;
+  box-sizing: border-box;
+}
+h1 {
+  font-size: 22px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 20px 0 10px;
+}
+p {
+  line-height: 1.6;
+  margin: 0;
+}
+section {
+  margin-top: 24px;
+}
+.page-heading {
+  margin-bottom: 8px;
+}
+.panel {
+  border: 1px solid mina-rust.$base-divider;
+  border-radius: 8px;
+  padding: 20px;
+}
+.worker-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.badge {
+  margin-left: 8px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-size: 11px;
+  color: mina-rust.$base-secondary;
+  background: mina-rust.$base-container;
+}
+.badge.on {
+  color: mina-rust.$success-primary;
+  background: mina-rust.$success-container;
+}
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 14px 0 6px;
+  border-radius: 18px;
+  color: mina-rust.$base-primary;
+  background: mina-rust.$base-container;
+}
+.switch .knob {
+  position: relative;
+  width: 36px;
+  height: 22px;
+  border-radius: 11px;
+  background: mina-rust.$base-divider;
+}
+.switch .knob::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: mina-rust.$base-surface-top;
+  transition: left 0.15s;
+}
+.switch[aria-checked='true'] .knob {
+  background: mina-rust.$success-primary;
+}
+.switch[aria-checked='true'] .knob::after {
+  left: 17px;
+}
+.switch:disabled {
+  opacity: 0.5;
+}
+.form {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 16px 0 12px;
+}
+.form label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-width: 280px;
+}
+.form label.fee {
+  flex: 0 0 160px;
+  min-width: 160px;
+}
+.form label span {
+  color: mina-rust.$base-secondary;
+}
+.form input {
+  height: 40px;
+  padding: 10px;
+  border: 1px solid mina-rust.$base-divider;
+  border-radius: 4px;
+  font-family: monospace;
+  background: mina-rust.$base-surface-top;
+  color: mina-rust.$base-primary;
+}
+.apply {
+  height: 40px;
+  padding: 0 16px;
+  color: mina-rust.$selected-primary;
+  background: mina-rust.$selected-container;
+  border-radius: 6px;
+}
+.apply:disabled {
+  opacity: 0.5;
+}
+.rule {
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+.job {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 20px;
+  margin: 20px 0;
+}
+.summary > div {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.summary strong {
+  font-size: 22px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.summary.compact strong {
+  font-size: 16px;
+}
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid mina-rust.$base-divider;
+  border-radius: 8px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  white-space: nowrap;
+}
+th {
+  background: mina-rust.$base-surface-top;
+  color: mina-rust.$base-secondary;
+  font-weight: 500;
+  font-size: 11px;
+}
+th,
+td {
+  padding: 11px 12px;
+  border-bottom: 1px solid mina-rust.$base-divider;
+}
+tbody tr:last-child td {
+  border-bottom: 0;
+}
+tbody tr:hover {
+  background: mina-rust.$base-container;
+}
+tr.failed td {
+  color: mina-rust.$warn-primary;
+}
+td small {
+  white-space: normal;
+  max-width: 420px;
+}
+.numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+small {
+  display: block;
+  margin-top: 5px;
+  color: mina-rust.$base-secondary;
+  font-size: 11px;
+}
+.height {
+  font-weight: 600;
+  color: mina-rust.$base-primary;
+  text-decoration: none;
+}
+.height:hover {
+  text-decoration: underline;
+}
+.state {
+  display: inline-block;
+  padding: 4px 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  color: mina-rust.$base-secondary;
+  background: mina-rust.$base-container;
+}
+.state.final {
+  color: mina-rust.$success-primary;
+  background: mina-rust.$success-container;
+}
+.state.pending {
+  color: mina-rust.$selected-primary;
+  background: mina-rust.$selected-container;
+}
+.state.dropped {
+  color: mina-rust.$warn-primary;
+  background: mina-rust.$warn-container;
+}
+.footnote {
+  font-size: 12px;
+  color: mina-rust.$base-secondary;
+  margin: 12px 0;
+}
+.empty {
+  padding: 40px 24px;
+  text-align: center;
+  color: mina-rust.$base-secondary;
+}
+.empty-section {
+  border: 1px solid mina-rust.$base-divider;
+  border-radius: 6px;
+  padding: 18px;
+  color: mina-rust.$base-secondary;
+}
+.notice {
+  padding: 14px;
+  border: 1px solid mina-rust.$base-divider;
+  border-radius: 6px;
+  margin: 12px 0;
+  overflow-wrap: anywhere;
+}
+.notice code {
+  font-family: monospace;
+}
+.error {
+  color: mina-rust.$warn-primary;
+  background: mina-rust.$warn-container;
+}
+.ok {
+  color: mina-rust.$success-primary;
+  background: mina-rust.$success-container;
+}
+@media (max-width: 800px) {
+  .summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

@@ -209,6 +209,35 @@ if (CONFIG.hidePeersPill) {
 }
 ```
 
+#### View-only builds and the build stamp
+
+`CONFIG.controls` says which controls that act on the chain a build offers:
+`producer` (block production pages, starting a web node with a key) and `send`
+(sending payments and zkApp transactions, under Benchmarks). The native
+dashboard and web node environments take them from the build-time define
+`MINA_FRONTEND_CONTROLS`, which is empty by default: a view-only build, as for
+the public demo. `MINA_FRONTEND_CONTROLS=producer,send` (or `all`) enables them;
+the frontend Makefile threads it through `build-webnode` and `build-native`.
+Other environments leave `controls` unset, which enables both.
+
+In a view-only build the features those controls need leave the menu, their
+routes redirect to the first feature, and the web node starts as an observer
+whatever key it is given.
+
+`MINA_FRONTEND_COMMIT` stamps the commit the page was built from; the sidebar
+footer shows it as "UI build", and below it the commit of the node serving the
+data (from that node's `/build_env`), labelled "Native node" or "Web node". The
+build modal names that node, with its URL or "running in this browser tab".
+`tools/regression/webnode/build.sh` builds a web node from one clean commit with
+both set.
+
+`MINA_NATIVE_NODE_URL` (web node environment, empty by default) adds a native
+node to the configured nodes, with the block explorer (Blocks, Accounts), its
+dashboard, mempool, Nodes and Network > Topology. The web node's start page then
+offers that node's block explorer next to starting the web node. The visitor's
+browser calls the URL directly, so it must be reachable from there and answer
+CORS requests. `tools/regression/webnode/build.sh` sets it from `NATIVE`.
+
 #### 4. Error Tracking
 
 ```typescript

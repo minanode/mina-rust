@@ -27,19 +27,22 @@ mina wallet balance --address <PUBLIC_KEY>
 
 **Optional:**
 
-- `[PASSWORD]` - Password to decrypt the key (only required when using
-  `--from`). Can be provided as an argument or via the `MINA_PRIVKEY_PASS`
-  environment variable (recommended for security)
-- `--endpoint <URL>` - GraphQL endpoint URL (default:
-  `http://localhost:3000/graphql`)
+- `--node <URL>` - The node's HTTP base URL (or `MINA_NODE_URL`; default:
+  `http://localhost:3000`)
 - `--format <FORMAT>` - Output format: `text` (default) or `json`
+
+**Environment:**
+
+- `MINA_PRIVKEY_PASS` - Password to decrypt the key, required with `--from`. The
+  password is read only from this variable. A password given as an argument is
+  refused.
 
 ## Examples
 
 ### Check balance using key file
 
 ```bash
-export MINA_PRIVKEY_PASS="my-secret-password"
+read -rs -p "Key password: " MINA_PRIVKEY_PASS && export MINA_PRIVKEY_PASS
 mina wallet balance --from ./keys/my-wallet
 ```
 
@@ -55,7 +58,7 @@ mina wallet balance \
 ```bash
 mina wallet balance \
   --address B62qre3erTHfzQckNuibViWQGyyKwZseztqrjPZBv6SQF384Rg6ESAy \
-  --endpoint https://node.example.com:3000/graphql
+  --node https://node.example.com:3000
 ```
 
 ### Get balance in JSON format

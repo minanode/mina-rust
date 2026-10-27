@@ -63,8 +63,10 @@ Ensure Docker and Docker Compose are installed on your system -
    ```bash
    # Generate a new encrypted key pair using Docker
    # This creates the key directly in the mina-workdir/producer-key file
-   docker run --rm -v $(pwd)/mina-workdir:/root/.mina o1labs/mina-rust:latest \
-     misc mina-encrypted-key "YourPassword" --file /root/.mina/producer-key
+   read -rs -p "Key password: " MINA_PRIVKEY_PASS && export MINA_PRIVKEY_PASS
+   docker run --rm -e MINA_PRIVKEY_PASS \
+     -v $(pwd)/mina-workdir:/root/.mina o1labs/mina-rust:latest \
+     wallet generate --output /root/.mina/producer-key
 
    # Fix file permissions to match your local user (recommended)
    sudo chown $(id -u):$(id -g) mina-workdir/producer-key
@@ -86,12 +88,12 @@ Ensure Docker and Docker Compose are installed on your system -
    :::
    <!-- prettier-ignore-stop -->
 
-   The command also outputs the public key which you should save for reference:
+   The key file is readable only by its owner (mode `0600`). The command prints
+   the public key and the file paths, never the secret key, and also writes the
+   public key to `mina-workdir/producer-key.pub`:
 
    ```bash
-   # To see just the public key, you can run:
-   docker run --rm -v $(pwd)/mina-workdir:/root/.mina o1labs/mina-rust:latest \
-     misc mina-encrypted-key "YourPassword" --file /root/.mina/producer-key | grep "Public key:"
+   cat mina-workdir/producer-key.pub
    ```
 
    **Option B: Use an existing key**
@@ -108,11 +110,13 @@ Ensure Docker and Docker Compose are installed on your system -
 
 4. **Launch Block Producer**
 
-   Use `MINA_PRIVKEY_PASS` to set the private key password. Optionally, use
-   `COINBASE_RECEIVER` to set a different coinbase receiver:
+   Set `MINA_PRIVKEY_PASS` to the private key password in your shell; the node
+   reads it only from the environment. Optionally, use `COINBASE_RECEIVER` to
+   set a different coinbase receiver:
 
    ```bash
-   env COINBASE_RECEIVER="YourWalletAddress" MINA_PRIVKEY_PASS="YourPassword" \
+   read -rs -p "Key password: " MINA_PRIVKEY_PASS && export MINA_PRIVKEY_PASS
+   env COINBASE_RECEIVER="YourWalletAddress" \
    docker compose -f docker-compose.block-producer.yml up -d --pull always
    ```
 
@@ -131,12 +135,12 @@ Ensure Docker and Docker Compose are installed on your system -
    ```bash
    # Use specific version (recommended for production)
    env MINA_RUST_TAG="v1.4.2" MINA_FRONTEND_TAG="v1.4.2" \
-   COINBASE_RECEIVER="YourWalletAddress" MINA_PRIVKEY_PASS="YourPassword" \
+   COINBASE_RECEIVER="YourWalletAddress" \
    docker compose -f docker-compose.block-producer.yml up -d --pull always
 
    # Use development version (latest features, may be unstable)
    env MINA_RUST_TAG="develop" MINA_FRONTEND_TAG="develop" \
-   COINBASE_RECEIVER="YourWalletAddress" MINA_PRIVKEY_PASS="YourPassword" \
+   COINBASE_RECEIVER="YourWalletAddress" \
    docker compose -f docker-compose.block-producer.yml up -d --pull always
    ```
 
@@ -172,10 +176,12 @@ using the Makefile target. This method requires building from source.
    `mina-workdir/producer-key.pub`. The command will fail if keys already exist
    to prevent accidental overwriting.
 
-   To generate keys with a password:
+   To generate keys with a password, set it in the environment first. The
+   password is read only from `MINA_PRIVKEY_PASS`, never from the command line:
 
    ```bash
-   make generate-block-producer-key MINA_PRIVKEY_PASS="YourPassword"
+   read -rs -p "Key password: " MINA_PRIVKEY_PASS && export MINA_PRIVKEY_PASS
+   make generate-block-producer-key
    ```
 
    To generate keys with a custom filename:
@@ -191,8 +197,7 @@ using the Makefile target. This method requires building from source.
 
    ```bash
    make generate-block-producer-key \
-     PRODUCER_KEY_FILENAME=./path/to/custom-key \
-     MINA_PRIVKEY_PASS="YourPassword"
+     PRODUCER_KEY_FILENAME=./path/to/custom-key
    ```
 
    **Option B: Use an existing key**
@@ -204,11 +209,16 @@ using the Makefile target. This method requires building from source.
 
 2. **Run Block Producer**
 
+   Set the key password in the environment, as for generating keys:
+
+   ```bash
+   read -rs -p "Key password: " MINA_PRIVKEY_PASS && export MINA_PRIVKEY_PASS
+   ```
+
    For devnet (default):
 
    ```bash
    make run-block-producer \
-       MINA_PRIVKEY_PASS="YourPassword" \
        NETWORK=devnet \
        COINBASE_RECEIVER="YourWalletAddress"
    ```
@@ -218,7 +228,6 @@ using the Makefile target. This method requires building from source.
    ```bash
    make run-block-producer \
        COINBASE_RECEIVER="YourWalletAddress" \
-       MINA_PRIVKEY_PASS="YourPassword" \
        NETWORK=mainnet
    ```
 
@@ -234,7 +243,6 @@ using the Makefile target. This method requires building from source.
    make run-block-producer \
      NETWORK=devnet \
      COINBASE_RECEIVER="YourWalletAddress" \
-     MINA_PRIVKEY_PASS="YourPassword" \
      MINA_LIBP2P_EXTERNAL_IP="1.2.3.4" \
      MINA_LIBP2P_PORT="8302"
    ```
@@ -246,8 +254,10 @@ using the Makefile target. This method requires building from source.
 
 ### Access Logs
 
-Logs are stored in `mina-workdir` with filenames like `mina.log.2024-10-14`,
-`mina.log.2024-10-15`, etc.
+Logs are stored in `mina-workdir` as `mina.log`, rotated to `mina.log.1` and so
+on, at most 200 MB by default. See
+[Logs and log levels](node-management#logs-and-log-levels) for what the default
+level shows and how to see more.
 
 ### Provide Feedback
 

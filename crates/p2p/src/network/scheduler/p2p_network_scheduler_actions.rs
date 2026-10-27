@@ -8,7 +8,9 @@ use super::{
         select::{token, SelectKind},
         Data, Limit,
     },
-    p2p_network_scheduler_state::{P2pNetworkConnectionCloseReason, P2pNetworkConnectionError},
+    p2p_network_scheduler_state::{
+        P2pNetworkConnectionCloseReason, P2pNetworkConnectionError, P2pNetworkStreamResetReason,
+    },
 };
 
 use crate::{disconnection::P2pDisconnectionReason, ConnectionAddr, P2pState, PeerId, StreamId};
@@ -103,10 +105,26 @@ pub enum P2pNetworkSchedulerAction {
         /// Connection address.
         addr: ConnectionAddr,
     },
-    /// Prune streams.
-    PruneStream {
+    /// Stream closed, connection kept.
+    ///
+    /// The peer reset the stream, or its protocol negotiation failed and we
+    /// reset it. The connection and its other streams carry on, as in
+    /// go-libp2p, where a reset is stream-scoped. Failures of the streams a
+    /// connection can't do without are fatal `Error`s instead
+    /// (`P2pNetworkConnectionState::is_essential_stream`). Our pubsub stream,
+    /// once negotiated, is opened again
+    /// (`P2pNetworkConnectionState::may_reopen_pubsub`).
+    #[action_event(
+        level = debug,
+        fields(display(addr), display(peer_id), stream_id, debug(protocol), display(reason))
+    )]
+    StreamReset {
+        addr: ConnectionAddr,
         peer_id: PeerId,
         stream_id: StreamId,
+        /// The stream's protocol, if it had been negotiated.
+        protocol: Option<token::StreamKind>,
+        reason: P2pNetworkStreamResetReason,
     },
 }
 
@@ -169,12 +187,12 @@ impl redux::EnablingCondition<P2pState> for P2pNetworkSchedulerAction {
                 .connections
                 .get(addr)
                 .is_some_and(|conn_state| conn_state.closed.is_some()),
-            P2pNetworkSchedulerAction::PruneStream { peer_id, stream_id } => state
+            P2pNetworkSchedulerAction::StreamReset { addr, .. } => state
                 .network
                 .scheduler
-                .find_peer(peer_id)
-                .and_then(|(_, conn_state)| conn_state.streams.get(stream_id))
-                .is_some(),
+                .connections
+                .get(addr)
+                .is_some_and(|conn_state| conn_state.closed.is_none()),
         }
     }
 }

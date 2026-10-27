@@ -40,7 +40,9 @@ pub fn certificate_from_pem_key(_: &str) -> RTCCertificate {
     ()
 }
 
-pub fn build_api() -> Api {}
+/// A browser chooses its own ports and addresses: only the ICE servers of
+/// the config apply, through [`RTCConfig`].
+pub fn build_api(_: &crate::webrtc::WebrtcConfig) -> Api {}
 
 pub struct RTCConnection(Rc<RtcPeerConnection>, bool);
 

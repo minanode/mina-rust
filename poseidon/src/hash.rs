@@ -236,7 +236,6 @@ pub fn hash_noinputs(param: &LazyParam) -> Fp {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)] // `string` is never read
 pub struct LazyParam {
     sponge_state: crate::SpongeState,
     state: [Fp; 3],
@@ -247,6 +246,11 @@ pub struct LazyParam {
 impl LazyParam {
     pub fn state(&self) -> [Fp; 3] {
         self.state
+    }
+
+    /// The domain string the sponge absorbed, such as `"MinaAccount"`.
+    pub fn string(&self) -> &'static str {
+        self.string
     }
 }
 
@@ -268,7 +272,11 @@ pub mod params {
                     string: $string,
                 })
             });
-        )*)
+        )*
+
+        /// Every parameter above, for tests that cover them all.
+        pub static ALL_PARAMS: &[&Lazy<Box<LazyParam>>] = &[$(&$name),*];
+        )
     }
 
     impl_params!(
@@ -417,7 +425,11 @@ pub mod params {
                     string: $string,
                 })
             });
-        )*)
+        )*
+
+        /// Every parameter above, for tests that cover them all.
+        pub static ALL_NOINPUT_PARAMS: &[&Lazy<Box<LazyParam>>] = &[$(&$name),*];
+        )
     }
 
     impl_params_noinput!(
@@ -541,7 +553,11 @@ pub mod legacy {
                         string: $string,
                     })
                 });
-            )*)
+            )*
+
+            /// Every parameter above, for tests that cover them all.
+            pub static ALL_PARAMS: &[&Lazy<Box<LazyParam>>] = &[$(&$name),*];
+            )
         }
 
         impl_params!(

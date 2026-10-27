@@ -38,14 +38,38 @@ export const appReducer = createReducer(
     activeNode,
     nodes,
   })),
-  on(AppActions.changeActiveNode, (state, { node }) => ({
-    ...state,
-    activeNode: node,
-  })),
-  on(AppActions.getNodeDetailsSuccess, (state, { details }) => ({
-    ...state,
-    activeNodeDetails: details,
-  })),
+  on(
+    AppActions.changeActiveNode,
+    (state, { node }): AppState => ({
+      ...state,
+      activeNode: node,
+      activeNodeDetails: initialState.activeNodeDetails,
+      // The last node's build must not be shown as this one's (R27 #2).
+      envBuild: undefined,
+    }),
+  ),
+  on(AppActions.getNodeDetailsSuccess, (state, { details, node }) =>
+    node !== state.activeNode?.name
+      ? state
+      : {
+          ...state,
+          activeNodeDetails:
+            details.status === AppNodeStatus.OFFLINE
+              ? {
+                  // No answer: keep what the last answer said, and when it came,
+                  // so the page can say how stale it is (R26c).
+                  ...details,
+                  blockHeight: state.activeNodeDetails.blockHeight,
+                  bestTipHash: state.activeNodeDetails.bestTipHash,
+                  bestTipTimestamp: state.activeNodeDetails.bestTipTimestamp,
+                  syncTime: state.activeNodeDetails.syncTime,
+                  sampledAt: state.activeNodeDetails.sampledAt,
+                  chainId: state.activeNodeDetails.chainId,
+                  network: state.activeNodeDetails.network,
+                }
+              : details,
+        },
+  ),
   on(AppActions.changeMenuCollapsing, (state, { isCollapsing }) => {
     getLocalStorage()?.setItem('menu_collapsed', JSON.stringify(isCollapsing));
     return { ...state, menu: { ...state.menu, collapsed: isCollapsing } };
@@ -84,8 +108,12 @@ export const appReducer = createReducer(
         state.activeNode?.name === node.name ? nodes[0] : state.activeNode,
     };
   }),
-  on(AppActions.getNodeEnvBuildSuccess, (state, { envBuild }) => ({
-    ...state,
-    envBuild,
-  })),
+  on(
+    AppActions.getNodeEnvBuildSuccess,
+    (state, { envBuild, node }): AppState =>
+      // A late answer from a node no longer selected is dropped.
+      node !== undefined && node !== state.activeNode?.name
+        ? state
+        : { ...state, envBuild },
+  ),
 );

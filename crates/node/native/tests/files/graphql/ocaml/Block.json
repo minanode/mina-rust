@@ -1,0 +1,202 @@
+{
+ "data": {
+  "block": {
+   "commandTransactionCount": 9,
+   "creatorAccount": {
+    "publicKey": "B62qpbpoWmfjZ12jA8TYrS8QktRDYGYjz2cj41tuUe1f2UP2wfpKvXs"
+   },
+   "protocolState": {
+    "blockchainState": {
+     "date": "1792511460000",
+     "snarkedLedgerHash": "jwq5oPqJk4Wad1ZWHjS1HubV9sVg8utBt3xhrRebv7vz2xnepU1",
+     "stagedLedgerHash": "jwBbZrXgXasZysr2ga4HqB5ezf6LUBPkbPvFeDuZ2yWpCgXniP2",
+     "utcDate": "1792511460000"
+    },
+    "consensusState": {
+     "blockCreator": "B62qpbpoWmfjZ12jA8TYrS8QktRDYGYjz2cj41tuUe1f2UP2wfpKvXs",
+     "blockHeight": "564495",
+     "coinbaseReceiever": "B62qomtdTPhSjX1HCbwkN9K2QdnfFh737Mi8cz2A7xyyR82XbFzx4m1",
+     "epoch": "6",
+     "nextEpochData": {
+      "ledger": {
+       "hash": "jxJp66JhmUbFo4U9rYiELCHQ2hgXzuHwYJffh1yY4Lp93hfH1X4"
+      },
+      "seed": "2vaJewAYqGoNbCxfJp5KxSveCBa3S3CNNEPER88sDbacaTtYuUmy"
+     },
+     "slot": "2194",
+     "slotSinceGenesis": "1003474",
+     "stakingEpochData": {
+      "epochLength": "2251",
+      "ledger": {
+       "hash": "jxRhCwcDDFbb49ZP3p5YppH9YtXkw5d2vpYzDnnx1v6cB35AdQR"
+      },
+      "seed": "2vbsQR2KSF8TPNC9sLnLjksxX981f3zc1QoVtarUYyT9Ni8PhhCS"
+     }
+    },
+    "previousStateHash": "3NL4BmPU4varBDBWXE8qjZLXKiZD9xqN12rBec2uuAwTwQ5JwQmb"
+   },
+   "snarkJobs": [],
+   "stateHash": "3NKoJTEU2aR6MNRrm2rp5P758LcLYdfY6ShXpNNPxEr19hGDod5Z",
+   "transactions": {
+    "coinbase": "360000000000",
+    "coinbaseReceiverAccount": {
+     "publicKey": "B62qomtdTPhSjX1HCbwkN9K2QdnfFh737Mi8cz2A7xyyR82XbFzx4m1"
+    },
+    "feeTransfer": [
+     {
+      "fee": "960200000",
+      "recipient": "B62qomtdTPhSjX1HCbwkN9K2QdnfFh737Mi8cz2A7xyyR82XbFzx4m1",
+      "type": "Fee_transfer"
+     }
+    ],
+    "userCommands": [
+     {
+      "amount": "10000000",
+      "failureReason": null,
+      "fee": "10000000",
+      "hash": "5Jv7mepKsi4i95JBrTqpWfVVYKiJLKdkZLJnLFgWdU8gkWkwWFf3",
+      "id": "Av2AlpgA+AH9ZI64SqO8UPlOMDYgqnthO3WmuA9z3nvHmu5DgwMA/epoAgAA//8iARRtYWlubmV0LXR4LWdlbmVyYXRvcgAAAAAAAAAAAAAAAAD4Af1kjrhKo7xQ+U4wNiCqe2E7daa4D3Pee8ea7kODAwD9gJaYAPgB/WSOuEqjvFD5TjA2IKp7YTt1prgPc957x5ruQ4MDAPkhSnQyN417mcRyV9BU0m7XtfiD4Po7KkBmrz66DScJ6RQ5JAByPfxJJdkhdoA86iQQDIspHYpcyBgOyCUzJzs=",
+      "kind": "PAYMENT",
+      "memo": "E4Z2jyxgBoCVo8HzwJMoC4VJ7S2m2iFFdF9Mc8BNQHd2tcjSwaUft",
+      "nonce": 157930,
+      "receiver": {
+       "publicKey": "B62qrmRJosdwWKwFXjfLEA7fNaPDkAiSkGmGDLiPQkphCcnC7agyYEZ"
+      },
+      "source": {
+       "publicKey": "B62qrmRJosdwWKwFXjfLEA7fNaPDkAiSkGmGDLiPQkphCcnC7agyYEZ"
+      }
+     },
+     {
+      "amount": "10000000",
+      "failureReason": null,
+      "fee": "10000000",
+      "hash": "5JtdbErZrwyT2cFrSwY2a8HkMz9Xz495mAPQN9FPNXTBz2W1ypRG",
+      "id": "Av2AlpgA+AH9ZI64SqO8UPlOMDYgqnthO3WmuA9z3nvHmu5DgwMA/eloAgAA//8iARRtYWlubmV0LXR4LWdlbmVyYXRvcgAAAAAAAAAAAAAAAAD4Af1kjrhKo7xQ+U4wNiCqe2E7daa4D3Pee8ea7kODAwD9gJaYAPgB/WSOuEqjvFD5TjA2IKp7YTt1prgPc957x5ruQ4MDAA+NcDtpTbtAUwUjq9ddd0zcBqI7z+D+FfaUa2neGq8N3SrIHl4rTQjpTNAsTmX0SAdWb6ZeWx1/xii19gR/5SY=",
+      "kind": "PAYMENT",
+      "memo": "E4Z2jyxgBoCVo8HzwJMoC4VJ7S2m2iFFdF9Mc8BNQHd2tcjSwaUft",
+      "nonce": 157929,
+      "receiver": {
+       "publicKey": "B62qrmRJosdwWKwFXjfLEA7fNaPDkAiSkGmGDLiPQkphCcnC7agyYEZ"
+      },
+      "source": {
+       "publicKey": "B62qrmRJosdwWKwFXjfLEA7fNaPDkAiSkGmGDLiPQkphCcnC7agyYEZ"
+      }
+     },
+     {
+      "amount": "10000000",
+      "failureReason": null,
+      "fee": "10000000",
+      "hash": "5JuUmVFKjT2ztZYGJ4fHPYFeXBunUK9ZzTxoty1e1knizayNvPHQ",
+      "id": "Av2AlpgA+AH9ZI64SqO8UPlOMDYgqnthO3WmuA9z3nvHmu5DgwMA/ehoAgAA//8iARRtYWlubmV0LXR4LWdlbmVyYXRvcgAAAAAAAAAAAAAAAAD4Af1kjrhKo7xQ+U4wNiCqe2E7daa4D3Pee8ea7kODAwD9gJaYAPgB/WSOuEqjvFD5TjA2IKp7YTt1prgPc957x5ruQ4MDABRYLre9k54hm43FnlUO5+by1JRYn0BV8Bx7T3O0lZEvbWvamPkDg5ynVd+NIhhbz8UaWrvVsnE2p3ENXkqKLBY=",
+      "kind": "PAYMENT",
+      "memo": "E4Z2jyxgBoCVo8HzwJMoC4VJ7S2m2iFFdF9Mc8BNQHd2tcjSwaUft",
+      "nonce": 157928,
+      "receiver": {
+       "publicKey": "B62qrmRJosdwWKwFXjfLEA7fNaPDkAiSkGmGDLiPQkphCcnC7agyYEZ"
+      },
+      "source": {
+       "publicKey": "B62qrmRJosdwWKwFXjfLEA7fNaPDkAiSkGmGDLiPQkphCcnC7agyYEZ"
+      }
+     },
+     {
+      "amount": "4134363649667",
+      "failureReason": null,
+      "fee": "10100000",
+      "hash": "5JufcrsdoeN58Ghwa8t7uY2eKZqQrmHHMv111Fc31kaVoozGbuYj",
+      "id": "Av0gHZoA8LyqoY6SIRNJa5VaS1bu2AR41P/OxpUBGAGvdB/InSIBCAD//yIBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADhVc780c0Fb7p1PEtCy3y8uhV5xwed8NP52hlpETZARAPyD1kabwgMAAPC8qqGOkiETSWuVWktW7tgEeNT/zsaVARgBr3QfyJ0iAUvrFwzFO2/pQ6ji8vW2CzWZ77UfFOSjOC/C7GLUur0z/DEktkAcqO/Q5sF9lDL0LINtxNELCkH2MnOhTtDfPx0=",
+      "kind": "PAYMENT",
+      "memo": "E4YM2vTHhWEg66xpj52JErHUBU4pZ1yageL4TVDDpTTSsv8mK6YaH",
+      "nonce": 8,
+      "receiver": {
+       "publicKey": "B62qkLq8sTx8Pap9RTHLQzj2EXj3YKNX5DomGWzMCGYbVUcVWVXHki4"
+      },
+      "source": {
+       "publicKey": "B62qrXHZoa3GhgTYGe82Tf7NEZV5wEfYqihYMdmCvHfQ32w7u5yshuN"
+      }
+     },
+     {
+      "amount": "40313850000000",
+      "failureReason": null,
+      "fee": "100000000",
+      "hash": "5JuujQueGe5mRi6y2H9LCFC42gukCLVYLeGTMgN95qSEGYiqbhQo",
+      "id": "Av0A4fUFQxBGiu09wPa0608cC+UpgiwvfVcwApzQpCYRwfRytw4A/gwNAP//IgEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAopcH5H4CmA6mVaL7OQ6VQkLcckckuu2SoOdjuiLU5jwA/IBytUyqJAAAQxBGiu09wPa0608cC+UpgiwvfVcwApzQpCYRwfRytw4ARs+j3EfMjn4RKjZ4Fi/Gb5DlPSUrchnqh272Re9F7ifaDU1kpMGxhyhQRk6WhGhxbS1S3xE3IX+gajKEM/1hGQ==",
+      "kind": "PAYMENT",
+      "memo": "E4YM2vTHhWEg66xpj52JErHUBU4pZ1yageL4TVDDpTTSsv8mK6YaH",
+      "nonce": 3340,
+      "receiver": {
+       "publicKey": "B62qouNvgzGaA3fe6G9mKtktCfsEinqj27eqTSvDu4jSKReDEx7A8Vx"
+      },
+      "source": {
+       "publicKey": "B62qkhgrngyLTJ7TQc2d5x5dxQfaaKGUyDgDo1pHamNBXwishoxT54W"
+      }
+     },
+     {
+      "amount": "399937160000",
+      "failureReason": null,
+      "fee": "200000000",
+      "hash": "5JtdQahLHzv9BKHwNaR2jTJMzBXrYD4Nc47Jm4dztGNQwsZJbiin",
+      "id": "Av0AwusLpIYoCULjnJlAljGybIY3SSBS2mIaWrzHk5seb8Q3dA8A/qA5AP//IgEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAkiWRjG2InH9dnphCS372nA0A+W6orfYNbzbd735TAz0B/EDDHB5dAAAApIYoCULjnJlAljGybIY3SSBS2mIaWrzHk5seb8Q3dA8AUwjYR3hm1pQiGv+Y/zpGrQrp3VgUN1hK+PHCRxQexAqh/iUcUcauca9Vp0bdqqXDDy8hzLyXb6CD9mw0FmrvEA==",
+      "kind": "PAYMENT",
+      "memo": "E4YM2vTHhWEg66xpj52JErHUBU4pZ1yageL4TVDDpTTSsv8mK6YaH",
+      "nonce": 14752,
+      "receiver": {
+       "publicKey": "B62qoMR3dG31t6ur73Vxnr73ZgFbnRNNEd6GQK9YHMU7SAdYjbK92Mw"
+      },
+      "source": {
+       "publicKey": "B62qoy8z1RnC9PNwfz4JLLjmjnFmC8HQnnXzwZKqfq3BbVFN86FPPhB"
+      }
+     },
+     {
+      "amount": "29000000000",
+      "failureReason": null,
+      "fee": "200000000",
+      "hash": "5JvBSif2GCkdrzSMwb1o6dzf8Cpng2GLpEAAN8hz8nDtvTXbWe3q",
+      "id": "Av0AwusLpIYoCULjnJlAljGybIY3SSBS2mIaWrzHk5seb8Q3dA8A/p85AP//IgEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAkXtN5JcEtcIwACzyM0eDIxD4WIJweNhOtAzP0CEFyToA/ADiiMAGAAAApIYoCULjnJlAljGybIY3SSBS2mIaWrzHk5seb8Q3dA8At8IBr+mjuGL8iOoCxD/5n74Jd88U39X+qJurZWt99A/aevWw8iJFUp9eDnFuLWRPuC2z5upbvTNtqP+cMSItBw==",
+      "kind": "PAYMENT",
+      "memo": "E4YM2vTHhWEg66xpj52JErHUBU4pZ1yageL4TVDDpTTSsv8mK6YaH",
+      "nonce": 14751,
+      "receiver": {
+       "publicKey": "B62qoL84TFijftm5xA6R6WvkE8Ji5wELbHTQqqUFxuRVnskErDnGtKw"
+      },
+      "source": {
+       "publicKey": "B62qoy8z1RnC9PNwfz4JLLjmjnFmC8HQnnXzwZKqfq3BbVFN86FPPhB"
+      }
+     },
+     {
+      "amount": "5000000000000",
+      "failureReason": null,
+      "fee": "200100000",
+      "hash": "5JvCFzYRxbCJk65aJR5ZQE8kBUHJ5332dZbLCpjWr7i5CAV3xG7N",
+      "id": "Av2gSO0LOIhIu8qEWeaT+ihHF1DWCPoTS5p4NA7cBxG6369TaBkA/poAAP//IgEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAALh7Lhglbrg8iI5j+x96BixfAU2hmX4z5ZRagrE9bnwsA/ABQOSeMBAAAOIhIu8qEWeaT+ihHF1DWCPoTS5p4NA7cBxG6369TaBkAm5bn3QxaTvcQ4hd422lK2kncVziS8GmFfVHjpihQ4SC9QZ8k8hlj16idZ+t93J1re1VA8pcalqnj9Ffs1HJ8DQ==",
+      "kind": "PAYMENT",
+      "memo": "E4YM2vTHhWEg66xpj52JErHUBU4pZ1yageL4TVDDpTTSsv8mK6YaH",
+      "nonce": 154,
+      "receiver": {
+       "publicKey": "B62qjzycxryZj91UVyg3h2mgqz5a9CqhQDcz9zEJ4JVXgRz5HJTSMsS"
+      },
+      "source": {
+       "publicKey": "B62qkMDXJgEAzB5S3wTgCj6RcqC6yG5MibGMd3VgbkzkdDq6f8Guc1m"
+      }
+     },
+     {
+      "amount": "74467450000000",
+      "failureReason": null,
+      "fee": "220000000",
+      "hash": "5Jv4SXwGpHkf7rDTL8oKz5W1bdZZ1SAtR8TxEYi1qXawneQVmBM2",
+      "id": "Av0A7xwNECANhB5c+a9jkfRch6zmasBthny2lLy1wd2HRovOUwEB/s4VAP358gdaIgEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAvpRzpf2YiDH2MS/B8x/oLNHasL+sn1zx56YnpwrqVAcA/ICS5026QwAAECANhB5c+a9jkfRch6zmasBthny2lLy1wd2HRovOUwEBmoraG51sAuF4G4N8sulJrVNIWR6HcVnwv2RQjsw78ChhnlRnItMXnmsD8UmV3xJsltfwWu5dxWdBI9gXz5JwMw==",
+      "kind": "PAYMENT",
+      "memo": "E4YM2vTHhWEg66xpj52JErHUBU4pZ1yageL4TVDDpTTSsv8mK6YaH",
+      "nonce": 5582,
+      "receiver": {
+       "publicKey": "B62qpqndkVXkWqEQM3R9KBroaaHcBTaa5BUAaqnVpGt1sKMNYMytNSs"
+      },
+      "source": {
+       "publicKey": "B62qizfqoMPyyFre9pRruPkPfbjsQZtSn5gatraNyTmeypT3Bim3B6G"
+      }
+     }
+    ],
+    "zkappCommands": []
+   }
+  }
+ }
+}

@@ -22,6 +22,7 @@ import {
   NodesOverviewLedgerStepState,
 } from '@shared/types/nodes/dashboard/nodes-overview-ledger.type';
 import { NodeDetailsResponse } from '@app/app.service';
+import { restoreSummary } from '@shared/helpers/restore.helper';
 
 @Injectable({
   providedIn: 'root',
@@ -106,7 +107,9 @@ export class NodesOverviewService {
           ? nodeDetails.transition_frontier.sync.phase
           : hasValue(node.synced)
             ? NodesOverviewNodeKindType.SYNCED
-            : node.kind,
+            : node.kind === 'Restored'
+              ? NodesOverviewNodeKindType.CATCHUP
+              : node.kind,
         snarks: nodeDetails?.snark_pool.snarks,
         transactions: nodeDetails?.transaction_pool.transactions,
         bestTipReceived: toReadableDate(node.best_tip_received / ONE_MILLION),
@@ -131,8 +134,12 @@ export class NodesOverviewService {
           (block: any) =>
             block.status === NodesOverviewNodeBlockStatus.FETCHING,
         ).length,
-        ledgers: this.getLedgers(node.ledgers),
+        ledgers: this.getLedgers(
+          node.ledgers,
+          !restoreSummary(node.restored)?.failed,
+        ),
         blocks,
+        restored: restoreSummary(node.restored),
       } as NodesOverviewNode;
     });
   }
@@ -148,7 +155,14 @@ export class NodesOverviewService {
     }
   }
 
-  private getLedgers(ledgers: any): NodesOverviewLedger {
+  /**
+   * `storeUsed`: false when a restore's replay failed, so the ledgers it
+   * loaded are not the node's (the node syncs them from the network).
+   */
+  private getLedgers(
+    ledgers: any,
+    storeUsed: boolean = true,
+  ): NodesOverviewLedger {
     const ledger = {} as NodesOverviewLedger;
 
     const epochLedger = this.getSnarkedLedgerStep(ledgers.root);
@@ -226,6 +240,25 @@ export class NodesOverviewService {
       ledger.stakingEpoch.totalTime =
         ledger.stakingEpoch.snarked.fetchHashesDuration +
         ledger.stakingEpoch.snarked.fetchAccountsDuration;
+    }
+
+    // A restart from saved state loaded these ledgers instead (F-dash3).
+    const fromStore = {
+      state: NodesOverviewLedgerStepState.SUCCESS,
+      fromStore: true,
+    };
+    if (!storeUsed) {
+      return ledger;
+    }
+    if (ledgers.staking_epoch?.from_store) {
+      Object.assign(ledger.stakingEpoch, fromStore);
+    }
+    if (ledgers.next_epoch?.from_store) {
+      Object.assign(ledger.nextEpoch, fromStore);
+    }
+    if (ledgers.root?.from_store) {
+      Object.assign(ledger.rootSnarked, fromStore);
+      Object.assign(ledger.rootStaged, fromStore);
     }
 
     return ledger;

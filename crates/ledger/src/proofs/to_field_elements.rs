@@ -848,6 +848,94 @@ impl ToFieldElements<Fp> for StepMainStatement {
     }
 }
 
+/// A side-loaded proof's evaluations as `Plonk_types.Evals.typ` lays them
+/// out with `Maybe` feature flags: the evaluations every circuit has, then
+/// each optional one as an `Opt.Maybe`, its flag and then its value or the
+/// dummy zero. Whichever gates the proof's circuit uses, the layout is the
+/// same (ZK1).
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/kimchi_backend/common/plonk_types.ml#L1209-L1255>
+fn maybe_evals_to_field_elements(
+    evals: &ProofEvaluations<PointEvaluations<Vec<Fp>>>,
+    fields: &mut Vec<Fp>,
+) {
+    let ProofEvaluations {
+        public: _,
+        w,
+        coefficients,
+        z,
+        s,
+        generic_selector,
+        poseidon_selector,
+        complete_add_selector,
+        mul_selector,
+        emul_selector,
+        endomul_scalar_selector,
+        range_check0_selector,
+        range_check1_selector,
+        foreign_field_add_selector,
+        foreign_field_mul_selector,
+        xor_selector,
+        rot_selector,
+        lookup_aggregation,
+        lookup_table,
+        lookup_sorted,
+        runtime_lookup_table,
+        runtime_lookup_table_selector,
+        xor_lookup_selector,
+        lookup_gate_lookup_selector,
+        range_check_lookup_selector,
+        foreign_field_mul_lookup_selector,
+    } = evals;
+
+    w.to_field_elements(fields);
+    coefficients.to_field_elements(fields);
+    z.to_field_elements(fields);
+    s.to_field_elements(fields);
+    for selector in [
+        generic_selector,
+        poseidon_selector,
+        complete_add_selector,
+        mul_selector,
+        emul_selector,
+        endomul_scalar_selector,
+    ] {
+        selector.to_field_elements(fields);
+    }
+
+    let optional = [
+        range_check0_selector,
+        range_check1_selector,
+        foreign_field_add_selector,
+        foreign_field_mul_selector,
+        xor_selector,
+        rot_selector,
+        lookup_aggregation,
+        lookup_table,
+    ]
+    .into_iter()
+    .chain(lookup_sorted)
+    .chain([
+        runtime_lookup_table,
+        runtime_lookup_table_selector,
+        xor_lookup_selector,
+        lookup_gate_lookup_selector,
+        range_check_lookup_selector,
+        foreign_field_mul_lookup_selector,
+    ]);
+    for eval in optional {
+        match eval {
+            Some(eval) => {
+                true.to_field_elements(fields);
+                eval.to_field_elements(fields);
+            }
+            // The flag, then the dummy zero at zeta and zeta_omega: one
+            // chunk, as for every side-loaded key
+            None => [Fp::zero(); 3].to_field_elements(fields),
+        }
+    }
+}
+
 impl ToFieldElements<Fp> for PerProofWitness {
     fn to_field_elements(&self, fields: &mut Vec<Fp>) {
         let Self {
@@ -924,8 +1012,8 @@ impl ToFieldElements<Fp> for PerProofWitness {
                             zeta_to_srs_length,
                             zeta_to_domain_size,
                             perm,
-                            lookup: _,
-                            feature_flags: _,
+                            lookup,
+                            feature_flags,
                         },
                     combined_inner_product,
                     b,
@@ -947,18 +1035,19 @@ impl ToFieldElements<Fp> for PerProofWitness {
         perm.to_field_elements(fields);
         match hack_feature_flags {
             OptFlag::Maybe => {
-                // This block is used only when proving zkapps using proof authorization.
-                // <https://github.com/MinaProtocol/mina/blob/126d4d2e3495d03adc8f9597113d58a7e8fbcfd0/src/lib/pickles/composition_types/composition_types.ml#L150-L155>
-                // <https://github.com/MinaProtocol/mina/blob/126d4d2e3495d03adc8f9597113d58a7e8fbcfd0/src/lib/pickles/per_proof_witness.ml#L149>
-                // <https://github.com/MinaProtocol/mina/blob/a51f09d09e6ae83362ea74eaca072c8e40d08b52/src/lib/pickles_types/plonk_types.ml#L104-L119>
-                // <https://github.com/MinaProtocol/mina/blob/a51f09d09e6ae83362ea74eaca072c8e40d08b52/src/lib/pickles_types/plonk_types.ml#L253-L303>
-
-                // the first 8 elements are the `Plonk_types.Features.typ`
-                // The last 2 elements are the `Plonk_types.Opt.typ`
-                // So far I've only seen proofs without feature flags.
-                // TODO: Are feature flags ever used in the server node ? Or they are only used in browser/client ?
-                let zeros: [u64; 10] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-                zeros.to_field_elements(fields);
+                // A side-loaded proof (a zkApp's proof authorization): its
+                // feature flags, `Plonk_types.Features.typ`, and its joint
+                // combiner, an `Opt.Maybe`: the flag, then the challenge or
+                // the dummy zero. The flags are the proof's: a zkApp circuit
+                // may use custom gates and lookups (ZK1).
+                // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/pickles/composition_types/composition_types.ml#L141-L161>
+                // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/plonkish_prelude/opt.ml#L102-L116>
+                feature_flags.to_field_elements(fields);
+                lookup.is_some().to_field_elements(fields);
+                lookup
+                    .as_ref()
+                    .map_or(Fp::zero(), two_u64_to_field::<Fp, _>)
+                    .to_field_elements(fields);
             }
             OptFlag::Yes => unimplemented!(), // Is that used ?
             OptFlag::No => {}
@@ -1001,16 +1090,10 @@ impl ToFieldElements<Fp> for PerProofWitness {
         } = prev_proof_evals;
 
         public_input.to_field_elements(fields);
-        evals.to_field_elements(fields);
         match hack_feature_flags {
-            OptFlag::Maybe => {
-                // See above.
-                // <https://github.com/MinaProtocol/mina/blob/a51f09d09e6ae83362ea74eaca072c8e40d08b52/src/lib/pickles_types/plonk_types.ml#L1028-L1046>
-                let zeros: [u64; 57] = [0; 57];
-                zeros.to_field_elements(fields);
-            }
+            OptFlag::Maybe => maybe_evals_to_field_elements(evals, fields),
             OptFlag::Yes => unimplemented!(), // Is that used ?
-            OptFlag::No => {}
+            OptFlag::No => evals.to_field_elements(fields),
         }
         ft_eval1.to_field_elements(fields);
         prev_challenges.to_field_elements(fields);

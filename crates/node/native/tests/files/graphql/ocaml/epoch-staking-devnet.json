@@ -1,0 +1,50 @@
+{
+ "source": "https://devnet-plain-1.gcp.o1test.net/graphql (OCaml 4.0.2, 84b8d969)",
+ "capturedAt": "2026-10-21T23:50:55.875014Z",
+ "query": "query EpochStaking { selfDelegated: account(publicKey: \"B62qkiqPXFDayJV8JutYvjerERZ35EKrdmdcXh3j1rDUHRs1bJkFFcX\") { publicKey stakingActive delegate epochDelegateAccount { publicKey stakingActive } lastEpochDelegators { publicKey } } delegatesOther: account(publicKey: \"B62qjxMvVeRCVriY3nuU5Tzu7PMdfgwjcQrPj15Tsemg1pNzALTH9U4\") { publicKey stakingActive delegate epochDelegateAccount { publicKey stakingActive } lastEpochDelegators { publicKey } } notInStakingLedger: account(publicKey: \"B62qikRf8iN1HPGzRgFH3QPguaNoqGBmYL3t8vrKMCF3fZNi3M6B46E\") { publicKey stakingActive delegate epochDelegateAccount { publicKey stakingActive } lastEpochDelegators { publicKey } } timed: account(publicKey: \"B62qodfNRxosKcrfASzBdvxwFamY9TqXbbyhXv2j3mJZrBMsWC1uZnr\") { publicKey stakingActive delegate epochDelegateAccount { publicKey stakingActive } lastEpochDelegators { publicKey } } daemonStatus { blockProductionKeys nextBlockProduction { times { epoch } } } }",
+ "response": {
+  "data": {
+   "selfDelegated": {
+    "publicKey": "B62qkiqPXFDayJV8JutYvjerERZ35EKrdmdcXh3j1rDUHRs1bJkFFcX",
+    "stakingActive": false,
+    "delegate": "B62qkiqPXFDayJV8JutYvjerERZ35EKrdmdcXh3j1rDUHRs1bJkFFcX",
+    "epochDelegateAccount": {
+     "publicKey": "B62qkiqPXFDayJV8JutYvjerERZ35EKrdmdcXh3j1rDUHRs1bJkFFcX",
+     "stakingActive": false
+    },
+    "lastEpochDelegators": []
+   },
+   "delegatesOther": {
+    "publicKey": "B62qjxMvVeRCVriY3nuU5Tzu7PMdfgwjcQrPj15Tsemg1pNzALTH9U4",
+    "stakingActive": false,
+    "delegate": "B62qnNjzScBuJNA78nZ2CSihG7Z4dNPdj66NpJW38fNSRmSTPHk1WCC",
+    "epochDelegateAccount": {
+     "publicKey": "B62qnNjzScBuJNA78nZ2CSihG7Z4dNPdj66NpJW38fNSRmSTPHk1WCC",
+     "stakingActive": false
+    },
+    "lastEpochDelegators": []
+   },
+   "notInStakingLedger": {
+    "publicKey": "B62qikRf8iN1HPGzRgFH3QPguaNoqGBmYL3t8vrKMCF3fZNi3M6B46E",
+    "stakingActive": false,
+    "delegate": "B62qikRf8iN1HPGzRgFH3QPguaNoqGBmYL3t8vrKMCF3fZNi3M6B46E",
+    "epochDelegateAccount": null,
+    "lastEpochDelegators": []
+   },
+   "timed": {
+    "publicKey": "B62qodfNRxosKcrfASzBdvxwFamY9TqXbbyhXv2j3mJZrBMsWC1uZnr",
+    "stakingActive": false,
+    "delegate": "B62qpfenMTTuG2RgaJJaatbJ7KheZ4K2a43dsK48keARjk8mZ4Mhjcr",
+    "epochDelegateAccount": {
+     "publicKey": "B62qpfenMTTuG2RgaJJaatbJ7KheZ4K2a43dsK48keARjk8mZ4Mhjcr",
+     "stakingActive": false
+    },
+    "lastEpochDelegators": []
+   },
+   "daemonStatus": {
+    "blockProductionKeys": [],
+    "nextBlockProduction": null
+   }
+  }
+ }
+}

@@ -9,10 +9,7 @@ use axum::{
 };
 use utoipa_axum::{router::OpenApiRouter, routes};
 
-use mina_node::{
-    core::snark::SnarkJobId,
-    rpc::{RpcRequest, RpcSnarkPoolGetResponse, RpcSnarkPoolJobGetResponse},
-};
+use mina_node::rpc::{RpcRequest, RpcSnarkPoolGetResponse, RpcSnarkPoolJobGetResponse};
 
 use crate::http_server::{AppResult, AppState};
 
@@ -50,7 +47,7 @@ async fn jobs(State(state): State<AppState>) -> AppResult<Json<RpcSnarkPoolGetRe
 )]
 async fn job(
     State(state): State<AppState>,
-    Path(job_id): Path<SnarkJobId>,
+    Path(job_id): Path<crate::input_limits::JobId>,
 ) -> AppResult<Json<RpcSnarkPoolJobGetResponse>> {
-    jsonify_rpc!(state, RpcRequest::SnarkPoolJobGet { job_id })
+    jsonify_rpc!(state, RpcRequest::SnarkPoolJobGet { job_id: job_id.0 })
 }

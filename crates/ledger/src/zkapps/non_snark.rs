@@ -1,5 +1,6 @@
 #![allow(unused)]
 
+use crate::ZKAPP_STATE_SIZE;
 use std::marker::PhantomData;
 
 use mina_curves::pasta::Fp;
@@ -728,7 +729,7 @@ impl AccountInterface for Account {
         self.zkapp_mut().proved_state = proved_state;
     }
 
-    fn app_state(&self) -> [Fp; 8] {
+    fn app_state(&self) -> [Fp; ZKAPP_STATE_SIZE] {
         self.zkapp().app_state
     }
 
@@ -847,6 +848,13 @@ impl ControllerInterface for NonSnarkController {
         w: &mut Self::W,
     ) -> AuthRequired {
         auth.verification_key_perm_fallback_to_signature_with_older_version()
+    }
+
+    fn access_perm_fallback_to_signature_with_older_version(
+        auth: &AuthRequired,
+        _w: &mut Self::W,
+    ) -> AuthRequired {
+        auth.access_perm_fallback_to_signature_with_older_version()
     }
 }
 

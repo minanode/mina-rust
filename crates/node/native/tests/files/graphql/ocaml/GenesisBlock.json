@@ -1,0 +1,51 @@
+{
+ "data": {
+  "genesisBlock": {
+   "commandTransactionCount": 0,
+   "creatorAccount": {
+    "publicKey": "B62qiy32p8kAKnny8ZFwoMhYpBppM1DWVCqAPBYNcXnsAHhnfAAuXgg"
+   },
+   "protocolState": {
+    "blockchainState": {
+     "date": "1788458400000",
+     "snarkedLedgerHash": "jwo3EM3zXkK5gpQYZHQP9KJVgH4ZCfv5bMgvyy3Gh2dAWU6AgyN",
+     "stagedLedgerHash": "jwo3EM3zXkK5gpQYZHQP9KJVgH4ZCfv5bMgvyy3Gh2dAWU6AgyN",
+     "utcDate": "1788458400000"
+    },
+    "consensusState": {
+     "blockCreator": "B62qiy32p8kAKnny8ZFwoMhYpBppM1DWVCqAPBYNcXnsAHhnfAAuXgg",
+     "blockHeight": "548147",
+     "coinbaseReceiever": "B62qiy32p8kAKnny8ZFwoMhYpBppM1DWVCqAPBYNcXnsAHhnfAAuXgg",
+     "epoch": "0",
+     "nextEpochData": {
+      "ledger": {
+       "hash": "jwCRaGZjgN6fe1ZQWGvti47ERfzdPMbffeL6BJPNj8sk6SLNX8Z"
+      },
+      "seed": "2vaqXMFj2itE1uQ3ZtzZzFcDXFB9XnJeeCgPnbtMnd3dqfHpYDi2"
+     },
+     "slot": "0",
+     "slotSinceGenesis": "958440",
+     "stakingEpochData": {
+      "epochLength": "1",
+      "ledger": {
+       "hash": "jwydedrpUSNZr49ZgNsmZjMVX5BEZp5cwGN68Z7hhU9kp3eAtBa"
+      },
+      "seed": "2vaPBM2CkpnPhnPsrDEBwhX8d5XBP6UaedLCpVu3Y9bARWPCrQCC"
+     }
+    },
+    "previousStateHash": "3NKHyxzgM9z4C1wUz5ZhJBmNhtDzDQGr1PGvWRwiCUcFvsdTco2T"
+   },
+   "snarkJobs": [],
+   "stateHash": "3NLntCRR9RvjtzP24Q1dRvdhmpjiPvfKGaJmAZuJgYoqGpevqDR7",
+   "transactions": {
+    "coinbase": "360000000000",
+    "coinbaseReceiverAccount": {
+     "publicKey": "B62qiy32p8kAKnny8ZFwoMhYpBppM1DWVCqAPBYNcXnsAHhnfAAuXgg"
+    },
+    "feeTransfer": [],
+    "userCommands": [],
+    "zkappCommands": []
+   }
+  }
+ }
+}

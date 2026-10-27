@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use ark_ff::Zero;
@@ -29,31 +29,55 @@ use crate::{
 
 use super::{sparse_ledger_impl::SparseLedgerImpl, LedgerIntf};
 
+/// A sparse ledger. Clones share it: a clone of a scan state (its
+/// `Arc<TransactionWithWitness>` jobs hold the witnesses) is shallow.
+///
+/// Its lock is taken with a blocking `lock()`, never `try_lock()`: a scan
+/// state and its clones can be read from two threads at once. The frontier
+/// store's thread converts a checkpoint's clone of the root's scan state to
+/// wire types while the ledger thread may convert the same jobs (a peer's
+/// staged ledger request, a commit's available jobs) or copy them
+/// (`copy_content`), and a `try_lock` would panic one of the two threads. No
+/// path holds two of these locks at once except `eq`, which takes them in
+/// address order, so blocking cannot deadlock.
 #[derive(Clone, Debug)]
 pub struct SparseLedger {
-    // Using a mutex for now but this can be replaced with a RefCell
+    // A mutex, not a `RefCell`: clones are used from more than one thread.
     inner: Arc<Mutex<SparseLedgerImpl<AccountId, Account>>>,
 }
 
 impl PartialEq for SparseLedger {
     fn eq(&self, other: &Self) -> bool {
-        if Arc::as_ptr(&self.inner) == Arc::as_ptr(&other.inner) {
+        if Arc::ptr_eq(&self.inner, &other.inner) {
             return true;
         }
 
-        let this = self.inner.try_lock().unwrap();
-        let other = other.inner.try_lock().unwrap();
+        // Both locks are held at once, so they are taken in address order:
+        // two threads comparing the same two ledgers either way round can't
+        // deadlock.
+        let (this, other) = if Arc::as_ptr(&self.inner) < Arc::as_ptr(&other.inner) {
+            let this = self.lock();
+            (this, other.lock())
+        } else {
+            let other = other.lock();
+            (self.lock(), other)
+        };
 
         this.eq(&other)
     }
 }
 
 impl SparseLedger {
+    /// Blocks while another thread holds the lock (see [`SparseLedger`]).
+    fn lock(&self) -> MutexGuard<'_, SparseLedgerImpl<AccountId, Account>> {
+        self.inner.lock().expect("sparse ledger lock poisoned")
+    }
+
     fn with<F, R>(&self, fun: F) -> R
     where
         F: FnOnce(&mut SparseLedgerImpl<AccountId, Account>) -> R,
     {
-        let mut inner = self.inner.try_lock().expect("lock failed");
+        let mut inner = self.lock();
         fun(&mut inner)
     }
 }
@@ -119,6 +143,13 @@ impl SparseLedger {
 
     pub fn merkle_root(&mut self) -> Fp {
         self.with(|this| this.merkle_root())
+    }
+
+    /// Read an account through its sparse-ledger index, including an empty
+    /// account at a witnessed new-account location. Unlike `get_account`,
+    /// absence of a witness entry is distinguishable from an empty account.
+    pub fn get_account_if_present(&self, key: &AccountId) -> Option<Box<Account>> {
+        self.with(|this| this.get_account_if_present(key))
     }
 
     pub fn get_account(&self, key: &AccountId) -> Box<Account> {
@@ -303,7 +334,9 @@ impl From<&SparseLedger> for mina_p2p_messages::v2::MinaBaseSparseLedgerBaseStab
             MinaBaseSparseLedgerBaseStableV2Tree,
         };
 
-        let value = value.inner.try_lock().unwrap();
+        // Blocking: the store thread converts a scan state's clone while the
+        // ledger thread may convert the same witness (see `SparseLedger`).
+        let value = value.lock();
 
         assert!(value.hashes_matrix.get(&Address::root()).is_some());
 
@@ -454,5 +487,61 @@ impl TryFrom<&mina_p2p_messages::v2::MinaBaseSparseLedgerBaseStableV2> for Spars
                 indexes_list,
             })),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Barrier;
+
+    use mina_p2p_messages::v2::MinaBaseSparseLedgerBaseStableV2;
+
+    use super::*;
+    use crate::{BaseLedger, Mask};
+
+    fn sparse_ledger(num_accounts: usize) -> SparseLedger {
+        let mut mask = Mask::new_unattached(constraint_constants().ledger_depth as usize);
+        let ids = (0..num_accounts)
+            .map(|_| {
+                let account = Account::rand();
+                let id = account.id();
+                mask.get_or_create_account(id.clone(), account).unwrap();
+                id
+            })
+            .collect::<Vec<_>>();
+        let mut ledger = SparseLedger::of_ledger_subset_exn(mask, &ids);
+        ledger.merkle_root();
+        ledger
+    }
+
+    /// Clones share the lock, and two threads may use them at once: each
+    /// waits its turn (with `try_lock`, one of them panicked). Comparing two
+    /// ledgers takes both locks, in address order, so two threads comparing
+    /// them either way round don't deadlock.
+    #[test]
+    fn clones_are_used_from_two_threads_at_once() {
+        let ledger = sparse_ledger(50);
+        let other = ledger.copy_content();
+        let want = MinaBaseSparseLedgerBaseStableV2::from(&ledger);
+        let start = &Barrier::new(2);
+        for _ in 0..200 {
+            let (clone, other_clone) = (ledger.clone(), other.clone());
+            std::thread::scope(|scope| {
+                let thread = scope.spawn(move || {
+                    start.wait();
+                    let converted = MinaBaseSparseLedgerBaseStableV2::from(&clone);
+                    let equal = clone == other_clone;
+                    (converted, equal, clone.copy_content().merkle_root())
+                });
+                start.wait();
+                let converted = MinaBaseSparseLedgerBaseStableV2::from(&ledger);
+                let equal = other == ledger;
+                let root = ledger.copy_content().merkle_root();
+                let (thread_converted, thread_equal, thread_root) = thread.join().unwrap();
+                assert!(converted == want && thread_converted == want);
+                assert!(equal && thread_equal);
+                assert_eq!(root, thread_root);
+            });
+        }
     }
 }

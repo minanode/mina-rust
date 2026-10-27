@@ -66,12 +66,20 @@ API interactively using one of these viewers:
 The OpenAPI spec is also available as
 [raw JSON](pathname:///openapi/openapi.json).
 
-When running a node locally, the same documentation is available at:
+A node serves the spec itself at `http://localhost:3000/api-docs/openapi.json`;
+use it with any OpenAPI viewer, or read the viewers above.
 
-- `http://localhost:3000/api-docs/swagger-ui`
-- `http://localhost:3000/api-docs/scalar`
-- `http://localhost:3000/api-docs/stoplight`
-- `http://localhost:3000/api-docs/openapi.json`
+The node's own API docs UIs are developer features, left out of the default
+build:
+
+- Swagger UI (`/api-docs/swagger-ui`) embeds its files, about 11 MB of the
+  binary:
+  `cargo build --release -p mina-cli --features mina-node-native/swagger-ui`.
+- Scalar (`/api-docs/scalar`) and Stoplight Elements (`/api-docs/stoplight`)
+  load their scripts from CDNs, which would then run on the node's own address,
+  where they could change the SNARK worker; the node doesn't serve them while
+  `--allow-worker-control` is on, even when built in. `openapi-uis` adds all
+  three: `--features mina-node-native/openapi-uis`.
 
 ## Endpoint reference
 
@@ -122,8 +130,10 @@ in the Rust API documentation.
 
 #### `GET /healthz`
 
-Health check endpoint for load balancers and orchestration systems. Returns
-empty response with status code 200 if healthy, 503 if unhealthy.
+Liveness endpoint for orchestration systems. Returns an empty response with
+status code 200 whenever the node answers, including while it bootstraps,
+catches up or has no peers, so a liveness probe never restarts a node for being
+unsynced. Use `/readyz` for sync and peers.
 
 <CodeBlock language="bash" title="scripts/rpc-api/curl/healthz.sh">
   {RpcHealthz}
@@ -133,14 +143,16 @@ This endpoint returns no body, only an HTTP status code.
 
 #### `GET /readyz`
 
-Readiness check endpoint. Returns 200 when the node is ready to serve requests,
-503 otherwise.
+Readiness endpoint. Returns 200 when the node reached `Synced` in the last 30
+minutes and has at least one ready peer, otherwise 503 with a JSON `error`
+listing every failing condition (for example `not synced, peer count 0 < 1`).
+`Synced` is the phase `/status` reports, below.
 
 <CodeBlock language="bash" title="scripts/rpc-api/curl/readyz.sh">
   {RpcReadyz}
 </CodeBlock>
 
-This endpoint returns no body, only an HTTP status code.
+A ready node returns no body, only an HTTP status code.
 
 ### Node status
 
@@ -148,6 +160,18 @@ This endpoint returns no body, only an HTTP status code.
 
 Get comprehensive node status including sync state, peer information, and
 resource usage.
+
+`transition_frontier.sync.phase` is `Connecting` (no ready peer), `Listening`
+(no peer has sent a best tip yet), `Bootstrap`, `Catchup` or `Synced`, as
+OCaml's sync status. When its sync is done, the node says `Listening` until a
+peer has sent it a best tip, so never `Synced` right after a start, on the
+genesis block or on a tip restored from the frontier store; on the genesis
+block, `Bootstrap` while a peer is beyond it; `Catchup` while a block from a
+peer, its proof verified, is better than its tip; and `Synced` otherwise. Peers'
+unverified tips don't keep a node out of `Synced`. `sync.status` names the
+sync's own state (for example `StakingLedgerPending`), or the phase when the
+sync is done but the phase is not `Synced`. GraphQL `syncStatus` and the
+`mina_sync_status` metric report the same phase.
 
 <CodeBlock language="bash" title="scripts/rpc-api/curl/status.sh">
   {RpcStatus}

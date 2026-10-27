@@ -1,0 +1,241 @@
+[package]
+name = "rustrtc"
+version = "0.4.9"
+edition = "2024"
+authors = ["jinti<shenjindi@fourz.cn>"]
+repository = "https://github.com/restsend/rustrtc"
+description = "A high-performance real-time communication library — WebRTC, RTP/SRTP, T.38 Fax, and RTP Latching"
+readme = "README.md"
+keywords = ["rtp", "srtp", "webrtc", "fax", "turn"]
+categories = ["network-programming"]
+license = "MIT"
+exclude = ["flamegraph.svg","examples", "tests", "rustrtc_sfu.png", "output.ulaw"]
+
+[dependencies]
+anyhow = { version = "1", optional = true }
+thiserror = { version = "2", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+tokio = { version = "1", optional = true, features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "net",
+    "io-util",
+] }
+tracing = { version = "0.1", default-features = false, features = ["attributes"] }
+async-trait = "0.1"
+bytes = { version = "1", default-features = false }
+aes = "0.9.2"
+ctr = "0.10"
+hmac = "0.13.0"
+sha1 = "0.11.0"
+sha2 = "0.11.0"
+md5 = { package = "md-5", version = "0.11.0" }
+p256 = { version = "0.13.2", optional = true, default-features = false, features = ["alloc", "ecdh", "ecdsa", "pkcs8"] }
+aes-gcm = { version = "0.10.3", default-features = false, features = ["aes", "alloc"] }
+futures = { version = "0.3.32", default-features = false, features = ["alloc"] }
+crc32fast = { version = "1.5.0", default-features = false }
+base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
+local-ip-address = { version = "0.6", optional = true }
+rand = { version = "0.10.1", optional = true }
+parking_lot = { version = "0.12", optional = true }
+socket2 = { version = "0.6", optional = true }
+igd = { version = "0.12", optional = true, features = ["aio"] }
+rcgen = { version = "0.14.8", optional = true, default-features = false, features = [
+    "pem",
+    "ring",
+] }
+
+[dev-dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+turn = "0.17.1"
+webrtc = "0.17.1"
+reqwest = { version = "0.13", default-features = false, features = [
+    "json",
+    "charset",
+    "http2",
+    "system-proxy",
+    "rustls-no-provider",
+] }
+webrtc-util = "0.17.1"
+env_logger = "0.11.10"
+dtls = "0.17.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+indicatif = "0.18.4"
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "tls12",
+    "logging",
+] }
+hyper-rustls = { version = "0.27", default-features = false, features = [
+    "http1",
+    "tls12",
+    "logging",
+    "native-tokio",
+] }
+tokio-rustls = { version = "0.26", default-features = false, features = [
+    "ring",
+    "tls12",
+    "logging",
+] }
+serial_test = "3.4.0"
+socket2 = "0.6"
+tower-http = { version = "0.6", features = ["fs"] }
+
+[features]
+default = ["std"]
+# Host std support; the no_std build (WP2) currently exposes the RTP/SRTP/RTX
+# data plane only — more modules graduate as their platform seams land.
+std = [
+    "dep:anyhow",
+    "dep:tokio",
+    "dep:local-ip-address",
+    "dep:parking_lot",
+    "dep:socket2",
+    "dep:igd",
+    "dep:rcgen",
+    "dep:rand",
+    "crypto-p256",
+    "dtls",
+    "bytes/std",
+    "bytes/serde",
+]
+simulator = []
+t38 = []
+t38-interop = []
+# Self-implemented DTLS transport (transports/dtls). Crypto goes through the
+# platform::crypto seam: enable `crypto-p256` for the pure-Rust backend or
+# inject one via platform::crypto::set_crypto (hardware-accelerated /
+# mbedtls-backed) — the p256 dependency chain then stays out of the build.
+dtls = []
+crypto-p256 = ["dep:p256"]
+# Test-only instrumentation ([`DTLS_MONITOR_ITERATIONS`]): lets downstream
+# integration tests (e.g. restsend-call's TURN relay e2e) assert that the
+# connected-state DTLS monitor parks instead of busy-looping. Inert (a single
+# relaxed atomic add per monitor iteration) and off by default.
+test-hooks = []
+
+# The T.38 benchmark imports `rustrtc::t38`, which only exists with the
+# feature enabled; without this gate plain `cargo test/build` fails on it.
+[[example]]
+name = "t38_bench"
+required-features = ["t38"]
+
+# Local dev/test build speedups. These only apply when rustrtc is the root crate
+# (e.g. `cargo test` here); downstream consumers use their own profiles. The big
+# win is `split-debuginfo = "unpacked"`, which moves debug info out of the
+# binary and dramatically cuts link time for the large test binary.
+[profile.dev]
+split-debuginfo = "unpacked"
+
+[profile.test]
+split-debuginfo = "unpacked"
+
+# Optimized release profile for the high-throughput media/crypto hot paths.
+# `fat` LTO + single codegen unit enable cross-crate inlining across the many
+# small RustCrypto crates and the RTP/SRTP/SCTP hot paths.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
+[profile.bench]
+lto = "fat"
+codegen-units = 1
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "audio_saver"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "benchmark"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "datachannel_chat"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "datachannel_stress"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "dtls_srtp_bench"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "echo_server"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "interop_pion"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "latency_optimization"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "repro_sdp"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "rewrite_relay_e2e"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "rtp_bench_echo"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "rtp_bench_generator"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "rtp_bench_sut"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "rtp_pc_echo_bench"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "rtp_play"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "rtp_reinvite_demo"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "rtp_track_event"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "rustrtc_sfu"
+required-features = ["std"]
+
+# Host-only demo: gated out of the no_std build (WP2/G1).
+[[example]]
+name = "sctp_benchmark"
+required-features = ["std"]

@@ -26,7 +26,7 @@ pub struct StagedLedgerPartsBase {
 pub struct ScanStateBase {
     pub trees: UInt32,
     pub acc: Option<(
-        Box<v2::TransactionSnarkScanStateLedgerProofWithSokMessageStableV2>,
+        Box<v2::LedgerProofProdStableV2>,
         List<v2::TransactionSnarkScanStateTransactionWithWitnessStableV2>,
     )>,
     pub curr_job_seq_no: UInt64,

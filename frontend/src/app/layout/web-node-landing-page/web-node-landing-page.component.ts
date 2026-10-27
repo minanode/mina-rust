@@ -8,10 +8,12 @@ import {
 import { StoreDispatcher } from '@shared/base-classes/store-dispatcher.class';
 import { AppSelectors } from '@app/app.state';
 import { filter } from 'rxjs';
+import { BrandLogoComponent } from '@shared/components/brand-logo/brand-logo.component';
 
 @Component({
   selector: 'mina-web-node-landing-page',
   standalone: true,
+  imports: [BrandLogoComponent],
   templateUrl: './web-node-landing-page.component.html',
   styleUrl: './web-node-landing-page.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

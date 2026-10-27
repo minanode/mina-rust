@@ -76,6 +76,7 @@ pub mod account;
 
 pub mod recorder;
 pub mod stats;
+pub mod verification;
 
 pub mod block_producer;
 pub mod block_producer_effectful;
@@ -87,6 +88,8 @@ pub mod ledger;
 pub mod ledger_effectful;
 pub mod logger;
 pub mod p2p;
+pub mod persist;
+pub mod proof_memory;
 pub mod rpc;
 pub mod rpc_effectful;
 pub mod snark;

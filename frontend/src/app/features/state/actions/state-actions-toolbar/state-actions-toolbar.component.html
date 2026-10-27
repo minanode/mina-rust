@@ -9,7 +9,9 @@
   >
     <button
       class="h-sm w-sm fx-row-full-cent"
-      [class.disabled]="!earliestSlot || activeSlot === 0"
+      [class.disabled]="
+        earliestSlot === undefined || activeSlot <= minRetainedSlot
+      "
       [tooltip]="'Prev slot'"
       [showDelay]="500"
       (click)="getSlot(activeSlot - 1)"

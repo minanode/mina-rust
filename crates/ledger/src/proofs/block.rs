@@ -35,7 +35,10 @@ use crate::{
         scan_state::transaction_snark::{
             validate_ledgers_at_merge_checked, Registers, SokDigest, Statement, StatementLedgers,
         },
-        transaction_logic::protocol_state::{EpochLedger, ProtocolStateView},
+        transaction_logic::{
+            local_state::LocalStateSignedAmountsVar,
+            protocol_state::{EpochLedger, ProtocolStateView},
+        },
     },
     staged_ledger::hash::StagedLedgerHash,
     zkapps::interfaces::{SignedAmountBranchParam, SignedAmountInterface},
@@ -198,9 +201,7 @@ fn ledger_proof_opt(
     match proof {
         Some(proof) => {
             let statement: Statement<SokDigest> = (&proof.0.statement).try_into()?;
-            let p: &v2::TransactionSnarkProofStableV2 = &proof.0.proof;
-            // TODO: Don't clone the proof here
-            Ok((statement, Arc::new(p.clone())))
+            Ok((statement, proof.0.proof.get()?))
         }
         None => {
             let statement: Statement<()> =
@@ -255,32 +256,69 @@ fn checked_hash_protocol_state2(
     (hash, body_hash)
 }
 
-fn non_pc_registers_equal_var(t1: &Registers, t2: &Registers, w: &mut Witness<Fp>) -> Boolean {
+/// A ledger statement in the block step circuit, with its five signed amounts
+/// as variables: the `excess` and `supply_increase` of its source and target
+/// local states, and its `supply_increase`.
+///
+/// OCaml's signed amount variables cache their field value, so comparing a
+/// statement a second time pushes no value for its signed amounts
+/// ([`LocalStateSignedAmountsVar`]). Since Mesa the block step compares the
+/// previous ledger statement twice, so it makes one `LedgerStatementVar` of it
+/// and passes it to both comparisons; a second conversion would push its five
+/// values again (R15: 67 values for the second comparison instead of 62).
+struct LedgerStatementVar<'a> {
+    statement: &'a Statement<()>,
+    source: LocalStateSignedAmountsVar,
+    target: LocalStateSignedAmountsVar,
+    supply_increase: CheckedSigned<Fp, CheckedAmount<Fp>>,
+}
+
+impl<'a> LedgerStatementVar<'a> {
+    fn new(statement: &'a Statement<()>) -> Self {
+        Self {
+            statement,
+            source: statement.source.local_state.signed_amounts_var(),
+            target: statement.target.local_state.signed_amounts_var(),
+            supply_increase: statement.supply_increase.to_checked(),
+        }
+    }
+}
+
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/blockchain_snark/blockchain_snark_state.ml#L70-L83>
+fn non_pc_registers_equal_var(
+    (t1, a1): (&Registers, &LocalStateSignedAmountsVar),
+    (t2, a2): (&Registers, &LocalStateSignedAmountsVar),
+    w: &mut Witness<Fp>,
+) -> Boolean {
     let alls = [
         // t1.pending_coinbase_stack.equal_var(&t2.pending_coinbase_stack, w),
         field::equal(t1.first_pass_ledger, t2.first_pass_ledger, w),
         field::equal(t1.second_pass_ledger, t2.second_pass_ledger, w),
     ]
     .into_iter()
-    .chain(t1.local_state.checked_equal_prime(&t2.local_state, w))
+    .chain(
+        t1.local_state
+            .checked_equal_prime(a1, &t2.local_state, a2, w),
+    )
     .collect::<Vec<_>>();
 
     Boolean::all(&alls, w)
 }
 
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/blockchain_snark/blockchain_snark_state.ml#L85-L119>
 fn txn_statement_ledger_hashes_equal(
-    s1: &Statement<()>,
-    s2: &Statement<()>,
+    s1: &LedgerStatementVar,
+    s2: &LedgerStatementVar,
     w: &mut Witness<Fp>,
 ) -> Boolean {
-    let source_eq = non_pc_registers_equal_var(&s1.source, &s2.source, w);
-    let target_eq = non_pc_registers_equal_var(&s1.target, &s2.target, w);
-    let left_ledger_eq = field::equal(s1.connecting_ledger_left, s2.connecting_ledger_left, w);
-    let right_ledger_eq = field::equal(s1.connecting_ledger_right, s2.connecting_ledger_right, w);
-    let supply_increase_eq = s1
-        .supply_increase
-        .to_checked()
-        .equal(&s2.supply_increase.to_checked(), w);
+    let (t1, t2) = (s1.statement, s2.statement);
+    let source_eq =
+        non_pc_registers_equal_var((&t1.source, &s1.source), (&t2.source, &s2.source), w);
+    let target_eq =
+        non_pc_registers_equal_var((&t1.target, &s1.target), (&t2.target, &s2.target), w);
+    let left_ledger_eq = field::equal(t1.connecting_ledger_left, t2.connecting_ledger_left, w);
+    let right_ledger_eq = field::equal(t1.connecting_ledger_right, t2.connecting_ledger_right, w);
+    let supply_increase_eq = s1.supply_increase.equal(&s2.supply_increase, w);
 
     Boolean::all(
         &[
@@ -1634,17 +1672,21 @@ fn block_main<'a>(
         (&prev_state, previous_state_hash, &prev_state, body)
     };
 
-    let txn_stmt_ledger_hashes_didn_t_change = {
-        let s1: &Statement<()> = &previous_state.body.blockchain_state.ledger_proof_statement;
-        let s2: Statement<()> = txn_snark.clone().without_digest();
-        txn_statement_ledger_hashes_equal(s1, &s2, w)
-    };
+    // The previous ledger statement's variables: compared here with the
+    // transaction snark's statement, and again with the new state's below.
+    let previous_ledger_statement =
+        LedgerStatementVar::new(&previous_state.body.blockchain_state.ledger_proof_statement);
+    let txn_snark_statement: Statement<()> = txn_snark.clone().without_digest();
+    let txn_snark_statement = LedgerStatementVar::new(&txn_snark_statement);
+
+    let txn_stmt_ledger_hashes_didn_t_change =
+        txn_statement_ledger_hashes_equal(&previous_ledger_statement, &txn_snark_statement, w);
 
     let supply_increase = CheckedSigned::on_if(
         txn_stmt_ledger_hashes_didn_t_change.var(),
         SignedAmountBranchParam {
             on_true: &CheckedSigned::zero(),
-            on_false: &txn_snark.supply_increase.to_checked(),
+            on_false: &txn_snark_statement.supply_increase,
         },
         w,
     );
@@ -1735,10 +1777,7 @@ fn block_main<'a>(
         let txn_snark_input_correct = {
             fee_excess::assert_equal_checked(&FeeExcess::empty(), &txn_snark.fee_excess, w);
 
-            let previous_ledger_statement =
-                &previous_state.body.blockchain_state.ledger_proof_statement;
-
-            let s1 = previous_ledger_statement;
+            let s1 = previous_ledger_statement.statement;
             let s2 = current_ledger_statement;
 
             let ledger_statement_valid = validate_ledgers_at_merge_checked(
@@ -1773,6 +1812,18 @@ fn block_main<'a>(
         };
 
         Boolean::assert_any(&[txn_snark_input_correct, nothing_changed], w);
+
+        // Mesa: when nothing changed (no ledger proof, no coinbase popped),
+        // the new ledger statement must be the previous one. Before, the
+        // block step left it unconstrained in that case.
+        //
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/blockchain_snark/blockchain_snark_state.ml#L315-L324>
+        let ledger_statements_equal = txn_statement_ledger_hashes_equal(
+            &previous_ledger_statement,
+            &LedgerStatementVar::new(current_ledger_statement),
+            w,
+        );
+        Boolean::assert_any(&[nothing_changed.neg(), ledger_statements_equal], w);
 
         let transaction_snark_should_verifiy = CircuitVar::Var(nothing_changed.neg());
 
@@ -1939,8 +1990,1010 @@ pub(super) fn generate_block_proof(
             dlog_plonk_index: &dlog_plonk_index,
             step_prover_index: &block_step_prover.index,
             wrap_prover: block_wrap_prover,
+            wrap_domain_indices: None,
         },
         &mut w,
     )
     .context("wrap")
+}
+
+/// R15 (private implementation notes, item 4): witness cost of
+/// the ledger-statement constraint Mesa adds to the block step.
+///
+/// OCaml 4.0.2 calls `txn_statement_ledger_hashes_equal` a second time, on the
+/// previous and the current ledger statement, and asserts
+/// `any [not nothing_changed; equal]`. `Currency.Amount.Signed.Checked.value`
+/// caches the signed value on the variable, and the first call already
+/// evaluated the five signed amounts of the previous statement, so OCaml's
+/// second call pushes 61 values plus 1 for the assert: 62, the block step's
+/// AUX_LEN delta left after the EndoMul and `ft_eval0` terms. Comparing new
+/// variables of the previous statement instead ([`LedgerStatementVar::new`]
+/// again) pushes those five values a second time.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/blockchain_snark/blockchain_snark_state.ml#L315-L324>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/currency/currency.ml#L550-L560>
+#[cfg(test)]
+mod r15_ledger_statement_witness {
+    use super::*;
+    use crate::scan_state::{
+        currency::{Amount, Signed},
+        transaction_logic::local_state::LocalState,
+    };
+
+    fn statement(seed: u64) -> Statement<()> {
+        let registers = |n: u64| Registers {
+            first_pass_ledger: Fp::from(seed + n),
+            second_pass_ledger: Fp::from(seed + n + 1),
+            pending_coinbase_stack: Stack::empty(),
+            local_state: LocalState::dummy(),
+        };
+        Statement {
+            source: registers(1),
+            target: registers(3),
+            connecting_ledger_left: Fp::from(seed + 5),
+            connecting_ledger_right: Fp::from(seed + 6),
+            supply_increase: Signed::<Amount>::zero(),
+            fee_excess: FeeExcess::empty(),
+            sok_digest: (),
+        }
+    }
+
+    #[test]
+    fn second_ledger_statement_check_witness_count() {
+        let (previous, txn_snark, current) = (statement(0), statement(0), statement(10));
+        let nothing_changed = Boolean::False;
+        let previous_var = LedgerStatementVar::new(&previous);
+
+        // The first call (txn_stmt_ledger_hashes_didn't_change): nothing is
+        // cached yet.
+        let mut w = Witness::<Fp>::empty();
+        let eq = txn_statement_ledger_hashes_equal(
+            &previous_var,
+            &LedgerStatementVar::new(&txn_snark),
+            &mut w,
+        );
+        assert_eq!(eq, Boolean::True);
+        let first = w.aux().len();
+
+        // Mesa's second call, as `block_main` makes it: the previous
+        // statement's variables are the first call's.
+        let mut cached = Witness::<Fp>::empty();
+        let eq = txn_statement_ledger_hashes_equal(
+            &previous_var,
+            &LedgerStatementVar::new(&current),
+            &mut cached,
+        );
+        assert_eq!(eq, Boolean::False);
+        Boolean::assert_any(&[nothing_changed.neg(), eq], &mut cached);
+
+        // With new variables for the previous statement.
+        let mut naive = Witness::<Fp>::empty();
+        let eq = txn_statement_ledger_hashes_equal(
+            &LedgerStatementVar::new(&previous),
+            &LedgerStatementVar::new(&current),
+            &mut naive,
+        );
+        Boolean::assert_any(&[nothing_changed.neg(), eq], &mut naive);
+
+        println!(
+            "first call {first}, second call + assert {}, with new variables {}",
+            cached.aux().len(),
+            naive.aux().len()
+        );
+        assert_eq!(first, 66);
+        assert_eq!(cached.aux().len(), 62);
+        assert_eq!(naive.aux().len(), 67);
+    }
+}
+
+/// P4.5: the Mesa block step and block wrap circuits on the base case, the
+/// real genesis transition of Mesa mainnet.
+#[cfg(test)]
+mod mesa_tests {
+    use mina_p2p_messages::binprot::BinProtRead;
+
+    use super::*;
+    use crate::{
+        proofs::{
+            constants::ProofConstants,
+            provers::{init_devnet_with_mesa_blobs, init_mainnet_with_mesa_blobs, BlockProver},
+            transaction::mesa_tests::{Outcome, PROVING},
+            verification::verify_block_proof,
+            verifiers::{block_verifier_index_of, BlockVerifier, TransactionVerifier},
+        },
+        scan_state::scan_state::transaction_snark::LedgerProof,
+        sparse_ledger::SparseLedger,
+    };
+
+    /// The block prover's input for the Mesa mainnet genesis block, height
+    /// 548147 (3NLntCRR9RvjtzP24Q1dRvdhmpjiPvfKGaJmAZuJgYoqGpevqDR7), the
+    /// parent of the first Mesa block, 548148
+    /// (3NKtYZVHgyWrTzFE8j594Wy6HmFTb9rWw3sfPxZmZgRkrg572bAP), as the node
+    /// builds it to prove its genesis block. Written by
+    /// `tools/block-replay/examples/mesa_genesis_block_input.rs`.
+    const GENESIS: &[u8] = include_bytes!("data/mesa_mainnet_genesis_block_input.bin");
+
+    const GENESIS_HASH: &str = "3NLntCRR9RvjtzP24Q1dRvdhmpjiPvfKGaJmAZuJgYoqGpevqDR7";
+
+    fn genesis_input() -> v2::ProverExtendBlockchainInputStableV2 {
+        v2::ProverExtendBlockchainInputStableV2::binprot_read(&mut &*GENESIS).unwrap()
+    }
+
+    #[test]
+    fn pc2_emitted_ledger_proof_read_cost_and_unavailable_error() {
+        use mina_p2p_messages::{binprot::BinProtWrite, proof_cache::ProofStore};
+        use std::time::Instant;
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+            "../../target/test-data/proof-cache/emitted-{}",
+            std::process::id()
+        ));
+        let store = ProofStore::dir(&dir).unwrap();
+        let bytes = include_bytes!("../verifier/fixtures/mainnet-551267-1.bin");
+        let work = v2::TransactionSnarkWorkTStableV2::binprot_read(&mut bytes.as_slice()).unwrap();
+        let proof = match &work.proofs {
+            v2::TransactionSnarkWorkTStableV2Proofs::One(p) => p,
+            v2::TransactionSnarkWorkTStableV2Proofs::Two((p, _)) => p,
+        };
+        let mut input = genesis_input();
+        input.ledger_proof = Some(Arc::new(proof.clone()));
+        let expected = ledger_proof_opt(Some(proof), &input.next_state).unwrap();
+        let mut wire = Vec::new();
+        input.binprot_write(&mut wire).unwrap();
+        let rounds = 2000;
+        let started = Instant::now();
+        for _ in 0..rounds {
+            std::hint::black_box(ledger_proof_opt(Some(proof), &input.next_state).unwrap());
+        }
+        let decoded = started.elapsed() / rounds;
+        proof.0.proof.cache_in(&store).unwrap();
+        let mut times = Vec::new();
+        for _ in 0..rounds {
+            let start = Instant::now();
+            let got = ledger_proof_opt(Some(proof), &input.next_state).unwrap();
+            times.push(start.elapsed());
+            assert_eq!(got, expected);
+        }
+        times.sort();
+        let mean = times.iter().sum::<std::time::Duration>() / rounds;
+        let started = Instant::now();
+        for _ in 0..rounds {
+            let mut bytes = Vec::new();
+            input.binprot_write(&mut bytes).unwrap();
+            assert_eq!(bytes, wire);
+        }
+        println!("PC2 emitted ledger proof: decoded mean {decoded:?}; cached mean {mean:?}, p50 {:?}, p99 {:?}, max {:?}; whole prover input encode mean {:?} (2000 rounds)", times[1000], times[1980], times[1999], started.elapsed() / rounds);
+        let file = std::fs::read_dir(&dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        std::fs::remove_file(file).unwrap();
+        assert!(ledger_proof_opt(Some(proof), &input.next_state).is_err());
+        assert!(input.binprot_write(&mut Vec::new()).is_err());
+        drop((input, work));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn state_hash(state: &v2::MinaStateProtocolStateValueStableV2) -> Fp {
+        MinaHash::hash(&ProtocolState::try_from(state).unwrap())
+    }
+
+    /// The fixture is the base case with Mesa mainnet's fork constants: the
+    /// negative-one state to the genesis state, whose previous state hash is
+    /// the fork's, at the fork's height plus one and its global slot, with
+    /// the genesis winner's account in the staking epoch ledger.
+    #[test]
+    fn mesa_genesis_block_input_is_the_base_case() {
+        let fork = mina_core::network::mainnet::CONSTRAINT_CONSTANTS
+            .fork
+            .unwrap();
+        let input = genesis_input();
+        let (negative_one, genesis) = (&input.chain.state, &input.next_state);
+
+        let genesis_hash = v2::StateHash::from_fp(state_hash(genesis));
+        assert_eq!(genesis_hash.to_string(), GENESIS_HASH);
+        assert_eq!(
+            genesis.previous_state_hash.to_field::<Fp>().unwrap(),
+            fork.state_hash
+        );
+        assert_eq!(
+            genesis.body.genesis_state_hash.to_field::<Fp>().unwrap(),
+            state_hash(negative_one)
+        );
+
+        let consensus = &genesis.body.consensus_state;
+        assert_eq!(
+            consensus.blockchain_length.as_u32(),
+            fork.blockchain_length + 1
+        );
+        assert_eq!(
+            consensus.global_slot_since_genesis.as_u32(),
+            fork.global_slot_since_genesis
+        );
+        assert_eq!(
+            consensus
+                .curr_global_slot_since_hard_fork
+                .slot_number
+                .as_u32(),
+            0
+        );
+        assert_eq!(input.block.consensus_transition.as_u32(), 0);
+        assert!(input.ledger_proof.is_none());
+        assert_eq!(
+            negative_one.body.blockchain_state.ledger_proof_statement,
+            genesis.body.blockchain_state.ledger_proof_statement
+        );
+
+        let staking = &negative_one.body.consensus_state.staking_epoch_data;
+        let mut stake_ledger = SparseLedger::try_from(&input.prover_state.ledger).unwrap();
+        assert_eq!(
+            stake_ledger.merkle_root(),
+            staking.ledger.hash.to_field::<Fp>().unwrap()
+        );
+        assert_eq!(input.prover_state.delegator.0.as_u64(), 0);
+        assert_eq!(
+            input.prover_state.delegator_pk,
+            consensus.block_stake_winner
+        );
+    }
+
+    /// The genesis input with a ledger statement that changed while nothing
+    /// else did: the transaction snark's statement is the previous one (with
+    /// a dummy proof, which need not verify then), and the new state claims
+    /// another connecting ledger. Before Mesa (OCaml 3.5.0) no constraint of
+    /// the block step tied the new statement to the previous one in this
+    /// case; 4.0.2's ledger-statement constraint rejects it.
+    fn statement_changed_without_proof() -> v2::ProverExtendBlockchainInputStableV2 {
+        let mut input = genesis_input();
+        let previous: Statement<()> = (&input
+            .chain
+            .state
+            .body
+            .blockchain_state
+            .ledger_proof_statement)
+            .try_into()
+            .unwrap();
+        let proof = LedgerProof::create(
+            previous,
+            SokDigest::default(),
+            dummy::dummy_transaction_proof(),
+        );
+        input.ledger_proof = Some(Arc::new((&proof).into()));
+
+        let mut changed: Statement<()> = (&input
+            .next_state
+            .body
+            .blockchain_state
+            .ledger_proof_statement)
+            .try_into()
+            .unwrap();
+        changed.connecting_ledger_right += Fp::from(1u64);
+        let changed: v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement =
+            (&changed).into();
+        input
+            .next_state
+            .body
+            .blockchain_state
+            .ledger_proof_statement = changed.clone();
+        input.block.blockchain_state.ledger_proof_statement = changed;
+        input
+    }
+
+    /// Generates the block step witness and checks every gate and copy
+    /// constraint with kimchi, without proving. Returns the outcome and the
+    /// witness length.
+    fn check_constraints(
+        input: &v2::ProverExtendBlockchainInputStableV2,
+        provers: &BlockProver,
+    ) -> (Outcome, usize) {
+        let mut w = Witness::new::<StepBlockProof>();
+        let result = generate_block_proof(
+            BlockParams {
+                input,
+                block_step_prover: &provers.block_step_prover,
+                block_wrap_prover: &provers.block_wrap_prover,
+                tx_wrap_prover: &provers.tx_wrap_prover,
+                only_verify_constraints: true,
+                expected_step_proof: None,
+                ocaml_wrap_witness: None,
+            },
+            &mut w,
+        );
+        (Outcome::of(result), w.aux().len())
+    }
+
+    fn provers() -> BlockProver {
+        init_mainnet_with_mesa_blobs();
+        BlockProver::make(
+            Some(BlockVerifier::make()),
+            Some(TransactionVerifier::make()),
+        )
+        .unwrap()
+    }
+
+    /// As [`provers`], with the Mesa devnet circuits (`4.0.2devnet`) and the
+    /// devnet keys.
+    fn devnet_provers() -> BlockProver {
+        init_devnet_with_mesa_blobs();
+        BlockProver::make(
+            Some(BlockVerifier::make()),
+            Some(TransactionVerifier::make()),
+        )
+        .unwrap()
+    }
+
+    /// Whether the blockchain verifier of the network the global config is
+    /// set to, the live Mesa key, accepts `proof` for `state`, as the node
+    /// verifies a block it receives.
+    fn verifies(state: &v2::MinaStateProtocolStateValueStableV2, proof: &WrapProof) -> bool {
+        let proof = v2::MinaBaseProofStableV2(proof.into());
+        verify_block_proof(state, &proof, &BlockVerifier::make())
+    }
+
+    /// Whether the other network's embedded blockchain key, built without
+    /// the global config, accepts `proof` for `state`. A block proof made for
+    /// one network must not verify on the other.
+    fn other_network_verifies(
+        state: &v2::MinaStateProtocolStateValueStableV2,
+        proof: &WrapProof,
+    ) -> bool {
+        let other = match mina_core::NetworkConfig::global().name {
+            "devnet" => "mainnet",
+            _ => "devnet",
+        };
+        let proof = v2::MinaBaseProofStableV2(proof.into());
+        verify_block_proof(state, &proof, &block_verifier_index_of(other).unwrap())
+    }
+
+    /// P4.5's gate for the block step: the witness of the genesis transition
+    /// has the Mesa block step's `AUX_LEN`, 343869, which counts the 62
+    /// values of the ledger-statement constraint Mesa added, and satisfies
+    /// the circuit (34901 rows). A ledger statement that changes without a
+    /// ledger proof does not.
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_genesis_block_step() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let provers = provers();
+
+        let (outcome, aux_len) = check_constraints(&genesis_input(), &provers);
+        assert_eq!(aux_len, 343869);
+        assert_eq!(aux_len, StepBlockProof::AUX_LEN);
+        assert_eq!(outcome, Outcome::Satisfied);
+
+        let (outcome, aux_len) = check_constraints(&statement_changed_without_proof(), &provers);
+        assert_eq!(aux_len, StepBlockProof::AUX_LEN);
+        eprintln!("ledger statement changed without a proof: {outcome:?}");
+        assert!(matches!(outcome, Outcome::NotSatisfied(_)), "{outcome:?}");
+    }
+
+    /// P4.5's gate for the block wrap: the genesis block proves, step and
+    /// wrap (the wrap witness must have the Mesa block wrap's `AUX_LEN`,
+    /// 181742, asserted in `compute_witness`), and the proof verifies with the
+    /// live mainnet blockchain key for the genesis state, and for no other
+    /// state, and not with the devnet key (P4.8).
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_genesis_block_proof_verifies() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let provers = provers();
+        let input = genesis_input();
+
+        let mut w = Witness::new::<StepBlockProof>();
+        let proof = generate_block_proof(
+            BlockParams {
+                input: &input,
+                block_step_prover: &provers.block_step_prover,
+                block_wrap_prover: &provers.block_wrap_prover,
+                tx_wrap_prover: &provers.tx_wrap_prover,
+                only_verify_constraints: false,
+                expected_step_proof: None,
+                ocaml_wrap_witness: None,
+            },
+            &mut w,
+        )
+        .unwrap();
+        assert_eq!(WrapBlockProof::AUX_LEN, 181742);
+        assert_eq!(WrapBlockProof::ROWS, 14664);
+
+        assert!(verifies(&input.next_state, &proof));
+        assert!(!other_network_verifies(&input.next_state, &proof));
+        // The negative-one state fails, and so does the genesis state with
+        // another genesis state hash, its parent's.
+        assert!(!verifies(&input.chain.state, &proof));
+        let mut other = input.next_state.clone();
+        other.body.genesis_state_hash = other.previous_state_hash.clone();
+        assert!(!verifies(&other, &proof));
+    }
+
+    /// Two blocks of P4.6a's offline Mesa chain, written by
+    /// `tools/block-replay/examples/mesa_offline_chain.rs`: the block
+    /// prover's inputs of its first two blocks after genesis, built by the
+    /// node's block producer code. Its genesis is Mesa mainnet's but for the
+    /// staking epoch ledger, where the genesis winner holds three times the
+    /// total currency, so that it wins slots: a real Mesa block can't be
+    /// proved again without its producer's private key. Each block carries the
+    /// user commands of the real block at its height. The private key in them
+    /// is the genesis winner's, which is public.
+    const OFFLINE_548148: &[u8] = include_bytes!("data/mesa_offline_chain_548148_input.bin");
+    const OFFLINE_548149: &[u8] = include_bytes!("data/mesa_offline_chain_548149_input.bin");
+
+    const OFFLINE_GENESIS_HASH: &str = "3NLpUb3wT12N8XwgUiNx1LvtmAjmhd7jmMwPAt5ABCcEyQStgvVb";
+    const OFFLINE_548148_HASH: &str = "3NLeqFbhhaaWxo8f3nkzRLQo76qNUBJui8MajdWuBMAPfUSFjtKh";
+    const OFFLINE_548149_HASH: &str = "3NKLvHFnXhZw3mzUDz8ZdaicqVGMHEuoUYzB4YxjzKrkXLg2nYNr";
+
+    fn offline_input(bytes: &[u8]) -> v2::ProverExtendBlockchainInputStableV2 {
+        v2::ProverExtendBlockchainInputStableV2::binprot_read(&mut &*bytes).unwrap()
+    }
+
+    /// The offline chain's genesis is the Mesa mainnet genesis with another
+    /// staking epoch ledger, and its two blocks are non-genesis transitions:
+    /// each extends the previous state, at a later slot, without a ledger
+    /// proof, with the genesis winner's account in the staking epoch ledger
+    /// as the stake proof, delegating to the block's producer.
+    #[test]
+    fn mesa_offline_chain_inputs_extend_the_chain() {
+        let first = offline_input(OFFLINE_548148);
+        let second = offline_input(OFFLINE_548149);
+        assert_eq!(second.chain.state, first.next_state);
+
+        let genesis = &first.chain.state;
+        let genesis_hash = state_hash(genesis);
+        assert_eq!(
+            v2::StateHash::from_fp(genesis_hash).to_string(),
+            OFFLINE_GENESIS_HASH
+        );
+        // Mesa mainnet's negative-one and genesis states with the offline
+        // staking epoch ledger are the offline chain's.
+        let staking_ledger = &genesis.body.consensus_state.staking_epoch_data.ledger;
+        let mesa = genesis_input();
+        let (mut negative_one, mut mesa_genesis) = (mesa.chain.state, mesa.next_state);
+        for state in [&mut negative_one, &mut mesa_genesis] {
+            let staking = &mut state.body.consensus_state.staking_epoch_data;
+            assert_ne!(&staking.ledger, staking_ledger);
+            staking.ledger = staking_ledger.clone();
+        }
+        // So is the negative-one state's hash, which the genesis state
+        // records twice.
+        let negative_one_hash = v2::StateHash::from_fp(state_hash(&negative_one));
+        mesa_genesis.body.genesis_state_hash = negative_one_hash.clone();
+        let next_epoch = &mut mesa_genesis.body.consensus_state.next_epoch_data;
+        next_epoch.lock_checkpoint = negative_one_hash;
+        assert_eq!(&mesa_genesis, genesis);
+
+        for (input, height, hash) in [
+            (&first, 548148, OFFLINE_548148_HASH),
+            (&second, 548149, OFFLINE_548149_HASH),
+        ] {
+            assert_offline_block(input, height, hash, genesis_hash);
+        }
+    }
+
+    /// `input` is a non-genesis transition of an offline chain of genesis
+    /// `genesis_hash` to the state of hash `hash` at `height`: it extends the
+    /// previous state, at a later slot, without a ledger proof, with the
+    /// genesis winner's account (index 0) in the staking epoch ledger as the
+    /// stake proof, delegating to itself, the block's producer.
+    fn assert_offline_block(
+        input: &v2::ProverExtendBlockchainInputStableV2,
+        height: u32,
+        hash: &str,
+        genesis_hash: Fp,
+    ) {
+        let (parent, state) = (&input.chain.state, &input.next_state);
+        assert_eq!(v2::StateHash::from_fp(state_hash(state)).to_string(), hash);
+        assert_eq!(
+            state.previous_state_hash.to_field::<Fp>().unwrap(),
+            state_hash(parent)
+        );
+        assert_eq!(
+            state.body.genesis_state_hash.to_field::<Fp>().unwrap(),
+            genesis_hash
+        );
+
+        let consensus = &state.body.consensus_state;
+        let slot = &consensus.curr_global_slot_since_hard_fork.slot_number;
+        assert_eq!(consensus.blockchain_length.as_u32(), height);
+        assert!(
+            slot.as_u32()
+                > parent
+                    .body
+                    .consensus_state
+                    .curr_global_slot_since_hard_fork
+                    .slot_number
+                    .as_u32()
+        );
+        assert_eq!(&input.block.consensus_transition, slot);
+        assert!(input.ledger_proof.is_none());
+        assert_eq!(
+            state.body.blockchain_state.ledger_proof_statement,
+            parent.body.blockchain_state.ledger_proof_statement
+        );
+
+        let mut stake_ledger = SparseLedger::try_from(&input.prover_state.ledger).unwrap();
+        assert_eq!(
+            stake_ledger.merkle_root(),
+            parent
+                .body
+                .consensus_state
+                .staking_epoch_data
+                .ledger
+                .hash
+                .to_field::<Fp>()
+                .unwrap()
+        );
+        assert_eq!(input.prover_state.delegator.0.as_u64(), 0);
+        let account = stake_ledger.get_exn(&crate::Address::from_index(
+            crate::AccountIndex(0),
+            constraint_constants().ledger_depth as usize,
+        ));
+        assert_eq!(account.delegate.as_ref(), Some(&account.public_key));
+        let producer = v2::NonZeroCurvePoint::from(&account.public_key);
+        assert_eq!(input.prover_state.producer_public_key, producer);
+        assert_eq!(consensus.block_creator, producer);
+        assert_eq!(consensus.block_stake_winner, producer);
+    }
+
+    /// P4.6a: both offline blocks' step witnesses satisfy the Mesa block step,
+    /// on the non-genesis branch. A state with another VRF output than the
+    /// circuit computes, or another producer key than the stake proof's
+    /// delegate, does not.
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_offline_chain_block_step() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let provers = provers();
+
+        for bytes in [OFFLINE_548148, OFFLINE_548149] {
+            let (outcome, aux_len) = check_constraints(&offline_input(bytes), &provers);
+            assert_eq!(aux_len, StepBlockProof::AUX_LEN);
+            assert_eq!(outcome, Outcome::Satisfied);
+        }
+
+        let mut other_vrf = offline_input(OFFLINE_548149);
+        other_vrf
+            .next_state
+            .body
+            .consensus_state
+            .last_vrf_output
+            .0
+             .0[0] ^= 1;
+        let (outcome, _) = check_constraints(&other_vrf, &provers);
+        eprintln!("another VRF output: {outcome:?}");
+        assert!(matches!(outcome, Outcome::NotSatisfied(_)), "{outcome:?}");
+
+        let mut other_key = offline_input(OFFLINE_548149);
+        other_key.prover_state.producer_private_key =
+            v2::SignatureLibPrivateKeyStableV1(mina_p2p_messages::bigint::BigInt::one());
+        let (outcome, _) = check_constraints(&other_key, &provers);
+        eprintln!("another producer key: {outcome:?}");
+        assert!(matches!(outcome, Outcome::NotSatisfied(_)), "{outcome:?}");
+    }
+
+    /// A real Mesa mainnet transition, 548414 to 548415, the first block that
+    /// emits a ledger proof, as `mesa_real_transition_check` rebuilds the
+    /// block prover's input: OCaml's proof of the parent, OCaml's ledger
+    /// proof, the pending coinbase update and witness from a replay, and the
+    /// stake winner's account in the staking epoch ledger. The producer's
+    /// private key is unknown and is 1 in the fixture.
+    const REAL_548415: &[u8] = include_bytes!("data/mesa_mainnet_548415_block_input.bin");
+
+    const REAL_548415_HASH: &str = "3NKrjPJhwEjTw7dbvT4Yzjg7iuugAocLkQHW79Vuv82g3ngkdheZ";
+
+    /// The failures `constraint_failures` lists after the first one.
+    /// The failing rows, without the witness values each names after it.
+    fn failures(outcome: &Outcome) -> Vec<String> {
+        let Outcome::NotSatisfied(why) = outcome else {
+            panic!("{outcome:?}");
+        };
+        let (_, list) = why.split_once(" failures: ").unwrap();
+        list.split("; ")
+            .map(|failure| match failure.split_once(" (aux ") {
+                Some((row, _)) => row.to_owned(),
+                None => failure.to_owned(),
+            })
+            .collect()
+    }
+
+    /// P4.6a: with the genesis winner's key in place of the real producer's,
+    /// the real transition fails the block step exactly where the key
+    /// matters: the key's public key against the winner's delegate (rows
+    /// 4191 and 4640, both coordinates), the new state's hash, which commits
+    /// to the VRF output the circuit computes with the key (rows 9418 and
+    /// 34638), and the final assert (row 10390), as that output misses the
+    /// winner's threshold. An offline block with a wrong key fails the same
+    /// rows but the last: its winner's stake is large. Every other constraint
+    /// holds for the real transition, the step's part of verifying OCaml's
+    /// block proof and OCaml's ledger proof among them.
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_real_transition_fails_only_where_the_key_matters() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let provers = provers();
+
+        let key_rows = [
+            "row 4191 col 4 disconnected from row 4640 col 4",
+            "row 4191 col 5 disconnected from row 4640 col 5",
+            "row 4640 col 4 disconnected from row 4191 col 4",
+            "row 4640 col 5 disconnected from row 4191 col 5",
+            "row 9418 col 0 disconnected from row 34638 col 0",
+            "row 34638 col 0 disconnected from row 9418 col 0",
+        ];
+        let mut real_rows = key_rows.to_vec();
+        real_rows.insert(5, "row 10390 Generic gate: generic: incorrect gate");
+
+        let mut real = offline_input(REAL_548415);
+        assert_eq!(
+            v2::StateHash::from_fp(state_hash(&real.next_state)).to_string(),
+            REAL_548415_HASH
+        );
+        assert!(real.ledger_proof.is_some());
+        real.prover_state.producer_private_key = genesis_input().prover_state.producer_private_key;
+        let (outcome, aux_len) = check_constraints(&real, &provers);
+        assert_eq!(aux_len, StepBlockProof::AUX_LEN);
+        assert_eq!(failures(&outcome), real_rows);
+
+        let mut offline = offline_input(OFFLINE_548149);
+        offline.prover_state.producer_private_key =
+            v2::SignatureLibPrivateKeyStableV1(mina_p2p_messages::bigint::BigInt::one());
+        assert_eq!(failures(&check_constraints(&offline, &provers).0), key_rows);
+    }
+
+    /// P4.6a's gate: a non-genesis block, the offline chain's second, proves
+    /// on its parent's proof (itself made by the Rust prover on the genesis
+    /// proof), and the live mainnet blockchain key accepts the proof for the
+    /// block's state, and for neither its parent's nor the state with another
+    /// VRF output; the devnet key rejects it (P4.8). Proved on another
+    /// previous proof, the genesis proof, the block's proof fails.
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_offline_chain_block_proof_verifies() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let provers = provers();
+        let prove = |input: &v2::ProverExtendBlockchainInputStableV2| {
+            let mut w = Witness::new::<StepBlockProof>();
+            generate_block_proof(
+                BlockParams {
+                    input,
+                    block_step_prover: &provers.block_step_prover,
+                    block_wrap_prover: &provers.block_wrap_prover,
+                    tx_wrap_prover: &provers.tx_wrap_prover,
+                    only_verify_constraints: false,
+                    expected_step_proof: None,
+                    ocaml_wrap_witness: None,
+                },
+                &mut w,
+            )
+        };
+
+        let input = offline_input(OFFLINE_548149);
+        let proof = prove(&input).unwrap();
+        assert!(verifies(&input.next_state, &proof));
+        assert!(!other_network_verifies(&input.next_state, &proof));
+        assert!(!verifies(&input.chain.state, &proof));
+        let mut other = input.next_state.clone();
+        other.body.consensus_state.last_vrf_output.0 .0[0] ^= 1;
+        assert!(!verifies(&other, &proof));
+
+        let mut other_parent_proof = input.clone();
+        other_parent_proof.chain.proof = offline_input(OFFLINE_548148).chain.proof;
+        match prove(&other_parent_proof) {
+            Ok(proof) => assert!(!verifies(&input.next_state, &proof)),
+            Err(error) => eprintln!("on the genesis proof: {error:#}"),
+        }
+    }
+
+    /// P4.8: three inputs of an offline chain from the Mesa devnet genesis,
+    /// written by `tools/block-replay/examples/mesa_offline_chain.rs
+    /// --network devnet`: the genesis block's, and the first two blocks'
+    /// after it, which carry the user commands of the real devnet blocks at
+    /// their heights, none in 545435 and a payment in 545436. As on mainnet
+    /// (P4.6a), the genesis is Mesa devnet's but for the staking epoch
+    /// ledger, where the genesis winner holds three times the total currency,
+    /// and the private key in them is the genesis winner's, which is public.
+    const DEVNET_OFFLINE_GENESIS: &[u8] =
+        include_bytes!("data/mesa_devnet_offline_chain_genesis_input.bin");
+    const DEVNET_OFFLINE_545435: &[u8] =
+        include_bytes!("data/mesa_devnet_offline_chain_545435_input.bin");
+    const DEVNET_OFFLINE_545436: &[u8] =
+        include_bytes!("data/mesa_devnet_offline_chain_545436_input.bin");
+
+    const DEVNET_OFFLINE_GENESIS_HASH: &str =
+        "3NLrbxZLyvkxGH8xQh5voNtuZ63attA8ThozNfZQJrdRgY3Zp7W3";
+    const DEVNET_OFFLINE_545435_HASH: &str = "3NK4us8Y8DcRdf9NP2EiET3L5PEhw1KcX5rtQjQtTvk6M1qhCYzM";
+    const DEVNET_OFFLINE_545436_HASH: &str = "3NK9hhj2PCqXGJhf5QrNNZv8PnirKHNtaLyY1KgGC4YzMuU5oT9k";
+
+    /// The Mesa devnet genesis state hash, which every real Mesa devnet block
+    /// records (OCaml's; R13).
+    const DEVNET_GENESIS_HASH: &str = "3NLT7n4LiVo6U4LXr9BjCEp9712fP61uXkRC6hnRnB682A8f4HrJ";
+    /// The Mesa devnet staking epoch ledger at genesis, from OCaml's genesis
+    /// config (`genesis_ledgers/mesa-devnet-without-ledgers.json`).
+    const DEVNET_STAKING_LEDGER_HASH: &str = "jwbFn9V1eyDa5AgLkHAwsVffHSjLLhfw8WpKYM6bJiKXb5Uhbti";
+    const DEVNET_STAKING_TOTAL_CURRENCY: u64 = 1_582_881_647_000_001_000;
+
+    /// A real Mesa devnet transition, 545435 to 545436, the first block with
+    /// a user command (a payment), as `mesa_real_transition_check --network
+    /// devnet` rebuilds the block prover's input: OCaml's devnet proof of the
+    /// parent, the pending coinbase update and witness from a replay, and the
+    /// stake winner's account in the staking epoch ledger. The producer's
+    /// private key is unknown and is 1 in the fixture.
+    const DEVNET_REAL_545436: &[u8] = include_bytes!("data/mesa_devnet_545436_block_input.bin");
+
+    const DEVNET_REAL_545435_HASH: &str = "3NL1GQ579hqk3tsp16when7jKfjEw6NfA9Ud3ssnqPAwj3anXT3s";
+    const DEVNET_REAL_545436_HASH: &str = "3NL1QfL3x2witWb5zqqgRGuCC5TcM58Fdp5eypWAwiCgKqYyYKdH";
+
+    /// Proves `input`, step and wrap, as the block producer does.
+    fn prove(
+        input: &v2::ProverExtendBlockchainInputStableV2,
+        provers: &BlockProver,
+    ) -> anyhow::Result<WrapProof> {
+        let mut w = Witness::new::<StepBlockProof>();
+        generate_block_proof(
+            BlockParams {
+                input,
+                block_step_prover: &provers.block_step_prover,
+                block_wrap_prover: &provers.block_wrap_prover,
+                tx_wrap_prover: &provers.tx_wrap_prover,
+                only_verify_constraints: false,
+                expected_step_proof: None,
+                ocaml_wrap_witness: None,
+            },
+            &mut w,
+        )
+    }
+
+    /// P4.8: the devnet offline chain's genesis is the Mesa devnet genesis
+    /// with another staking epoch ledger: with Mesa devnet's staking epoch
+    /// ledger put back, its genesis state hashes to the one every real devnet
+    /// block records. It is the base case with devnet's fork constants, and
+    /// its two blocks are non-genesis transitions, as on mainnet.
+    #[test]
+    fn mesa_devnet_offline_chain_inputs_extend_the_chain() {
+        let fork = mina_core::network::devnet::CONSTRAINT_CONSTANTS
+            .fork
+            .unwrap();
+        let genesis_input = offline_input(DEVNET_OFFLINE_GENESIS);
+        let first = offline_input(DEVNET_OFFLINE_545435);
+        let second = offline_input(DEVNET_OFFLINE_545436);
+        assert_eq!(first.chain.state, genesis_input.next_state);
+        assert_eq!(second.chain.state, first.next_state);
+
+        let (negative_one, genesis) = (&genesis_input.chain.state, &genesis_input.next_state);
+        let genesis_hash = state_hash(genesis);
+        assert_eq!(
+            v2::StateHash::from_fp(genesis_hash).to_string(),
+            DEVNET_OFFLINE_GENESIS_HASH
+        );
+        assert_eq!(
+            genesis.previous_state_hash.to_field::<Fp>().unwrap(),
+            fork.state_hash
+        );
+        assert_eq!(
+            genesis.body.genesis_state_hash.to_field::<Fp>().unwrap(),
+            state_hash(negative_one)
+        );
+        let consensus = &genesis.body.consensus_state;
+        assert_eq!(
+            consensus.blockchain_length.as_u32(),
+            fork.blockchain_length + 1
+        );
+        assert_eq!(
+            consensus.global_slot_since_genesis.as_u32(),
+            fork.global_slot_since_genesis
+        );
+        assert_eq!(genesis_input.block.consensus_transition.as_u32(), 0);
+        assert!(genesis_input.ledger_proof.is_none());
+        assert_eq!(
+            genesis_input.prover_state.delegator_pk,
+            consensus.block_stake_winner
+        );
+
+        // Mesa devnet's staking epoch ledger back in the negative-one and
+        // genesis states, and the negative-one state's new hash where the
+        // genesis state records it, give OCaml's devnet genesis.
+        let real = offline_input(DEVNET_REAL_545436);
+        let mesa_staking = v2::MinaBaseEpochLedgerValueStableV1 {
+            hash: DEVNET_STAKING_LEDGER_HASH.parse().unwrap(),
+            total_currency: v2::CurrencyAmountStableV1(DEVNET_STAKING_TOTAL_CURRENCY.into()),
+        };
+        let (mut negative_one, mut mesa_genesis) = (negative_one.clone(), genesis.clone());
+        for state in [&mut negative_one, &mut mesa_genesis] {
+            let staking = &mut state.body.consensus_state.staking_epoch_data;
+            assert_ne!(staking.ledger, mesa_staking);
+            staking.ledger = mesa_staking.clone();
+        }
+        let negative_one_hash = v2::StateHash::from_fp(state_hash(&negative_one));
+        mesa_genesis.body.genesis_state_hash = negative_one_hash.clone();
+        let next_epoch = &mut mesa_genesis.body.consensus_state.next_epoch_data;
+        next_epoch.lock_checkpoint = negative_one_hash;
+        let mesa_genesis_hash = v2::StateHash::from_fp(state_hash(&mesa_genesis));
+        assert_eq!(mesa_genesis_hash.to_string(), DEVNET_GENESIS_HASH);
+        assert_eq!(mesa_genesis_hash, real.next_state.body.genesis_state_hash);
+
+        for (input, height, hash) in [
+            (&first, 545435, DEVNET_OFFLINE_545435_HASH),
+            (&second, 545436, DEVNET_OFFLINE_545436_HASH),
+        ] {
+            assert_offline_block(input, height, hash, genesis_hash);
+        }
+    }
+
+    /// P4.8: the networks' block keys tell OCaml's block proofs apart, with
+    /// no blobs: OCaml's proof of the real devnet block 545435 verifies with
+    /// the embedded devnet blockchain key (the live one) and not with
+    /// mainnet's, and OCaml's proof of the real mainnet block 548414 the
+    /// other way round. Both keys are built without the global config.
+    #[test]
+    fn ocaml_block_proofs_verify_only_with_their_network_key() {
+        let mainnet = block_verifier_index_of("mainnet").unwrap();
+        let devnet = block_verifier_index_of("devnet").unwrap();
+
+        let real = offline_input(DEVNET_REAL_545436);
+        assert_eq!(
+            v2::StateHash::from_fp(state_hash(&real.chain.state)).to_string(),
+            DEVNET_REAL_545435_HASH
+        );
+        assert_eq!(
+            v2::StateHash::from_fp(state_hash(&real.next_state)).to_string(),
+            DEVNET_REAL_545436_HASH
+        );
+        assert_eq!(
+            real.next_state.previous_state_hash.to_string(),
+            DEVNET_REAL_545435_HASH
+        );
+        let mainnet_real = offline_input(REAL_548415);
+
+        for (name, input, mainnet_ok) in [
+            ("devnet 545435", &real, false),
+            ("mainnet 548414", &mainnet_real, true),
+        ] {
+            let (state, proof) = (&input.chain.state, &*input.chain.proof);
+            assert_eq!(
+                verify_block_proof(state, proof, &mainnet),
+                mainnet_ok,
+                "{name}, mainnet key"
+            );
+            assert_eq!(
+                verify_block_proof(state, proof, &devnet),
+                !mainnet_ok,
+                "{name}, devnet key"
+            );
+        }
+    }
+
+    /// P4.8: the devnet offline chain's genesis and both blocks' step
+    /// witnesses satisfy the Mesa devnet block step (`4.0.2devnet`, devnet's
+    /// fork constants). A state with another VRF output than the circuit
+    /// computes does not.
+    #[test]
+    #[ignore = "needs the Mesa devnet circuit blobs: MINA_PROFILE=devnet \
+                tools/mesa-circuits/generate.sh <dir> tools/mesa-circuits/mesa-devnet-fork.json, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_devnet_offline_chain_block_step() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let provers = devnet_provers();
+
+        for bytes in [
+            DEVNET_OFFLINE_GENESIS,
+            DEVNET_OFFLINE_545435,
+            DEVNET_OFFLINE_545436,
+        ] {
+            let (outcome, aux_len) = check_constraints(&offline_input(bytes), &provers);
+            assert_eq!(aux_len, StepBlockProof::AUX_LEN);
+            assert_eq!(outcome, Outcome::Satisfied);
+        }
+
+        let mut other_vrf = offline_input(DEVNET_OFFLINE_545436);
+        other_vrf
+            .next_state
+            .body
+            .consensus_state
+            .last_vrf_output
+            .0
+             .0[0] ^= 1;
+        let (outcome, _) = check_constraints(&other_vrf, &provers);
+        eprintln!("another VRF output: {outcome:?}");
+        assert!(matches!(outcome, Outcome::NotSatisfied(_)), "{outcome:?}");
+    }
+
+    /// P4.8: the real devnet transition 545435 to 545436, with the genesis
+    /// winner's key in place of the real producer's, fails the devnet block
+    /// step at exactly the rows where the key matters, the rows mainnet's
+    /// real transition fails (see
+    /// `mesa_real_transition_fails_only_where_the_key_matters`). An offline
+    /// devnet block with the key 1 fails the same seven rows: the threshold
+    /// row too, as the VRF output of the key 1 for its slot misses even the
+    /// offline winner's threshold (three quarters of the stake win about two
+    /// slots in three; on mainnet's offline block it happened to win). Every
+    /// other constraint holds for the real transition, the step's part of
+    /// verifying OCaml's devnet proof of the parent among them.
+    #[test]
+    #[ignore = "needs the Mesa devnet circuit blobs: MINA_PROFILE=devnet \
+                tools/mesa-circuits/generate.sh <dir> tools/mesa-circuits/mesa-devnet-fork.json, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_devnet_real_transition_fails_only_where_the_key_matters() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let provers = devnet_provers();
+
+        let key_rows = [
+            "row 4191 col 4 disconnected from row 4640 col 4",
+            "row 4191 col 5 disconnected from row 4640 col 5",
+            "row 4640 col 4 disconnected from row 4191 col 4",
+            "row 4640 col 5 disconnected from row 4191 col 5",
+            "row 9418 col 0 disconnected from row 34638 col 0",
+            "row 34638 col 0 disconnected from row 9418 col 0",
+        ];
+        let mut real_rows = key_rows.to_vec();
+        real_rows.insert(5, "row 10390 Generic gate: generic: incorrect gate");
+
+        let mut real = offline_input(DEVNET_REAL_545436);
+        assert_eq!(
+            v2::StateHash::from_fp(state_hash(&real.next_state)).to_string(),
+            DEVNET_REAL_545436_HASH
+        );
+        real.prover_state.producer_private_key = offline_input(DEVNET_OFFLINE_GENESIS)
+            .prover_state
+            .producer_private_key;
+        let (outcome, aux_len) = check_constraints(&real, &provers);
+        assert_eq!(aux_len, StepBlockProof::AUX_LEN);
+        assert_eq!(failures(&outcome), real_rows);
+
+        let mut offline = offline_input(DEVNET_OFFLINE_545436);
+        offline.prover_state.producer_private_key =
+            v2::SignatureLibPrivateKeyStableV1(mina_p2p_messages::bigint::BigInt::one());
+        assert_eq!(
+            failures(&check_constraints(&offline, &provers).0),
+            real_rows
+        );
+    }
+
+    /// P4.8's gate for the devnet block circuits: the devnet offline chain's
+    /// genesis block and its block 545436, which carries a real devnet
+    /// payment, prove with the devnet circuits, the block on its parent's
+    /// proof (made by the Rust prover on the genesis proof), and the live
+    /// devnet blockchain key accepts each proof for its block's state, and
+    /// not for its parent's or the state with another VRF output. The
+    /// mainnet key rejects both.
+    #[test]
+    #[ignore = "needs the Mesa devnet circuit blobs: MINA_PROFILE=devnet \
+                tools/mesa-circuits/generate.sh <dir> tools/mesa-circuits/mesa-devnet-fork.json, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_devnet_offline_chain_block_proof_verifies() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let provers = devnet_provers();
+        assert_eq!(mina_core::NetworkConfig::global().name, "devnet");
+
+        for bytes in [DEVNET_OFFLINE_GENESIS, DEVNET_OFFLINE_545436] {
+            let input = offline_input(bytes);
+            let proof = prove(&input, &provers).unwrap();
+            assert!(verifies(&input.next_state, &proof));
+            assert!(!other_network_verifies(&input.next_state, &proof));
+            assert!(!verifies(&input.chain.state, &proof));
+            let mut other = input.next_state.clone();
+            other.body.consensus_state.last_vrf_output.0 .0[0] ^= 1;
+            assert!(!verifies(&other, &proof));
+        }
+    }
 }

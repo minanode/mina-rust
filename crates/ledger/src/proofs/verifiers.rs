@@ -5,10 +5,19 @@ use std::{
 };
 
 use anyhow::Context;
-use mina_core::{info, log::system_time, warn};
+use mina_core::{debug, info, log::system_time, warn};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+/// ab84160: kimchi `VerifierIndex` uses `std::sync::OnceLock` (not once_cell's
+/// `OnceCell`) for `permutation_vanishing_polynomial_m`/`w`. This helper builds a
+/// pre-filled `OnceLock`, mirroring kimchi's own construction in `verifier_index.rs`.
+fn once_lock_with<T>(value: T) -> std::sync::OnceLock<T> {
+    let cell = std::sync::OnceLock::new();
+    let _ = cell.set(value);
+    cell
+}
 
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use kimchi::{
@@ -69,9 +78,11 @@ fn cache_path(kind: Kind) -> Option<PathBuf> {
 
 macro_rules! read_cache {
     ($kind: expr, $digest: expr) => {{
+        // The cache is this node's own (`write_cache`): no release publishes
+        // it, so it is only read locally.
         #[cfg(not(target_family = "wasm"))]
-        let data = super::circuit_blobs::fetch_blocking(&cache_filename($kind))
-            .context("fetching verifier index failed")?;
+        let data = super::circuit_blobs::read_local(&cache_filename($kind))
+            .context("reading the verifier index cache")?;
         #[cfg(target_family = "wasm")]
         let data = super::circuit_blobs::fetch(&cache_filename($kind))
             .await
@@ -81,7 +92,13 @@ macro_rules! read_cache {
         // source digest
         slice.read_exact(&mut d).context("reading source digest")?;
         if d != $digest {
-            anyhow::bail!("source digest verification failed");
+            // A cache made from another embedded index, or not a cache at
+            // all, as a server's fallback page for a missing file is.
+            anyhow::bail!(
+                "source digest verification failed: the cache was made from {}, this build embeds {}",
+                hex::encode(&d[..8]),
+                hex::encode(&$digest[..8])
+            );
         }
 
         // index digest
@@ -143,22 +160,39 @@ macro_rules! make_with_ext_cache {
 
         match cache {
             Ok(verifier_index) => {
-                info!(system_time(); "Verifier index is loaded");
+                debug!(system_time(); "Verifier index is loaded");
                 verifier_index
             }
             Err(err) => {
-                warn!(system_time(); "Cannot load verifier index: {err}");
+                if is_not_cached(&err) {
+                    // A first start (RC7-FIXES: not a warning).
+                    info!(
+                        system_time();
+                        "The {} isn't cached yet: building it from the embedded one",
+                        $kind.to_str().replace('_', " ")
+                    );
+                } else {
+                    warn!(system_time(); "Cannot load verifier index: {err:#}");
+                }
                 let index = make_verifier_index(verifier_index);
                 #[cfg(not(target_family = "wasm"))]
                 if let Err(err) = write_cache($kind, &index, &src_index_digest) {
                     warn!(system_time(); "Cannot store verifier index to cache file: {err}");
                 } else {
-                    info!(system_time(); "Stored verifier index to cache file");
+                    debug!(system_time(); "Stored verifier index to cache file");
                 }
                 index
             }
         }
     }}
+}
+
+/// A cache read that failed only because the cache isn't there: a first
+/// start, not a problem.
+fn is_not_cached(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -185,8 +219,35 @@ static BLOCK_VERIFIER: OnceCell<BlockVerifier> = OnceCell::new();
 static TX_VERIFIER: OnceCell<TransactionVerifier> = OnceCell::new();
 
 impl BlockVerifier {
+    /// Identity of the embedded network-specific verifier index used by make().
+    pub fn source_sha256() -> String {
+        super::util::sha256_sum(Self::src_json().as_bytes())
+    }
+
     fn kind() -> Kind {
         Kind::BlockVerifier
+    }
+
+    /// The block verifier, if it was made already: making it is async in a
+    /// browser.
+    pub fn get() -> Option<Self> {
+        BLOCK_VERIFIER.get().cloned()
+    }
+
+    /// Makes `index` the block verifier, in place of the embedded one, for a
+    /// runtime fork whose blockchain circuits differ from the release's (see
+    /// [`super::fork_circuits`]). Only before the verifier is first made.
+    pub fn install(index: VerifierIndex<Fq>) -> Result<(), String> {
+        BLOCK_VERIFIER
+            .set(Self(Arc::new(index)))
+            .map_err(|_| "the block verifier was already made".to_owned())
+    }
+
+    /// A block verifier of this index, whichever network the process runs:
+    /// for tests that check another network's blocks
+    /// ([`block_verifier_index_of`]).
+    pub fn from_index(index: VerifierIndex<Fq>) -> Self {
+        Self(Arc::new(index))
     }
 
     fn src_json() -> &'static str {
@@ -306,6 +367,39 @@ impl From<TransactionVerifier> for Arc<VerifierIndex<Fq>> {
     }
 }
 
+/// The embedded mainnet transaction verifier index, built without the global
+/// network config or the cache file, so that tests which verify real mainnet
+/// proofs can run next to tests that use the default network.
+#[cfg(test)]
+pub(crate) fn mainnet_transaction_verifier_index() -> VerifierIndex<Fq> {
+    let json = include_str!("data/mainnet_transaction_verifier_index.json");
+    make_verifier_index(serde_json::from_str(json).unwrap())
+}
+
+/// The embedded blockchain verifier index of `network` ("mainnet" or
+/// "devnet"), built without the global network config, the global verifier
+/// or the cache file: for checking a proof against another network's key, as
+/// the negative control that a proof made for one network does not verify on
+/// the other.
+pub fn block_verifier_index_of(network: &str) -> anyhow::Result<VerifierIndex<Fq>> {
+    let json = match network {
+        "mainnet" => include_str!("data/mainnet_blockchain_verifier_index.json"),
+        "devnet" => include_str!("data/devnet_blockchain_verifier_index.json"),
+        other => anyhow::bail!("unknown network {other}"),
+    };
+    Ok(make_verifier_index(serde_json::from_str(json)?))
+}
+
+/// As [`block_verifier_index_of`], for transaction proofs (snark work).
+pub fn transaction_verifier_index_of(network: &str) -> anyhow::Result<VerifierIndex<Fq>> {
+    let json = match network {
+        "mainnet" => include_str!("data/mainnet_transaction_verifier_index.json"),
+        "devnet" => include_str!("data/devnet_transaction_verifier_index.json"),
+        other => anyhow::bail!("unknown network {other}"),
+    };
+    Ok(make_verifier_index(serde_json::from_str(json)?))
+}
+
 fn make_verifier_index(index: VerifierIndex<Fq>) -> VerifierIndex<Fq> {
     let domain = index.domain;
     let max_poly_size: usize = index.max_poly_size;
@@ -359,8 +453,8 @@ fn make_verifier_index(index: VerifierIndex<Fq>) -> VerifierIndex<Fq> {
 
     VerifierIndex::<Fq> {
         srs,
-        permutation_vanishing_polynomial_m: OnceCell::from(permutation_vanishing_polynomial_m),
-        w: OnceCell::from(w),
+        permutation_vanishing_polynomial_m: once_lock_with(permutation_vanishing_polynomial_m),
+        w: once_lock_with(w),
         endo,
         linearization,
         powers_of_alpha,
@@ -464,14 +558,34 @@ pub fn make_zkapp_verifier_index(vk: &VerificationKey) -> VerifierIndex<Fq> {
         xor_comm: None,
         rot_comm: None,
         shift: *shift.shifts(),
-        permutation_vanishing_polynomial_m: OnceCell::with_value(permutation_vanishing_polynomial(
+        permutation_vanishing_polynomial_m: once_lock_with(permutation_vanishing_polynomial(
             domain, zk_rows,
         )),
-        w: { OnceCell::with_value(zk_w(domain, zk_rows)) },
+        w: { once_lock_with(zk_w(domain, zk_rows)) },
         endo: endo_q,
         lookup_index: None,
         linearization,
         powers_of_alpha,
         zk_rows,
+    }
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod rc7_cache_tests {
+    use anyhow::Context;
+
+    /// RC7-FIXES: a missing verifier index cache is looked for only locally
+    /// and reads as "not cached yet", which the node logs at INFO; a damaged
+    /// or stale cache still warns.
+    #[test]
+    fn rc7_a_missing_verifier_index_cache_is_not_cached_and_not_fetched() {
+        let error = super::super::circuit_blobs::read_local(&"4.0.2devnet/rc7_missing.postcard")
+            .context("reading the verifier index cache")
+            .unwrap_err();
+        assert!(super::is_not_cached(&error), "{error:#}");
+        assert!(!format!("{error:#}").contains("github"), "{error:#}");
+        assert!(!super::is_not_cached(&anyhow::anyhow!(
+            "source digest verification failed"
+        )));
     }
 }

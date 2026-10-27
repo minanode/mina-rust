@@ -1,5 +1,10 @@
 include = ["**/*.toml"]
-exclude = ["**/node_modules/**", "**/target/**", "**/.git/**"]
+exclude = [
+  "**/node_modules/**",
+  "**/target/**",
+  "**/.git/**",
+  "vendor/rustrtc/**",
+]
 
 [formatting]
 reorder_keys = false

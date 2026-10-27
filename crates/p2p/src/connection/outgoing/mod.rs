@@ -6,6 +6,9 @@ pub use p2p_connection_outgoing_actions::*;
 
 mod p2p_connection_outgoing_reducer;
 
+mod p2p_connection_outgoing_backoff;
+pub use p2p_connection_outgoing_backoff::*;
+
 #[cfg(feature = "p2p-libp2p")]
 use std::net::SocketAddr;
 use std::{fmt, net::IpAddr, str::FromStr};
@@ -46,6 +49,18 @@ impl P2pConnectionOutgoingInitOpts {
             Some(self)
         }
     }
+
+    /// Improve a stored libp2p dial target when a more reachable address is
+    /// advertised later. An equal-ranked address does not displace one that
+    /// may already have worked.
+    pub fn is_better_than(&self, current: &Self, observed: Option<IpAddr>) -> bool {
+        match (self, current) {
+            (Self::LibP2P(candidate), Self::LibP2P(current)) => {
+                candidate.dial_rank(observed) > current.dial_rank(observed)
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(BinProtWrite, BinProtRead, Eq, PartialEq, Ord, PartialOrd, Debug, Clone)]
@@ -56,43 +71,181 @@ pub struct P2pConnectionOutgoingInitLibp2pOpts {
 }
 
 impl P2pConnectionOutgoingInitLibp2pOpts {
-    /// If the current host is local and there is a better host among the `addrs`,
-    /// replace the current one with the better one.
-    pub fn update_host_if_needed<'a>(&mut self, mut addrs: impl Iterator<Item = &'a Multiaddr>) {
-        fn is_local(ip: impl Into<IpAddr>) -> bool {
-            match ip.into() {
-                IpAddr::V4(ip) => ip.is_loopback() || ip.is_private(),
-                IpAddr::V6(ip) => ip.is_loopback(),
-            }
-        }
-
-        // if current dial opts is not good enough
-        let update = match &self.host {
-            Host::Domain(_) => false,
-            Host::Ipv4(ip) => is_local(*ip),
-            Host::Ipv6(ip) => is_local(*ip),
+    /// Build a dial target only from a peer-advertised TCP listen address.
+    pub fn from_listen_addr(peer_id: PeerId, addr: &Multiaddr) -> Option<Self> {
+        let mut protocols = addr.iter();
+        let host = match protocols.next()? {
+            Protocol::Ip4(ip) if !ip.is_unspecified() => Host::Ipv4(ip),
+            Protocol::Ip6(ip) if !ip.is_unspecified() => Host::Ipv6(ip),
+            Protocol::Dns4(name) | Protocol::Dns6(name) => Host::Domain(name.into_owned()),
+            _ => return None,
         };
-        if update {
-            // if new options is better
-            let new = addrs.find_map(|x| {
-                x.iter().find_map(|x| match x {
-                    Protocol::Dns4(hostname) | Protocol::Dns6(hostname) => {
-                        Some(Host::Domain(hostname.into_owned()))
-                    }
-                    Protocol::Ip4(ip) if !is_local(ip) => Some(Host::Ipv4(ip)),
-                    Protocol::Ip6(ip) if !is_local(ip) => Some(Host::Ipv6(ip)),
-                    _ => None,
-                })
-            });
-            if let Some(new) = new {
-                self.host = new;
+        let Protocol::Tcp(port) = protocols.next()? else {
+            return None;
+        };
+        let candidate = Self {
+            peer_id,
+            host,
+            port,
+        };
+        (port != 0 && candidate.dial_rank(None).0 != 0).then_some(candidate)
+    }
+
+    /// Higher scope wins before address family. Public addresses outrank
+    /// private addresses; the latter are a fallback when no public address is
+    /// known. The remote socket's family breaks ties within a scope.
+    pub fn dial_rank(&self, observed: Option<IpAddr>) -> (u8, u8) {
+        let (scope, family) = match &self.host {
+            Host::Ipv4(ip) => (Self::ip_scope(IpAddr::V4(*ip)), 4),
+            Host::Ipv6(ip) => (Self::ip_scope(IpAddr::V6(*ip)), 6),
+            Host::Domain(_) => (2, 0),
+        };
+        let preferred_family = match observed {
+            Some(IpAddr::V4(_)) => 4,
+            Some(IpAddr::V6(_)) => 6,
+            None => 0,
+        };
+        (scope, u8::from(family == preferred_family && family != 0))
+    }
+
+    fn ip_scope(ip: IpAddr) -> u8 {
+        match ip {
+            IpAddr::V4(ip)
+                if ip.is_unspecified()
+                    || ip.is_loopback()
+                    || ip.is_link_local()
+                    || ip.is_multicast()
+                    || ip.is_broadcast() =>
+            {
+                0
             }
+            IpAddr::V4(ip)
+                if ip.is_private()
+                    || (ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1])) =>
+            {
+                1
+            }
+            IpAddr::V4(_) => 3,
+            IpAddr::V6(ip)
+                if ip.is_unspecified()
+                    || ip.is_loopback()
+                    || ip.is_unicast_link_local()
+                    || ip.is_multicast() =>
+            {
+                0
+            }
+            IpAddr::V6(ip) if ip.is_unique_local() => 1,
+            IpAddr::V6(_) => 3,
         }
+    }
+
+    pub fn best_listen_addr<'a>(
+        peer_id: PeerId,
+        addrs: impl IntoIterator<Item = &'a Multiaddr>,
+        observed: Option<IpAddr>,
+    ) -> Option<Self> {
+        addrs
+            .into_iter()
+            .filter_map(|addr| Self::from_listen_addr(peer_id, addr))
+            .reduce(|best, candidate| {
+                if candidate.dial_rank(observed) > best.dial_rank(observed) {
+                    candidate
+                } else {
+                    best
+                }
+            })
     }
 
     pub fn with_host_resolved(mut self) -> Option<Self> {
         self.host = self.host.resolve()?;
         Some(self)
+    }
+}
+
+#[cfg(test)]
+mod d3f_tests {
+    use super::*;
+
+    #[test]
+    fn advertised_tcp_port_is_used_instead_of_incoming_source_port() {
+        let peer_id = PeerId::from_bytes([1; 32]);
+        let listen_addr: Multiaddr = "/ip4/203.0.113.7/tcp/8302".parse().unwrap();
+        let opts =
+            P2pConnectionOutgoingInitLibp2pOpts::from_listen_addr(peer_id, &listen_addr).unwrap();
+        assert_eq!(opts.port, 8302);
+        assert_eq!(opts.host, Host::Ipv4("203.0.113.7".parse().unwrap()));
+        assert!(P2pConnectionOutgoingInitLibp2pOpts::from_listen_addr(
+            peer_id,
+            &"/ip4/203.0.113.7/udp/44618".parse().unwrap()
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn identify_order_does_not_displace_public_address() {
+        let peer_id = PeerId::from_bytes([1; 32]);
+        let private: Multiaddr = "/ip4/192.168.1.4/tcp/8302".parse().unwrap();
+        let public: Multiaddr = "/ip4/203.0.113.7/tcp/8302".parse().unwrap();
+        let observed = Some("203.0.113.8".parse().unwrap());
+        for addrs in [[&private, &public], [&public, &private]] {
+            let best =
+                P2pConnectionOutgoingInitLibp2pOpts::best_listen_addr(peer_id, addrs, observed)
+                    .unwrap();
+            assert_eq!(best.host, Host::Ipv4("203.0.113.7".parse().unwrap()));
+        }
+        let fallback =
+            P2pConnectionOutgoingInitLibp2pOpts::best_listen_addr(peer_id, [&private], observed)
+                .unwrap();
+        assert_eq!(fallback.host, Host::Ipv4("192.168.1.4".parse().unwrap()));
+        for invalid in [
+            "/ip4/127.0.0.1/tcp/8302",
+            "/ip4/169.254.1.4/tcp/8302",
+            "/ip4/0.0.0.0/tcp/8302",
+            "/ip6/::1/tcp/8302",
+            "/ip6/fe80::1/tcp/8302",
+        ] {
+            assert!(P2pConnectionOutgoingInitLibp2pOpts::from_listen_addr(
+                peer_id,
+                &invalid.parse().unwrap()
+            )
+            .is_none());
+        }
+    }
+
+    #[test]
+    fn later_discovery_can_replace_a_private_target() {
+        let peer_id = PeerId::from_bytes([1; 32]);
+        let private = P2pConnectionOutgoingInitOpts::LibP2P(
+            P2pConnectionOutgoingInitLibp2pOpts::from_listen_addr(
+                peer_id,
+                &"/ip4/192.168.1.4/tcp/8302".parse().unwrap(),
+            )
+            .unwrap(),
+        );
+        let public = P2pConnectionOutgoingInitOpts::LibP2P(
+            P2pConnectionOutgoingInitLibp2pOpts::from_listen_addr(
+                peer_id,
+                &"/ip4/203.0.113.7/tcp/8302".parse().unwrap(),
+            )
+            .unwrap(),
+        );
+        assert!(public.is_better_than(&private, None));
+        assert!(!private.is_better_than(&public, None));
+        assert!(!public.is_better_than(&public, None));
+    }
+
+    #[test]
+    fn observed_remote_family_breaks_public_address_ties() {
+        let peer_id = PeerId::from_bytes([1; 32]);
+        let v4: Multiaddr = "/ip4/203.0.113.7/tcp/8302".parse().unwrap();
+        let v6: Multiaddr = "/ip6/2001:db8::7/tcp/8302".parse().unwrap();
+        let best = P2pConnectionOutgoingInitLibp2pOpts::best_listen_addr(
+            peer_id,
+            [&v4, &v6],
+            Some("2001:db8::8".parse().unwrap()),
+        )
+        .unwrap();
+        assert_eq!(best.host, Host::Ipv6("2001:db8::7".parse().unwrap()));
     }
 }
 
@@ -184,6 +337,14 @@ pub(crate) mod libp2p_opts {
 impl P2pConnectionOutgoingInitOpts {
     pub fn is_libp2p(&self) -> bool {
         matches!(self, Self::LibP2P(_))
+    }
+
+    /// The socket address of a libp2p peer whose host is an IP address.
+    pub fn libp2p_socket_addr(&self) -> Option<std::net::SocketAddr> {
+        match self {
+            Self::LibP2P(opts) => std::net::SocketAddr::try_from(opts).ok(),
+            Self::WebRTC { .. } => None,
+        }
     }
 
     pub fn peer_id(&self) -> &PeerId {
@@ -1123,5 +1284,72 @@ mod tests {
             }
             x => panic!("Expected WebRTC variant, got {x:?}"),
         }
+    }
+
+    /// The signalling URL of a WebRTC address, and its multiaddr written back.
+    fn signal_url_and_maddr(maddr: &str) -> (String, String) {
+        let opts: P2pConnectionOutgoingInitOpts = maddr.parse().unwrap();
+        let P2pConnectionOutgoingInitOpts::WebRTC { signaling, .. } = &opts else {
+            panic!("Expected WebRTC variant, got {opts:?}");
+        };
+        (signaling.http_url().unwrap(), opts.to_string())
+    }
+
+    /// W1: a public relay behind a TLS-terminating proxy. A page served over
+    /// HTTPS may only call an HTTPS signalling URL.
+    #[test]
+    fn test_public_relay_https_address() {
+        let maddr =
+            format!("/dns4/relay.minaweb.org/tcp/443/webrtc/https/p2p/{TEST_PEER_ID_LIBP2P}");
+        let (url, back) = signal_url_and_maddr(&maddr);
+        assert_eq!(url, "https://relay.minaweb.org:443/mina/webrtc/signal");
+        assert_eq!(back, maddr);
+
+        // `/dns/` is read too, and written back as `/dns4/`.
+        let (url, back) = signal_url_and_maddr(&format!(
+            "/dns/relay.minaweb.org/tcp/443/webrtc/https/p2p/{TEST_PEER_ID_LIBP2P}"
+        ));
+        assert_eq!(url, "https://relay.minaweb.org:443/mina/webrtc/signal");
+        assert_eq!(back, maddr);
+
+        // Another port, and an IP address, behind the proxy.
+        let (url, _) = signal_url_and_maddr(&format!(
+            "/dns4/relay.example.org/tcp/8443/webrtc/https/p2p/{TEST_PEER_ID_LIBP2P}"
+        ));
+        assert_eq!(url, "https://relay.example.org:8443/mina/webrtc/signal");
+        let (url, _) = signal_url_and_maddr(&format!(
+            "/ip4/203.0.113.7/tcp/443/webrtc/https/p2p/{TEST_PEER_ID_LIBP2P}"
+        ));
+        assert_eq!(url, "https://203.0.113.7:443/mina/webrtc/signal");
+
+        // A proxy that serves the relay under a path.
+        let maddr = format!(
+            "/dns4/minaweb.org/tcp/443/webrtc/https/http-path/relay/p2p/{TEST_PEER_ID_LIBP2P}"
+        );
+        let (url, back) = signal_url_and_maddr(&maddr);
+        assert_eq!(url, "https://minaweb.org:443/relay/mina/webrtc/signal");
+        assert_eq!(back, maddr);
+    }
+
+    /// The local relay's plain HTTP address keeps working.
+    #[test]
+    fn test_local_relay_http_address() {
+        let maddr = format!("/ip4/127.0.0.1/tcp/3540/webrtc/http/p2p/{TEST_PEER_ID_LIBP2P}");
+        let (url, back) = signal_url_and_maddr(&maddr);
+        assert_eq!(url, "http://127.0.0.1:3540/mina/webrtc/signal");
+        assert_eq!(back, maddr);
+    }
+
+    /// `https` goes after `webrtc`, naming how to reach its signalling; the
+    /// other order is refused rather than read as plain HTTP.
+    #[test]
+    fn test_https_before_webrtc_is_refused() {
+        let result: Result<P2pConnectionOutgoingInitOpts, _> =
+            format!("/dns4/relay.minaweb.org/tcp/443/https/webrtc/http/p2p/{TEST_PEER_ID_LIBP2P}")
+                .parse();
+        assert!(
+            matches!(&result, Err(P2pConnectionOutgoingInitOptsParseError::Other(e)) if e == "expected webrtc protocol"),
+            "{result:?}"
+        );
     }
 }

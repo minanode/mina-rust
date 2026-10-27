@@ -1,3 +1,4 @@
+use crate::ZKAPP_STATE_SIZE;
 use std::marker::PhantomData;
 
 use mina_curves::pasta::Fp;
@@ -396,6 +397,11 @@ pub trait ControllerInterface {
         auth: &AuthRequired,
         w: &mut Self::W,
     ) -> AuthRequired;
+
+    fn access_perm_fallback_to_signature_with_older_version(
+        auth: &AuthRequired,
+        w: &mut Self::W,
+    ) -> AuthRequired;
 }
 
 pub trait TxnVersionInterface {
@@ -475,7 +481,7 @@ where
     fn unmake_zkapp(&mut self);
     fn proved_state(&self) -> Self::Bool;
     fn set_proved_state(&mut self, proved_state: Self::Bool);
-    fn app_state(&self) -> [Fp; 8];
+    fn app_state(&self) -> [Fp; ZKAPP_STATE_SIZE];
     fn last_action_slot(&self) -> Self::GlobalSlot;
     fn set_last_action_slot(&mut self, slot: Self::GlobalSlot);
 }

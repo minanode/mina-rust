@@ -1,0 +1,25 @@
+[package]
+name = "mina-light-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LN1 prototype: verify a best tip and one account's Merkle path from untrusted sources"
+
+[dependencies]
+base64 = { workspace = true }
+binprot = { workspace = true }
+clap = { workspace = true }
+env_logger = { workspace = true }
+ledger = { workspace = true }
+libp2p = { workspace = true, features = ["macros", "tokio"] }
+log = { workspace = true }
+mina-core = { workspace = true }
+mina-curves = { workspace = true }
+mina-p2p-messages = { workspace = true }
+mina-transport = { workspace = true }
+mina-web-verifier = { path = "../../crates/web-verifier" }
+poseidon = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+void = "1"

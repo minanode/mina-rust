@@ -31,6 +31,26 @@ impl P2pChannelsEffectfulAction {
                 msg_id,
                 msg,
             } => {
+                // Log only public hashes, at the actual channel service handoff.
+                // Announcements carry metadata; the RPC reply carries the body.
+                match &msg {
+                    ChannelMsg::TransactionPropagation(
+                        super::transaction::TransactionPropagationChannelMsg::Transaction(info),
+                    ) => {
+                        mina_core::debug!(meta.time(); kind = "WebRtcTransactionAnnounceSend",
+                            peer_id = display(peer_id), hash = display(&info.hash));
+                    }
+                    ChannelMsg::Rpc(super::rpc::RpcChannelMsg::Response(
+                        id,
+                        Some(super::rpc::P2pRpcResponse::Transaction(tx)),
+                    )) => {
+                        if let Ok(hash) = tx.hash() {
+                            mina_core::debug!(meta.time(); kind = "WebRtcTransactionBodySend",
+                                peer_id = display(peer_id), rpc_id = display(id), hash = display(hash));
+                        }
+                    }
+                    _ => {}
+                }
                 store.service().channel_send(peer_id, msg_id, msg);
             }
             P2pChannelsEffectfulAction::SignalingDiscoveryAnswerDecrypt {

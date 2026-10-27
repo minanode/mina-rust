@@ -31,8 +31,8 @@ export class RustService {
     return this.node?.name ?? '';
   }
 
-  get<T>(path: string): Observable<T> {
-    if (this.node?.isWebNode) {
+  get<T>(path: string, node: MinaNode = this.node): Observable<T> {
+    if (node?.isWebNode) {
       return this.getFromWebNode(path).pipe(
         map((response: any) => {
           // console.log(path, response);
@@ -40,7 +40,7 @@ export class RustService {
         }),
       );
     }
-    return this.http.get<T>(this.URL + path);
+    return this.http.get<T>((node?.url ?? '') + path);
   }
 
   post<T, B = string | object>(path: string, body: B): Observable<T> {

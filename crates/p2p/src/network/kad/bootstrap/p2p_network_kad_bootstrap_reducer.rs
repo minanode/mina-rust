@@ -13,7 +13,9 @@ use crate::{
     P2pNetworkKademliaAction, P2pState,
 };
 
-use super::{P2pNetworkKadBootstrapAction, P2pNetworkKadBootstrapState};
+use super::{
+    P2pNetworkKadBootstrapAction, P2pNetworkKadBootstrapNextStep, P2pNetworkKadBootstrapState,
+};
 
 impl P2pNetworkKadBootstrapState {
     pub fn reducer<Action, State>(
@@ -61,8 +63,16 @@ impl P2pNetworkKadBootstrapState {
             }
             P2pNetworkKadBootstrapAction::AppendRequest { request, peer_id } => {
                 let state: &mut Self = state_context.get_substate_mut()?.substate_mut()?;
-                state.requests_number -= 1;
-                if let Some(request) = request {
+                // Saturating: a batch started while another was being
+                // assembled used to drain the counter first, and the outer
+                // batch's appends then took it below zero (a panic with
+                // overflow checks, a wrap without, after which the batch was
+                // finalized only in threes). `next_step` no longer starts
+                // such a batch; this keeps the counter sane regardless.
+                state.requests_number = state.requests_number.saturating_sub(1);
+                // A peer this lookup has asked already, or that this batch
+                // holds, is not asked again.
+                if let Some(request) = request.filter(|_| !state.is_known(&peer_id)) {
                     state.peer_id_req_vec.push((peer_id, request));
                 }
                 if state.peer_id_req_vec.len() == 3 || state.requests_number == 0 {
@@ -74,7 +84,10 @@ impl P2pNetworkKadBootstrapState {
             P2pNetworkKadBootstrapAction::FinalizeRequests => {
                 let state: &mut Self = state_context.get_substate_mut()?.substate_mut()?;
                 for (peer_id, request) in mem::take(&mut state.peer_id_req_vec) {
-                    state.processed_peers.insert(peer_id);
+                    if !state.processed_peers.insert(peer_id) {
+                        // Asked already in this lookup.
+                        continue;
+                    }
                     let address =
                         P2pConnectionOutgoingInitOpts::LibP2P((peer_id, request.addr).into());
                     state
@@ -154,11 +167,8 @@ impl P2pNetworkKadBootstrapState {
                     bug_condition!("cannot find stats for request {req:?}");
                 };
 
-                if state.successful_requests < 20 {
-                    let dispatcher = state_context.into_dispatcher();
-                    dispatcher.push(P2pNetworkKadBootstrapAction::CreateRequests);
-                }
-
+                let step = state.next_step();
+                Self::dispatch_next_step(state_context.into_dispatcher(), step);
                 Ok(())
             }
             P2pNetworkKadBootstrapAction::RequestError { peer_id, error } => {
@@ -202,10 +212,42 @@ impl P2pNetworkKadBootstrapState {
                     bug_condition!("cannot find stats for request {req:?}");
                 };
 
-                let dispatcher = state_context.into_dispatcher();
-                dispatcher.push(P2pNetworkKadBootstrapAction::CreateRequests);
+                let step = bootstrap_state.next_step();
+                Self::dispatch_next_step(state_context.into_dispatcher(), step);
                 Ok(())
             }
+        }
+    }
+
+    /// After a request ended: ask more peers while the lookup has had fewer
+    /// than [`Self::SUCCESSFUL_REQUESTS`] successful ones, and otherwise end
+    /// it once the last request in flight has ended. Before I18b nothing ended
+    /// a lookup that reached 20 successful requests, so Kademlia stayed
+    /// `Bootstrapping`, never looked up again, and the node discovered no
+    /// peer after its first 16 seconds on mainnet.
+    ///
+    /// Nothing starts while a batch is being assembled
+    /// ([`Self::next_step`]). Dispatch is depth first, so a request refused
+    /// at once (the backoff, the target, the seed policy) ends inside the
+    /// batch that made it; a new batch there asked again the peers the outer
+    /// batch had still to append, and drained `requests_number` under it.
+    /// The batch in progress already covers every peer not yet asked, and
+    /// `FinalizeRequests` ends the lookup if it leaves nothing in flight.
+    fn dispatch_next_step<Action, State>(
+        dispatcher: &mut redux::Dispatcher<Action, State>,
+        step: P2pNetworkKadBootstrapNextStep,
+    ) where
+        State: crate::P2pStateTrait,
+        Action: crate::P2pActionTrait<State>,
+    {
+        match step {
+            P2pNetworkKadBootstrapNextStep::AskMore => {
+                dispatcher.push(P2pNetworkKadBootstrapAction::CreateRequests);
+            }
+            P2pNetworkKadBootstrapNextStep::Finish => {
+                dispatcher.push(P2pNetworkKademliaAction::BootstrapFinished {});
+            }
+            P2pNetworkKadBootstrapNextStep::Wait => {}
         }
     }
 }

@@ -1,0 +1,9 @@
+{
+  "name": "mina-web-verifier-browser-test",
+  "private": true,
+  "type": "module",
+  "description": "Drive the demo page in headless Chrome and report timings",
+  "dependencies": {
+    "puppeteer-core": "^24.0.0"
+  }
+}

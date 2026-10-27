@@ -64,6 +64,51 @@ pub struct P2pNetworkSchedulerState {
 }
 
 impl P2pNetworkSchedulerState {
+    /// Bytes actually retained behind remote Yamux windows, across all
+    /// connections. Scan live streams so resets and disconnects release their
+    /// share without a separate counter that can become stale.
+    pub fn queued_outgoing_bytes(&self, peer_id: &PeerId) -> (usize, usize) {
+        self.connections
+            .values()
+            .fold((0, 0), |(total, peer), connection| {
+                let queued = match &connection.mux {
+                    Some(P2pNetworkConnectionMuxState::Yamux(yamux)) => yamux
+                        .streams
+                        .values()
+                        .map(|stream| stream.pending_len())
+                        .sum::<usize>(),
+                    _ => 0,
+                };
+                (
+                    total.saturating_add(queued),
+                    peer.saturating_add(if connection.peer_id() == Some(peer_id) {
+                        queued
+                    } else {
+                        0
+                    }),
+                )
+            })
+    }
+
+    /// Expected output for channel-dispatched RPC work. The stream is the
+    /// owner, so resets and disconnects release this without counter updates.
+    pub fn reserved_rpc_response_bytes(&self, peer_id: &PeerId) -> (usize, usize) {
+        self.rpc_incoming_streams.iter().fold(
+            (0usize, 0usize),
+            |(total, peer), (owner, streams)| {
+                let reserved = streams
+                    .values()
+                    .flat_map(|stream| stream.pending_incoming.values())
+                    .map(|query| query.reserved_bytes)
+                    .sum::<usize>();
+                (
+                    total.saturating_add(reserved),
+                    peer.saturating_add(if owner == peer_id { reserved } else { 0 }),
+                )
+            },
+        )
+    }
+
     pub fn discovery_state(&self) -> Option<&P2pNetworkKadState> {
         self.discovery_state.as_ref()
     }
@@ -87,6 +132,35 @@ impl P2pNetworkSchedulerState {
 
         self.rpc_incoming_streams.remove(peer_id);
         self.rpc_outgoing_streams.remove(peer_id);
+    }
+
+    /// Forgets one stream of a peer in every protocol's state, after the
+    /// stream was reset. `pubsub_incoming` drops the peer's partial pubsub
+    /// message as well, which would otherwise be prefixed to the next
+    /// stream's data.
+    pub fn prune_stream_state(
+        &mut self,
+        peer_id: &PeerId,
+        stream_id: StreamId,
+        pubsub_incoming: bool,
+    ) {
+        self.broadcast_state
+            .prune_stream_state(peer_id, stream_id, pubsub_incoming);
+        self.identify_state
+            .remove_identify_stream_state(peer_id, &stream_id);
+
+        if let Some(discovery_state) = self.discovery_state.as_mut() {
+            discovery_state.remove_kad_stream_state(peer_id, &stream_id);
+        }
+
+        for streams in [
+            &mut self.rpc_incoming_streams,
+            &mut self.rpc_outgoing_streams,
+        ] {
+            if let Some(streams) = streams.get_mut(peer_id) {
+                streams.remove(&stream_id);
+            }
+        }
     }
 
     pub fn connection_state_mut(
@@ -115,10 +189,45 @@ pub struct P2pNetworkConnectionState {
     pub closed: Option<P2pNetworkConnectionCloseReason>,
     // the number of bytes that peer allowed to send us before yamux is negotiated
     pub limit: usize,
+    /// Reopens of our pubsub stream after the peer reset it: how many since
+    /// the window last expired, and when the last one was
+    /// (`P2pNetworkConnectionState::may_reopen_pubsub`).
+    #[serde(default)]
+    #[ignore_malloc_size_of = "small"]
+    pub pubsub_reopens: Option<(u8, Timestamp)>,
 }
 
 impl P2pNetworkConnectionState {
     pub const INITIAL_LIMIT: usize = 1024;
+    /// At most this many reopens of our pubsub stream...
+    pub const PUBSUB_MAX_REOPENS: u8 = 4;
+    /// ...until this long has passed since the last one.
+    pub const PUBSUB_REOPEN_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
+
+    /// Whether to reopen our pubsub stream, which the peer reset while the
+    /// connection stays up, and if so counts the reopen. Without the stream the
+    /// peer gets none of our gossip. go-libp2p-pubsub, which OCaml nodes run,
+    /// respawns its writer in this case, at most `MaxBackoffAttempts` (4) times
+    /// until `TimeToLive` (10 minutes) passes since the last respawn
+    /// (`handleDeadPeers` in `pubsub.go` and `backoff.go`, v0.9.3, the version
+    /// OCaml 4.0.2's helper pins). We reopen at once, without its backoff delay.
+    pub fn may_reopen_pubsub(&mut self, now: Timestamp) -> bool {
+        let attempts = match self.pubsub_reopens {
+            Some((attempts, last))
+                if now
+                    .checked_sub(last)
+                    .is_some_and(|since| since <= Self::PUBSUB_REOPEN_WINDOW) =>
+            {
+                attempts
+            }
+            _ => 0,
+        };
+        if attempts >= Self::PUBSUB_MAX_REOPENS {
+            return false;
+        }
+        self.pubsub_reopens = Some((attempts + 1, now));
+        true
+    }
 
     pub fn peer_id(&self) -> Option<&PeerId> {
         self.auth.as_ref().and_then(P2pNetworkAuthState::peer_id)
@@ -162,6 +271,40 @@ impl P2pNetworkConnectionState {
         self.mux
             .as_ref()
             .map(|P2pNetworkConnectionMuxState::Yamux(state)| state)
+    }
+
+    /// Whether the peer, rather than we, opened the stream. The yamux client,
+    /// the side that dialled, opens odd-numbered streams and the server
+    /// even-numbered ones.
+    pub fn stream_opened_by_peer(addr: &ConnectionAddr, stream_id: StreamId) -> bool {
+        (stream_id % 2 == 1) == addr.incoming
+    }
+
+    /// Whether a failure of this stream must close the connection: our RPC
+    /// stream, which the RPC channel needs for every request we send, and our
+    /// identify stream while it is open, without whose answer we never open
+    /// the RPC stream. Both use fixed ids (`YamuxStreamKind::stream_id`).
+    pub fn is_essential_stream(&self, addr: &ConnectionAddr, stream_id: StreamId) -> bool {
+        let essential = [YamuxStreamKind::Rpc, YamuxStreamKind::Identify]
+            .into_iter()
+            .any(|kind| kind.stream_id(addr.incoming) == stream_id);
+        essential && self.streams.contains_key(&stream_id)
+    }
+
+    /// The protocol negotiated on a stream, if any.
+    pub fn stream_protocol(&self, stream_id: StreamId) -> Option<token::StreamKind> {
+        match self.streams.get(&stream_id)?.select.negotiated {
+            Some(Some(token::Protocol::Stream(kind))) => Some(kind),
+            _ => None,
+        }
+    }
+
+    /// Removes a stream from the connection and from its multiplexer.
+    pub fn remove_stream(&mut self, stream_id: StreamId) {
+        self.streams.remove(&stream_id);
+        if let Some(yamux) = self.yamux_state_mut() {
+            yamux.streams.remove(&stream_id);
+        }
     }
 
     pub fn select_state_mut(&mut self, kind: &SelectKind) -> Option<&mut P2pNetworkSelectState> {
@@ -218,7 +361,7 @@ pub enum P2pNetworkConnectionError {
     KademliaIncomingStreamError(#[from] P2pNetworkKadIncomingStreamError),
     #[error(transparent)]
     KademliaOutgoingStreamError(#[from] P2pNetworkKadOutgoingStreamError),
-    #[error("peer reset yamux stream")]
+    #[error("peer reset yamux stream {0}")]
     StreamReset(StreamId),
     #[error("pubsub error: {0}")]
     PubSubError(String),
@@ -226,6 +369,25 @@ pub enum P2pNetworkConnectionError {
     YamuxOverflow(StreamId),
     #[error("peer should not decrease window size at stream {0}")]
     YamuxBadWindowUpdate(StreamId),
+}
+
+/// Why a single stream was closed (`P2pNetworkSchedulerAction::StreamReset`).
+#[derive(Debug, Clone, PartialEq, thiserror::Error, Serialize, Deserialize)]
+pub enum P2pNetworkStreamResetReason {
+    #[error("peer reset the stream")]
+    RemoteReset,
+    #[error("peer closed the RPC connection")]
+    RemoteRpcClose,
+    #[error("incoming RPC heartbeat timed out")]
+    RpcTimeout,
+    #[error("outgoing stream queue exceeded its memory budget or stalled")]
+    OutgoingQueueLimit,
+    #[error("incoming stream limit exceeded")]
+    StreamLimit,
+    #[error("protocol negotiation failed: {0}")]
+    SelectError(String),
+    #[error("Kademlia stream error: {0}")]
+    Kademlia(String),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, MallocSizeOf)]
@@ -341,5 +503,143 @@ mod measurement {
                 + self.rpc_incoming_streams.size_of(ops)
                 + self.rpc_outgoing_streams.size_of(ops)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::P2pTimeouts;
+
+    fn addr(incoming: bool) -> ConnectionAddr {
+        ConnectionAddr {
+            sock_addr: "127.0.0.1:8302".parse().unwrap(),
+            incoming,
+        }
+    }
+
+    fn connection(incoming: bool, streams: &[StreamId]) -> P2pNetworkConnectionState {
+        let time = Timestamp::ZERO;
+        let mut yamux = P2pNetworkYamuxState::default();
+        let mut stream_states = BTreeMap::new();
+        for id in streams {
+            yamux.streams.insert(*id, Default::default());
+            stream_states.insert(*id, P2pNetworkStreamState::new_incoming(time));
+        }
+        P2pNetworkConnectionState {
+            incoming,
+            pnet: P2pNetworkPnetState::new([0; 32], time),
+            select_auth: Default::default(),
+            auth: None,
+            select_mux: Default::default(),
+            mux: Some(P2pNetworkConnectionMuxState::Yamux(yamux)),
+            streams: stream_states,
+            closed: None,
+            limit: P2pNetworkConnectionState::INITIAL_LIMIT,
+            pubsub_reopens: None,
+        }
+    }
+
+    #[test]
+    fn who_opened_a_stream() {
+        // We dialled: we are the yamux client, with odd ids.
+        assert!(!P2pNetworkConnectionState::stream_opened_by_peer(
+            &addr(false),
+            1
+        ));
+        assert!(P2pNetworkConnectionState::stream_opened_by_peer(
+            &addr(false),
+            4
+        ));
+        // The peer dialled: we are the server, with even ids.
+        assert!(P2pNetworkConnectionState::stream_opened_by_peer(
+            &addr(true),
+            1
+        ));
+        assert!(!P2pNetworkConnectionState::stream_opened_by_peer(
+            &addr(true),
+            2
+        ));
+    }
+
+    #[test]
+    fn only_our_rpc_and_identify_streams_are_essential() {
+        // Outgoing: our RPC 1, pubsub 3, Kademlia 5, identify 7; the peer's 2, 4.
+        let ids = [1, 2, 3, 4, 5, 7];
+        let conn = connection(false, &ids);
+        let essential: Vec<_> = ids
+            .into_iter()
+            .filter(|id| conn.is_essential_stream(&addr(false), *id))
+            .collect();
+        assert_eq!(essential, [1, 7]);
+
+        // Incoming: ours are even; the peer's odd ones never are.
+        let ids = [1, 2, 7, 8];
+        let conn = connection(true, &ids);
+        let essential: Vec<_> = ids
+            .into_iter()
+            .filter(|id| conn.is_essential_stream(&addr(true), *id))
+            .collect();
+        assert_eq!(essential, [2, 8]);
+
+        // A finished identify stream is gone, so a late reset of it is not
+        // fatal.
+        let conn = connection(false, &[1]);
+        assert!(!conn.is_essential_stream(&addr(false), 7));
+    }
+
+    #[test]
+    fn pubsub_reopens_are_bounded_like_go_libp2p_pubsub() {
+        let mut conn = connection(false, &[1, 3]);
+        let start = Timestamp::ZERO + Duration::from_secs(1);
+        let at = |secs| start + Duration::from_secs(secs);
+
+        // Four reopens in quick succession, then none.
+        for secs in 0..4 {
+            assert!(conn.may_reopen_pubsub(at(secs)), "reopen {secs}");
+        }
+        assert!(!conn.may_reopen_pubsub(at(4)));
+        // A refusal doesn't extend the window: it ends 10 minutes after the
+        // last reopen.
+        assert!(!conn.may_reopen_pubsub(at(3 + 600)));
+        assert!(conn.may_reopen_pubsub(at(3 + 601)));
+        // And the count starts again.
+        for secs in 602..605 {
+            assert!(conn.may_reopen_pubsub(at(3 + secs)));
+        }
+        assert!(!conn.may_reopen_pubsub(at(3 + 605)));
+    }
+
+    #[test]
+    fn remove_stream_forgets_it_in_yamux_too() {
+        let mut conn = connection(false, &[1, 4]);
+        conn.remove_stream(4);
+        assert!(!conn.streams.contains_key(&4));
+        assert!(!conn.yamux_state().unwrap().streams.contains_key(&4));
+        assert!(conn.streams.contains_key(&1));
+        // Removing a stream that is already gone is harmless.
+        conn.remove_stream(4);
+    }
+
+    #[test]
+    fn peer_opened_streams_get_the_longer_negotiation_timeout() {
+        let timeouts = P2pTimeouts {
+            select: Some(Duration::from_secs(5)),
+            select_incoming_stream: Some(Duration::from_secs(10)),
+            ..Default::default()
+        };
+        let start = Timestamp::ZERO;
+        let at = |secs| start + Duration::from_secs(secs);
+
+        let theirs = P2pNetworkStreamState::new_incoming(start).select;
+        assert!(!theirs.is_stream_timed_out(at(9), &timeouts));
+        assert!(theirs.is_stream_timed_out(at(10), &timeouts));
+
+        let kind = token::StreamKind::Ping(token::PingAlgorithm::Ping1_0_0);
+        let ours = P2pNetworkStreamState::new(kind, start).select;
+        assert!(!ours.is_stream_timed_out(at(4), &timeouts));
+        assert!(ours.is_stream_timed_out(at(5), &timeouts));
     }
 }

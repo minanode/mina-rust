@@ -1,4 +1,4 @@
-Derives `[mina_core::ActionEvent]` trait implementation for action.
+Derives the `mina_core::ActionEvent` trait implementation for an action.
 
 ### Action containers
 
@@ -6,7 +6,7 @@ For action containers, it simply delegates to inner actions.
 
 ```rust
 # use mina_core::ActionEvent;
-#
+# fn example(context: &impl mina_core::log::EventContext) {
 #[derive(ActionEvent)]
 enum ActionContainer {
     SubAction1(Action1),
@@ -18,26 +18,29 @@ enum Action1 {
 }
 
 ActionContainer::SubAction1(Action1::Init).action_event(context);
+# }
 ```
 
-```rust
+The following expansion is illustrative text, not a standalone program.
+
+```text
 impl ActionEvent for ActionContainer {
     fn action_event<T>(&self, context: &T)
-    where T: ActionContext
+    where T: mina_core::log::EventContext
     {
         match self {
-            ActionContainer(action) => action.action_event(context),
+            ActionContainer::SubAction1(action) => action.action_event(context),
         }
     }
 }
 
 impl ActionEvent for Action1 {
     fn action_event<T>(&self, context: &T)
-    where T: ActionContext
+    where T: mina_core::log::EventContext
     {
         match self {
-            Action1::Init => mina_core::action_debug!(context),
-            Action1::Done => mina_core::action_debug!(context),
+            Action1::Init => mina_core::action_trace!(context),
+            Action1::Done => mina_core::action_trace!(context),
         }
     }
 }
@@ -45,7 +48,7 @@ impl ActionEvent for Action1 {
 
 ### Tracing level
 
-By default, tracing event of level `debug` is generated for an action. It can be
+By default, tracing event of level `trace` is generated for an action. It can be
 overriden by using `#[action_event(level = ...)]` attribute. Also, actions that
 names ends with `Error` or `Warn` will be traced with `warn` level.
 
@@ -61,7 +64,9 @@ pub enum Action {
 }
 ```
 
-```rust
+The following expansion is illustrative text, not a standalone program.
+
+```text
 impl mina_core::ActionEvent for Action {
     fn action_event<T>(&self, context: &T)
     where
@@ -97,16 +102,18 @@ pub enum Action {
 }
 ```
 
-```rust
+The following expansion is illustrative text, not a standalone program.
+
+```text
 impl mina_core::ActionEvent for Action {
     fn action_event<T>(&self, context: &T)
     where
         T: mina_core::log::EventContext,
     {
         match self {
-            Action::Unit => mina_core::action_debug!(context),
-            Action::UnitWithDoc => mina_core::action_debug!(context, summary = "documentation"),
-            Action::UnitWithMultilineDoc => mina_core::action_debug!(context, summary = "Multiline documentation"),
+            Action::Unit => mina_core::action_trace!(context),
+            Action::UnitWithDoc => mina_core::action_trace!(context, summary = "documentation"),
+            Action::UnitWithMultilineDoc => mina_core::action_trace!(context, summary = "Multiline documentation"),
         }
     }
 }
@@ -132,18 +139,20 @@ pub enum Action {
 }
 ```
 
-```rust
+The following expansion is illustrative text, not a standalone program.
+
+```text
 impl mina_core::ActionEvent for Action {
     fn action_event<T>(&self, context: &T)
     where
         T: mina_core::log::EventContext,
     {
         match self {
-            Action::NoFields { f1 } => mina_core::action_debug!(context),
-            Action::Field { f1 } => mina_core::action_debug!(context, f1 = f1),
-            Action::FieldWithName { f1 } => mina_core::action_debug!(context, f = f1),
-            Action::DebugField { f1 } => mina_core::action_debug!(context, f1 = debug(f1)),
-            Action::DisplayField { f1 } => mina_core::action_debug!(context, f1 = display(f1)),
+            Action::NoFields { f1 } => mina_core::action_trace!(context),
+            Action::Field { f1 } => mina_core::action_trace!(context, f1 = f1),
+            Action::FieldWithName { f1 } => mina_core::action_trace!(context, f = f1),
+            Action::DebugField { f1 } => mina_core::action_trace!(context, f1 = debug(f1)),
+            Action::DisplayField { f1 } => mina_core::action_trace!(context, f1 = display(f1)),
         }
     }
 }
@@ -156,6 +165,8 @@ a field's enum variant), logging can be delegated to a function implementing
 that logic.
 
 ```rust
+# fn foo<T: mina_core::log::EventContext>(_: &T) {}
+# fn bar<T: mina_core::log::EventContext>(_: &T, _: &bool) {}
 #[derive(mina_core::ActionEvent)]
 pub enum Action {
     #[action_event(expr(foo(context)))]
@@ -165,7 +176,9 @@ pub enum Action {
 }
 ```
 
-```rust
+The following expansion is illustrative text, not a standalone program.
+
+```text
 impl mina_core::ActionEvent for Action {
     fn action_event<T>(&self, context: &T)
     where

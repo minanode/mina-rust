@@ -22,6 +22,13 @@ impl TransitionFrontierSyncLedgerState {
 
         match action {
             TransitionFrontierSyncLedgerAction::Init => {}
+            TransitionFrontierSyncLedgerAction::LocalSnarkedSuccess => {
+                let target = state.target();
+                *state = Self::Snarked(TransitionFrontierSyncLedgerSnarkedState::Success {
+                    time: meta.time(),
+                    target,
+                });
+            }
             TransitionFrontierSyncLedgerAction::Snarked(action) => {
                 if let TransitionFrontierSyncLedgerSnarkedAction::Pending = action {
                     let Self::Init { target, .. } = state else {

@@ -1,154 +1,252 @@
 <div class="header border-bottom fx-row-full-cent">
-  <img
-    class="mina-svg"
-    src="assets/images/logo/text-logo-text.svg"
-    height="40"
-    width="346"
-  />
+  <mina-brand-logo />
 </div>
 <div class="content fx-col-full-cent w-100">
-  <h2>Set Up Your Web Node</h2>
-  <main class="border border-rad-6 p-12 w-100">
-    <div class="admin-container fx-col-full-cent">
-      <span class="mina-icon primary">encrypted_add_circle</span>
-    </div>
-    @if (!validFiles) {
-      @if (!error) {
-        <div
-          class="upload-container mb-8 bg-surface border-rad-6 fx-row-vert-cent flex-between pr-5"
-        >
-          <div class="fx-row-vert-cent">
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="49"
-              height="49"
-              viewBox="0 0 49 49"
-              fill="none"
+  @if (viewOnly) {
+    <h2>Explore Mina {{ network }}</h2>
+    <div class="choices" [class.two]="!!explorerNode">
+      @if (explorerNode) {
+        <main class="border border-rad-6 p-12 w-100" data-native-explorer-start>
+          <div class="admin-container fx-col-full-cent">
+            <span class="mina-icon primary">view_in_ar</span>
+          </div>
+          <h3 class="primary">Browse the chain with our native node</h3>
+          <p class="primary">
+            Recent blocks, the payments in them and account balances, read from
+            {{ explorerNode.name }}: a native Mina node built from this
+            project's Rust code, already following {{ network }}. Opens at once.
+          </p>
+          <p class="tertiary">Read-only · {{ explorerNode.url }}</p>
+          <div class="buttons-container fx-row-vert-cent flex-end">
+            <button
+              class="whitey h-lg border-rad-8 f-500 pl-12 pr-12"
+              data-open-explorer
+              (click)="openExplorer()"
             >
-              <mask
-                id="mask0_777_21854"
-                style="mask-type: alpha"
-                maskUnits="userSpaceOnUse"
-                x="12"
-                y="12"
-                width="25"
-                height="25"
-              >
-                <rect
-                  x="12.0833"
-                  y="12.5"
-                  width="24"
-                  height="24"
-                  fill="var(--base-primary)"
-                />
-              </mask>
-              <g mask="url(#mask0_777_21854)">
-                <path
-                  fill="var(--base-primary)"
-                  fill-opacity="0.8"
-                  d="M28.0833 24.4693V22.4846H30.0678V24.4693H28.0833ZM28.0833 26.4538H26.0988V24.4693H28.0833V26.4538ZM28.0833 28.4386V26.4538H30.0678V28.4386H28.0833ZM23.3083 20.5001L21.3853 18.5771H16.1603V30.4231H26.0961V28.4386H28.0833V30.4231H32.0063V20.5001H28.0833V22.4846H26.0988V20.5001H23.3083ZM15.2371 31.3463V17.6538H21.7563L23.6796 19.5771H32.9296V31.3463H15.2371Z"
-                />
-              </g>
-            </svg>
-            <i class="tertiary">Select configuration file (.zip)</i>
+              Open the block explorer
+            </button>
           </div>
+        </main>
+      }
+      <main class="border border-rad-6 p-12 w-100" data-view-only-start>
+        <div class="admin-container fx-col-full-cent">
+          <span class="mina-icon primary">visibility</span>
+        </div>
+        <h3 class="primary">Run a Mina node in your browser</h3>
+        <p class="primary">
+          This page starts a view-only Mina {{ network }} node in this tab. It
+          connects to peers, downloads the ledgers, checks block proofs and
+          follows the chain. It holds no keys, produces no blocks and submits no
+          transactions.
+        </p>
+        <p class="tertiary">
+          Syncing takes several minutes and 2 to 3 GB of memory. Keep the tab
+          open while it runs.
+        </p>
+        <div class="buttons-container fx-row-vert-cent flex-end">
           <button
-            class="whitey pr-12 pl-8 h-lg border-rad-8 fx-row-full-cent p-relative"
-            (click)="fileInput.click()"
+            class="whitey h-lg border-rad-8 f-500 pl-12 pr-12"
+            (click)="onStartDevelopWebnodeNonBP()"
           >
-            <span class="mina-icon icon-300">upload</span>
-            <span class="lh-sm">Upload</span>
+            Start the web node
           </button>
-          <input
-            type="file"
-            #fileInput
-            class="d-none"
-            (change)="onFileSelected($event)"
-            accept=".zip"
-          />
         </div>
-        <div class="primary">Upload webnode-account.zip</div>
-      } @else {
-        <div
-          class="upload-container warn-primary bg-warn-container mb-8 bg-surface border-rad-6 fx-row-vert-cent flex-between pl-12 pr-12"
-          [@messageChange]
-        >
-          <div class="fx-row-vert-cent">
-            <span class="mina-icon icon-300 check_circle">error</span>
-            <div class="pl-12">
-              {{ uploadedFileName | truncateMid: 30 : 8 }}
-            </div>
-          </div>
+      </main>
+    </div>
+  } @else {
+    <h2>Set Up Your Web Node</h2>
+    <main class="border border-rad-6 p-12 w-100">
+      <div class="admin-container fx-col-full-cent">
+        <span class="mina-icon primary">encrypted_add_circle</span>
+      </div>
+      @if (!validFiles) {
+        @if (!error) {
           <div
-            class="close-file h-sm w-sm fx-row-full-cent bg-success-container border-rad-6 pointer"
-            (click)="clearFiles()"
+            class="upload-container mb-8 bg-surface border-rad-6 fx-row-vert-cent flex-between pr-5"
           >
-            <span class="mina-icon icon-400 f-22">close</span>
+            <div class="fx-row-vert-cent">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="49"
+                height="49"
+                viewBox="0 0 49 49"
+                fill="none"
+              >
+                <mask
+                  id="mask0_777_21854"
+                  style="mask-type: alpha"
+                  maskUnits="userSpaceOnUse"
+                  x="12"
+                  y="12"
+                  width="25"
+                  height="25"
+                >
+                  <rect
+                    x="12.0833"
+                    y="12.5"
+                    width="24"
+                    height="24"
+                    fill="var(--base-primary)"
+                  />
+                </mask>
+                <g mask="url(#mask0_777_21854)">
+                  <path
+                    fill="var(--base-primary)"
+                    fill-opacity="0.8"
+                    d="M28.0833 24.4693V22.4846H30.0678V24.4693H28.0833ZM28.0833 26.4538H26.0988V24.4693H28.0833V26.4538ZM28.0833 28.4386V26.4538H30.0678V28.4386H28.0833ZM23.3083 20.5001L21.3853 18.5771H16.1603V30.4231H26.0961V28.4386H28.0833V30.4231H32.0063V20.5001H28.0833V22.4846H26.0988V20.5001H23.3083ZM15.2371 31.3463V17.6538H21.7563L23.6796 19.5771H32.9296V31.3463H15.2371Z"
+                  />
+                </g>
+              </svg>
+              <i class="tertiary">Select configuration file (.zip)</i>
+            </div>
+            <button
+              class="whitey pr-12 pl-8 h-lg border-rad-8 fx-row-full-cent p-relative"
+              (click)="fileInput.click()"
+            >
+              <span class="mina-icon icon-300">upload</span>
+              <span class="lh-sm">Upload</span>
+            </button>
+            <input
+              type="file"
+              #fileInput
+              class="d-none"
+              (change)="onFileSelected($event)"
+              accept=".zip"
+            />
           </div>
-        </div>
-        <div class="p-relative">
-          <span class="opacity-0">x</span>
+          <div class="primary">Upload webnode-account.zip</div>
+        } @else {
           <div
-            class="warn-explanation p-absolute w-100 warn-primary"
+            class="upload-container warn-primary bg-warn-container mb-8 bg-surface border-rad-6 fx-row-vert-cent flex-between pl-12 pr-12"
             [@messageChange]
           >
-            Incorrect file selected.&nbsp;
-            <span class="warn-secondary">
-              Please upload the correct zip file from your email.
-            </span>
-          </div>
-        </div>
-      }
-    } @else {
-      <div
-        class="upload-container special-node-bg mb-8 border-rad-6 fx-row-vert-cent"
-        [@messageChange]
-      >
-        <div
-          class="h-100 w-100 bg-success-container success-primary border-rad-6 fx-row-vert-cent flex-between pl-12 pr-12"
-        >
-          <div class="fx-row-vert-cent">
-            <span class="mina-icon icon-300 check_circle">check_circle</span>
-            <div class="pl-12">
-              {{ uploadedFileName | truncateMid: 30 : 8 }}
+            <div class="fx-row-vert-cent">
+              <span class="mina-icon icon-300 check_circle">error</span>
+              <div class="pl-12">
+                {{ uploadedFileName | truncateMid: 30 : 8 }}
+              </div>
+            </div>
+            <div
+              class="close-file h-sm w-sm fx-row-full-cent bg-success-container border-rad-6 pointer"
+              (click)="clearFiles()"
+            >
+              <span class="mina-icon icon-400 f-22">close</span>
             </div>
           </div>
+          <div class="p-relative">
+            <span class="opacity-0">x</span>
+            <div
+              class="warn-explanation p-absolute w-100 warn-primary"
+              [@messageChange]
+            >
+              Incorrect file selected.&nbsp;
+              <span class="warn-secondary">
+                Please upload the correct zip file from your email.
+              </span>
+            </div>
+          </div>
+        }
+      } @else {
+        <div
+          class="upload-container special-node-bg mb-8 border-rad-6 fx-row-vert-cent"
+          [@messageChange]
+        >
           <div
-            class="close-file h-sm w-sm fx-row-full-cent bg-success-container border-rad-6 pointer"
-            (click)="clearFiles()"
+            class="h-100 w-100 bg-success-container success-primary border-rad-6 fx-row-vert-cent flex-between pl-12 pr-12"
           >
-            <span class="mina-icon icon-400 f-22">close</span>
+            <div class="fx-row-vert-cent">
+              <span class="mina-icon icon-300 check_circle">check_circle</span>
+              <div class="pl-12">
+                {{ uploadedFileName | truncateMid: 30 : 8 }}
+              </div>
+            </div>
+            <div
+              class="close-file h-sm w-sm fx-row-full-cent bg-success-container border-rad-6 pointer"
+              (click)="clearFiles()"
+            >
+              <span class="mina-icon icon-400 f-22">close</span>
+            </div>
           </div>
         </div>
-      </div>
-      <div class="success-primary" [@messageChange]>
-        File verified. Your node is ready to start!
-      </div>
-    }
-    <div class="buttons-container fx-row-vert-cent flex-between">
-      <div class="develop-buttons fx-row-vert-cent">
+        <div class="success-primary" [@messageChange]>
+          File verified. Your node is ready to start!
+        </div>
+      }
+      <div class="buttons-container fx-row-vert-cent flex-between">
+        <div class="develop-buttons fx-row-vert-cent">
+          <button
+            class="btn-aware h-lg border-rad-8 f-500 pl-12 pr-12"
+            [tooltip]="'Start a develop Block Producer Web Node'"
+            (click)="onStartDevelopWebnodeBP()"
+            [class.disabled]="!validFiles"
+          >
+            Start BP
+          </button>
+          <button
+            class="btn-aware h-lg border-rad-8 f-500 pl-12 pr-12"
+            [tooltip]="'Start a develop Web Node without Block Producer feature'"
+            (click)="onStartDevelopWebnodeNonBP()"
+          >
+            Start Non BP
+          </button>
+        </div>
         <button
-          class="btn-aware h-lg border-rad-8 f-500 pl-12 pr-12"
-          [tooltip]="'Start a develop Block Producer Web Node'"
-          (click)="onStartDevelopWebnodeBP()"
-          [class.disabled]="!validFiles"
+          class="whitey h-lg border-rad-8 f-500 pl-12 pr-12"
+          (click)="startAutoWebNode()"
         >
-          Start BP
-        </button>
-        <button
-          class="btn-aware h-lg border-rad-8 f-500 pl-12 pr-12"
-          [tooltip]="'Start a develop Web Node without Block Producer feature'"
-          (click)="onStartDevelopWebnodeNonBP()"
-        >
-          Start Non BP
+          Start Web Node
         </button>
       </div>
-      <button
-        class="whitey h-lg border-rad-8 f-500 pl-12 pr-12"
-        (click)="startAutoWebNode()"
-      >
-        Start Web Node
-      </button>
-    </div>
-  </main>
+    </main>
+  }
+  @if (snarkerControl) {
+    <section
+      class="snarker border border-rad-6 p-12 w-100 mt-12"
+      data-snarker-settings
+    >
+      <h3 class="primary">Sell SNARK work (optional)</h3>
+      <p class="tertiary">
+        The web node proves transaction SNARK work in this tab and sells it for
+        the public key below, which receives the fees. No private key is needed.
+        A tab that produces blocks doesn't sell SNARK work: a SNARK proof can't
+        be stopped for a block proof, which could then miss its slot. To do
+        both, sell SNARK work from another tab.
+      </p>
+      @if (snarkerWithProducer) {
+        <div class="warn-primary mt-8" data-snarker-producer>
+          If this tab produces blocks with the uploaded key, its SNARK worker
+          stays off.
+        </div>
+      }
+      <div class="fx-row-vert-cent flex-between">
+        <label class="primary" for="snarker-key">Public key</label>
+        <input
+          #snarkerKeyInput
+          id="snarker-key"
+          class="h-lg border-rad-6 pl-8 pr-8"
+          placeholder="B62..."
+          autocomplete="off"
+          spellcheck="false"
+          (change)="onSnarkerKey(snarkerKeyInput)"
+        />
+      </div>
+      <div class="fx-row-vert-cent flex-between mt-8">
+        <label class="primary" for="snarker-fee">Fee per bundle (MINA)</label>
+        <input
+          #snarkerFeeInput
+          id="snarker-fee"
+          class="h-lg border-rad-6 pl-8 pr-8"
+          placeholder="0.1"
+          inputmode="decimal"
+          autocomplete="off"
+          (change)="onSnarkerFee(snarkerFeeInput)"
+        />
+      </div>
+      @for (error of [snarkerKeyError, snarkerFeeError]; track $index) {
+        @if (error) {
+          <div class="warn-primary mt-8" data-snarker-error>{{ error }}</div>
+        }
+      }
+    </section>
+  }
 </div>

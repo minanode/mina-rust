@@ -8,9 +8,10 @@ use token::{
 use crate::{
     fuzzer::{mutate_select_authentication, mutate_select_multiplexing, mutate_select_stream},
     network::identify::P2pNetworkIdentifyStreamAction,
-    ConnectionAddr, Data, P2pNetworkKademliaStreamAction, P2pNetworkNoiseAction,
-    P2pNetworkPnetAction, P2pNetworkPubsubAction, P2pNetworkRpcAction, P2pNetworkSchedulerAction,
-    P2pNetworkSchedulerState, P2pNetworkYamuxAction, P2pState, YamuxFlags,
+    ConnectionAddr, Data, P2pNetworkConnectionError, P2pNetworkKademliaStreamAction,
+    P2pNetworkNoiseAction, P2pNetworkPnetAction, P2pNetworkPubsubAction, P2pNetworkRpcAction,
+    P2pNetworkSchedulerAction, P2pNetworkSchedulerState, P2pNetworkStreamResetReason,
+    P2pNetworkYamuxAction, P2pState, YamuxFlags,
 };
 
 use self::{p2p_network_select_state::P2pNetworkSelectStateInner, token::ParseTokenError};
@@ -487,8 +488,44 @@ impl P2pNetworkSelectState {
                             stream_id,
                             data,
                         });
+                        if fin {
+                            // OCaml closes the Async RPC connection on EOF, then
+                            // resets its libp2p stream. Process any final payload
+                            // first; abandon outstanding work when retiring it.
+                            // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/gossip_net/libp2p.ml#L407-L424>
+                            let essential = p2p_state
+                                .network
+                                .scheduler
+                                .connection_state(&addr)
+                                .is_some_and(|connection| {
+                                    connection.is_essential_stream(&addr, stream_id)
+                                });
+                            if essential {
+                                dispatcher.push(P2pNetworkSchedulerAction::Error {
+                                    addr,
+                                    error: P2pNetworkConnectionError::StreamReset(stream_id),
+                                });
+                            } else {
+                                dispatcher.push(P2pNetworkYamuxAction::OutgoingData {
+                                    addr,
+                                    stream_id,
+                                    data: Data::default(),
+                                    flags: YamuxFlags::RST,
+                                });
+                                dispatcher.push(P2pNetworkSchedulerAction::StreamReset {
+                                    addr,
+                                    peer_id,
+                                    stream_id,
+                                    protocol: Some(*kind),
+                                    reason: P2pNetworkStreamResetReason::RemoteRpcClose,
+                                });
+                            }
+                        }
                     }
-                    _ => error!(time;
+                    // Peers push identify updates (`/ipfs/id/push/1.0.0`) on
+                    // a protocol we accept and ignore: routine, so not an
+                    // error an operator should see (O1).
+                    _ => mina_core::debug!(time;
                         "trying to negotiate unimplemented stream kind {kind:?}"
                     ),
                 },

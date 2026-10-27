@@ -9,9 +9,10 @@ use std::fmt::{self, Display, Formatter};
 use ledger::{
     scan_state::currency::{Amount, Balance, Magnitude, Nonce, Slot, SlotSpan, TxnVersion},
     AuthRequired, Permissions, ReceiptChainHash, SetVerificationKey, Timing, TokenId, TokenSymbol,
-    VotingFor, ZkAppAccount, ZkAppUri,
+    VerificationKey, VerificationKeyWire, VotingFor, ZkAppAccount, ZkAppUri, ZKAPP_STATE_SIZE,
 };
 use mina_node_account::{AccountPublicKey, AccountSecretKey};
+use mina_p2p_messages::v2::{MinaBaseVerificationKeyWireStableV1, TokenIdKeyHash};
 
 use crate::ledger::LEDGER_DEPTH;
 
@@ -115,6 +116,9 @@ pub struct Account {
     pub(super) balance: RawCurrency,
     delegate: Option<String>,
     token_id: Option<String>,
+    /// Base58 token id, as `mina ledger export` writes it.
+    token: Option<String>,
+    #[serde(default, deserialize_with = "string_or_bytes_option")]
     token_symbol: Option<Vec<u8>>,
     #[serde(default, deserialize_with = "string_or_u32_option")]
     nonce: Option<u32>,
@@ -133,6 +137,7 @@ impl Account {
             balance,
             delegate,
             token_id: None,
+            token: None,
             token_symbol: None,
             nonce: None,
             receipt_chain_hash: None,
@@ -184,6 +189,13 @@ impl Account {
     }
 
     pub fn token_id(&self) -> Result<TokenId, AccountConfigError> {
+        if let Some(token) = &self.token {
+            return token
+                .parse::<TokenIdKeyHash>()
+                .ok()
+                .and_then(|token| TokenId::try_from(token).ok())
+                .ok_or_else(|| AccountConfigError::MalformedTokenId(token.clone()));
+        }
         let token_fp = self
             .token_id
             .as_ref()
@@ -307,6 +319,52 @@ enum StringOrU32 {
     U32(u32),
 }
 
+/// Byte strings appear both as JSON strings (`mina ledger export`) and as arrays
+/// of bytes.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum StringOrBytes {
+    String(String),
+    Bytes(Vec<u8>),
+}
+
+impl From<StringOrBytes> for Vec<u8> {
+    fn from(value: StringOrBytes) -> Self {
+        match value {
+            StringOrBytes::String(s) => s.into_bytes(),
+            StringOrBytes::Bytes(b) => b,
+        }
+    }
+}
+
+fn string_or_bytes<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    StringOrBytes::deserialize(deserializer).map(Into::into)
+}
+
+fn string_or_bytes_option<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<StringOrBytes>::deserialize(deserializer).map(|v| v.map(Into::into))
+}
+
+/// Slots appear both as JSON strings and as numbers.
+fn string_or_number<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Value::deserialize(deserializer)? {
+        Value::String(s) => Ok(s),
+        Value::Number(n) => Ok(n.to_string()),
+        other => Err(serde::de::Error::custom(format!(
+            "expected a string or a number, got {other}"
+        ))),
+    }
+}
+
 fn string_or_u32<'de, D>(deserializer: D) -> Result<u32, D::Error>
 where
     D: Deserializer<'de>,
@@ -376,15 +434,16 @@ impl AccountPermissions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Zkapp {
     app_state: Vec<String>,
-    // These verification keys currently don't appear in configs, but
-    // they could in the future. We ignore them for now, but should they
-    // appear, serialization is likely to crash and we'll have to update
-    // this type and relevant conversion functions.
-    verification_key: Option<()>,
+    /// Base64-encoded bin_prot `Verification_key_wire`, as `mina ledger export`
+    /// writes it.
+    verification_key: Option<String>,
+    #[serde(deserialize_with = "string_or_u32")]
     zkapp_version: u32,
     action_state: Vec<String>,
+    #[serde(deserialize_with = "string_or_number")]
     last_action_slot: RawSlot,
     proved_state: bool,
+    #[serde(deserialize_with = "string_or_bytes")]
     zkapp_uri: Vec<u8>,
 }
 
@@ -399,9 +458,9 @@ impl Zkapp {
             .iter()
             .map(|fp| parse_fp(fp))
             .collect::<Result<Vec<Fp>, AccountConfigError>>()?;
-        let app_state = if app_state_fps.len() <= 8 {
-            let mut app_state = [0.into(); 8];
-            app_state.copy_from_slice(&app_state_fps);
+        let app_state = if app_state_fps.len() <= ZKAPP_STATE_SIZE {
+            let mut app_state = [0.into(); ZKAPP_STATE_SIZE];
+            app_state[..app_state_fps.len()].copy_from_slice(&app_state_fps);
             app_state
         } else {
             return Err(AccountConfigError::ZkAppStateTooLong(
@@ -415,7 +474,7 @@ impl Zkapp {
             .collect::<Result<Vec<Fp>, AccountConfigError>>()?;
         let action_state = if act_state_fps.len() <= 5 {
             let mut action_state = [0.into(); 5];
-            action_state.copy_from_slice(&act_state_fps);
+            action_state[..act_state_fps.len()].copy_from_slice(&act_state_fps);
             action_state
         } else {
             return Err(AccountConfigError::ZkAppStateTooLong(
@@ -427,12 +486,20 @@ impl Zkapp {
             .parse::<u32>()
             .map(Slot::from_u32)
             .map_err(|_| AccountConfigError::MalformedSlot(self.last_action_slot.clone()))?;
-        if self.verification_key.is_some() {
-            return Err(AccountConfigError::VerificationKeyParsingNotSupported);
-        };
+        let verification_key = self
+            .verification_key
+            .as_ref()
+            .map(|base64| {
+                MinaBaseVerificationKeyWireStableV1::from_base64(base64)
+                    .ok()
+                    .and_then(|wire| VerificationKey::try_from(&wire).ok())
+                    .map(VerificationKeyWire::new)
+                    .ok_or_else(|| AccountConfigError::MalformedVerificationKey(base64.clone()))
+            })
+            .transpose()?;
         Ok(ZkAppAccount {
             app_state,
-            verification_key: None,
+            verification_key,
             zkapp_version: self.zkapp_version,
             action_state,
             last_action_slot,
@@ -453,7 +520,7 @@ pub enum AccountConfigError {
     MalformedSlot(String),
     MalformedFp(String),
     ZkAppStateTooLong(Vec<String>),
-    VerificationKeyParsingNotSupported,
+    MalformedVerificationKey(String),
     DelegateSetOnNonDefaultTokenAccount,
     InvalidBigInt,
 }
@@ -563,8 +630,8 @@ impl Display for AccountConfigError {
             Self::ZkAppStateTooLong(app_state) => {
                 write!(f, "zkapp app state too long ('{:?}')", app_state)
             }
-            Self::VerificationKeyParsingNotSupported => {
-                write!(f, "verification key parsing not supported yet!")
+            Self::MalformedVerificationKey(vk) => {
+                write!(f, "malformed verification key ('{}')", vk)
             }
             Self::DelegateSetOnNonDefaultTokenAccount => {
                 write!(f, "delegate set on non-default token account")

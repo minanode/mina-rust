@@ -99,6 +99,28 @@ impl Database<V2> {
         }
     }
 
+    /// A copy, as [`Self::clone_db`] makes, with the uuid `uuid`.
+    pub fn clone_db_with_uuid(&self, uuid: Uuid) -> Self {
+        let db = self.with(|this| {
+            let mut db = this.clone_db(this.get_directory().unwrap());
+            db.set_uuid(uuid);
+            db
+        });
+        Self {
+            inner: Arc::new(Mutex::new(db)),
+        }
+    }
+
+    /// Whether the overlay is large enough to write the file again (PC3b).
+    pub fn refreeze_due(&self) -> bool {
+        self.with(|this| this.refreeze_due())
+    }
+
+    /// The accounts the file's read cache holds, if frozen.
+    pub fn disk_cached(&self) -> Option<usize> {
+        self.with(|this| this.disk_cached())
+    }
+
     pub fn get_cached_hash(&self, addr: &Address) -> Option<Fp> {
         self.with(|this| this.get_cached_hash(addr))
     }
@@ -121,6 +143,28 @@ impl Database<V2> {
 
     pub fn has_token_owners(&self) -> bool {
         self.with(|this| this.has_token_owners())
+    }
+
+    /// Moves the accounts to a file in `dir` (PC3a); see
+    /// [`DatabaseImpl::freeze_to_disk`].
+    pub fn freeze_to_disk(
+        &self,
+        dir: &std::path::Path,
+    ) -> std::io::Result<Option<super::database_impl::FreezeReport>> {
+        self.with(|this| this.freeze_to_disk(dir))
+    }
+
+    /// Calls `fun` with each account and its address, in slot order.
+    pub fn iter_with_addr<F>(&self, fun: F)
+    where
+        F: FnMut(Address, &Account),
+    {
+        self.with(|this| this.iter_with_addr(fun))
+    }
+
+    /// Whether the accounts are in a file, and the slots changed since.
+    pub fn disk_state(&self) -> Option<usize> {
+        self.with(|this| this.is_on_disk().then(|| this.disk_overlay_len()))
     }
 
     #[cfg(test)]
@@ -304,6 +348,23 @@ impl BaseLedger for Database<V2> {
     fn commit(&mut self) {
         // no-op
     }
+}
+
+/// Root, in base58, of a ledger of `depth` holding `accounts` at indices 0, 1,
+/// 2 and so on.
+///
+/// OCaml prints the same root for those accounts with `mina ledger hash`, so
+/// test vectors can come from OCaml: its mainnet profile has ledger depth 35
+/// and its dev profile depth 10. `tools/ocaml-test-vectors` writes the account
+/// files.
+#[cfg(test)]
+pub(crate) fn ledger_root_b58(depth: u8, accounts: impl IntoIterator<Item = Account>) -> String {
+    let mut db = Database::<V2>::create(depth);
+    for account in accounts {
+        let added = db.get_or_create_account(account.id(), account).unwrap();
+        assert!(matches!(added, GetOrCreated::Added(_)));
+    }
+    mina_p2p_messages::v2::LedgerHash::from_fp(db.merkle_root()).to_string()
 }
 
 #[cfg(test)]
@@ -580,26 +641,25 @@ export function performance_now() {
         }
     }
 
+    /// The expected roots are OCaml 4.0.2's `mina ledger hash` of an empty
+    /// ledger with the dev profile (depth 10) and the mainnet profile (depth
+    /// 35, the Mesa empty-ledger root). Each empty hash is the one below
+    /// hashed with itself, from the hash of `Account.empty`, so these two
+    /// cover every height up to 35.
     #[test]
     fn test_hash_empty() {
-        let heights = [0, 5, 10, 11];
-
-        let hexs = [
-            "f3ee39f42a7b2cac196c8eb1c9fe00f853678c920c0c9ce3724c0b7fe911c731",
-            "d305ebed68f3d4ff16cfc9c6857c274bfbd4a5e83db6fb26e009f75711005524",
-            "bfae9c6290bcc9cf282889c6b880e4eac236d4e50b22395639731e1465939915",
-            "def7de4e2f2f13aa638f5671eccf9367ab9d39ae49ed683fca0169b33b31c416",
-        ];
-
-        let result: Vec<_> = heights
-            .iter()
-            .map(|height| V2::empty_hash_at_height(*height).to_hex())
-            .collect();
-
-        assert_eq!(result, hexs);
-
-        let account_empty_hash = Account::empty().hash();
-        assert_eq!(account_empty_hash.to_hex(), hexs[0]);
+        for (height, expected) in [
+            (10, "jxvN5DVDHPQow7qV8qMYu5JViwcLwYaM885xoov9DdSeC6oGMfc"),
+            (35, "jwkaDMeSMeL94hwJg6EYtSRD6gxB1BHpXnGKnZ1VW6jthKzgcef"),
+        ] {
+            let hash = V2::empty_hash_at_height(height);
+            assert_eq!(
+                mina_p2p_messages::v2::LedgerHash::from_fp(hash).to_string(),
+                expected,
+                "empty hash at height {height}"
+            );
+            assert_eq!(ledger_root_b58(height as u8, []), expected);
+        }
     }
 
     // /// An empty tree produces the same hash than a tree full of empty accounts
@@ -711,7 +771,6 @@ export function performance_now() {
 mod tests_ocaml {
     use std::ops::ControlFlow;
 
-    use o1_utils::FieldHelpers;
     use rand::Rng;
 
     #[cfg(target_family = "wasm")]
@@ -1135,139 +1194,91 @@ mod tests_ocaml {
         assert_eq!(total_balance, retrieved);
     }
 
+    /// Eight accounts in a tree of depth 4. The expected roots are OCaml
+    /// 4.0.2's `mina ledger hash` of the same accounts in ledgers of depth 10
+    /// (dev profile) and 35 (mainnet profile). Every merkle path must lead
+    /// from its leaf to that root.
     #[test]
     fn test_merkle_path_long() {
         const DEPTH: usize = 4;
         const NACCOUNTS: usize = 2u64.pow(DEPTH as u32) as usize;
 
+        let accounts: Vec<Account> = (0..NACCOUNTS / 2)
+            .map(|index| {
+                let mut account = Account::empty();
+                account.token_id = TokenId::from(index as u64);
+                account
+            })
+            .collect();
+
         let mut db = Database::<V2>::create(DEPTH as u8);
-
-        for index in 0..NACCOUNTS / 2 {
-            let mut account = Account::empty();
-            account.token_id = TokenId::from(index as u64);
-
-            // elog!("account{}={}", index, account.hash().to_hex());
-
+        for account in accounts.iter().cloned() {
             let res = db.get_or_create_account(account.id(), account).unwrap();
             assert!(matches!(res, GetOrCreated::Added(_)));
         }
+        let root = db.merkle_root();
 
-        elog!("naccounts={:?}", db.last_filled());
-
-        let expected = [
-            &[
-                "f3ee39f42a7b2cac196c8eb1c9fe00f853678c920c0c9ce3724c0b7fe911c731",
-                "19c428e06065374dcdbb9c2773d59c14a4bc5322b821b616f5ad8b95e3fce83c",
-                "277bb79d5e2b48e92cf9e3cf169eccf199e66b1b611765bdd190ad914d50f138",
-                "63f92c64075ae8ef4d076fc7d6743e758513e7b958a4d7a6cb6744eda019d019",
-            ][..],
-            &[
-                "ea3278ff7f5c0472163846755a94643f9dea2babe2d25848294fd727d83a6630",
-                "19c428e06065374dcdbb9c2773d59c14a4bc5322b821b616f5ad8b95e3fce83c",
-                "277bb79d5e2b48e92cf9e3cf169eccf199e66b1b611765bdd190ad914d50f138",
-                "63f92c64075ae8ef4d076fc7d6743e758513e7b958a4d7a6cb6744eda019d019",
-            ][..],
-            &[
-                "9c461cf909421302a96f3794f198bae68d14eb542cfdae3c5942d61211cdbc3c",
-                "c9c043aa20b69f061a06bf27e19e6c7a7c2cb94a5022a614ebfb9209cda11527",
-                "277bb79d5e2b48e92cf9e3cf169eccf199e66b1b611765bdd190ad914d50f138",
-                "63f92c64075ae8ef4d076fc7d6743e758513e7b958a4d7a6cb6744eda019d019",
-            ][..],
-            &[
-                "225381a665a6c436f0750ce907b8077ae3670b17af0acee4a3eb98569692dd10",
-                "c9c043aa20b69f061a06bf27e19e6c7a7c2cb94a5022a614ebfb9209cda11527",
-                "277bb79d5e2b48e92cf9e3cf169eccf199e66b1b611765bdd190ad914d50f138",
-                "63f92c64075ae8ef4d076fc7d6743e758513e7b958a4d7a6cb6744eda019d019",
-            ][..],
-            &[
-                "6224d72dc65c9b89d5717cb43b9de5a31763192dbe316f46bb0ed2486c46d50a",
-                "16b9cac5d2aa4e87c46520d88df96ddb6da7e2f52e23ec406fce9a06d3654f10",
-                "a4c190a90cddf828af5c87b2b9278da29fdf46bab27642c553f281c4cb25ca1f",
-                "63f92c64075ae8ef4d076fc7d6743e758513e7b958a4d7a6cb6744eda019d019",
-            ][..],
-            &[
-                "1b1edf8a2bc43639f2dd7fbffc953a5887ca8e2f57afe2474b293e00a0c8fd13",
-                "16b9cac5d2aa4e87c46520d88df96ddb6da7e2f52e23ec406fce9a06d3654f10",
-                "a4c190a90cddf828af5c87b2b9278da29fdf46bab27642c553f281c4cb25ca1f",
-                "63f92c64075ae8ef4d076fc7d6743e758513e7b958a4d7a6cb6744eda019d019",
-            ][..],
-            &[
-                "bd649e2c20b743b9ecc6235f06016b4aa1263ee7cd6af77afb5358c60ca9143e",
-                "2580091fe2ab125a78a5d8df8c017d1a0f588b871f50a2a34cd383df3d647503",
-                "a4c190a90cddf828af5c87b2b9278da29fdf46bab27642c553f281c4cb25ca1f",
-                "63f92c64075ae8ef4d076fc7d6743e758513e7b958a4d7a6cb6744eda019d019",
-            ][..],
-            &[
-                "2834b7e93942f095625b96ce9b6b709934bbdd35bc5762f6493db73dd84b242c",
-                "2580091fe2ab125a78a5d8df8c017d1a0f588b871f50a2a34cd383df3d647503",
-                "a4c190a90cddf828af5c87b2b9278da29fdf46bab27642c553f281c4cb25ca1f",
-                "63f92c64075ae8ef4d076fc7d6743e758513e7b958a4d7a6cb6744eda019d019",
-            ][..],
-            &[
-                "f3ee39f42a7b2cac196c8eb1c9fe00f853678c920c0c9ce3724c0b7fe911c731",
-                "64ea581ca7a7aef2b78d04e4a64d0df1da1aa5c2d32a2a34c3c8d50a2c932f07",
-                "358495ff9f624ba2ea37d0890b8c14079fb16e3626bed5ff0447ee10ecf5f30f",
-                "c1da0c74de92bf4c1ae893b0f70524a9c6ff4a7ad754e0fc64f5e00548b4cd3d",
-            ][..],
-            &[
-                "f3ee39f42a7b2cac196c8eb1c9fe00f853678c920c0c9ce3724c0b7fe911c731",
-                "64ea581ca7a7aef2b78d04e4a64d0df1da1aa5c2d32a2a34c3c8d50a2c932f07",
-                "358495ff9f624ba2ea37d0890b8c14079fb16e3626bed5ff0447ee10ecf5f30f",
-                "c1da0c74de92bf4c1ae893b0f70524a9c6ff4a7ad754e0fc64f5e00548b4cd3d",
-            ][..],
-            &[
-                "f3ee39f42a7b2cac196c8eb1c9fe00f853678c920c0c9ce3724c0b7fe911c731",
-                "64ea581ca7a7aef2b78d04e4a64d0df1da1aa5c2d32a2a34c3c8d50a2c932f07",
-                "358495ff9f624ba2ea37d0890b8c14079fb16e3626bed5ff0447ee10ecf5f30f",
-                "c1da0c74de92bf4c1ae893b0f70524a9c6ff4a7ad754e0fc64f5e00548b4cd3d",
-            ][..],
-            &[
-                "f3ee39f42a7b2cac196c8eb1c9fe00f853678c920c0c9ce3724c0b7fe911c731",
-                "64ea581ca7a7aef2b78d04e4a64d0df1da1aa5c2d32a2a34c3c8d50a2c932f07",
-                "358495ff9f624ba2ea37d0890b8c14079fb16e3626bed5ff0447ee10ecf5f30f",
-                "c1da0c74de92bf4c1ae893b0f70524a9c6ff4a7ad754e0fc64f5e00548b4cd3d",
-            ][..],
-            &[
-                "f3ee39f42a7b2cac196c8eb1c9fe00f853678c920c0c9ce3724c0b7fe911c731",
-                "64ea581ca7a7aef2b78d04e4a64d0df1da1aa5c2d32a2a34c3c8d50a2c932f07",
-                "358495ff9f624ba2ea37d0890b8c14079fb16e3626bed5ff0447ee10ecf5f30f",
-                "c1da0c74de92bf4c1ae893b0f70524a9c6ff4a7ad754e0fc64f5e00548b4cd3d",
-            ][..],
-            &[
-                "f3ee39f42a7b2cac196c8eb1c9fe00f853678c920c0c9ce3724c0b7fe911c731",
-                "64ea581ca7a7aef2b78d04e4a64d0df1da1aa5c2d32a2a34c3c8d50a2c932f07",
-                "358495ff9f624ba2ea37d0890b8c14079fb16e3626bed5ff0447ee10ecf5f30f",
-                "c1da0c74de92bf4c1ae893b0f70524a9c6ff4a7ad754e0fc64f5e00548b4cd3d",
-            ][..],
-            &[
-                "f3ee39f42a7b2cac196c8eb1c9fe00f853678c920c0c9ce3724c0b7fe911c731",
-                "64ea581ca7a7aef2b78d04e4a64d0df1da1aa5c2d32a2a34c3c8d50a2c932f07",
-                "358495ff9f624ba2ea37d0890b8c14079fb16e3626bed5ff0447ee10ecf5f30f",
-                "c1da0c74de92bf4c1ae893b0f70524a9c6ff4a7ad754e0fc64f5e00548b4cd3d",
-            ][..],
-            &[
-                "f3ee39f42a7b2cac196c8eb1c9fe00f853678c920c0c9ce3724c0b7fe911c731",
-                "64ea581ca7a7aef2b78d04e4a64d0df1da1aa5c2d32a2a34c3c8d50a2c932f07",
-                "358495ff9f624ba2ea37d0890b8c14079fb16e3626bed5ff0447ee10ecf5f30f",
-                "c1da0c74de92bf4c1ae893b0f70524a9c6ff4a7ad754e0fc64f5e00548b4cd3d",
-            ][..],
-        ];
-
-        let mut hashes = Vec::with_capacity(100);
-
-        let root = Address::root();
-        let nchild = root.iter_children(DEPTH);
-
-        for child in nchild {
-            let path = db.merkle_path(child);
-            let path = path.iter().map(|p| p.hash().to_hex()).collect::<Vec<_>>();
-            hashes.push(path);
+        for (depth, expected) in [
+            (10, "jxJtZKqJDXhLHgZk9aK4rqAJvvW5sKkymuZF6CwH5TNY4GZCCih"),
+            (35, "jwpjaD1uVj5Z7JxX2dbPPMuvZuipXb5nb3SNv9MaD5jcgah69F7"),
+        ] {
+            assert_eq!(ledger_root_b58(depth as u8, accounts.clone()), expected);
+            let completed = (DEPTH..depth).fold(root, |hash, height| {
+                V2::hash_node(height, hash, V2::empty_hash_at_height(height))
+            });
+            assert_eq!(
+                mina_p2p_messages::v2::LedgerHash::from_fp(completed).to_string(),
+                expected
+            );
         }
 
-        // elog!("expected={:#?}", expected);
-        // elog!("computed={:#?}", hashes);
+        let addresses = Address::root().iter_children(DEPTH).collect::<Vec<_>>();
+        assert_eq!(addresses.len(), NACCOUNTS);
+        for (index, address) in addresses.into_iter().enumerate() {
+            let leaf = accounts
+                .get(index)
+                .map(Account::hash)
+                .unwrap_or_else(|| V2::empty_hash_at_height(0));
+            let path = db.merkle_path(address);
+            assert_eq!(path.len(), DEPTH);
 
-        assert_eq!(&expected[..], hashes.as_slice());
+            let implied_root =
+                path.iter()
+                    .enumerate()
+                    .fold(leaf, |hash, (height, step)| match step {
+                        MerklePath::Left(right) => {
+                            assert_eq!((index >> height) & 1, 0, "index {index}");
+                            V2::hash_node(height, hash, *right)
+                        }
+                        MerklePath::Right(left) => {
+                            assert_eq!((index >> height) & 1, 1, "index {index}");
+                            V2::hash_node(height, *left, hash)
+                        }
+                    });
+            assert_eq!(implied_root, root, "index {index}");
+        }
+    }
+
+    /// 1000 accounts with different balances, filling most of a tree of
+    /// height 10. The expected roots are OCaml 4.0.2's `mina ledger hash` of
+    /// the same accounts with the dev profile (depth 10) and the mainnet
+    /// profile (depth 35). mina-node's `test_complete_with_empties` uses them
+    /// too.
+    #[test]
+    fn test_ledger_root_1000_accounts() {
+        let accounts = (0..1000u64).map(|index| {
+            let mut account = Account::empty();
+            account.token_id = TokenId::from(index + 2);
+            account.balance = Balance::from_u64(index);
+            account
+        });
+
+        for (depth, expected) in [
+            (10, "jxkpJJb18Gd4x4cphdnUG3KMNU1Ykm7UMjMKgVwfRBzvp3FHXsW"),
+            (35, "jxyeaYyGz8REJMbG9QXuooAEndFVF4yaSNbD6DPC2bmkAbTW8cv"),
+        ] {
+            assert_eq!(ledger_root_b58(depth, accounts.clone()), expected);
+        }
     }
 
     // "fold_until over account balances"

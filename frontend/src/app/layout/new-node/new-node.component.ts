@@ -20,6 +20,7 @@ import {
   MinaNode,
 } from '@shared/types/core/environment/mina-env.type';
 import { AppActions } from '@app/app.actions';
+import { withoutDisabledControls } from '@shared/constants/config';
 
 const nodeNames: string[] = [
   'Crypto Hash',
@@ -55,6 +56,23 @@ type SubFeature = {
   checked?: boolean;
 };
 
+/**
+ * An address typed without a scheme ("192.0.2.44:3600") means http: kept as
+ * is, the browser would read it as a path on this page's own server. Empty
+ * values and paths starting with "/" are left alone.
+ */
+export function withScheme(address: string): string {
+  const trimmed = (address ?? '').trim();
+  if (
+    !trimmed ||
+    trimmed.startsWith('/') ||
+    /^[a-z][a-z\d+.-]*:\/\//i.test(trimmed)
+  ) {
+    return trimmed;
+  }
+  return `http://${trimmed}`;
+}
+
 @Component({
   selector: 'mina-new-node',
   templateUrl: './new-node.component.html',
@@ -70,6 +88,17 @@ export class NewNodeComponent extends StoreDispatcher implements OnInit {
   protected readonly features: Feature[] = [
     {
       name: 'Dashboard',
+      checked: true,
+      subFeatures: [],
+    },
+    // The block explorer: the node's GraphQL (R27 #3).
+    {
+      name: 'Blocks',
+      checked: true,
+      subFeatures: [],
+    },
+    {
+      name: 'Accounts',
       checked: true,
       subFeatures: [],
     },
@@ -104,6 +133,7 @@ export class NewNodeComponent extends StoreDispatcher implements OnInit {
       name: 'Snarks',
       checked: true,
       subFeatures: [
+        { name: 'worker', checked: true },
         { name: 'scan state', checked: true },
         { name: 'work pool', checked: true },
       ],
@@ -208,10 +238,12 @@ export class NewNodeComponent extends StoreDispatcher implements OnInit {
 
     const node: MinaNode = {
       name: this.formGroup.get('name').value,
-      url: this.formGroup.get('url').value,
-      memoryProfiler: this.formGroup.get('memProfiler').value,
-      debugger: this.formGroup.get('debugger').value,
-      features: featuresConfig,
+      url: withScheme(this.formGroup.get('url').value),
+      memoryProfiler: withScheme(this.formGroup.get('memProfiler').value),
+      debugger: withScheme(this.formGroup.get('debugger').value),
+      // A view-only build offers no controls for an added node either
+      // (R27 #13: Benchmarks showed until a reload).
+      features: withoutDisabledControls(featuresConfig),
       isCustom: true,
     };
 

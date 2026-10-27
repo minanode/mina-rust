@@ -70,7 +70,7 @@ pub enum TransactionPoolCandidateAction {
 }
 
 impl redux::EnablingCondition<crate::State> for TransactionPoolCandidateAction {
-    fn is_enabled(&self, state: &crate::State, _time: redux::Timestamp) -> bool {
+    fn is_enabled(&self, state: &crate::State, time: redux::Timestamp) -> bool {
         match self {
             TransactionPoolCandidateAction::InfoReceived { peer_id, info } => {
                 !state.transaction_pool.contains(&info.hash)
@@ -114,13 +114,11 @@ impl redux::EnablingCondition<crate::State> for TransactionPoolCandidateAction {
                 .is_some(),
             TransactionPoolCandidateAction::Libp2pTransactionsReceived { .. } => true,
             TransactionPoolCandidateAction::VerifyNext => {
-                // Don't continue if we are producing a block, or we never synced yet
-                // or if the ledger service is busy.
+                // Don't continue if we are producing a block, or while we have
+                // no usable frontier (never synced, or re-bootstrapping), or if
+                // the ledger service is busy.
                 !state.block_producer.is_producing()
-                    && state
-                        .transition_frontier
-                        .best_tip()
-                        .is_some_and(|b| !b.is_genesis())
+                    && !state.transition_frontier.is_bootstrapping(time)
                     && !state.ledger.write.is_busy()
             }
             TransactionPoolCandidateAction::VerifyPending {

@@ -14,8 +14,8 @@ Send a payment transaction to the network.
 mina wallet send \
   --from /path/to/encrypted/key \
   --to <receiver_public_key> \
-  --amount <amount_in_nanomina> \
-  --fee <fee_in_nanomina>
+  --amount <amount_in_mina> \
+  --fee <fee_in_mina>
 ```
 
 ## Arguments
@@ -24,23 +24,24 @@ mina wallet send \
 
 - `--from <PATH>` - Path to encrypted sender key file
 - `--to <PUBLIC_KEY>` - Receiver's public key (Base58Check encoded)
-- `--amount <AMOUNT>` - Amount in nanomina (1 MINA = 1,000,000,000 nanomina)
-- `--fee <FEE>` - Transaction fee in nanomina
+- `--amount <MINA>` - Amount in MINA, like `2.5` (at most 9 decimal places)
+- `--fee <MINA>` - Transaction fee in MINA, like `0.1`
 
 **Optional:**
 
-- `[PASSWORD]` - Password to decrypt the sender key. Can be provided as an
-  argument or via the `MINA_PRIVKEY_PASS` environment variable (recommended for
-  security)
 - `--memo <MEMO>` - Transaction memo (max 32 bytes, default: empty)
 - `--nonce <NONCE>` - Transaction nonce (default: fetched from node)
 - `--valid-until <SLOT>` - Slot until which transaction is valid (default: never
   expires)
-- `--fee-payer <PUBLIC_KEY>` - Optional fee payer public key (default: sender
-  pays)
 - `--network <NETWORK>` - Network for signing: `mainnet` or `devnet` (default:
   `devnet`)
-- `--node <URL>` - Node GraphQL endpoint (default: `http://localhost:3000`)
+- `--node <URL>` - The node's HTTP base URL (or `MINA_NODE_URL`; default:
+  `http://localhost:3000`)
+
+**Environment:**
+
+- `MINA_PRIVKEY_PASS` - Password to decrypt the sender key. The password is read
+  only from this variable. A password given as an argument is refused.
 
 ## Examples
 
@@ -50,8 +51,8 @@ mina wallet send \
 mina wallet send \
   --from ./keys/my-wallet \
   --to B62qre3erTHfzQckNuibViWQGyyKwZseztqrjPZBv6SQF384Rg6ESAy \
-  --amount 1000000000 \
-  --fee 10000000 \
+  --amount 1 \
+  --fee 0.01 \
   --network devnet
 ```
 
@@ -61,21 +62,10 @@ mina wallet send \
 mina wallet send \
   --from ./keys/my-wallet \
   --to B62qre3erTHfzQckNuibViWQGyyKwZseztqrjPZBv6SQF384Rg6ESAy \
-  --amount 5000000000 \
-  --fee 10000000 \
+  --amount 5 \
+  --fee 0.01 \
   --memo "Payment for services" \
   --network mainnet
-```
-
-### Send payment with separate fee payer
-
-```bash
-mina wallet send \
-  --from ./keys/sender-wallet \
-  --to B62qre3erTHfzQckNuibViWQGyyKwZseztqrjPZBv6SQF384Rg6ESAy \
-  --amount 1000000000 \
-  --fee 10000000 \
-  --fee-payer B62qkfHpLpELqpMK6ZvUTJ5wRqKDRF3UHyJ4Kv3FU79Sgs4qpBnx5RG
 ```
 
 ### Send payment to remote node
@@ -84,21 +74,21 @@ mina wallet send \
 mina wallet send \
   --from ./keys/my-wallet \
   --to B62qre3erTHfzQckNuibViWQGyyKwZseztqrjPZBv6SQF384Rg6ESAy \
-  --amount 1000000000 \
-  --fee 10000000 \
+  --amount 1 \
+  --fee 0.01 \
   --node https://node.example.com:3000
 ```
 
-### Use environment variable for password
+### Set the password
 
 ```bash
-export MINA_PRIVKEY_PASS="my-secret-password"
+read -rs -p "Key password: " MINA_PRIVKEY_PASS && export MINA_PRIVKEY_PASS
 
 mina wallet send \
   --from ./keys/my-wallet \
   --to B62qre3erTHfzQckNuibViWQGyyKwZseztqrjPZBv6SQF384Rg6ESAy \
-  --amount 1000000000 \
-  --fee 10000000
+  --amount 1 \
+  --fee 0.01
 ```
 
 ## How it works
@@ -126,15 +116,3 @@ The `--network` flag controls which network the transaction is signed for:
 
 **Important:** Make sure to use the correct network flag. A transaction signed
 for devnet will not be valid on mainnet and vice versa.
-
-## Fee payer
-
-By default, the sender pays the transaction fee. However, you can specify a
-different fee payer using the `--fee-payer` option:
-
-- The sender's key is used to sign the payment
-- The fee payer's public key is included in the transaction
-- The fee payer must also sign the transaction (currently requires manual
-  coordination)
-
-This is useful for sponsored transactions where another party pays the fees.

@@ -1,0 +1,4 @@
+# Netlify only (build.sh copies it for HOSTING=netlify): the frontend routes
+# in the page, so other paths get index.html. Cloudflare Pages does this by
+# itself for a site without a 404.html.
+/*  /index.html  200

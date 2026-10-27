@@ -1,8 +1,7 @@
 use mina_core::log::system_time;
-use rand::prelude::*;
 
 use crate::{
-    block_producer::BlockProducerAction,
+    block_producer::{BlockProducerAction, BlockProducerWonSlotDiscardReason},
     block_producer_effectful::block_producer_effects,
     event_source::event_source_effects,
     external_snark_worker_effectful::external_snark_worker_effectful_effects,
@@ -15,7 +14,11 @@ use crate::{
     snark::snark_effects,
     snark_pool::{candidate::SnarkPoolCandidateAction, snark_pool_effects, SnarkPoolAction},
     transaction_pool::candidate::TransactionPoolCandidateAction,
-    transition_frontier::{genesis::TransitionFrontierGenesisAction, transition_frontier_effects},
+    transition_frontier::{
+        candidate::TransitionFrontierCandidateAction, genesis::TransitionFrontierGenesisAction,
+        persist::TransitionFrontierPersistAction, transition_frontier_effects,
+        TransitionFrontierAction,
+    },
     Action, ActionWithMeta, CheckInvalidPeersAction, ExternalSnarkWorkerAction, Service, Store,
     TransactionPoolAction,
 };
@@ -36,14 +39,38 @@ pub fn effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta) {
         // Following action gets dispatched very often, so ideally this
         // effect execution should be as light as possible.
         Action::CheckTimeouts(_) => {
+            if let Some(stats) = store.service.stats() {
+                stats
+                    .block_producer()
+                    .resolve_restored_schedules(meta.time());
+            }
+            store.service.save_block_production();
             // TODO(binier): create init action and dispatch these there.
             store.dispatch(TransitionFrontierGenesisAction::LedgerLoadInit);
             store.dispatch(ExternalSnarkWorkerAction::Start);
 
             store.dispatch(TransitionFrontierGenesisAction::ProveInit);
 
+            // The frontier store (R20 D4, D5): opens once the chain id is
+            // known, and is loaded for a restore once the genesis block is in
+            // the frontier; completed work renews its idle deadline. A
+            // checkpoint starts when one is due and the ledger is free.
+            store.dispatch(TransitionFrontierPersistAction::OpenInit);
+            store.dispatch(TransitionFrontierPersistAction::OpenTimeout);
+            store.dispatch(TransitionFrontierPersistAction::LoadInit);
+            let completed_stages = store.service.persist_load_progress();
+            store.dispatch(TransitionFrontierPersistAction::LoadProgress { completed_stages });
+            store.dispatch(TransitionFrontierPersistAction::LoadTimeout);
+            store.dispatch(TransitionFrontierPersistAction::ChainPutInit);
+            store.dispatch(TransitionFrontierPersistAction::CheckpointInit);
+            // Genesis ledgers deferred at startup, if the node bootstraps
+            // after all (I5d2).
+            store.dispatch(TransitionFrontierAction::GenesisLedgersLoadInit);
+
             if store.state().p2p.ready().is_some() {
-                p2p_request_best_tip_if_needed(store);
+                // Within the best tip budget, and once per peer per candidate.
+                store.dispatch(TransitionFrontierCandidateAction::ChainProofPeersQuery);
+                p2p_request_best_tips_of_new_peers(store);
                 p2p_request_transactions_if_needed(store);
                 p2p_request_snarks_if_needed(store);
             }
@@ -53,17 +80,29 @@ pub fn effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta) {
             store.dispatch(TransactionPoolCandidateAction::VerifyNext);
 
             store.dispatch(SnarkPoolAction::CheckTimeouts);
+            // A worker held back for one of our blocks takes a job again as
+            // soon as it may (P5.3).
+            if store.state().snark_pool.worker_paused_for_block
+                && store.state().snark_worker_may_take_job()
+            {
+                store.dispatch(SnarkPoolAction::AutoCreateCommitment);
+            }
             store.dispatch(SnarkPoolAction::P2pSendAll);
 
+            store.dispatch(SnarkPoolAction::CompletedSnarksFetch);
             store.dispatch(SnarkPoolCandidateAction::WorkFetchAll);
             store.dispatch(SnarkPoolCandidateAction::WorkVerifyNext);
 
             store.dispatch(ExternalSnarkWorkerAction::StartTimeout { now: meta.time() });
             store.dispatch(ExternalSnarkWorkerAction::WorkTimeout { now: meta.time() });
 
+            store.dispatch(BlockProducerAction::WonSlotDiscard {
+                reason: BlockProducerWonSlotDiscardReason::WonSlotExpired,
+            });
             store.dispatch(BlockProducerAction::WonSlotProduceInit);
             store.dispatch(BlockProducerAction::BlockInject);
             store.dispatch(LedgerReadAction::FindTodos);
+            store.dispatch(SnarkPoolAction::WorkCoverageRefresh);
 
             store.dispatch(CheckInvalidPeersAction {});
         }
@@ -74,7 +113,12 @@ pub fn effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta) {
             snark_effects(store, meta.with_action(action));
         }
         Action::TransactionPoolEffect(action) => {
-            action.effects(store);
+            // At a start the frontier is synced to the genesis block before
+            // the genesis ledger is loaded (RC7-FIXES).
+            let frontier = &store.state().transition_frontier;
+            let synced = frontier.sync.is_synced()
+                && frontier.best_tip().is_some_and(|tip| !tip.is_genesis());
+            action.effects(store, synced);
         }
         Action::TransitionFrontier(action) => {
             transition_frontier_effects(store, meta.with_action(action));
@@ -137,54 +181,64 @@ pub fn effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta) {
     }
 }
 
-fn p2p_request_best_tip_if_needed<S: Service>(store: &mut Store<S>) {
-    // TODO(binier): refactor
-    let state = store.state();
-    let best_candidate = state.transition_frontier.candidates.best_verified();
-    let best_candidate_hash = best_candidate.map(|s| s.block.hash());
-    let best_tip_hash = state.transition_frontier.best_tip().map(|v| &v.hash);
-    let syncing_best_tip_hash = state.transition_frontier.sync.best_tip().map(|v| &v.hash);
+/// Ask new peers, and refresh unusable bootstrap hints within the shared
+/// peer/IP request budget. A libp2p best-tip channel does not push updates.
+/// OCaml downloads and verifies best tips during initialization; the periodic
+/// refresh here is a local recovery policy for quiet fresh-peer chains.
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_networking/mina_networking.ml#L232-L256>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transition_router/transition_router.ml#L186-L266>
+fn p2p_request_best_tips_of_new_peers<S: Service>(store: &mut Store<S>) {
+    let requests = bootstrap_best_tip_requests(store.state());
 
-    if best_candidate.is_some()
-        && best_candidate_hash != best_tip_hash
-        && best_candidate_hash != syncing_best_tip_hash
-        && best_candidate.is_some_and(|s| s.chain_proof.is_none())
-    {
-        request_best_tip(store, best_candidate_hash.cloned());
-    }
-}
-use mina_p2p_messages::v2::StateHash;
-
-fn request_best_tip<S: Service>(store: &mut Store<S>, consensus_best_tip_hash: Option<StateHash>) {
-    let p2p = p2p_ready!(store.state().p2p, "request_best_tip", system_time());
-
-    let (ready_peers, ready_peers_matching_best_tip) = p2p.ready_rpc_peers_iter().fold(
-        (Vec::new(), Vec::new()),
-        |(mut all, mut matching), (peer_id, peer)| {
-            let rpc_id = peer.channels.next_local_rpc_id();
-            if peer.best_tip.as_ref().map(|b| b.hash()) == consensus_best_tip_hash.as_ref() {
-                matching.push((*peer_id, rpc_id));
-            } else if matching.is_empty() {
-                all.push((*peer_id, rpc_id));
-            }
-            (all, matching)
-        },
-    );
-
-    let peers = if !ready_peers_matching_best_tip.is_empty() {
-        ready_peers_matching_best_tip
-    } else {
-        ready_peers
-    };
-
-    if let Some((peer_id, id)) = peers.choose(&mut store.state().pseudo_rng()) {
+    for (peer_id, id) in requests {
         store.dispatch(P2pChannelsRpcAction::RequestSend {
-            peer_id: *peer_id,
-            id: *id,
+            peer_id,
+            id,
             request: Box::new(P2pRpcRequest::BestTipWithProof),
             on_init: None,
         });
     }
+}
+
+pub(crate) fn bootstrap_best_tip_requests(
+    state: &crate::State,
+) -> Vec<(crate::p2p::PeerId, crate::p2p::channels::rpc::P2pRpcId)> {
+    let time = state.time();
+    let Some(p2p) = state.p2p.ready() else {
+        return Vec::new();
+    };
+    let frontier = &state.transition_frontier;
+    let no_target = frontier.best_tip().is_none_or(|tip| tip.is_genesis())
+        && frontier.sync.best_tip().is_none_or(|tip| tip.is_genesis())
+        && frontier
+            .candidates
+            .best_verified_block()
+            .is_none_or(|tip| tip.is_genesis());
+    let stale_hint = |tip: &mina_core::block::ArcBlockWithHash| {
+        tip.is_genesis() || crate::transition_frontier::sync::tip_is_stale(tip, time)
+    };
+    let mut requests = p2p
+        .peers
+        .iter()
+        .filter(|(_, peer)| peer.is_libp2p())
+        .filter_map(|(peer_id, peer)| Some((peer_id, peer.status.as_ready()?)))
+        .filter(|(peer_id, peer)| {
+            let new_peer = peer.best_tip.is_none()
+                && p2p
+                    .best_tip_requests
+                    .last_request(peer_id)
+                    .is_none_or(|last| last < peer.connected_since);
+            let refresh = no_target && peer.best_tip.as_ref().is_none_or(stale_hint);
+            (new_peer || refresh)
+                && peer.channels.rpc.can_send_request()
+                && p2p.is_best_tip_request_within_budget(peer_id, time)
+        })
+        .map(|(peer_id, peer)| (*peer_id, peer.channels.next_local_rpc_id()))
+        .collect::<Vec<_>>();
+    // A shared-IP budget must not let one genesis-only peer monopolize all
+    // refreshes. RequestSend rechecks the budget after each actual dispatch.
+    requests.sort_by_key(|(peer, _)| p2p.best_tip_requests.last_request(peer));
+    requests
 }
 
 fn p2p_request_transactions_if_needed<S: Service>(store: &mut Store<S>) {

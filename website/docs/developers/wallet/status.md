@@ -22,7 +22,8 @@ mina wallet status --hash <TRANSACTION_HASH>
 
 **Optional:**
 
-- `--node <URL>` - Node GraphQL endpoint (default: `http://localhost:3000`)
+- `--node <URL>` - The node's HTTP base URL (or `MINA_NODE_URL`; default:
+  `http://localhost:3000`)
 - `--check-mempool` - Force checking the mempool even if transaction is found in
   blockchain
 
@@ -66,8 +67,8 @@ Transaction Details:
   Hash:   5Ju4H4DTE1zkwrnLrQ8vb2sZR19b7eSMiAVbb4wQh4bfhh4aQNew
   From:   B62qjtpVAMr7knjLxRLU887QgT7GPk3JYCg8NGdZsfMuaykAJ9C2Rem
   To:     B62qjtpVAMr7knjLxRLU887QgT7GPk3JYCg8NGdZsfMuaykAJ9C2Rem
-  Amount: 1000000000 nanomina
-  Fee:    1000000 nanomina
+  Amount: 1 MINA
+  Fee:    0.001 MINA
   Nonce:  0
 
 Status: PENDING (waiting to be included in a block)

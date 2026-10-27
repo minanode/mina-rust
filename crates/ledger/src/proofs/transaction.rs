@@ -308,6 +308,10 @@ pub mod scalar_challenge {
             let s4 = w.exists((yr.double() / (xr.double() + xq2 - s3_squared)) - s3);
             let xs = w.exists(xq2 + s4.square() - s3_squared);
             let ys = w.exists(((xr - xs) * s4) - yr);
+            // Mesa's EndoMul gate has a 12th constraint,
+            // `(xp - xr) * (xr - xs) * inv = 1`, with `inv` in column 2.
+            // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/pickles/scalar_challenge.ml#L230>
+            let _inv = w.exists(((xp - xr) * (xr - xs)).inverse().unwrap_or_default());
 
             acc = make_group::<F>(xs, ys);
             n_acc =
@@ -3842,7 +3846,35 @@ pub fn compute_witness<C: ProofConstants, F: FieldWitness>(
             w.aux()[i - C::PRIMARY_LEN]
         }
     };
+    place_witness::<C, F>(prover, external_values)
+}
 
+/// As [`compute_witness`], for a witness that may have the wrong number of
+/// values: the missing ones are zero, the extra ones left out, so that the
+/// rows it breaks can be listed (`only_verify_constraints`).
+fn compute_witness_unchecked<C: ProofConstants, F: FieldWitness>(
+    prover: &Prover<F>,
+    w: &Witness<F>,
+) -> [Vec<F>; COLUMNS] {
+    let external_values = |i: usize| {
+        if i < C::PRIMARY_LEN {
+            w.primary.get(i).copied().unwrap_or_else(F::zero)
+        } else {
+            w.aux()
+                .get(i - C::PRIMARY_LEN)
+                .copied()
+                .unwrap_or_else(F::zero)
+        }
+    };
+    place_witness::<C, F>(prover, external_values)
+}
+
+/// Places the witness values in the circuit's rows and columns, and computes
+/// the backend's internal variables from them.
+fn place_witness<C: ProofConstants, F: FieldWitness>(
+    prover: &Prover<F>,
+    external_values: impl Fn(usize) -> F,
+) -> [Vec<F>; COLUMNS] {
     let mut internal_values = HashMap::<usize, F>::with_capacity(13_000);
     let public_input_size = C::PRIMARY_LEN;
     let num_rows = C::ROWS;
@@ -3969,6 +4001,134 @@ impl<F: FieldWitness> ProofWithPublic<F> {
     }
 }
 
+/// Every copy constraint and gate the witness fails, up to `limit`, where
+/// kimchi's `verify_witness` stops at the first: which rows fail tells what
+/// part of a circuit an input breaks. A cell with a wrong value breaks the
+/// two copy constraints of its permutation cycle that touch it.
+///
+/// The same checks as kimchi's `ConstraintSystem::verify_witness`:
+/// <https://github.com/o1-labs/proof-systems/blob/ab84160fa2c22290a8506a7742ac1378879fc386/kimchi/src/circuits/constraints.rs#L416-L468>
+///
+/// Each failure names the `aux` indexes of the witness values its row holds,
+/// directly or through the backend's internal variables, which
+/// `Witness::trace_at` turns into the code that pushed them.
+fn constraint_failures<F: FieldWitness>(
+    prover: &Prover<F>,
+    witness: &[Vec<F>; COLUMNS],
+    public: &[F],
+    limit: usize,
+) -> Vec<String> {
+    use kimchi::circuits::wires::PERMUTS;
+
+    let index = &prover.index;
+    let cs = &index.cs;
+    let aux_of_row = |row: usize| -> Vec<usize> {
+        fn add<F>(
+            v: &V,
+            internal_vars: &InternalVars<F>,
+            public: usize,
+            seen: &mut std::collections::HashSet<usize>,
+            out: &mut Vec<usize>,
+        ) {
+            match v {
+                V::External(i) if *i >= public => out.push(*i - public),
+                V::External(_) => {}
+                V::Internal(id) => {
+                    if !seen.insert(*id) {
+                        return;
+                    }
+                    if let Some((lc, _)) = internal_vars.get(id) {
+                        for (_, v) in lc {
+                            add(v, internal_vars, public, seen, out);
+                        }
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        if let Some(cols) = row
+            .checked_sub(cs.public)
+            .and_then(|i| prover.rows_rev.len().checked_sub(i + 1))
+            .and_then(|i| prover.rows_rev.get(i))
+        {
+            for v in cols.iter().flatten() {
+                add(v, &prover.internal_vars, cs.public, &mut seen, &mut out);
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    };
+    let rows = ark_poly::EvaluationDomain::size(&cs.domain.d1);
+    let witness: [Vec<F>; COLUMNS] = std::array::from_fn(|i| {
+        let mut column = witness[i].clone();
+        column.resize(rows, F::zero());
+        column
+    });
+    let mut failures = Vec::new();
+    for (row, gate) in cs.gates.iter().enumerate() {
+        for col in 0..PERMUTS {
+            let wire = gate.wires[col];
+            if witness[col][row] != witness[wire.col][wire.row] {
+                failures.push(format!(
+                    "row {row} col {col} disconnected from row {} col {} (aux {:?} and {:?})",
+                    wire.row,
+                    wire.col,
+                    aux_of_row(row),
+                    aux_of_row(wire.row)
+                ));
+            }
+        }
+        if let Err(err) = gate.verify::<FULL_ROUNDS, F::OtherCurve>(row, &witness, cs, public) {
+            failures.push(format!(
+                "row {row} {:?} gate: {err} (aux {:?})",
+                gate.typ,
+                aux_of_row(row)
+            ));
+        }
+        if failures.len() >= limit {
+            failures.truncate(limit);
+            break;
+        }
+    }
+    failures
+}
+
+/// For tests: the witnesses `create_proof` is given on this thread, as the
+/// SHA-256 of their primary and auxiliary values, once a test enables it, to
+/// pin a circuit's witness (ZK1).
+#[cfg(test)]
+pub(super) mod witness_hashes {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static HASHES: RefCell<Option<Vec<(String, String)>>> = const { RefCell::new(None) };
+    }
+
+    /// Starts recording on this thread.
+    pub(in crate::proofs) fn enable() {
+        HASHES.with(|hashes| *hashes.borrow_mut() = Some(Vec::new()));
+    }
+
+    pub(super) fn is_enabled() -> bool {
+        HASHES.with(|hashes| hashes.borrow().is_some())
+    }
+
+    pub(super) fn record(primary: String, aux: String) {
+        HASHES.with(|hashes| {
+            if let Some(hashes) = hashes.borrow_mut().as_mut() {
+                hashes.push((primary, aux));
+            }
+        });
+    }
+
+    /// The hashes recorded since `enable`, in order; stops recording.
+    pub(in crate::proofs) fn take() -> Vec<(String, String)> {
+        HASHES.with(|hashes| hashes.borrow_mut().take().unwrap_or_default())
+    }
+}
+
 pub(super) fn create_proof<C: ProofConstants, F: FieldWitness>(
     params: CreateProofParams<F>,
     w: &Witness<F>,
@@ -3976,29 +4136,53 @@ pub(super) fn create_proof<C: ProofConstants, F: FieldWitness>(
     type EFrSponge<F> =
         mina_poseidon::sponge::DefaultFrSponge<F, PlonkSpongeConstantsKimchi, FULL_ROUNDS>;
 
+    #[cfg(test)]
+    if witness_hashes::is_enabled() {
+        witness_hashes::record(debug::hash_slice(&w.primary), debug::hash_slice(w.aux()));
+    }
+
     let CreateProofParams {
         prover,
         prev_challenges,
         only_verify_constraints,
     } = params;
 
-    let computed_witness: [Vec<F>; COLUMNS] = compute_witness::<C, _>(prover, w);
     let prover_index: &ProverIndex<F> = &prover.index;
 
-    // public input
-    let public_input = computed_witness[0][..prover_index.cs.public].to_vec();
-
     if only_verify_constraints {
-        prover_index
-            .verify(&computed_witness, &public_input)
-            .map_err(|e| {
-                ProofError::ConstraintsNotSatisfied(format!("incorrect witness: {:?}", e))
-            })?;
+        // A witness of the wrong length fails here rather than in
+        // `compute_witness`, with the rows it breaks: the first of them
+        // tells where it went wrong.
+        let computed_witness = compute_witness_unchecked::<C, _>(prover, w);
+        let public_input = computed_witness[0][..prover_index.cs.public].to_vec();
+        let wrong_length = (w.aux().len() != C::AUX_LEN)
+            .then(|| format!("witness of {} values, not {}; ", w.aux().len(), C::AUX_LEN));
+        let verified = match &wrong_length {
+            Some(_) => Err(None),
+            None => prover_index
+                .verify(&computed_witness, &public_input)
+                .map_err(Some),
+        };
+        verified.map_err(|e| {
+            let all = constraint_failures(prover, &computed_witness, &public_input, 64);
+            ProofError::ConstraintsNotSatisfied(format!(
+                "{}incorrect witness: {e:?}; {} failures{}: {}",
+                wrong_length.unwrap_or_default(),
+                all.len(),
+                if all.len() == 64 { " or more" } else { "" },
+                all.join("; ")
+            ))
+        })?;
 
         // We still return an error when `only_verify_constraints` is true and
         // constraints are verified, to short-circuit easily
         return Err(ProofError::ConstraintsOk.into());
     }
+
+    let computed_witness: [Vec<F>; COLUMNS] = compute_witness::<C, _>(prover, w);
+
+    // public input
+    let public_input = computed_witness[0][..prover_index.cs.public].to_vec();
 
     // NOTE: Not random in `cfg(test)`
     // let mut rng = get_rng();
@@ -4060,7 +4244,7 @@ pub(super) fn create_proof<C: ProofConstants, F: FieldWitness>(
     })
     .context("create_recursive")?;
 
-    eprintln!("proof_elapsed={:?}", now.elapsed());
+    mina_core::debug!("proof_elapsed={:?}", now.elapsed());
 
     Ok(ProofWithPublic {
         proof,
@@ -4318,6 +4502,7 @@ pub(super) fn generate_tx_proof(
             dlog_plonk_index: &dlog_plonk_index,
             step_prover_index: &tx_step_prover.index,
             wrap_prover: tx_wrap_prover,
+            wrap_domain_indices: None,
         },
         &mut w,
     )
@@ -4439,8 +4624,12 @@ pub(super) mod tests {
             .collect()
     }
 
+    /// Not a test: converts the snark worker jobs in the circuit-blobs
+    /// directory's `tests/` into requests in an existing `/tmp/requests`.
     #[allow(unused)]
     #[test]
+    #[ignore = "a conversion utility; needs Berkeley circuit-blobs `tests/` job \
+                files that are not in the repo, and there are none for Mesa"]
     fn test_convert_requests() {
         use binprot::BinProtWrite;
         use mina_p2p_messages::v2::*;
@@ -4574,11 +4763,19 @@ pub(super) mod tests {
         (statement, [p1, p2], message)
     }
 
+    // Builds the provers of the default network (devnet in tests), which
+    // since P4.8 are the Mesa devnet circuits, `4.0.2devnet`. Those blobs are
+    // generated locally (`tools/mesa-circuits/generate.sh`, P4.8) and not
+    // published: without them the loader falls back to the circuit-blobs
+    // GitHub release, which has no `4.0.2devnet`, and fails with a 404. So
+    // the test runs with the other blob-dependent prover tests:
+    // `MINA_CIRCUIT_BLOBS_BASE_DIR=<dir with 4.0.2devnet> cargo test -- --ignored`.
     #[allow(unused)]
     #[test]
+    #[ignore = "needs the Mesa devnet circuit blobs (4.0.2devnet) in MINA_CIRCUIT_BLOBS_BASE_DIR"]
     fn test_make_verifier_index() {
-        BlockProver::make(None, None);
-        TransactionProver::make(None);
+        BlockProver::make(None, None).unwrap();
+        TransactionProver::make(None).unwrap();
 
         // use crate::proofs::caching::verifier_index_to_bytes;
         // use crate::proofs::verifier_index::get_verifier_index;
@@ -4656,7 +4853,7 @@ pub(super) mod tests {
             tx_step_prover,
             tx_wrap_prover,
             merge_step_prover: _,
-        } = TransactionProver::make(None);
+        } = TransactionProver::make(None).unwrap();
 
         let mut witnesses: Witness<Fp> = Witness::new::<StepTransactionProof>();
         // witnesses.ocaml_aux = read_witnesses("tx_fps.txt").unwrap();
@@ -4776,7 +4973,7 @@ pub(super) mod tests {
             tx_step_prover: _,
             tx_wrap_prover,
             merge_step_prover,
-        } = TransactionProver::make(None);
+        } = TransactionProver::make(None).unwrap();
 
         let mut witnesses: Witness<Fp> = Witness::new::<StepMergeProof>();
         // witnesses.ocaml_aux = read_witnesses("fps_merge.txt").unwrap();
@@ -4823,7 +5020,7 @@ pub(super) mod tests {
             step_opt_signed_opt_signed_prover,
             step_opt_signed_prover,
             step_proof_prover,
-        } = ZkappProver::make(None);
+        } = ZkappProver::make(None).unwrap();
 
         dbg!(step_opt_signed_opt_signed_prover.rows_rev.len());
         // dbg!(step_opt_signed_opt_signed_prover.rows_rev.iter().map(|v| v.len()).collect::<Vec<_>>());
@@ -4866,7 +5063,7 @@ pub(super) mod tests {
             step_opt_signed_opt_signed_prover,
             step_opt_signed_prover,
             step_proof_prover,
-        } = ZkappProver::make(None);
+        } = ZkappProver::make(None).unwrap();
 
         let LedgerProof { proof, .. } = generate_zkapp_proof(ZkappParams {
             statement: &statement,
@@ -4906,7 +5103,7 @@ pub(super) mod tests {
             block_step_prover,
             block_wrap_prover,
             tx_wrap_prover,
-        } = BlockProver::make(None, None);
+        } = BlockProver::make(None, None).unwrap();
         let mut witnesses: Witness<Fp> = Witness::new::<StepBlockProof>();
         // witnesses.ocaml_aux = read_witnesses("block_fps.txt").unwrap();
 
@@ -5021,15 +5218,15 @@ pub(super) mod tests {
             block_step_prover,
             block_wrap_prover,
             tx_wrap_prover: _,
-        } = BlockProver::make(None, None);
-        let TransactionProver { tx_step_prover, .. } = TransactionProver::make(None);
+        } = BlockProver::make(None, None).unwrap();
+        let TransactionProver { tx_step_prover, .. } = TransactionProver::make(None).unwrap();
         let ZkappProver {
             tx_wrap_prover,
             merge_step_prover,
             step_opt_signed_opt_signed_prover: zkapp_step_opt_signed_opt_signed_prover,
             step_opt_signed_prover: zkapp_step_opt_signed_prover,
             step_proof_prover: zkapp_step_proof_prover,
-        } = ZkappProver::make(None);
+        } = ZkappProver::make(None).unwrap();
 
         // TODO: Compare checksum with OCaml
         #[rustfmt::skip]
@@ -5208,5 +5405,831 @@ pub(super) mod tests {
                 panic!()
             }
         }
+    }
+}
+
+/// The base transaction circuit on Mesa, with real mainnet base jobs of every
+/// non-zkApp kind: each is proved, step and wrap, and checked with the mainnet
+/// transaction verifier.
+///
+/// The fixtures are the `(statement, transaction witness)` pairs a snark worker
+/// gets for `Transition` work, from the scan states of Mesa mainnet blocks. The
+/// payment comes from a staged ledger dump whose scan state came from OCaml
+/// peers (`examples/mesa_base_job_fixture.rs`); the others are the first job
+/// of their kind after the fork, from a replay whose staged ledger hashes match
+/// the chain's (`tools/block-replay/examples/mesa_base_job_fixtures.rs`). The
+/// scan state part of those hashes covers the binprot of every base job,
+/// sparse ledgers included, so the jobs are OCaml's own. zkApp base jobs need
+/// the zkApp step circuits (P5.1) and are not here.
+#[cfg(test)]
+pub(crate) mod mesa_tests {
+    use std::sync::Mutex;
+
+    use mina_p2p_messages::binprot::BinProtRead;
+
+    use super::*;
+    use crate::{
+        proofs::{
+            constants::StepMergeProof,
+            merge::{generate_merge_proof, MergeParams},
+            provers::{
+                init_devnet_with_mesa_blobs, init_mainnet_with_mesa_blobs, TransactionProver,
+            },
+            verification::verify_transaction,
+            verifiers::TransactionVerifier,
+            VerifierIndex,
+        },
+        scan_state::{
+            currency::{Amount, Fee, Signed},
+            scan_state::transaction_snark::{LedgerProof, SokMessage},
+        },
+        sparse_ledger::SparseLedger,
+    };
+
+    type Fixture = (
+        v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement,
+        v2::TransactionWitnessStableV2,
+    );
+
+    /// A snark worker's `Merge` work: the merged statement and the two
+    /// ledger proofs to merge, as `mesa_merge_job_fixtures.rs` writes it.
+    type MergeFixture = (
+        v2::MinaStateSnarkedLedgerStateStableV2,
+        v2::LedgerProofProdStableV2,
+        v2::LedgerProofProdStableV2,
+    );
+
+    /// 8.459783116 MINA from
+    /// B62qmwLzwPaixB1fGgmJYvUwzfLo7XJ4Wp6dDSLqdzd9Xp53EUFS8A3 to
+    /// B62qn5gbzeD5pRP8ktnCcuEHDyTPVC742ysfT6vZRHkoxNqPgx9h635, fee 0.011,
+    /// nonce 23009, in block 563938
+    /// (3NLvJZg39dpwfJQU6w7usnuQnrb8aaewrkVdrW72ht6FwmeTFVYL), global slot
+    /// 1001745.
+    const PAYMENT: &[u8] = include_bytes!("data/mesa_mainnet_payment_base_job.bin");
+    /// Delegation from B62qpjxUpgdjzwQfd8q2gzxi99wN7SCgmofpvw27MBkfNHfHoY2VH32
+    /// to B62qq3TQ8AP7MFYPVtMx5tZGF3kWLJukfwG1A1RGvaBW1jfTPTkDBW6, fee 0.0101,
+    /// nonce 1260, in block 548179
+    /// (3NKASgJoTAHvxmRVvHCC6AedpbkHqECcaADDAFuqAuouZaq6CP65), global slot
+    /// 958519.
+    const DELEGATION: &[u8] = include_bytes!("data/mesa_mainnet_delegation_base_job.bin");
+    /// A payment of 0.1 MINA to a new account,
+    /// B62qksb7bXj5ypjTwqp6xuufDUjTuaDdVUsd9V6rzj6S47ERu6dWKc2, from
+    /// B62qkVtEBQyLwAzmivN1FfuAdUNypmUNxwJoRGVLQfHtZZ4HXwexiGU, fee 0.001,
+    /// nonce 161, that failed with `Amount_insufficient_to_create_account`: the
+    /// fee is charged and the nonce taken, nothing else. In block 548282
+    /// (3NKngFAPEubmaXEh9MdAChR6VyrzBXqzDVgHZM5eGuMzNP2S8b6N), global slot
+    /// 958772.
+    const FAILED_PAYMENT: &[u8] = include_bytes!("data/mesa_mainnet_failed_payment_base_job.bin");
+    /// A delegation from B62qp3wjM1AUg2Nkq7rQEeDWHWgczu1V36FmZwKC8zAVrwbKjdW44zn
+    /// to B62qkAhMYM7NWh2M5MABFwpNoqgzoweHr3bv6srWM43bwQMh2pVG82U, an account
+    /// that doesn't exist, fee 0.1, nonce 44, that failed with
+    /// `Receiver_not_present`. In block 558097
+    /// (3NLK5MLtQsc1gm3xyGCgjQXaQuwM6pbmAxS5puEKfPT79kw2Y51S), global slot
+    /// 984295.
+    const FAILED_DELEGATION: &[u8] =
+        include_bytes!("data/mesa_mainnet_failed_delegation_base_job.bin");
+    /// The block producer's fee transfer, 0.01 MINA to
+    /// B62qiYtY58Vx6iRzPz94DsPjJ5kM7zkF6VeVpWw6C2HaWRYtzzKVB82, in the first
+    /// Mesa block, 548148 (3NKtYZVHgyWrTzFE8j594Wy6HmFTb9rWw3sfPxZmZgRkrg572bAP),
+    /// global slot 958442.
+    const FEE_TRANSFER: &[u8] = include_bytes!("data/mesa_mainnet_fee_transfer_base_job.bin");
+    /// A fee transfer to two receivers: 0.047475 MINA to
+    /// B62qrB4hLHkwUz3UXwx6jLx6XrvbRae4d8t6pMVaGhjt2c1XoqJZTUb and 0.005 MINA to
+    /// B62qmdsqUB7b3GYTWmCTGSioxMKeSesj4JrcRQRmmPRqwTtTo6xdYDz, in block 548419
+    /// (3NKWw4y3Vnf9RmMHAUFPdpdNCX922UajAtWkuAEj68PmjC7GgQzn), global slot
+    /// 959095.
+    const FEE_TRANSFER_TWO: &[u8] =
+        include_bytes!("data/mesa_mainnet_fee_transfer_two_base_job.bin");
+    /// The coinbase of the first Mesa block, 548148
+    /// (3NKtYZVHgyWrTzFE8j594Wy6HmFTb9rWw3sfPxZmZgRkrg572bAP): 360 MINA to
+    /// B62qiYtY58Vx6iRzPz94DsPjJ5kM7zkF6VeVpWw6C2HaWRYtzzKVB82, global slot
+    /// 958442.
+    const COINBASE: &[u8] = include_bytes!("data/mesa_mainnet_coinbase_base_job.bin");
+    /// A coinbase that pays for snark work: 360 MINA to
+    /// B62qpFm7zJdmYD3Ckn5gguLnmSg7R1JL5QRu7n8uuYS4UcrzuXPw82X, with a fee
+    /// transfer of 0.01 MINA to
+    /// B62qmFMKE2uti9wcEfR5nNAr49x6QeeV2nhZwHAYsFXr53GDqT6faNo, in block 548687
+    /// (3NLqtN1LR9wivcE1naYpgkQpShrM8pYx4qgzvzfiRRy4wp33vedY), global slot
+    /// 959728.
+    const COINBASE_FEE_TRANSFER: &[u8] =
+        include_bytes!("data/mesa_mainnet_coinbase_fee_transfer_base_job.bin");
+
+    /// Every fixture, by the kind `kind` gives it.
+    const FIXTURES: &[(&str, &[u8])] = &[
+        ("payment", PAYMENT),
+        ("delegation", DELEGATION),
+        ("failed_payment", FAILED_PAYMENT),
+        ("failed_delegation", FAILED_DELEGATION),
+        ("fee_transfer", FEE_TRANSFER),
+        ("fee_transfer_two", FEE_TRANSFER_TWO),
+        ("coinbase", COINBASE),
+        ("coinbase_fee_transfer", COINBASE_FEE_TRANSFER),
+    ];
+
+    /// The first merge job of Mesa mainnet: OCaml's base proofs of the first
+    /// two transactions of the first Mesa block, 548148
+    /// (3NKtYZVHgyWrTzFE8j594Wy6HmFTb9rWw3sfPxZmZgRkrg572bAP), a payment and
+    /// its coinbase (the coinbase is the `COINBASE` base job), leaves 127 and
+    /// 128 of their tree. Available after block 548252
+    /// (3NKK7ouABUbnUF1iNf3KoJQpC1jMNFnJwPFcPk2L4rxkMSi1frrD), proved on chain
+    /// in block 548368 (3NK3NHL4pKJycy7eTSDQ61WVrQYAUQApinbtmiyPqouCYwUpkA5K).
+    const MERGE_OF_BASES: &[u8] = include_bytes!("data/mesa_mainnet_merge_of_bases_job.bin");
+    /// The first merge of two merge proofs on Mesa mainnet: node 31, at depth
+    /// 5 of its tree, over OCaml's merge proofs of its two children.
+    /// Available after block 548368
+    /// (3NK3NHL4pKJycy7eTSDQ61WVrQYAUQApinbtmiyPqouCYwUpkA5K), proved on chain
+    /// in block 548378 (3NLtBAyJrEkKeuQN8Eq5k8oCHjQkAuKhCzzFxVw2WMDti4wSaejk).
+    const MERGE_OF_MERGES: &[u8] = include_bytes!("data/mesa_mainnet_merge_of_merges_job.bin");
+
+    /// A real Mesa devnet payment, from the scan state of the devnet root
+    /// 577343 (3NK5JHqJydM4Js9mzk6euWvsUHcgMuttG4KL6xtiXsf2jmnwwpyG), rebuilt
+    /// by a Rust node from OCaml peers (P1e): 0.01 MINA from
+    /// B62qp3B9VW1ir5qL1MWRwr6ecjC2NZbGr8vysGeme9vXGcFXTMNXb2t to itself, fee
+    /// 0.01, nonce 748880, in the block after
+    /// 3NKnQXLsztg5CZo63EeDdn5Kd2Frcc2JK95FuJQctPy6uVaRNQNG (height 577273),
+    /// global slot 918635. Written by `mesa_base_job_fixture` (P4.8). It is
+    /// signed for the testnet signature kind, which devnet's base circuit
+    /// checks (`CodaSignature`).
+    const DEVNET_PAYMENT: &[u8] = include_bytes!("data/mesa_devnet_payment_base_job.bin");
+    /// A real Mesa devnet merge job from the same scan state, with OCaml's
+    /// two base proofs (made with the devnet circuits, for one sok digest):
+    /// node 63 of tree 3, over base jobs 127 and 128, the coinbases (each
+    /// with a fee transfer for snark work) of blocks 577145 and 577146, at
+    /// global slots 918405 and 918408: 720 MINA of supply increase together.
+    /// Written by `mesa_merge_job_from_dump` (P4.8), with the two base jobs
+    /// under it, which are still in the tree.
+    const DEVNET_MERGE_OF_BASES: &[u8] = include_bytes!("data/mesa_devnet_merge_of_bases_job.bin");
+    const DEVNET_MERGE_LEFT: &[u8] =
+        include_bytes!("data/mesa_devnet_merge_of_bases_left_base_job.bin");
+    const DEVNET_MERGE_RIGHT: &[u8] =
+        include_bytes!("data/mesa_devnet_merge_of_bases_right_base_job.bin");
+
+    fn fixture(bytes: &[u8]) -> Fixture {
+        Fixture::binprot_read(&mut &*bytes).unwrap()
+    }
+
+    /// A merge fixture as the merge prover takes it: the merged statement
+    /// and the two proofs.
+    fn merge_fixture(bytes: &[u8]) -> (Statement<()>, [v2::LedgerProofProdStableV2; 2]) {
+        let (statement, left, right) = MergeFixture::binprot_read(&mut &*bytes).unwrap();
+        ((&statement.0).try_into().unwrap(), [left, right])
+    }
+
+    /// A ledger proof's statement, without its sok digest.
+    fn statement_of(proof: &v2::LedgerProofProdStableV2) -> Statement<()> {
+        (&proof.0.statement).try_into().unwrap()
+    }
+
+    /// The fixture name of a base job's kind, as
+    /// `mesa_base_job_fixtures.rs` names it.
+    fn kind((_, witness): &Fixture) -> String {
+        use v2::{
+            MinaBaseFeeTransferStableV2 as FeeTransfer,
+            MinaBaseSignedCommandPayloadBodyStableV2 as Body,
+            MinaBaseTransactionStatusStableV2 as Status, MinaBaseUserCommandStableV2 as Command,
+            MinaTransactionTransactionStableV2 as Transaction,
+        };
+        let kind = match &witness.transaction {
+            Transaction::Command(command) => match &**command {
+                Command::SignedCommand(command) => match command.payload.body {
+                    Body::Payment(_) => "payment",
+                    Body::StakeDelegation(_) => "delegation",
+                },
+                Command::ZkappCommand(_) => "zkapp",
+            },
+            Transaction::FeeTransfer(FeeTransfer::One(_)) => "fee_transfer",
+            Transaction::FeeTransfer(FeeTransfer::Two(_)) => "fee_transfer_two",
+            Transaction::Coinbase(coinbase) => match coinbase.fee_transfer {
+                None => "coinbase",
+                Some(_) => "coinbase_fee_transfer",
+            },
+        };
+        match witness.status {
+            Status::Applied => kind.to_string(),
+            Status::Failed(_) => format!("failed_{kind}"),
+        }
+    }
+
+    fn sok_message(fee: u64) -> SokMessage {
+        SokMessage {
+            fee: Fee::from_u64(fee),
+            prover: CompressedPubKey::from_address(
+                "B62qpK6TcG4sWdtT3BzdbWHiK3RJMj3Zbo9mqwBos7cVsydPMCj5wZx",
+            )
+            .unwrap(),
+        }
+    }
+
+    /// The fixtures are what their names say, and each is a consistent
+    /// input: its sparse ledgers have the statement's source ledgers as
+    /// roots, and its protocol state body is from before its block.
+    #[test]
+    fn mesa_base_job_fixtures_are_their_kinds() {
+        use v2::{
+            MinaBaseTransactionStatusFailureStableV2 as Failure,
+            MinaBaseTransactionStatusStableV2 as Status,
+        };
+
+        for (name, bytes) in FIXTURES {
+            let fixture = fixture(bytes);
+            assert_eq!(kind(&fixture), *name);
+
+            let (statement, witness) = &fixture;
+            let root = |ledger| SparseLedger::try_from(ledger).unwrap().merkle_root();
+            assert_eq!(
+                root(&witness.first_pass_ledger),
+                statement.source.first_pass_ledger.to_field().unwrap(),
+                "{name}"
+            );
+            assert_eq!(
+                root(&witness.second_pass_ledger),
+                statement.source.second_pass_ledger.to_field().unwrap(),
+                "{name}"
+            );
+            // The job's block comes after the state whose body it carries.
+            let parent_slot = &witness.protocol_state_body.consensus_state;
+            assert!(
+                witness.block_global_slot.as_u32() > parent_slot.global_slot_since_genesis.as_u32(),
+                "{name}"
+            );
+        }
+
+        let failure = |bytes| match fixture(bytes).1.status {
+            Status::Failed(failures) => failures.0.iter().flatten().cloned().collect::<Vec<_>>(),
+            Status::Applied => vec![],
+        };
+        assert_eq!(
+            failure(FAILED_PAYMENT),
+            [Failure::AmountInsufficientToCreateAccount]
+        );
+        assert_eq!(failure(FAILED_DELEGATION), [Failure::ReceiverNotPresent]);
+    }
+
+    /// Each merge fixture's statement is the merge of its two proofs'
+    /// statements, as OCaml's `single_spec_of_job` makes it (`merge` checks
+    /// that they connect: ledgers, pending coinbase stacks, and the local
+    /// state without its ledger). The merge of base proofs is over the base
+    /// job `COINBASE` and the payment before it.
+    #[test]
+    fn mesa_merge_job_fixtures_are_merges() {
+        for bytes in [MERGE_OF_BASES, MERGE_OF_MERGES] {
+            let (statement, [left, right]) = merge_fixture(bytes);
+            let merged = statement_of(&left).merge(&statement_of(&right));
+            assert_eq!(merged.unwrap(), statement);
+        }
+
+        let (_, [payment, coinbase]) = merge_fixture(MERGE_OF_BASES);
+        let base_job = Statement::<()>::try_from(&fixture(COINBASE).0).unwrap();
+        assert_eq!(statement_of(&coinbase), base_job);
+        assert!(Registers::connected(
+            &statement_of(&payment).target,
+            &base_job.source
+        ));
+    }
+
+    /// Generates the step witness and checks every gate and copy constraint
+    /// with kimchi, without proving. Returns the outcome and the witness
+    /// length.
+    fn check_constraints(
+        (statement, tx_witness): &Fixture,
+        provers: &TransactionProver,
+    ) -> (Outcome, usize) {
+        let message = sok_message(0);
+        let mut w = Witness::new::<StepTransactionProof>();
+        let result = generate_tx_proof(
+            TransactionParams {
+                statement,
+                tx_witness,
+                message: &message,
+                tx_step_prover: &provers.tx_step_prover,
+                tx_wrap_prover: &provers.tx_wrap_prover,
+                only_verify_constraints: true,
+                expected_step_proof: None,
+                ocaml_wrap_witness: None,
+            },
+            &mut w,
+        );
+        (Outcome::of(result), w.aux().len())
+    }
+
+    /// As `check_constraints`, for the merge step circuit: `statement` is
+    /// the merged statement, `proofs` the two ledger proofs it merges.
+    fn check_merge_constraints(
+        statement: &Statement<()>,
+        proofs: &[v2::LedgerProofProdStableV2; 2],
+        provers: &TransactionProver,
+    ) -> (Outcome, usize) {
+        let message = sok_message(0);
+        let mut w = Witness::new::<StepMergeProof>();
+        let result = generate_merge_proof(
+            MergeParams {
+                statement: statement.clone(),
+                proofs,
+                message: &message,
+                step_prover: &provers.merge_step_prover,
+                wrap_prover: &provers.tx_wrap_prover,
+                only_verify_constraints: true,
+                expected_step_proof: None,
+                ocaml_wrap_witness: None,
+            },
+            &mut w,
+        );
+        (Outcome::of(result), w.aux().len())
+    }
+
+    #[derive(Debug, PartialEq)]
+    pub(crate) enum Outcome {
+        Satisfied,
+        NotSatisfied(String),
+        Other(String),
+    }
+
+    impl Outcome {
+        /// The outcome of a prover run with `only_verify_constraints`.
+        pub(crate) fn of<T>(result: anyhow::Result<T>) -> Self {
+            match result {
+                Ok(_) => Self::Other("made a proof instead of checking constraints".into()),
+                Err(e) => match e.downcast_ref::<ProofError>() {
+                    Some(ProofError::ConstraintsOk) => Self::Satisfied,
+                    Some(ProofError::ConstraintsNotSatisfied(why)) => {
+                        Self::NotSatisfied(why.clone())
+                    }
+                    _ => Self::Other(format!("{e:?}")),
+                },
+            }
+        }
+    }
+
+    /// One proof at a time: each takes about 2 GB, and the tests share the
+    /// provers. The block step tests (`block.rs`) take it too.
+    pub(crate) static PROVING: Mutex<()> = Mutex::new(());
+
+    /// Proves a base job, step and wrap, as a snark worker proves
+    /// `Transition` work for `message`.
+    fn prove_base(
+        (statement, tx_witness): &Fixture,
+        message: &SokMessage,
+        provers: &TransactionProver,
+    ) -> v2::TransactionSnarkProofStableV2 {
+        let mut w = Witness::new::<StepTransactionProof>();
+        let proof = generate_tx_proof(
+            TransactionParams {
+                statement,
+                tx_witness,
+                message,
+                tx_step_prover: &provers.tx_step_prover,
+                tx_wrap_prover: &provers.tx_wrap_prover,
+                only_verify_constraints: false,
+                expected_step_proof: None,
+                ocaml_wrap_witness: None,
+            },
+            &mut w,
+        )
+        .unwrap();
+        v2::TransactionSnarkProofStableV2((&proof).into())
+    }
+
+    /// Whether the transaction verifier accepts `proof` for `statement` with
+    /// the sok digest of `message`.
+    fn verifies(
+        statement: &Statement<()>,
+        message: &SokMessage,
+        proof: &v2::TransactionSnarkProofStableV2,
+        verifier: &VerifierIndex<Fq>,
+    ) -> bool {
+        let srs = crate::verifier::get_srs::<Fp>();
+        let with_sok = statement.clone().with_digest(message.digest());
+        verify_transaction([(&with_sok, proof)], verifier, &srs)
+    }
+
+    /// The other network's embedded transaction verifier: a proof made for
+    /// one network must not verify on the other.
+    fn other_network_verifier() -> (&'static str, VerifierIndex<Fq>) {
+        let other = match mina_core::NetworkConfig::global().name {
+            "devnet" => "mainnet",
+            _ => "devnet",
+        };
+        let index = crate::proofs::verifiers::transaction_verifier_index_of(other).unwrap();
+        (other, index)
+    }
+
+    /// Whether `verifier` accepts the ledger proof for its own statement and
+    /// sok digest, as the snark pool checks work.
+    fn ledger_proof_verifies(
+        proof: &v2::LedgerProofProdStableV2,
+        verifier: &VerifierIndex<Fq>,
+    ) -> bool {
+        let srs = crate::verifier::get_srs::<Fp>();
+        let statement = Statement::<SokDigest>::try_from(&proof.0.statement).unwrap();
+        verify_transaction(
+            [(&statement, &*proof.0.proof.get().unwrap())],
+            verifier,
+            &srs,
+        )
+    }
+
+    /// The networks' keys tell their proofs apart. OCaml's base proofs from
+    /// a real Mesa mainnet merge job verify with the embedded mainnet
+    /// transaction key and not with the devnet one, and OCaml's base proofs
+    /// from a real Mesa devnet merge job the other way round. No blobs needed:
+    /// the keys are embedded, built here without the global network config.
+    #[test]
+    fn ocaml_ledger_proofs_verify_only_with_their_network_key() {
+        let mainnet = crate::proofs::verifiers::transaction_verifier_index_of("mainnet").unwrap();
+        let devnet = crate::proofs::verifiers::transaction_verifier_index_of("devnet").unwrap();
+        for (name, bytes, mainnet_ok) in [
+            ("mainnet merge of bases", MERGE_OF_BASES, true),
+            ("devnet merge of bases", DEVNET_MERGE_OF_BASES, false),
+        ] {
+            let (_, proofs) = merge_fixture(bytes);
+            for (side, proof) in ["left", "right"].iter().zip(&proofs) {
+                assert_eq!(
+                    ledger_proof_verifies(proof, &mainnet),
+                    mainnet_ok,
+                    "{name}, {side} proof, mainnet key"
+                );
+                assert_eq!(
+                    ledger_proof_verifies(proof, &devnet),
+                    !mainnet_ok,
+                    "{name}, {side} proof, devnet key"
+                );
+            }
+        }
+    }
+
+    /// The devnet fixtures are what their names say: an applied payment,
+    /// and a merge whose two base jobs are the two base job fixtures, whose
+    /// statements merge to the merge job's statement.
+    #[test]
+    fn mesa_devnet_fixtures_are_consistent() {
+        assert_eq!(kind(&fixture(DEVNET_PAYMENT)), "payment");
+        let (merged, proofs) = merge_fixture(DEVNET_MERGE_OF_BASES);
+        let [left, right] = [DEVNET_MERGE_LEFT, DEVNET_MERGE_RIGHT].map(fixture);
+        assert_eq!(
+            [kind(&left), kind(&right)],
+            ["coinbase_fee_transfer", "coinbase_fee_transfer"]
+        );
+        let [left_statement, right_statement] =
+            [&left, &right].map(|(statement, _)| Statement::<()>::try_from(statement).unwrap());
+        assert_eq!(left_statement, statement_of(&proofs[0]));
+        assert_eq!(right_statement, statement_of(&proofs[1]));
+        assert_eq!(left_statement.merge(&right_statement).unwrap(), merged);
+    }
+
+    /// P4.3's gate for one base job: the step witness satisfies the base
+    /// circuit, and the job proves end to end, step and wrap, as a snark
+    /// worker proves it. The proof verifies with the mainnet transaction
+    /// verifier the node checks snark work with, for the sok digest it was
+    /// made for, and fails for another one. The wrap witness must have Mesa's
+    /// `AUX_LEN`, 182025 (asserted in `compute_witness`); that is where the
+    /// `is_square` and `plonk_checks` fixes of P4.1 matter.
+    fn prove_and_verify(bytes: &[u8]) {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        init_mainnet_with_mesa_blobs();
+        prove_and_verify_on_this_network(bytes);
+    }
+
+    /// `prove_and_verify` on the network the global config is set to, and
+    /// the proof fails with the other network's key.
+    fn prove_and_verify_on_this_network(bytes: &[u8]) -> v2::TransactionSnarkProofStableV2 {
+        let verifier = TransactionVerifier::make();
+        let provers = TransactionProver::make(Some(verifier.clone())).unwrap();
+        let fixture = fixture(bytes);
+
+        let (outcome, aux_len) = check_constraints(&fixture, &provers);
+        assert_eq!(outcome, Outcome::Satisfied);
+        assert_eq!(aux_len, StepTransactionProof::AUX_LEN);
+
+        let message = sok_message(0);
+        let proof = prove_base(&fixture, &message, &provers);
+        assert_eq!(WrapTransactionProof::AUX_LEN, 182025);
+
+        let statement = Statement::<()>::try_from(&fixture.0).unwrap();
+        assert!(verifies(&statement, &message, &proof, &verifier));
+        // The same proof for another fee, which changes the sok digest, fails.
+        assert!(!verifies(&statement, &sok_message(1), &proof, &verifier));
+        // So does the same proof with the other network's key.
+        let (other, other_verifier) = other_network_verifier();
+        assert!(
+            !verifies(&statement, &message, &proof, &other_verifier),
+            "the proof verifies with the {other} key too"
+        );
+        proof
+    }
+
+    /// P4.4's gate for one merge. The merge step witness satisfies the Mesa
+    /// merge circuit and has its `AUX_LEN`, 357407, which counts the 4
+    /// values of the local-state check Mesa added to the merge
+    /// (`merge_main`). The same merge for a statement that claims another
+    /// target ledger does not satisfy it. The merge proves end to end, step
+    /// and wrap, as a snark worker proves `Merge` work, and the proof
+    /// verifies with the mainnet transaction verifier for its statement and
+    /// sok digest, and for no other sok digest, target ledger or supply
+    /// increase.
+    fn merge_prove_and_verify(
+        statement: &Statement<()>,
+        proofs: &[v2::LedgerProofProdStableV2; 2],
+        provers: &TransactionProver,
+        verifier: &TransactionVerifier,
+    ) {
+        let (outcome, aux_len) = check_merge_constraints(statement, proofs, provers);
+        assert_eq!(aux_len, 357407);
+        assert_eq!(aux_len, StepMergeProof::AUX_LEN);
+        assert_eq!(outcome, Outcome::Satisfied);
+
+        let mut other_target = statement.clone();
+        other_target.target.first_pass_ledger += Fp::from(1u64);
+        let (outcome, aux_len) = check_merge_constraints(&other_target, proofs, provers);
+        assert_eq!(aux_len, StepMergeProof::AUX_LEN);
+        assert!(matches!(outcome, Outcome::NotSatisfied(_)), "{outcome:?}");
+
+        let message = sok_message(0);
+        let mut w = Witness::new::<StepMergeProof>();
+        let proof = generate_merge_proof(
+            MergeParams {
+                statement: statement.clone(),
+                proofs,
+                message: &message,
+                step_prover: &provers.merge_step_prover,
+                wrap_prover: &provers.tx_wrap_prover,
+                only_verify_constraints: false,
+                expected_step_proof: None,
+                ocaml_wrap_witness: None,
+            },
+            &mut w,
+        )
+        .unwrap();
+        let proof = v2::TransactionSnarkProofStableV2((&proof).into());
+
+        assert!(verifies(statement, &message, &proof, verifier));
+        assert!(!verifies(statement, &sok_message(1), &proof, verifier));
+        assert!(!verifies(&other_target, &message, &proof, verifier));
+        let mut more_supply = statement.clone();
+        more_supply.supply_increase = statement
+            .supply_increase
+            .add(&Signed::of_unsigned(Amount::from_u64(1)))
+            .unwrap();
+        assert!(!verifies(&more_supply, &message, &proof, verifier));
+        let (other, other_verifier) = other_network_verifier();
+        assert!(
+            !verifies(statement, &message, &proof, &other_verifier),
+            "the merge proof verifies with the {other} key too"
+        );
+    }
+
+    /// P4.4: a real merge job of base proofs, with the two OCaml base proofs
+    /// that the chain's snark work carried.
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_merge_of_base_proofs_verifies() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        init_mainnet_with_mesa_blobs();
+        let verifier = TransactionVerifier::make();
+        let provers = TransactionProver::make(Some(verifier.clone())).unwrap();
+        let (statement, proofs) = merge_fixture(MERGE_OF_BASES);
+        merge_prove_and_verify(&statement, &proofs, &provers, &verifier);
+    }
+
+    /// P4.4: as `mesa_merge_of_base_proofs_verifies`, one level up: the
+    /// children are OCaml's merge proofs.
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_merge_of_merge_proofs_verifies() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        init_mainnet_with_mesa_blobs();
+        let verifier = TransactionVerifier::make();
+        let provers = TransactionProver::make(Some(verifier.clone())).unwrap();
+        let (statement, proofs) = merge_fixture(MERGE_OF_MERGES);
+        merge_prove_and_verify(&statement, &proofs, &provers, &verifier);
+    }
+
+    /// The Rust base proof of a base job, made for the sok digest of a
+    /// message with `fee`, as the ledger proof a snark worker returns. It
+    /// verifies.
+    fn rust_ledger_proof(
+        bytes: &[u8],
+        fee: u64,
+        provers: &TransactionProver,
+        verifier: &TransactionVerifier,
+    ) -> v2::LedgerProofProdStableV2 {
+        let fixture = fixture(bytes);
+        let message = sok_message(fee);
+        let proof = prove_base(&fixture, &message, provers);
+        let statement = Statement::<()>::try_from(&fixture.0).unwrap();
+        assert!(verifies(&statement, &message, &proof, verifier));
+        let proof = LedgerProof::create(statement, message.digest(), Arc::new(proof));
+        v2::LedgerProofProdStableV2::from(&proof)
+    }
+
+    /// P4.4: the first merge job of Mesa mainnet, the statement OCaml proved
+    /// on chain, over OCaml's proof of the payment and the Rust proof of the
+    /// coinbase (`COINBASE`): proofs from both provers in one merge, as a
+    /// snark pool mixes them.
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_merge_of_ocaml_and_rust_base_proofs_verifies() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        init_mainnet_with_mesa_blobs();
+        let verifier = TransactionVerifier::make();
+        let provers = TransactionProver::make(Some(verifier.clone())).unwrap();
+        let (statement, [payment, _]) = merge_fixture(MERGE_OF_BASES);
+        let coinbase = rust_ledger_proof(COINBASE, 2, &provers, &verifier);
+        merge_prove_and_verify(&statement, &[payment, coinbase], &provers, &verifier);
+    }
+
+    /// P4.4: base to merge in Rust. The Rust base proofs of two adjacent
+    /// base jobs, `COINBASE` and `FEE_TRANSFER`, the second and third
+    /// transactions of block 548148, each made for its own sok digest, are
+    /// merged for a third. Their merge has a negative fee excess, the fee
+    /// transfer's, which `FeeExcess::combine_checked` got wrong before P4.4.
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_merge_of_rust_base_proofs_verifies() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        init_mainnet_with_mesa_blobs();
+        let verifier = TransactionVerifier::make();
+        let provers = TransactionProver::make(Some(verifier.clone())).unwrap();
+
+        let proofs = [(COINBASE, 2), (FEE_TRANSFER, 3)]
+            .map(|(bytes, fee)| rust_ledger_proof(bytes, fee, &provers, &verifier));
+        let [left, right] = &proofs;
+        let statement = statement_of(left).merge(&statement_of(right)).unwrap();
+        assert!(statement.fee_excess.fee_excess_l.is_neg());
+        merge_prove_and_verify(&statement, &proofs, &provers, &verifier);
+    }
+
+    /// P4.1's gate: with the EndoMul `inv`, the base circuit's witness has
+    /// Mesa's `AUX_LEN`, 94479, and satisfies the circuit for a real
+    /// payment. A copy whose statement claims the wrong target ledger is
+    /// rejected, so the check is not vacuous.
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_payment_base_job() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        init_mainnet_with_mesa_blobs();
+        let provers = TransactionProver::make(Some(TransactionVerifier::make())).unwrap();
+        let fixture = fixture(PAYMENT);
+
+        let (outcome, aux_len) = check_constraints(&fixture, &provers);
+        assert_eq!(aux_len, 94479);
+        assert_eq!(aux_len, StepTransactionProof::AUX_LEN);
+        assert_eq!(outcome, Outcome::Satisfied);
+
+        let (mut statement, tx_witness) = fixture;
+        assert_ne!(
+            statement.source.first_pass_ledger,
+            statement.target.first_pass_ledger
+        );
+        statement.target.first_pass_ledger = statement.source.first_pass_ledger.clone();
+        let (outcome, aux_len) = check_constraints(&(statement, tx_witness), &provers);
+        assert_eq!(aux_len, 94479);
+        assert!(matches!(outcome, Outcome::NotSatisfied(_)), "{outcome:?}");
+    }
+
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_payment_proof_verifies() {
+        prove_and_verify(PAYMENT);
+    }
+
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_delegation_proof_verifies() {
+        prove_and_verify(DELEGATION);
+    }
+
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_failed_payment_proof_verifies() {
+        prove_and_verify(FAILED_PAYMENT);
+    }
+
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_failed_delegation_proof_verifies() {
+        prove_and_verify(FAILED_DELEGATION);
+    }
+
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_fee_transfer_proof_verifies() {
+        prove_and_verify(FEE_TRANSFER);
+    }
+
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_fee_transfer_two_proof_verifies() {
+        prove_and_verify(FEE_TRANSFER_TWO);
+    }
+
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_coinbase_proof_verifies() {
+        prove_and_verify(COINBASE);
+    }
+
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_coinbase_fee_transfer_proof_verifies() {
+        prove_and_verify(COINBASE_FEE_TRANSFER);
+    }
+
+    /// P4.8: a real Mesa devnet payment, with the devnet circuits
+    /// (`4.0.2devnet`). The step witness satisfies the devnet base circuit,
+    /// whose signature check uses the testnet prefix; with a statement that
+    /// claims the wrong target ledger it does not. The payment proves, step
+    /// and wrap, and the proof verifies with the embedded devnet transaction
+    /// key (OCaml's), for its sok digest only, and not with the mainnet key.
+    #[test]
+    #[ignore = "needs the Mesa devnet circuit blobs: MINA_PROFILE=devnet \
+                tools/mesa-circuits/generate.sh <dir> tools/mesa-circuits/mesa-devnet-fork.json, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_devnet_payment_proof_verifies() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        init_devnet_with_mesa_blobs();
+
+        let provers = TransactionProver::make(Some(TransactionVerifier::make())).unwrap();
+        let (mut statement, tx_witness) = fixture(DEVNET_PAYMENT);
+        statement.target.first_pass_ledger = statement.source.first_pass_ledger.clone();
+        let (outcome, aux_len) = check_constraints(&(statement, tx_witness), &provers);
+        assert_eq!(aux_len, StepTransactionProof::AUX_LEN);
+        assert!(matches!(outcome, Outcome::NotSatisfied(_)), "{outcome:?}");
+
+        prove_and_verify_on_this_network(DEVNET_PAYMENT);
+    }
+
+    /// P4.8: a real Mesa devnet merge job, over OCaml's two devnet base
+    /// proofs, proves with the devnet merge circuit and verifies with the
+    /// devnet transaction key, for its statement and sok digest only, and not
+    /// with the mainnet key.
+    #[test]
+    #[ignore = "needs the Mesa devnet circuit blobs: MINA_PROFILE=devnet \
+                tools/mesa-circuits/generate.sh <dir> tools/mesa-circuits/mesa-devnet-fork.json, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_devnet_merge_of_ocaml_base_proofs_verifies() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        init_devnet_with_mesa_blobs();
+        let verifier = TransactionVerifier::make();
+        let provers = TransactionProver::make(Some(verifier.clone())).unwrap();
+        let (statement, proofs) = merge_fixture(DEVNET_MERGE_OF_BASES);
+        merge_prove_and_verify(&statement, &proofs, &provers, &verifier);
+    }
+
+    /// P4.8: base to merge in Rust on devnet. The two base jobs under the
+    /// devnet merge job are proved in Rust, each for its own sok digest, and
+    /// each proof verifies with the devnet key and not the mainnet one; the
+    /// two Rust proofs merge, in Rust, to the statement OCaml's proofs merge
+    /// to, and the merge proof verifies the same way.
+    #[test]
+    #[ignore = "needs the Mesa devnet circuit blobs: MINA_PROFILE=devnet \
+                tools/mesa-circuits/generate.sh <dir> tools/mesa-circuits/mesa-devnet-fork.json, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_devnet_merge_of_rust_base_proofs_verifies() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        init_devnet_with_mesa_blobs();
+        let verifier = TransactionVerifier::make();
+        let provers = TransactionProver::make(Some(verifier.clone())).unwrap();
+        let (_, other_verifier) = other_network_verifier();
+
+        let proofs = [(DEVNET_MERGE_LEFT, 2), (DEVNET_MERGE_RIGHT, 3)].map(|(bytes, fee)| {
+            let proof = rust_ledger_proof(bytes, fee, &provers, &verifier);
+            assert!(!ledger_proof_verifies(&proof, &other_verifier));
+            proof
+        });
+        let [left, right] = &proofs;
+        let statement = statement_of(left).merge(&statement_of(right)).unwrap();
+        assert_eq!(statement, merge_fixture(DEVNET_MERGE_OF_BASES).0);
+        merge_prove_and_verify(&statement, &proofs, &provers, &verifier);
     }
 }

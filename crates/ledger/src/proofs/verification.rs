@@ -27,7 +27,7 @@ use super::{
     block::ProtocolState,
     field::FieldWitness,
     public_input::plonk_checks::make_shifts,
-    step::{step_verifier::PlonkDomain, ExpandDeferredParams},
+    step::{step_verifier::PlonkDomain, ExpandDeferredParams, FeatureFlags},
     to_field_elements::ToFieldElements,
     transaction::{InnerCurve, PlonkVerificationKeyEvals},
     util::{extract_bulletproof, extract_polynomial_commitment, two_u64_to_field},
@@ -385,11 +385,39 @@ pub fn make_scalars_env<F: FieldWitness, const NLIMB: usize>(
     let zeta_to_srs_length =
         LazyValue::make(move |_| (0..srs_length_log2).fold(zeta_clone, |acc, _| acc * acc));
 
-    let feature_flags = minimal
-        .joint_combiner
-        .map(|_| expand_feature_flags::<F>(&minimal.feature_flags.to_boolean()));
+    // OCaml expands the proof's flags whether or not it has lookups: a
+    // circuit may use a custom gate, such as foreign field addition, with no
+    // joint combiner (ZK1). Both branches of an `IfFeature` are evaluated
+    // here, so the lookup terms need the Lagrange basis too.
+    // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/pickles/plonk_checks/plonk_checks.ml#L157-L163>
+    let any_feature = {
+        let FeatureFlags {
+            range_check0,
+            range_check1,
+            foreign_field_add,
+            foreign_field_mul,
+            xor,
+            rot,
+            lookup,
+            runtime_tables,
+        } = &minimal.feature_flags;
+        [
+            range_check0,
+            range_check1,
+            foreign_field_add,
+            foreign_field_mul,
+            xor,
+            rot,
+            lookup,
+            runtime_tables,
+        ]
+        .into_iter()
+        .any(|flag| *flag)
+    };
+    let feature_flags = (minimal.joint_combiner.is_some() || any_feature)
+        .then(|| expand_feature_flags::<F>(&minimal.feature_flags.to_boolean()));
 
-    let unnormalized_lagrange_basis = match minimal.joint_combiner {
+    let unnormalized_lagrange_basis = match feature_flags {
         None => None,
         Some(_) => {
             use crate::proofs::witness::Witness;
@@ -775,7 +803,7 @@ pub fn verify_block(
     let verified = verify_impl(&protocol_state_hash, protocol_state_proof, &vk).unwrap_or(false);
     let ok = accum_check && verified;
 
-    mina_core::info!(message = format!("verify_block OK={ok:?}"));
+    mina_core::debug!(message = format!("verify_block OK={ok:?}"));
 
     if !ok {
         on_fail::dump_block_verification(header);
@@ -784,11 +812,102 @@ pub fn verify_block(
     ok
 }
 
+/// Blocks verified per kimchi batch in [`verify_blocks`]; the batches run in
+/// parallel. Each batch costs about 0.35 s of CPU besides its proofs' (I5d4:
+/// a mainnet store's 291 proofs took 34 s of CPU in batches of 8, 23.5 s in
+/// batches of 32 or 64, and no more time in batches of 32).
+const BLOCKS_PER_BATCH: usize = 32;
+
+/// Verifies the blockchain proofs of many blocks: what [`verify_block`]
+/// checks of each, with one accumulator check over all of them and kimchi's
+/// batch verification, by batches in parallel. `true` only if every proof
+/// verifies. A frontier store restore (I5d1) checks every block it replays
+/// with it, as a peer's block is checked before it is followed.
+pub fn verify_blocks(
+    headers: &[&MinaBlockHeaderStableV2],
+    verifier_index: &VerifierIndex<Fq>,
+    srs: &SRS<Vesta>,
+) -> bool {
+    use rayon::prelude::*;
+
+    if headers.is_empty() {
+        return true;
+    }
+    let Ok(state_hashes) = headers
+        .par_iter()
+        .map(|header| {
+            ProtocolState::try_from(&header.protocol_state).map(|state| MinaHash::hash(&state))
+        })
+        .collect::<Result<Vec<Fp>, _>>()
+    else {
+        return false;
+    };
+    let proofs = headers
+        .iter()
+        .map(|header| &header.protocol_state_proof.0)
+        .collect::<Vec<_>>();
+    // The commitment conversion is the same for every proof in this call.
+    // Share it across parallel batches instead of rebuilding it for each one.
+    let vk = VK {
+        commitments: PlonkVerificationKeyEvals::from(verifier_index),
+        index: verifier_index,
+        data: (),
+    };
+    let (accum_check, verified) = rayon::join(
+        || accumulator_check::accumulator_check(srs, &proofs).unwrap_or(false),
+        || {
+            let items = state_hashes.iter().zip(proofs.iter()).collect::<Vec<_>>();
+            items.par_chunks(BLOCKS_PER_BATCH).all(|batch| {
+                let inputs = batch
+                    .iter()
+                    .map(|(hash, proof)| (*hash, **proof, &vk))
+                    .collect::<Vec<_>>();
+                batch_verify_impl(&inputs).unwrap_or(false)
+            })
+        },
+    );
+    accum_check && verified
+}
+
+/// Whether the blockchain verifier accepts `proof` for `state`: what a peer
+/// that receives a block with this state and proof checks
+/// ([`verify_block`]), and what a block producer checks of its own proof
+/// before it broadcasts the block. The rest of the header is not checked.
+pub fn verify_block_proof(
+    state: &v2::MinaStateProtocolStateValueStableV2,
+    proof: &v2::MinaBaseProofStableV2,
+    verifier_index: &VerifierIndex<Fq>,
+) -> bool {
+    let header = MinaBlockHeaderStableV2 {
+        protocol_state: state.clone(),
+        protocol_state_proof: std::sync::Arc::new(proof.clone()),
+        delta_block_chain_proof: (
+            state.previous_state_hash.clone(),
+            std::iter::empty().collect(),
+        ),
+        current_protocol_version: mina_core::constants::PROTOCOL_VERSION,
+        proposed_protocol_version_opt: None,
+    };
+    let srs = crate::verifier::get_srs::<Fp>();
+    verify_block(&header, verifier_index, &srs)
+}
+
+/// Transaction proofs verified per kimchi batch in [`verify_transaction`];
+/// the batches run in parallel, as [`verify_blocks`]'s do.
+const TRANSACTIONS_PER_BATCH: usize = 32;
+
+/// Verifies transaction (ledger) proofs: one accumulator check over all of
+/// them and kimchi's batch verification, by batches in parallel. `true` only
+/// if every proof verifies: a batch accepts only if each of its proofs does,
+/// so splitting the batch checks the same as one batch of all of them
+/// (I5d4: a block's 250 proofs took 13 s on one thread).
 pub fn verify_transaction<'a>(
     proofs: impl IntoIterator<Item = (&'a Statement<SokDigest>, &'a TransactionSnarkProofStableV2)>,
     verifier_index: &VerifierIndex<Fq>,
     srs: &SRS<Vesta>,
 ) -> bool {
+    use rayon::prelude::*;
+
     let vk = VK {
         commitments: PlonkVerificationKeyEvals::from(verifier_index),
         index: verifier_index,
@@ -811,12 +930,17 @@ pub fn verify_transaction<'a>(
             inputs.push((statement, transaction_proof, &vk));
         });
 
-    let accum_check =
-        accumulator_check::accumulator_check(srs, &accum_check_proofs).unwrap_or(false);
-    let verified = batch_verify_impl(inputs.as_slice()).unwrap_or(false);
+    let (accum_check, verified) = rayon::join(
+        || accumulator_check::accumulator_check(srs, &accum_check_proofs).unwrap_or(false),
+        || {
+            inputs
+                .par_chunks(TRANSACTIONS_PER_BATCH)
+                .all(|batch| batch_verify_impl(batch).unwrap_or(false))
+        },
+    );
     let ok = accum_check && verified;
 
-    mina_core::info!(message = format!("verify_transactions OK={ok:?}"));
+    mina_core::debug!(message = format!("verify_transactions OK={ok:?}"));
 
     if !ok {
         on_fail::dump_tx_verification(&inputs);
@@ -846,7 +970,7 @@ pub fn verify_zkapp(
 
     let ok = accum_check && verified;
 
-    mina_core::info!(message = format!("verify_zkapp OK={ok:?}"));
+    mina_core::debug!(message = format!("verify_zkapp OK={ok:?}"));
 
     if !ok {
         on_fail::dump_zkapp_verification(verification_key, zkapp_statement, sideloaded_proof);
@@ -899,38 +1023,46 @@ fn batch_verify_impl<AppState>(
     proofs: &[(&AppState, &PicklesProofProofsVerified2ReprStableV2, &VK)],
 ) -> anyhow::Result<bool>
 where
-    AppState: ToFieldElements<Fp>,
+    AppState: ToFieldElements<Fp> + Sync,
 {
-    let mut verification_contexts = Vec::with_capacity(proofs.len());
-    let mut checks = true;
+    use rayon::prelude::*;
 
-    for (app_state, proof, vk) in proofs {
-        let deferred_values = compute_deferred_values(proof)?;
-        checks = checks && run_checks(proof, vk.index);
+    // Each proof's part, in parallel: it is most of a batch's time (I5d4).
+    let prepared = proofs
+        .par_iter()
+        .map(|(app_state, proof, vk)| {
+            let deferred_values = compute_deferred_values(proof)?;
+            let checked = run_checks(proof, vk.index);
 
-        let message_for_next_step_proof = get_message_for_next_step_proof(
-            &proof.statement.messages_for_next_step_proof,
-            &vk.commitments,
-            app_state,
-        )?;
+            let message_for_next_step_proof = get_message_for_next_step_proof(
+                &proof.statement.messages_for_next_step_proof,
+                &vk.commitments,
+                *app_state,
+            )?;
 
-        let message_for_next_wrap_proof = get_message_for_next_wrap_proof(
-            &proof.statement.proof_state.messages_for_next_wrap_proof,
-        )?;
+            let message_for_next_wrap_proof = get_message_for_next_wrap_proof(
+                &proof.statement.proof_state.messages_for_next_wrap_proof,
+            )?;
 
-        let prepared_statement = get_prepared_statement(
-            &message_for_next_step_proof,
-            &message_for_next_wrap_proof,
-            deferred_values,
-            &proof.statement.proof_state.sponge_digest_before_evaluations,
-        );
+            let prepared_statement = get_prepared_statement(
+                &message_for_next_step_proof,
+                &message_for_next_wrap_proof,
+                deferred_values,
+                &proof.statement.proof_state.sponge_digest_before_evaluations,
+            );
 
-        let npublic_input = vk.index.public;
-        let public_inputs = prepared_statement.to_public_input(npublic_input)?;
-        let proof_padded = make_padded_proof_from_p2p(proof)?;
+            let npublic_input = vk.index.public;
+            let public_inputs = prepared_statement.to_public_input(npublic_input)?;
+            let proof_padded = make_padded_proof_from_p2p(proof)?;
 
-        verification_contexts.push((vk.index, proof_padded, public_inputs));
-    }
+            Ok((checked, (vk.index, proof_padded, public_inputs)))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let checks = prepared.iter().all(|(checked, _)| *checked);
+    let verification_contexts = prepared
+        .into_iter()
+        .map(|(_, context)| context)
+        .collect::<Vec<_>>();
 
     let proofs: Vec<VerificationContext> = verification_contexts
         .iter()

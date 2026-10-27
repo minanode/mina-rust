@@ -87,11 +87,19 @@ use super::{Answer, Offer};
 ///
 /// ## Usage
 ///
-/// ```rust
+/// Requires handshake data and peer identities supplied by the caller.
+/// This example is compiled without running a signaling exchange.
+///
+/// ```rust,no_run
+/// # use mina_p2p::{identity::{PublicKey, SecretKey}, webrtc::{Answer, Offer, ConnectionAuth, ConnectionAuthEncrypted}};
+/// # fn example(offer: Offer, answer: Answer, my_secret_key: SecretKey, peer_public_key: PublicKey) -> Option<()> {
 /// use mina_p2p::webrtc::{ConnectionAuth, Offer, Answer};
 ///
 /// let connection_auth = ConnectionAuth::new(&offer, &answer);
-/// let encrypted_auth = connection_auth.encrypt(&my_secret_key, &peer_public_key, rng)?;
+/// let mut rng = rand::thread_rng();
+/// let encrypted_auth = connection_auth.encrypt(&my_secret_key, &peer_public_key, &mut rng)?;
+/// # Some(())
+/// # }
 /// ```
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq, Clone)]
 pub struct ConnectionAuth(Vec<u8>);
@@ -123,10 +131,17 @@ pub struct ConnectionAuth(Vec<u8>);
 ///
 /// ## Example
 ///
-/// ```rust
+/// Requires handshake data and peer identities supplied by the caller.
+/// This example is compiled without running a signaling exchange.
+///
+/// ```rust,no_run
+/// # use mina_p2p::{identity::{PublicKey, SecretKey}, webrtc::{Answer, Offer, ConnectionAuth, ConnectionAuthEncrypted}};
+/// # fn example(encrypted_auth: ConnectionAuthEncrypted, my_secret_key: SecretKey, peer_public_key: PublicKey) -> Option<()> {
 /// // After receiving encrypted authentication data
 /// let decrypted_auth = encrypted_auth.decrypt(&my_secret_key, &peer_public_key)?;
 /// // Verify that the decrypted data matches expected values
+/// # Some(())
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct ConnectionAuthEncrypted(Box<[u8; 92]>);
@@ -157,11 +172,18 @@ impl ConnectionAuth {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// Requires handshake data and peer identities supplied by the caller.
+    /// This example is compiled without running a signaling exchange.
+    ///
+    /// ```rust,no_run
+    /// # use mina_p2p::{identity::{PublicKey, SecretKey}, webrtc::{Answer, Offer, ConnectionAuth, ConnectionAuthEncrypted}};
+    /// # fn example(offer: Offer, answer: Answer, my_secret_key: SecretKey, peer_public_key: PublicKey) -> Option<()> {
     /// use mina_p2p::webrtc::ConnectionAuth;
     ///
     /// let auth = ConnectionAuth::new(&offer, &answer);
     /// // Use auth for connection verification
+    /// # Some(())
+    /// # }
     /// ```
     pub fn new(offer: &Offer, answer: &Answer) -> Self {
         Self([offer.sdp_hash(), answer.sdp_hash()].concat())
@@ -195,7 +217,12 @@ impl ConnectionAuth {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// Requires handshake data and peer identities supplied by the caller.
+    /// This example is compiled without running a signaling exchange.
+    ///
+    /// ```rust,no_run
+    /// # use mina_p2p::{identity::{PublicKey, SecretKey}, webrtc::{Answer, Offer, ConnectionAuth, ConnectionAuthEncrypted}};
+    /// # fn example(connection_auth: ConnectionAuth, my_secret_key: SecretKey, peer_public_key: PublicKey) -> Option<()> {
     /// use rand::thread_rng;
     ///
     /// let mut rng = thread_rng();
@@ -204,6 +231,8 @@ impl ConnectionAuth {
     /// if let Some(encrypted) = encrypted_auth {
     ///     // Send encrypted authentication data to peer
     /// }
+    /// # Some(())
+    /// # }
     /// ```
     pub fn encrypt(
         &self,
@@ -253,7 +282,12 @@ impl ConnectionAuthEncrypted {
     ///
     /// # Example
     ///
-    /// ```rust
+    /// Requires handshake data and peer identities supplied by the caller.
+    /// This example is compiled without running a signaling exchange.
+    ///
+    /// ```rust,no_run
+    /// # use mina_p2p::{identity::{PublicKey, SecretKey}, webrtc::{Answer, Offer, ConnectionAuth, ConnectionAuthEncrypted}};
+    /// # fn example(encrypted_auth: ConnectionAuthEncrypted, my_secret_key: SecretKey, peer_public_key: PublicKey) -> Option<()> {
     /// // After receiving encrypted authentication data from peer
     /// if let Some(decrypted_auth) = encrypted_auth.decrypt(&my_secret_key, &peer_public_key) {
     ///     // Authentication successful, proceed with connection
@@ -262,6 +296,8 @@ impl ConnectionAuthEncrypted {
     ///     // Authentication failed, reject connection
     ///     println!("Peer authentication failed");
     /// }
+    /// # Some(())
+    /// # }
     /// ```
     pub fn decrypt(&self, sec_key: &SecretKey, other_pk: &PublicKey) -> Option<ConnectionAuth> {
         sec_key

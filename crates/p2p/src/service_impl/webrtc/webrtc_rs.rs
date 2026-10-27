@@ -1,11 +1,13 @@
 use std::{future::Future, sync::Arc};
 
 use webrtc::{
-    api::APIBuilder,
+    api::{setting_engine::SettingEngine, APIBuilder},
     data_channel::{data_channel_init::RTCDataChannelInit, RTCDataChannel},
+    ice::udp_network::{EphemeralUDP, UDPNetwork},
     ice_transport::{
-        ice_credential_type::RTCIceCredentialType, ice_gatherer_state::RTCIceGathererState,
-        ice_gathering_state::RTCIceGatheringState, ice_server::RTCIceServer,
+        ice_candidate_type::RTCIceCandidateType, ice_credential_type::RTCIceCredentialType,
+        ice_gatherer_state::RTCIceGathererState, ice_gathering_state::RTCIceGatheringState,
+        ice_server::RTCIceServer,
     },
     peer_connection::{
         configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
@@ -16,7 +18,7 @@ use webrtc::{
 
 use crate::{
     connection::P2pConnectionResponse,
-    webrtc::{Answer, Offer},
+    webrtc::{Answer, Offer, WebrtcConfig},
 };
 
 use super::{OnConnectionStateChangeHdlrFn, RTCChannelConfig, RTCConfig};
@@ -34,8 +36,29 @@ pub fn certificate_from_pem_key(pem_str: &str) -> RTCCertificate {
     RTCCertificate::from_key_pair(keypair).expect("keypair is compatible")
 }
 
-pub fn build_api() -> Api {
-    APIBuilder::new().build().into()
+/// The WebRTC API with the candidates' UDP ports and NAT addresses of
+/// `config` (W1): a relay behind a firewall opens just those ports.
+pub fn build_api(config: &WebrtcConfig) -> Api {
+    let mut settings = SettingEngine::default();
+    if let Some(ports) = config.udp_ports {
+        match EphemeralUDP::new(ports.min, ports.max) {
+            Ok(ports) => settings.set_udp_network(UDPNetwork::Ephemeral(ports)),
+            Err(error) => mina_core::error!(
+                mina_core::log::system_time();
+                summary = "WebRTC UDP port range ignored",
+                ports = ports.to_string(),
+                error = error.to_string(),
+            ),
+        }
+    }
+    if !config.nat_ips.is_empty() {
+        let ips = config.nat_ips.iter().map(ToString::to_string).collect();
+        settings.set_nat_1to1_ips(ips, RTCIceCandidateType::Host);
+    }
+    APIBuilder::new()
+        .with_setting_engine(settings)
+        .build()
+        .into()
 }
 
 pub struct RTCConnection(Arc<RTCPeerConnection>, bool);
@@ -168,6 +191,9 @@ impl RTCChannel {
         self.0.send(data).await
     }
 
+    /// Unused with ready events, which keep channel 0 open; kept for the
+    /// backend interface.
+    #[allow(dead_code)]
     pub async fn close(&self) {
         let _ = self.0.close().await;
     }

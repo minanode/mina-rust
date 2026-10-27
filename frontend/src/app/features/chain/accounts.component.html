@@ -1,0 +1,133 @@
+<div class="page-heading">
+  <div>
+    <h1>Account lookup</h1>
+    <p class="secondary">
+      Look up a public key in this node’s current ledger · Default MINA token
+    </p>
+  </div>
+</div>
+<form class="lookup panel" (ngSubmit)="lookup()">
+  <label for="public-key">Public key</label>
+  <div class="lookup-input">
+    <input
+      id="public-key"
+      name="publicKey"
+      [(ngModel)]="publicKey"
+      placeholder="B62…"
+      autocomplete="off"
+      spellcheck="false"
+      required
+    />
+    <button type="submit" class="btn-primary">Look up account</button>
+  </div>
+</form>
+@if (vm$ | async; as vm) {
+  @if (vm.loading) {
+    <p class="empty" role="status">Loading account…</p>
+  }
+  @if (vm.error) {
+    <div class="notice error" role="alert">{{ vm.error }}</div>
+  }
+  @if (vm.updatedAt && vm.data === null) {
+    <div class="empty" role="status">
+      <h2>Account not found</h2>
+      <p>
+        This public key has no default-token account in the node’s current
+        ledger.
+      </p>
+    </div>
+  }
+  @if (vm.data; as account) {
+    <section class="panel" aria-label="Account details">
+      <h2>Account</h2>
+      <mina-chain-value [value]="account.publicKey" [full]="true" />
+      <div class="summary">
+        <div>
+          <span class="secondary">Balance (MINA)</span>
+          <strong data-balance>{{ mina(account.balance.total) }}</strong>
+        </div>
+        <div>
+          <span class="secondary">Liquid (MINA)</span>
+          <strong>{{ mina(account.balance.liquid) }}</strong>
+        </div>
+        <div>
+          <span class="secondary">Locked (MINA)</span>
+          <strong>{{ mina(account.balance.locked) }}</strong>
+        </div>
+        <div>
+          <span class="secondary">Nonce</span>
+          <strong data-account-nonce>{{ account.nonce }}</strong>
+        </div>
+      </div>
+      <dl class="hashes">
+        <dt>Delegate</dt>
+        <dd>
+          @if (account.delegateAccount) {
+            <mina-chain-value
+              [value]="account.delegateAccount.publicKey"
+              kind="account"
+              [full]="true"
+            />
+          } @else {
+            <span class="secondary">No delegate returned</span>
+          }
+        </dd>
+        <dt>Ledger height</dt>
+        <dd>{{ account.balance.blockHeight | number }}</dd>
+        @if (account.balance.stateHash) {
+          <dt>State hash</dt>
+          <dd>
+            <mina-chain-value
+              [value]="account.balance.stateHash"
+              kind="block"
+              [full]="true"
+            />
+          </dd>
+        }
+        <dt>Fetched (UTC)</dt>
+        <dd>{{ vm.updatedAt | date: 'yyyy-MM-dd HH:mm:ss' : 'UTC' }}</dd>
+      </dl>
+    </section>
+    <section class="panel">
+      <h2>Timing</h2>
+      @if (account.timing.initialMinimumBalance !== null) {
+        <div class="facts">
+          <div>
+            <span>Initial minimum balance (MINA)</span>
+            <strong>{{ mina(account.timing.initialMinimumBalance) }}</strong>
+          </div>
+          <div>
+            <span>Cliff time (slot since genesis)</span>
+            <strong>{{ account.timing.cliffTime | number }}</strong>
+          </div>
+          <div>
+            <span>Cliff amount (MINA)</span>
+            <strong>{{ mina(account.timing.cliffAmount) }}</strong>
+          </div>
+          <div>
+            <span>Vesting period (slots)</span>
+            <strong>{{ account.timing.vestingPeriod | number }}</strong>
+          </div>
+          <div>
+            <span>Vesting increment (MINA)</span>
+            <strong>{{ mina(account.timing.vestingIncrement) }}</strong>
+          </div>
+        </div>
+      } @else {
+        <p class="secondary">Untimed account · No vesting schedule</p>
+      }
+    </section>
+    <p class="footnote">
+      Values are a snapshot of the current ledger, not the account’s state at a
+      previously viewed block. Lookups do not submit transactions.
+    </p>
+  } @else if (!vm.loading && !vm.error && !vm.updatedAt) {
+    <div class="empty">
+      <span class="mina-icon f-40 secondary" aria-hidden="true">
+        account_balance_wallet
+      </span>
+      <h2>Explore a ledger account</h2>
+      <p>Paste a public key above, or follow an account link from a block.</p>
+    </div>
+  }
+}

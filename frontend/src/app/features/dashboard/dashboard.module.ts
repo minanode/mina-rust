@@ -1,3 +1,6 @@
+import { VerificationPanelComponent } from '../verification/verification-panel.component';
+import { FreshnessComponent } from '../verification/freshness.component';
+import { DashboardRolesComponent } from './dashboard-roles/dashboard-roles.component';
 import { NgModule } from '@angular/core';
 
 import { DashboardRouting } from '@dashboard/dashboard.routing';
@@ -22,6 +25,9 @@ import { BlockProductionPillComponent } from '@app/layout/block-production-pill/
     DashboardPeersMinimalTableComponent,
   ],
   imports: [
+    VerificationPanelComponent,
+    FreshnessComponent,
+    DashboardRolesComponent,
     SharedModule,
     DashboardRouting,
     EffectsModule.forFeature(DashboardEffects),

@@ -33,6 +33,19 @@ use super::{
     wrap::WrapProof,
 };
 
+/// The merge step circuit's main: the two statements to merge, and the checks
+/// that they connect and add up to `statement`. Only the witness values are
+/// computed here; the equalities themselves are the circuit's gates, which
+/// come from OCaml's blobs.
+///
+/// Mesa (4.0.2) added a third local-state check, between the two halves and
+/// ignoring the ledger (`Local_state.Checked.assert_equal_ignoring_ledger`).
+/// Its gadgets push nothing but the signed amounts' values, the excess and
+/// the supply increase of each side: 4 values, which take the witness from
+/// 357403 to the Mesa merge circuit's `AUX_LEN`, 357407.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark/transaction_snark.ml#L3255-L3324>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_state/local_state.ml#L144-L170>
 fn merge_main(
     statement: &Statement<SokDigest>,
     proofs: &[v2::LedgerProofProdStableV2; 2],
@@ -66,8 +79,11 @@ fn merge_main(
         s1.add(&s2, w)
     };
 
+    // The local states at both ends, then, new in Mesa, the one between the
+    // two halves, ledger aside (4 more witness values).
     assert_equal_local_state(&statement.source.local_state, &s1.source.local_state, w);
     assert_equal_local_state(&statement.target.local_state, &s2.target.local_state, w);
+    assert_equal_local_state(&s1.target.local_state, &s2.source.local_state, w);
 
     let _valid_ledger = validate_ledgers_at_merge_checked(
         &StatementLedgers::of_statement(&s1),
@@ -233,10 +249,8 @@ pub(super) fn generate_merge_proof(
 
     let (s1, s2) = merge_main(&statement_with_sok, proofs, w)?;
 
-    let [p1, p2]: [&v2::PicklesProofProofsVerified2ReprStableV2; 2] = {
-        let [p1, p2] = proofs;
-        [&p1.0.proof, &p2.0.proof]
-    };
+    let decoded = [proofs[0].0.proof.get()?, proofs[1].0.proof.get()?];
+    let [p1, p2] = [&decoded[0].0, &decoded[1].0];
 
     let prev_challenge_polynomial_commitments = extract_recursion_challenges(&[p1, p2])?;
 
@@ -308,6 +322,7 @@ pub(super) fn generate_merge_proof(
             dlog_plonk_index: &dlog_plonk_index,
             step_prover_index: &step_prover.index,
             wrap_prover,
+            wrap_domain_indices: None,
         },
         &mut w,
     )

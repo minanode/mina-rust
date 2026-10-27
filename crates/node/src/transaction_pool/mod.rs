@@ -10,5 +10,8 @@ mod transaction_pool_reducer;
 
 mod transaction_pool_effects;
 
+#[cfg(test)]
+pub(crate) mod submission_tests;
+
 mod transaction_pool_service;
 pub use transaction_pool_service::*;

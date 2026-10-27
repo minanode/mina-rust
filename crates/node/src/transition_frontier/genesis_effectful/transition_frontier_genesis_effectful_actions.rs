@@ -17,9 +17,16 @@ pub enum TransitionFrontierGenesisEffectfulAction {
     LedgerLoadInit {
         config: Arc<GenesisConfig>,
     },
+    /// I5d2: load the deferred genesis ledgers of `config`, checking that
+    /// it gives the genesis the node started with, `expected`.
+    LedgersLoadInit {
+        config: Arc<GenesisConfig>,
+        expected: Arc<GenesisConfig>,
+    },
     ProveInit {
         block_hash: StateHash,
         input: Box<ProverExtendBlockchainInputStableV2>,
+        deadline: redux::Timestamp,
     },
 }
 

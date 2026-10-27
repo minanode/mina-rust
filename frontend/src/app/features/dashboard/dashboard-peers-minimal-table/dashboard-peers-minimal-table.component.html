@@ -10,5 +10,5 @@
     {{ row.status }}
   </span>
   <span>{{ row.datetime }}</span>
-  <span>{{ row.height ?? '-' }}</span>
+  <span>{{ formatHeight(row.height) }}</span>
 </ng-template>

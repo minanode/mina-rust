@@ -14,6 +14,10 @@ pub enum P2pConnectionOutgoingAction {
     /// Initialize connection to a random peer.
     #[action_event(level = trace)]
     RandomInit,
+    /// A single rate-limited early retry while below the recovery peer floor.
+    Recover {
+        opts: P2pConnectionOutgoingInitOpts,
+    },
     /// Initialize connection to a new peer.
     Init {
         opts: P2pConnectionOutgoingInitOpts,
@@ -91,20 +95,29 @@ pub enum P2pConnectionOutgoingAction {
 impl redux::EnablingCondition<P2pState> for P2pConnectionOutgoingAction {
     fn is_enabled(&self, state: &P2pState, time: redux::Timestamp) -> bool {
         match self {
-            P2pConnectionOutgoingAction::RandomInit =>  !state.already_has_min_peers() && state.disconnected_peers().next().is_some(),
-            P2pConnectionOutgoingAction::Init { opts, .. } => {
+            P2pConnectionOutgoingAction::Recover { opts } => state.recovery_candidate(time) == Some(opts),
+            P2pConnectionOutgoingAction::RandomInit =>  !state.already_has_min_peers() && !state.dial_candidates(time).is_empty(),
+            // A dial the RPC asked for (`rpc_id`) is the operator's, and is
+            // not held back by the backoff.
+            P2pConnectionOutgoingAction::Init { opts, rpc_id, .. } => {
                 !state.already_has_min_peers() &&
                 &state.my_id() != opts.peer_id() &&
                 state
                     .peers
                     .get(opts.peer_id())
-                    .is_none_or(|peer| !peer.status.is_connected_or_connecting())
+                    .is_none_or(|peer| !peer.status.is_connected_or_connecting()) &&
+                (rpc_id.is_some() || state.may_dial(opts, time))
             }
-            P2pConnectionOutgoingAction::Reconnect { opts, .. } => {
+            // Libp2p peers are redialled only while we have fewer than the
+            // target, counting dials in flight (I18b).
+            P2pConnectionOutgoingAction::Reconnect { opts, rpc_id } => {
                 !state.already_has_min_peers()
                     && state.peers.get(opts.peer_id()).is_some_and( |peer| {
                         peer.can_reconnect(time, &state.config.timeouts)
                     })
+                    && (rpc_id.is_some()
+                        || (state.may_dial(opts, time)
+                            && (!opts.is_libp2p() || state.libp2p_dial_deficit() > 0)))
             }
             P2pConnectionOutgoingAction::OfferSdpCreatePending { peer_id } => state
                 .peers

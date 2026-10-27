@@ -1,0 +1,42 @@
+[package]
+name = "mina-block-replay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Replay precomputed blocks from genesis or a staged ledger dump, check ledger hashes and verify proofs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+ledger = { workspace = true }
+mina-core = { workspace = true }
+mina-curves = { workspace = true }
+mina-node = { workspace = true }
+mina-p2p-messages = { workspace = true }
+# `verify`: block headers from precomputed blocks, and verification keys in
+# the OCaml JSON form.
+mina-web-verifier = { path = "../../crates/web-verifier" }
+pprof = { version = "0.15.0", optional = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_path_to_error = "0.1.14"
+zstd = { workspace = true }
+
+[dev-dependencies]
+# `prove_block`: writes proofs as OCaml JSON base64 S-expressions.
+base64 = { workspace = true }
+# `mesa_offline_chain`: the block producer's VRF evaluation.
+mina-vrf = { workspace = true }
+rsexp = { workspace = true }
+tempfile = { workspace = true }
+
+[features]
+# `--profile-from` and the `profile_reconstruct` example: sample where the
+# time goes, without perf.
+profile = ["dep:pprof"]
+peak-alloc = ["ledger/peak-alloc"]
+
+[[example]]
+name = "profile_reconstruct"
+required-features = ["profile"]

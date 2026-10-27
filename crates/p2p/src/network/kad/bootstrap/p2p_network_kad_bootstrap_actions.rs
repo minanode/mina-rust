@@ -38,9 +38,11 @@ impl EnablingCondition<P2pState> for P2pNetworkKadBootstrapAction {
             .as_ref()
             .and_then(|discovery_state| discovery_state.bootstrap_state());
         match self {
-            P2pNetworkKadBootstrapAction::CreateRequests => {
-                state.is_some_and(|bootstrap_state| bootstrap_state.requests.len() < 3)
-            }
+            // One batch at a time: a new one would ask again the peers the
+            // batch being assembled has yet to append.
+            P2pNetworkKadBootstrapAction::CreateRequests => state.is_some_and(|bootstrap_state| {
+                bootstrap_state.requests.len() < 3 && !bootstrap_state.is_assembling()
+            }),
             P2pNetworkKadBootstrapAction::AppendRequest { .. } => {
                 state.is_some_and(|bootstrap_state| bootstrap_state.peer_id_req_vec.len() < 3)
             }

@@ -8,6 +8,12 @@ use super::super::*;
 pub const INITIAL_RECV_BUFFER_CAPACITY: usize = 0x40000; // 256kb
 pub const INITIAL_WINDOW_SIZE: u32 = INITIAL_RECV_BUFFER_CAPACITY as u32;
 pub const MAX_WINDOW_SIZE: u32 = 16 * 1024 * 1024; // 16mb
+/// The most receive window one connection grants beyond its streams' initial
+/// windows: a stream's window grows past [`INITIAL_WINDOW_SIZE`] only while
+/// the connection's windows add up to less, so a peer can never have more
+/// than this plus one initial window per stream in flight, far below the
+/// 256 MiB frame limit, however many streams it opens and grows.
+pub const MAX_CONNECTION_RECEIVE_WINDOW: usize = 64 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct P2pNetworkYamuxState {
@@ -37,17 +43,47 @@ impl P2pNetworkYamuxState {
         let _ = len;
     }
 
+    /// How much to read from the connection at once: what the peer may send,
+    /// at most [`MAX_CONNECTION_RECEIVE_WINDOW`] of data. Reading less than
+    /// the peer may send just takes another read.
     pub fn limit(&self) -> usize {
         const SIZE_OF_HEADER: usize = 12;
         let headers = self.streams.len() * 2 + 1;
 
-        let windows = self
-            .streams
-            .values()
-            .map(|s| s.window_ours as usize)
-            .sum::<usize>();
+        windows_ours(&self.streams).min(MAX_CONNECTION_RECEIVE_WINDOW) + headers * SIZE_OF_HEADER
+    }
 
-        windows + headers * SIZE_OF_HEADER
+    /// The part of a `wanted` window update for `stream_id` that keeps the
+    /// connection's receive windows within [`MAX_CONNECTION_RECEIVE_WINDOW`];
+    /// a stream may always get back up to its initial window, so none stalls.
+    pub fn receive_window_grant(&self, stream_id: StreamId, wanted: u32) -> u32 {
+        let Some(stream) = self.streams.get(&stream_id) else {
+            return wanted;
+        };
+        let room = MAX_CONNECTION_RECEIVE_WINDOW.saturating_sub(windows_ours(&self.streams));
+        let to_initial = INITIAL_WINDOW_SIZE.saturating_sub(stream.window_ours) as usize;
+        wanted.min(u32::try_from(room.max(to_initial)).unwrap_or(u32::MAX))
+    }
+
+    /// The most a data frame on `stream_id` may carry: the receive window we
+    /// gave the peer, the initial one for a stream the frame opens, and the
+    /// largest we ever give for one we don't know (it may have just closed).
+    /// The reducer checks the exact window as it takes each frame.
+    fn receive_window_bound(&self, stream_id: StreamId, flags: YamuxFlags) -> u32 {
+        if flags.contains(YamuxFlags::SYN) {
+            return INITIAL_WINDOW_SIZE;
+        }
+        self.streams
+            .get(&stream_id)
+            .map_or(MAX_WINDOW_SIZE, |stream| stream.window_ours)
+    }
+
+    /// The stream whose receive window the peer overran, if it did.
+    pub fn window_exceeded(&self) -> Option<StreamId> {
+        match self.terminated {
+            Some(Err(YamuxFrameParseError::WindowExceeded(stream_id))) => Some(stream_id),
+            _ => None,
+        }
     }
 
     pub fn set_err(&mut self, err: YamuxFrameParseError) {
@@ -88,6 +124,12 @@ impl P2pNetworkYamuxState {
                 let len = u32::from_be_bytes(b) as usize;
                 if len > self.message_size_limit {
                     self.set_res(Err(YamuxSessionError::Internal));
+                    return None;
+                }
+                // Refuse a frame that can't fit the window as soon as its
+                // header is in, rather than buffering it.
+                if len > self.receive_window_bound(stream_id, flags) as usize {
+                    self.set_err(YamuxFrameParseError::WindowExceeded(stream_id));
                     return None;
                 }
                 if buf.len() >= 12 + len {
@@ -192,6 +234,10 @@ impl P2pNetworkYamuxState {
     }
 }
 
+fn windows_ours(streams: &BTreeMap<StreamId, YamuxStreamState>) -> usize {
+    streams.values().map(|s| s.window_ours as usize).sum()
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, MallocSizeOf)]
 pub struct YamuxStreamState {
     pub incoming: bool,
@@ -203,6 +249,12 @@ pub struct YamuxStreamState {
     pub window_ours: u32,
     pub max_window_size: u32,
     pub pending: VecDeque<YamuxFrame>,
+    #[serde(default)]
+    #[ignore_malloc_size_of = "primitive"]
+    pub pending_since: Option<redux::Timestamp>,
+    #[serde(default)]
+    #[ignore_malloc_size_of = "primitive"]
+    pub pending_first_at: Option<redux::Timestamp>,
 }
 
 impl Default for YamuxStreamState {
@@ -217,6 +269,8 @@ impl Default for YamuxStreamState {
             window_ours: INITIAL_WINDOW_SIZE,
             max_window_size: INITIAL_WINDOW_SIZE,
             pending: VecDeque::default(),
+            pending_since: None,
+            pending_first_at: None,
         }
     }
 }
@@ -227,6 +281,42 @@ impl YamuxStreamState {
             incoming: true,
             ..Default::default()
         }
+    }
+
+    /// Takes a data frame to send on this stream and returns what the peer's
+    /// window has room for now. The rest waits in `pending` behind any bytes
+    /// already waiting there, so that the stream's bytes keep their order. A
+    /// reset goes at once, and nothing waiting is sent after it.
+    pub fn take_sendable(&mut self, mut frame: YamuxFrame) -> Option<YamuxFrame> {
+        if frame.flags.contains(YamuxFlags::RST) {
+            self.pending.clear();
+            return Some(frame);
+        }
+        if !self.pending.is_empty() || (self.window_theirs == 0 && frame.len() > 0) {
+            self.pending.push_back(frame);
+            return None;
+        }
+        match self.window_theirs.checked_sub(frame.len_as_u32()) {
+            Some(window) => self.window_theirs = window,
+            None => {
+                if let Some(rest) = frame.split_at(self.window_theirs as usize) {
+                    self.pending.push_back(rest);
+                }
+                self.window_theirs = 0;
+            }
+        }
+        Some(frame)
+    }
+
+    /// The frames waiting for the peer's window, oldest first, to offer to
+    /// `take_sendable` again once the window grows.
+    pub fn take_pending(&mut self) -> VecDeque<YamuxFrame> {
+        std::mem::take(&mut self.pending)
+    }
+
+    /// Bytes waiting for the peer's window.
+    pub fn pending_len(&self) -> usize {
+        self.pending.iter().map(YamuxFrame::len).sum()
     }
 }
 
@@ -280,6 +370,8 @@ pub enum YamuxFrameParseError {
     Type(u8),
     /// Unknown error code.
     ErrorCode(u32),
+    /// A data frame bigger than the stream's receive window.
+    WindowExceeded(StreamId),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, MallocSizeOf)]
@@ -412,6 +504,35 @@ impl YamuxStreamKind {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// However large its streams' windows, a connection reads at most
+    /// `MAX_CONNECTION_RECEIVE_WINDOW` of data at once, and grants no window
+    /// growth once its windows add up to that; a stream below its initial
+    /// window still gets back up to it.
+    #[test]
+    fn connection_receive_allowance_is_bounded() {
+        let mut yamux = P2pNetworkYamuxState::default();
+        for id in 0..128u32 {
+            let stream = YamuxStreamState {
+                window_ours: MAX_WINDOW_SIZE,
+                max_window_size: MAX_WINDOW_SIZE,
+                ..YamuxStreamState::incoming()
+            };
+            yamux.streams.insert(id * 2 + 2, stream);
+        }
+        assert!(yamux.limit() <= MAX_CONNECTION_RECEIVE_WINDOW + (128 * 2 + 1) * 12);
+        assert!(yamux.limit() < 256 * 1024 * 1024);
+        assert_eq!(yamux.receive_window_grant(2, 1024 * 1024), 0);
+        yamux.streams.get_mut(&2).unwrap().window_ours = 1000;
+        assert_eq!(
+            yamux.receive_window_grant(2, 1024 * 1024),
+            INITIAL_WINDOW_SIZE - 1000
+        );
+        // An unknown stream is not ours to limit here.
+        assert_eq!(yamux.receive_window_grant(1, 7), 7);
+    }
+
     #[test]
     fn yamux_stream_id() {
         use super::YamuxStreamKind::*;
@@ -419,6 +540,83 @@ mod tests {
         assert_eq!(Rpc.stream_id(true), 2);
         assert_eq!(Kademlia.stream_id(false), 5);
         assert_eq!(Kademlia.stream_id(true), 6);
+    }
+
+    use super::{YamuxFlags, YamuxFrame, YamuxFrameInner, YamuxStreamState};
+
+    fn frame(flags: YamuxFlags, bytes: &[u8]) -> YamuxFrame {
+        YamuxFrame {
+            flags,
+            stream_id: 1,
+            inner: YamuxFrameInner::Data(bytes.to_vec().into()),
+        }
+    }
+
+    fn bytes(frame: &YamuxFrame) -> Vec<u8> {
+        match &frame.inner {
+            YamuxFrameInner::Data(data) => data.0.to_vec(),
+            _ => panic!("not a data frame"),
+        }
+    }
+
+    /// Offers every waiting frame again, as a window update does, and returns
+    /// the bytes sent.
+    fn window_update(stream: &mut YamuxStreamState, difference: u32) -> Vec<u8> {
+        stream.window_theirs += difference;
+        let mut sent = vec![];
+        for frame in stream.take_pending() {
+            if let Some(frame) = stream.take_sendable(frame) {
+                sent.extend(bytes(&frame));
+            }
+        }
+        sent
+    }
+
+    #[test]
+    fn bytes_that_wait_for_the_window_keep_their_order() {
+        let mut stream = YamuxStreamState {
+            window_theirs: 4,
+            ..Default::default()
+        };
+        let mut sent = vec![];
+
+        // "abcdef" fills the window: "abcd" goes and "ef" waits.
+        let first = stream.take_sendable(frame(YamuxFlags::empty(), b"abcdef"));
+        sent.extend(bytes(&first.unwrap()));
+        // "gh" waits behind "ef", though it came later. It went ahead of it
+        // before: `push_front` on a full window.
+        assert!(stream
+            .take_sendable(frame(YamuxFlags::empty(), b"gh"))
+            .is_none());
+        assert_eq!(stream.pending_len(), 4);
+        // A FIN waits behind the data too.
+        assert!(stream.take_sendable(frame(YamuxFlags::FIN, b"")).is_none());
+
+        // A window of 3 lets "ef" and "g" go; "h" and the FIN wait.
+        sent.extend(window_update(&mut stream, 3));
+        assert_eq!(sent, b"abcdefg");
+        assert_eq!(stream.pending_len(), 1);
+
+        sent.extend(window_update(&mut stream, 10));
+        assert_eq!(sent, b"abcdefgh");
+        assert!(stream.pending.is_empty());
+        assert_eq!(stream.window_theirs, 9);
+    }
+
+    #[test]
+    fn a_reset_goes_at_once_and_drops_what_waits() {
+        let mut stream = YamuxStreamState {
+            window_theirs: 2,
+            ..Default::default()
+        };
+        assert!(stream
+            .take_sendable(frame(YamuxFlags::empty(), b"abcd"))
+            .is_some());
+        assert_eq!(stream.pending_len(), 2);
+
+        let reset = stream.take_sendable(frame(YamuxFlags::RST, b""));
+        assert!(reset.is_some_and(|f| f.flags.contains(YamuxFlags::RST)));
+        assert!(stream.pending.is_empty());
     }
 }
 

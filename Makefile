@@ -94,6 +94,10 @@ build-node-native: ## Build the package mina-node-native with all features and t
 build-release: ## Build the project in release mode
 	@cargo build --release --package=mina-cli --bin mina
 
+.PHONY: dashboard
+dashboard: ## Build the node dashboard (ui/dashboard/dist), which mina node embeds; build it before the node
+	@cd ui && npm ci && npm run build:dashboard
+
 .PHONY: build-testing
 build-testing: ## Build the testing binary with scenario generators
 	cargo build --release --features scenario-generators --bin mina-node-testing
@@ -141,6 +145,10 @@ build-wasm: ## Build WebAssembly node
 		--out-dir pkg \
 		target/wasm32-unknown-unknown/release/mina_node_web.wasm
 
+.PHONY: build-webnode-public
+build-webnode-public: ## Build the public devnet web node for minaweb.org (RELAY_PEER_ID=...; see tools/deploy/site)
+	@tools/deploy/site/build.sh
+
 .PHONY: build-benches
 build-benches: ## Build all benchmarks without running them
 	@cargo bench --no-run
@@ -159,6 +167,7 @@ bench-database: ## Run ledger database benchmark
 
 .PHONY: check
 check: ## Check code for compilation errors
+	cargo check -p mina-node-testing
 	cargo check --all-targets
 
 .PHONY: check-beta
@@ -197,7 +206,13 @@ fix-trailing-whitespace: ## Remove trailing whitespaces from all files
 		-not -path "./website/build/*" \
 		-not -path "./website/static/api-docs/*" \
 		-not -path "./website/.docusaurus/*" \
+		-not -path "./ui/node_modules/*" \
+		-not -path "./ui/*/node_modules/*" \
+		-not -path "./ui/*/.next/*" \
+		-not -path "./ui/*/out/*" \
+		-not -path "./ui/*/dist/*" \
 		-not -path "./.git/*" \
+		-not -path "./vendor/rustrtc/*" \
 		-exec sh -c 'echo "Processing: $$1"; $(SED) -i -e "s/[[:space:]]*$$//" "$$1"' _ {} \; && \
 		echo "Trailing whitespaces removed."
 
@@ -218,7 +233,13 @@ check-trailing-whitespace: ## Check for trailing whitespaces in source files
 		-not -path "./website/build/*" \
 		-not -path "./website/static/api-docs/*" \
 		-not -path "./website/.docusaurus/*" \
+		-not -path "./ui/node_modules/*" \
+		-not -path "./ui/*/node_modules/*" \
+		-not -path "./ui/*/.next/*" \
+		-not -path "./ui/*/out/*" \
+		-not -path "./ui/*/dist/*" \
 		-not -path "./.git/*" \
+		-not -path "./vendor/rustrtc/*" \
 		-exec grep -l '[[:space:]]$$' {} + 2>/dev/null || true); \
 	if [ -n "$$files_with_trailing_ws" ]; then \
 		echo "❌ Files with trailing whitespaces found:"; \
@@ -387,8 +408,7 @@ nextest-ledger: build-ledger ## Run ledger tests with cargo-nextest, requires ni
 
 .PHONY: docker-build-all
 docker-build-all: docker-build-bootstrap-sandbox \
-	docker-build-frontend docker-build-fuzzing \
-	docker-build-mina ## Build all Docker images
+	docker-build-frontend docker-build-fuzzing ## Build the development Docker images
 
 .PHONY: docker-build-bootstrap-sandbox
 docker-build-bootstrap-sandbox: ## Build bootstrap sandbox Docker image
@@ -404,24 +424,13 @@ docker-build-fuzzing: ## Build fuzzing Docker image
 	docker build -t $(DOCKER_ORG)/mina-rust-fuzzing:$(GIT_COMMIT) tools/fuzzing/
 
 .PHONY: docker-build-mina
-docker-build-mina: ## Build main Mina Docker image
-	@ARCH=$$(uname -m); \
-	case $$ARCH in \
-		x86_64) PLATFORM="linux/amd64" ;; \
-		aarch64|arm64) PLATFORM="linux/arm64" ;; \
-		*) echo "Unsupported architecture: $$ARCH" && exit 1 ;; \
-	esac; \
-	echo "Building for platform: $$PLATFORM"; \
-	docker buildx build \
-		--platform $$PLATFORM \
-		--tag $(DOCKER_ORG)/mina-rust:$(GIT_COMMIT) \
-		.
+docker-build-mina: ## Build the node image from release archives (VERSION=X.Y.Z DIST=dir)
+	@if [ -z "$(VERSION)" ] || [ -z "$(DIST)" ]; then \
+		echo "usage: make docker-build-mina VERSION=X.Y.Z DIST=dir"; exit 2; \
+	fi
+	tools/release/docker/build-image.sh "$(VERSION)" "$(DIST)"
 
 # Docker push targets
-
-.PHONY: docker-push-mina
-docker-push-mina: ## Push main Mina Docker image to DockerHub
-	@docker push $(DOCKER_ORG)/mina-rust:$(GIT_COMMIT)
 
 .PHONY: docker-push-frontend
 docker-push-frontend: ## Push frontend Docker image to DockerHub
@@ -475,9 +484,8 @@ generate-block-producer-key: build-release ## Generate a new block producer key 
 	fi
 	@mkdir -p mina-workdir
 	@echo "Generating new encrypted block producer key..."
-	@OUTPUT=$$($(if $(MINA_PRIVKEY_PASS),MINA_PRIVKEY_PASS="$(MINA_PRIVKEY_PASS)") cargo run --release --package=mina-cli --bin mina -- misc mina-encrypted-key --file $(PRODUCER_KEY_FILENAME)); \
-	PUBLIC_KEY=$$(echo "$$OUTPUT" | grep "public key:" | cut -d' ' -f3); \
-	chmod 600 $(PRODUCER_KEY_FILENAME); \
+	@cargo run --release --package=mina-cli --bin mina -- wallet generate --output $(PRODUCER_KEY_FILENAME) >/dev/null || exit 1; \
+	PUBLIC_KEY=$$(cat $(PRODUCER_KEY_FILENAME).pub); \
 	echo ""; \
 	echo "✓ Generated new encrypted producer key:"; \
 	echo "  Encrypted key saved to: $(PRODUCER_KEY_FILENAME)"; \

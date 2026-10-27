@@ -139,9 +139,40 @@ pub enum Error {
     #[error("uncaught exception")]
     Uncaught_exn, //(Sexp),
     #[error("unimplemented method {}:{}", .0.to_string(), .1)]
-    Unimplemented_rpc(BinprotTag, Ver),
+    Unimplemented_rpc(BinprotTag, RpcErrorVersion),
     #[error("unknown query id: {0}")]
     Unknown_query_id(QueryID),
+}
+
+/// The version in [`Error::Unimplemented_rpc`], OCaml's `` [`Version of int] ``.
+///
+/// It is a polymorphic variant, which bin_prot writes as a 4-byte hash of the
+/// constructor's name before the version, not as a one-byte index.
+#[derive(Clone, Debug, Serialize, Deserialize, BinProtRead, BinProtWrite, PartialEq, Eq)]
+#[polymorphic_variant]
+pub enum RpcErrorVersion {
+    Version(Ver),
+}
+
+impl RpcErrorVersion {
+    pub fn version(&self) -> Ver {
+        let Self::Version(version) = self;
+        *version
+    }
+}
+
+impl std::fmt::Display for RpcErrorVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.version())
+    }
+}
+
+impl Error {
+    /// The answer async_rpc_kernel gives to a query whose tag and version it
+    /// has no implementation for, when it keeps the connection open.
+    pub fn unimplemented_rpc(tag: BinprotTag, version: Ver) -> Self {
+        Self::Unimplemented_rpc(tag, RpcErrorVersion::Version(version))
+    }
 }
 
 /// Type used for encoding RPC query payload.
@@ -582,6 +613,45 @@ mod tests {
         let mut p = s.as_slice();
         let msg = T::read_from_stream(&mut p).unwrap();
         assert_eq!(msg, decoded);
+    }
+
+    /// `Unimplemented_rpc of Rpc_tag.t * [`Version of int]`: the version is a
+    /// polymorphic variant, written as the 4-byte hash of `Version`
+    /// (`(hash_variant "Version" lsl 1) lor 1`, little endian) and the int.
+    #[test]
+    fn unimplemented_rpc_response() {
+        use binprot::BinProtWrite;
+
+        let response = Message::<()>::Response(Response {
+            id: 5,
+            data: RpcResult(Err(super::Error::unimplemented_rpc(
+                "get_ancestry".into(),
+                3,
+            ))),
+        });
+        let mut bytes = Vec::new();
+        response.binprot_write(&mut bytes).unwrap();
+        let expected = concat!(
+            "02",                         // Response
+            "05",                         // id
+            "01",                         // Error
+            "04",                         // Unimplemented_rpc
+            "0c6765745f616e636573747279", // "get_ancestry"
+            "f11d8694",                   // `Version
+            "03",                         // 3
+        );
+        assert_eq!(hex::encode(&bytes), expected);
+
+        let decoded = Message::<()>::binprot_read(&mut bytes.as_slice()).unwrap();
+        assert_eq!(decoded, response);
+        let Message::Response(Response {
+            data: RpcResult(Err(error)),
+            ..
+        }) = decoded
+        else {
+            panic!("not an error response");
+        };
+        assert_eq!(error.to_string(), "unimplemented method get_ancestry:3");
     }
 
     #[test]

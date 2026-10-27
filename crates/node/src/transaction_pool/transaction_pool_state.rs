@@ -18,6 +18,10 @@ pub(super) type PendingId = u32;
 #[derive(Serialize, Deserialize, Debug)]
 pub struct TransactionPoolState {
     pub candidates: TransactionPoolCandidatesState,
+    /// OCaml network and pool status counters. Kept with the pool so a state
+    /// snapshot and a metrics scrape observe the same applied actions.
+    #[serde(default)]
+    pub telemetry: TransactionPoolTelemetry,
     // TODO(binier): ideally this and `.pool` should be merged together.
     pub(super) dpool: DistributedPool<TransactionState, v2::TransactionHash>,
     pub(super) pool: ledger::transaction_pool::TransactionPool,
@@ -27,6 +31,13 @@ pub struct TransactionPoolState {
     /// For debug only
     #[serde(skip)]
     pub(super) file: Option<std::fs::File>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct TransactionPoolTelemetry {
+    pub diffs_received: u64,
+    pub diffs_broadcasted: u64,
+    pub transactions_added: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -45,6 +56,7 @@ impl Clone for TransactionPoolState {
     fn clone(&self) -> Self {
         Self {
             candidates: self.candidates.clone(),
+            telemetry: self.telemetry.clone(),
             dpool: self.dpool.clone(),
             pool: self.pool.clone(),
             pending_actions: self.pending_actions.clone(),
@@ -56,9 +68,21 @@ impl Clone for TransactionPoolState {
 }
 
 impl TransactionPoolState {
+    /// Diagnostic counts and encodings for maps whose keys are not JSON keys.
+    pub fn memory_debug(&self) -> serde_json::Value {
+        serde_json::json!({
+            "pool_entries": self.size(),
+            "pool_commands_json_bytes": crate::stats::serialized_size(&self.pool.get_all_transactions()),
+            "distributed_entries": self.for_propagation_size(),
+            "pending_actions": self.pending_actions.len(),
+            "pending_actions_json_bytes": crate::stats::serialized_size(&self.pending_actions.values().collect::<Vec<_>>()),
+        })
+    }
+
     pub fn new(config: Config, consensus_constants: &ConsensusConstants) -> Self {
         Self {
             candidates: Default::default(),
+            telemetry: Default::default(),
             dpool: Default::default(),
             pool: ledger::transaction_pool::TransactionPool::new(config, consensus_constants),
             pending_actions: Default::default(),
@@ -123,6 +147,12 @@ impl TransactionPoolState {
         }
     }
 
+    /// The nonce the pool expects next from `account_id`, if it holds any of
+    /// its commands.
+    pub fn inferred_nonce(&self, account_id: &ledger::AccountId) -> Option<Nonce> {
+        self.pool.inferred_nonce(account_id)
+    }
+
     pub(super) fn global_slots(state: &crate::State) -> Option<(Slot, Slot)> {
         Some((
             Slot::from_u32(state.cur_global_slot()?),
@@ -137,8 +167,11 @@ mod tests {
     use crate::State;
     use redux::Dispatcher;
 
+    /// A debugging tool rather than a test: replays the pool actions that
+    /// `save_actions` wrote to `/tmp/pool.bin` while a node ran.
     #[allow(unused)]
     #[test]
+    #[ignore = "debugging tool: needs /tmp/pool.bin, written by save_actions"]
     fn test_replay_pool() {
         let vec = std::fs::read("/tmp/pool.bin").unwrap();
         let slice = vec.as_slice();

@@ -1,21 +1,14 @@
 use crate::{
-    account::AccountSecretKey, block_producer::calc_epoch_seed, p2p::P2pInitializeAction,
+    p2p::P2pInitializeAction,
     transition_frontier::genesis_effectful::TransitionFrontierGenesisEffectfulAction,
 };
-use ledger::{
-    dummy::dummy_blockchain_proof, scan_state::transaction_logic::local_state::LocalState,
-};
-use mina_core::{
-    block::{genesis::genesis_and_negative_one_protocol_states, BlockWithHash},
-    constants::PROTOCOL_VERSION,
-    error,
-};
+use ledger::dummy::dummy_blockchain_proof;
+use mina_core::{block::BlockWithHash, constants::PROTOCOL_VERSION, error, info};
 use mina_p2p_messages::v2;
 
 use super::{
-    empty_block_body, empty_block_body_hash, empty_pending_coinbase, empty_pending_coinbase_hash,
-    TransitionFrontierGenesisAction, TransitionFrontierGenesisActionWithMetaRef,
-    TransitionFrontierGenesisState,
+    empty_block_body, genesis_block_prover_input, TransitionFrontierGenesisAction,
+    TransitionFrontierGenesisActionWithMetaRef, TransitionFrontierGenesisState,
 };
 
 impl TransitionFrontierGenesisState {
@@ -58,29 +51,40 @@ impl TransitionFrontierGenesisState {
                     return;
                 };
 
-                let genesis_vrf = ::mina_vrf::genesis_vrf(data.staking_epoch_seed.clone()).unwrap();
-                let genesis_vrf_hash = genesis_vrf.hash();
+                let protocol_states =
+                    |genesis_total_currency, staking_total_currency, next_total_currency| {
+                        data.protocol_states(
+                            genesis_total_currency,
+                            staking_total_currency,
+                            next_total_currency,
+                        )
+                    };
 
-                let Ok((negative_one, genesis, genesis_hash)) =
-                    genesis_and_negative_one_protocol_states(
-                        data.constants.clone(),
-                        data.genesis_ledger_hash.clone(),
-                        data.genesis_total_currency.clone(),
-                        data.staking_epoch_ledger_hash.clone(),
-                        data.staking_epoch_total_currency.clone(),
-                        data.next_epoch_ledger_hash.clone(),
-                        data.next_epoch_total_currency.clone(),
-                        AccountSecretKey::genesis_producer().public_key().into(),
-                        empty_pending_coinbase_hash(),
-                        (&LocalState::dummy()).into(),
-                        empty_block_body_hash(),
-                        genesis_vrf.into(),
-                        data.staking_epoch_seed.clone(),
-                        data.next_epoch_seed.clone(),
-                        calc_epoch_seed(&data.next_epoch_seed, genesis_vrf_hash), //data.next_epoch_seed.clone(),
-                    )
+                let Ok((negative_one, genesis, genesis_hash)) = protocol_states(
+                    data.genesis_total_currency.clone(),
+                    data.staking_epoch_total_currency.clone(),
+                    data.next_epoch_total_currency.clone(),
+                ) else {
+                    error!(meta.time(); "invalid negative protocol state");
+                    return;
+                };
+                // The chain id commits to the genesis state with zero total
+                // currencies, so it does not depend on ledger contents.
+                //
+                // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/chain_id/chain_id.ml#L44-L70>
+                let zero = || v2::CurrencyAmountStableV1(0u64.into());
+                let Ok((_, _, chain_id_genesis_hash)) = protocol_states(zero(), zero(), zero())
                 else {
                     error!(meta.time(); "invalid negative protocol state");
+                    return;
+                };
+
+                // Built once here rather than on every `genesis_block()`
+                // call: it hashes the protocol state (I20).
+                let Ok(block_with_dummy_proof) =
+                    Self::build_block_with_dummy_proof(&genesis, &genesis_hash)
+                else {
+                    error!(meta.time(); "invalid genesis block");
                     return;
                 };
 
@@ -89,7 +93,9 @@ impl TransitionFrontierGenesisState {
                     negative_one,
                     genesis,
                     genesis_hash,
+                    chain_id_genesis_hash,
                     genesis_producer_stake_proof: data.genesis_producer_stake_proof.clone(),
+                    block_with_dummy_proof,
                 };
 
                 // Dispatch
@@ -97,7 +103,7 @@ impl TransitionFrontierGenesisState {
                 if global_state.p2p.ready().is_none() {
                     let TransitionFrontierGenesisState::Produced {
                         genesis,
-                        genesis_hash,
+                        chain_id_genesis_hash,
                         ..
                     } = &global_state.transition_frontier.genesis
                     else {
@@ -110,16 +116,22 @@ impl TransitionFrontierGenesisState {
                         override_id.clone()
                     } else {
                         let constraint_system_digests =
-                            mina_core::NetworkConfig::global().constraint_system_digests;
+                            mina_core::network::constraint_system_digests();
                         ChainId::compute(
                             constraint_system_digests,
-                            genesis_hash,
+                            chain_id_genesis_hash,
                             &genesis.body.constants,
                             constants::PROTOCOL_TRANSACTION_VERSION,
                             constants::PROTOCOL_NETWORK_VERSION,
                             &v2::UnsignedExtendedUInt32StableV1::from(constants::TX_POOL_MAX_SIZE),
                         )
                     };
+                    info!(meta.time();
+                        summary = "chain id",
+                        chain_id = chain_id.to_hex(),
+                        overridden = global_state.config.chain_id_override.is_some(),
+                        genesis_hash = chain_id_genesis_hash.to_string(),
+                    );
                     dispatcher.push(P2pInitializeAction::Initialize { chain_id });
                 }
                 dispatcher.push(TransitionFrontierGenesisAction::ProveInit);
@@ -136,73 +148,34 @@ impl TransitionFrontierGenesisState {
                     return;
                 };
 
-                // When proof verification is disabled (interop testing with
-                // OCaml --proof-level none), skip real genesis proving and
-                // use a dummy proof. The real prover can panic on custom
-                // genesis configurations due to sparse ledger mismatches.
+                let genesis_hash = genesis_hash.clone();
+                let input =
+                    genesis_block_prover_input(negative_one, genesis, genesis_producer_stake_proof);
+                let (dispatcher, global_state) = state_context.into_dispatcher_and_state();
+                let Some(won_slot) = global_state.block_producer.current_won_slot() else {
+                    return;
+                };
+                let deadline = won_slot.next_slot_time();
+                dispatcher.push(TransitionFrontierGenesisAction::ProvePending { deadline });
                 if skip_proof_verification {
-                    let dispatcher = state_context.into_dispatcher();
-                    dispatcher.push(TransitionFrontierGenesisAction::ProvePending);
                     dispatcher.push(TransitionFrontierGenesisAction::ProveSuccess {
                         proof: dummy_blockchain_proof().clone(),
                     });
-                    return;
+                } else {
+                    dispatcher.push(TransitionFrontierGenesisEffectfulAction::ProveInit {
+                        block_hash: genesis_hash,
+                        input: input.into(),
+                        deadline,
+                    });
                 }
-
-                let genesis_hash = genesis_hash.clone();
-                let producer_pk = genesis.body.consensus_state.block_creator.clone();
-                let delegator_pk = genesis.body.consensus_state.block_stake_winner.clone();
-
-                let input = v2::ProverExtendBlockchainInputStableV2 {
-                    chain: v2::BlockchainSnarkBlockchainStableV2 {
-                        state: negative_one.clone(),
-                        proof: dummy_blockchain_proof().clone(),
-                    },
-                    next_state: genesis.clone(),
-                    block: v2::MinaStateSnarkTransitionValueStableV2 {
-                        blockchain_state: genesis.body.blockchain_state.clone(),
-                        consensus_transition: genesis
-                            .body
-                            .consensus_state
-                            .curr_global_slot_since_hard_fork
-                            .slot_number
-                            .clone(),
-                        pending_coinbase_update: v2::MinaBasePendingCoinbaseUpdateStableV1::zero(),
-                    },
-                    ledger_proof: None,
-                    prover_state: v2::ConsensusStakeProofStableV2 {
-                        delegator: v2::MinaBaseAccountIndexStableV1(0u64.into()),
-                        delegator_pk,
-                        coinbase_receiver_pk: genesis
-                            .body
-                            .consensus_state
-                            .coinbase_receiver
-                            .clone(),
-                        producer_public_key: producer_pk,
-                        producer_private_key: AccountSecretKey::genesis_producer().into(),
-                        ledger: genesis_producer_stake_proof.clone(),
-                    },
-                    pending_coinbase: v2::MinaBasePendingCoinbaseWitnessStableV2 {
-                        pending_coinbases: (&empty_pending_coinbase()).into(),
-                        is_new_stack: true,
-                    },
-                };
-
-                // Dispatch
-                let dispatcher = state_context.into_dispatcher();
-
-                dispatcher.push(TransitionFrontierGenesisAction::ProvePending);
-                dispatcher.push(TransitionFrontierGenesisEffectfulAction::ProveInit {
-                    block_hash: genesis_hash,
-                    input: input.into(),
-                });
             }
-            TransitionFrontierGenesisAction::ProvePending => {
+            TransitionFrontierGenesisAction::ProvePending { deadline } => {
                 let Self::Produced {
                     negative_one,
                     genesis,
                     genesis_hash,
                     genesis_producer_stake_proof,
+                    block_with_dummy_proof,
                     ..
                 } = state
                 else {
@@ -215,7 +188,48 @@ impl TransitionFrontierGenesisState {
                     genesis: genesis.clone(),
                     genesis_hash: genesis_hash.clone(),
                     genesis_producer_stake_proof: genesis_producer_stake_proof.clone(),
+                    block_with_dummy_proof: block_with_dummy_proof.clone(),
+                    deadline: *deadline,
+                    attempt: 1,
                 };
+            }
+            TransitionFrontierGenesisAction::ProveError { error } => {
+                let Self::ProvePending {
+                    negative_one,
+                    genesis,
+                    genesis_hash,
+                    genesis_producer_stake_proof,
+                    block_with_dummy_proof,
+                    deadline,
+                    attempt,
+                    ..
+                } = state
+                else {
+                    return;
+                };
+                if *attempt < 2 && meta.time() < *deadline {
+                    *attempt += 1;
+                    let input = genesis_block_prover_input(
+                        negative_one,
+                        genesis,
+                        genesis_producer_stake_proof,
+                    );
+                    let action = TransitionFrontierGenesisEffectfulAction::ProveInit {
+                        block_hash: genesis_hash.clone(),
+                        input: input.into(),
+                        deadline: *deadline,
+                    };
+                    info!(meta.time(); message = "Genesis proof failed; retrying once", error = error);
+                    state_context.into_dispatcher().push(action);
+                } else {
+                    error!(meta.time(); message = "Genesis proof failed; giving up", attempts = *attempt, error = error);
+                    *state = Self::ProveError {
+                        time: meta.time(),
+                        block_with_dummy_proof: block_with_dummy_proof.clone(),
+                        error: error.clone(),
+                        attempts: *attempt,
+                    };
+                }
             }
             TransitionFrontierGenesisAction::ProveSuccess { proof } => {
                 let Self::ProvePending {

@@ -19,15 +19,15 @@ This document is sourced from the
 <!-- prettier-ignore-stop -->
 
     Title: Mina Schnorr Signatures
-    Author: Izaak Mecklker (izaak@o1labs.org)
+    Author: Izaak Mecklker
     Status: Draft
     Type: Informational
     License: BSD-2-Clause
 
 ## Updates
 
-- December 2021, Joseph Spadavecchia (joseph@o1labs.org) Updated to latest
-  curves and signing algorithm
+- December 2021, Joseph Spadavecchia Updated to latest curves and signing
+  algorithm
 
 ## Introduction
 

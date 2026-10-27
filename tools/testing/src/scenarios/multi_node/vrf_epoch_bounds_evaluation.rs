@@ -47,15 +47,12 @@ impl MultiNodeVrfEpochBoundsEvaluation {
             libp2p_port: None,
             recorder: Default::default(),
             peer_discovery: true,
+            libp2p_target_peers: None,
         };
 
         let producer_node = runner.add_rust_node(RustNodeTestingConfig {
             block_producer: Some(RustNodeBlockProducerTestingConfig {
-                config: BlockProducerConfig {
-                    pub_key: sec_key.public_key().into(),
-                    custom_coinbase_receiver: None,
-                    proposed_protocol_version: None,
-                },
+                config: BlockProducerConfig::new(sec_key.public_key().into()),
                 sec_key: sec_key.clone(),
             }),
             ..rust_config.clone()
@@ -69,6 +66,8 @@ impl MultiNodeVrfEpochBoundsEvaluation {
                 )),
                 strategy: SnarkerStrategy::Sequential,
                 auto_commit: true,
+                block_first_lead: None,
+                skip_zkapp_jobs: false,
             }),
             ..rust_config
         });

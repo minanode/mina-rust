@@ -1,9 +1,10 @@
 use redux::ActionMeta;
 
-use crate::{ledger::hash_node_at_depth, Store};
+use crate::{ledger::hash_subtree_at_depth, Store};
 
 use super::{
-    TransitionFrontierSyncLedgerSnarkedAction, TransitionFrontierSyncLedgerSnarkedService,
+    child_hashes_query_depth, TransitionFrontierSyncLedgerSnarkedAction,
+    TransitionFrontierSyncLedgerSnarkedService,
 };
 
 impl TransitionFrontierSyncLedgerSnarkedAction {
@@ -35,7 +36,7 @@ impl TransitionFrontierSyncLedgerSnarkedAction {
 
             TransitionFrontierSyncLedgerSnarkedAction::ChildHashesReceived {
                 address,
-                hashes: (left_hash, right_hash),
+                hashes,
                 sender,
                 ..
             } => {
@@ -53,46 +54,53 @@ impl TransitionFrontierSyncLedgerSnarkedAction {
                     return;
                 };
 
-                let (Ok(left_hash_fp), Ok(right_hash_fp), Ok(parent_hash_fp)) = (
-                    left_hash.to_field(),
-                    right_hash.to_field(),
+                let reject = |store: &mut Store<S>| {
+                    store.dispatch(
+                        TransitionFrontierSyncLedgerSnarkedAction::ChildHashesRejected {
+                            address: address.clone(),
+                            hashes: hashes.clone(),
+                            sender: *sender,
+                        },
+                    );
+                };
+
+                // At most as many levels as asked for, and not below the
+                // account subtrees.
+                let levels = hashes.len().trailing_zeros() as usize;
+                let max_levels = child_hashes_query_depth(address.length()).unwrap_or(0);
+                if !hashes.len().is_power_of_two() || levels == 0 || levels > max_levels {
+                    reject(store);
+                    return;
+                }
+
+                let (Ok(hashes_fp), Ok(parent_hash_fp)) = (
+                    hashes
+                        .iter()
+                        .map(|hash| hash.to_field())
+                        .collect::<Result<Vec<_>, _>>(),
                     parent_hash.to_field(),
                 ) else {
                     // Reject in case of invalid fields
-                    store.dispatch(
-                        TransitionFrontierSyncLedgerSnarkedAction::ChildHashesRejected {
-                            address: address.clone(),
-                            hashes: (left_hash.clone(), right_hash.clone()),
-                            sender: *sender,
-                        },
-                    );
+                    reject(store);
                     return;
                 };
 
-                let actual_hash = hash_node_at_depth(address.length(), left_hash_fp, right_hash_fp);
-                if actual_hash != parent_hash_fp {
-                    store.dispatch(
-                        TransitionFrontierSyncLedgerSnarkedAction::ChildHashesRejected {
-                            address: address.clone(),
-                            hashes: (left_hash.clone(), right_hash.clone()),
-                            sender: *sender,
-                        },
-                    );
-
+                if hash_subtree_at_depth(address.length(), hashes_fp) != Some(parent_hash_fp) {
+                    reject(store);
                     return;
                 }
 
                 // TODO: for async ledger this needs an intermediary action
-                let (previous_left_hash, previous_right_hash) = store
+                let previous_hashes = store
                     .service()
-                    .child_hashes_get(snarked_ledger_hash, address)
+                    .child_hashes_get(snarked_ledger_hash, address, levels)
                     .unwrap();
 
                 store.dispatch(
                     TransitionFrontierSyncLedgerSnarkedAction::ChildHashesAccepted {
                         address: address.clone(),
-                        hashes: (left_hash.clone(), right_hash.clone()),
-                        previous_hashes: (previous_left_hash, previous_right_hash),
+                        hashes: hashes.clone(),
+                        previous_hashes,
                         sender: *sender,
                     },
                 );
@@ -122,13 +130,16 @@ impl TransitionFrontierSyncLedgerSnarkedAction {
 
                 // After setting the accounts, we get the new computed hash.
                 // It must be equal to the parent node hash, otherwise we got
-                // bad data from the peer.
-                let computed_hash = store
-                    .service
-                    .accounts_set(snarked_ledger_hash.clone(), address, accounts.clone())
-                    .unwrap();
+                // bad data from the peer. Accounts the ledger can't take are
+                // bad data too.
+                let computed_hash = store.service.accounts_set(
+                    snarked_ledger_hash.clone(),
+                    address,
+                    &parent_hash,
+                    accounts.clone(),
+                );
 
-                if computed_hash != parent_hash {
+                if computed_hash.as_ref() != Ok(&parent_hash) {
                     store.dispatch(
                         TransitionFrontierSyncLedgerSnarkedAction::ChildAccountsRejected {
                             address: address.clone(),

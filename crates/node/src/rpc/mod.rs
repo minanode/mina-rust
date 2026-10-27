@@ -1,5 +1,5 @@
 mod rpc_state;
-use std::{collections::BTreeMap, str::FromStr};
+use std::collections::BTreeMap;
 
 use crate::p2p::bootstrap::P2pNetworkKadBootstrapStats;
 use ledger::{
@@ -16,7 +16,7 @@ use mina_core::{
 };
 use mina_node_account::AccountPublicKey;
 use mina_p2p_messages::{
-    bigint::{BigInt, InvalidBigInt},
+    bigint::BigInt,
     v2::{
         LedgerHash, MinaBaseSignedCommandPayloadBodyStableV2, MinaBaseSignedCommandStableV2,
         MinaBaseTransactionStatusStableV2, MinaBaseUserCommandStableV2,
@@ -35,10 +35,29 @@ pub use rpc_reducer::collect_rpc_peers_info;
 
 mod rpc_impls;
 
+mod rpc_health;
+pub use rpc_health::*;
+mod ledger_export;
+pub use ledger_export::*;
+
+mod hard_fork;
+pub use hard_fork::*;
+
+mod light;
+pub use light::*;
+#[cfg(test)]
+mod light_tests;
+
 mod heartbeat;
 pub use heartbeat::{NodeHeartbeat, ProducedBlockInfo, SignedNodeHeartbeat};
 
 pub use mina_core::requests::{RpcId, RpcIdType};
+
+/// The answer to a transaction submission while the node has no usable
+/// transition frontier, OCaml's text.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L365-L366>
+pub const TRANSACTION_INJECT_BOOTSTRAPPING: &str = "Daemon is bootstrapping";
 
 use ledger::scan_state::scan_state::{transaction_snark::OneOrTwo, AvailableJobMessage};
 use mina_core::snark::SnarkJobId;
@@ -75,23 +94,42 @@ use crate::{
 pub enum RpcRequest {
     StateGet(Option<String>),
     StatusGet,
+    MemoryDebugGet,
+    MetricsGet,
     HeartbeatGet,
     ActionStatsGet(ActionStatsQuery),
     SyncStatsGet(SyncStatsQuery),
     BlockProducerStatsGet,
+    VerificationStatsGet(crate::verification::VerificationQuery),
+    SnarkWorkCoverageGet,
+    /// PC1: the proofs the node holds, by holder.
+    ProofMemoryGet,
     MessageProgressGet,
     PeersGet,
     P2pConnectionOutgoing(P2pConnectionOutgoingInitOpts),
     P2pConnectionIncoming(P2pConnectionIncomingInitOpts),
     ScanStateSummaryGet(RpcScanStateSummaryGetQuery),
     SnarkPoolGet,
-    SnarkPoolJobGet { job_id: SnarkJobId },
+    SnarkPoolJobGet {
+        job_id: SnarkJobId,
+    },
     SnarkPoolCompletedJobsGet,
     SnarkPoolPendingJobsGet,
     SnarkerConfig,
-    SnarkerJobCommit { job_id: SnarkJobId },
-    SnarkerJobSpec { job_id: SnarkJobId },
+    SnarkerJobCommit {
+        job_id: SnarkJobId,
+    },
+    SnarkerJobSpec {
+        job_id: SnarkJobId,
+    },
     SnarkerWorkers,
+    /// The worker as the operator sees it (P5.4).
+    SnarkWorkerControlGet,
+    /// Starts the worker with a key and fee, re-prices it, or stops it
+    /// (`None`), if the node allows it (P5.4).
+    SnarkWorkerControlSet(Option<crate::SnarkerSetting>),
+    /// Our work that blocks included (P5.4).
+    SnarkWorkIncludedGet,
     HealthCheck,
     ReadinessCheck,
     DiscoveryRoutingTable,
@@ -109,7 +147,37 @@ pub enum RpcRequest {
     GenesisBlockGet,
     ConsensusTimeGet(ConsensusTimeQuery),
     LedgerStatusGet(LedgerHash),
-    LedgerAccountDelegatorsGet(LedgerHash, AccountId),
+    LedgerAccountDelegatorsGet(DelegatorsQuery, AccountId),
+    /// What the node knows of a sender's next nonce, for `sendPayment` and
+    /// `sendDelegation`.
+    TransactionNonceGet(AccountId),
+    /// A whole ledger at the best tip, as `mina ledger export` prints it.
+    LedgerExport(LedgerExportKind),
+    /// The next hard fork's runtime config inputs and ledgers, as OCaml's
+    /// `mina advanced generate-hardfork-config` derives them.
+    HardForkConfig(HardForkBlockSpec),
+    /// LN2: the best chain for a light client's tip check, while synced.
+    LightBestTip,
+    /// LN2: one account with its Merkle path in a best-chain block's ledger.
+    LightAccount(RpcLightAccountQuery),
+}
+
+/// Maximum last-epoch delegators returned per public GraphQL lookup.
+/// Keep the public cost multiplier tied to this result/work bound.
+pub const MAX_LAST_EPOCH_DELEGATORS: usize = 8;
+
+/// Which delegators [`RpcRequest::LedgerAccountDelegatorsGet`] lists.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum DelegatorsQuery {
+    /// Every account that delegates to the key in this ledger: a scan of the
+    /// whole ledger on the ledger thread.
+    Ledger(LedgerHash),
+    /// OCaml's `lastEpochDelegators`: the accounts that delegated to this
+    /// node's block producer key in the staking ledger of the epoch before the
+    /// root's, kept by the ledger service. `None` until the root has crossed
+    /// an epoch while the node ran; empty for any other key. No scan.
+    /// An optional public request limit, applied before cloning in ledger order.
+    LastEpoch { limit: Option<usize> },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -134,27 +202,33 @@ pub struct RpcInjectPayment {
 }
 // MinaBaseUserCommandStableV2
 impl TryFrom<RpcInjectPayment> for MinaBaseUserCommandStableV2 {
-    type Error = InvalidBigInt;
+    type Error = String;
 
     fn try_from(value: RpcInjectPayment) -> Result<Self, Self::Error> {
+        let invalid = |what: &str| format!("invalid {what}");
         let signature = mina_signer::Signature {
-            rx: value.signature_field.try_into()?,
-            s: value.signature_scalar.try_into()?,
+            rx: value
+                .signature_field
+                .try_into()
+                .map_err(|_| invalid("signature field"))?,
+            s: value
+                .signature_scalar
+                .try_into()
+                .map_err(|_| invalid("signature scalar"))?,
         };
-        println!("Signature: {signature}");
         let sc = signed_command::SignedCommand {
             payload: SignedCommandPayload::create(
                 Fee::from_u64(value.fee),
-                value.from.clone().try_into().map_err(|_| InvalidBigInt)?,
+                value.from.clone().try_into().map_err(|_| invalid("from"))?,
                 Nonce::from_u32(value.nonce),
                 Some(Slot::from_u32(value.valid_until)),
-                Memo::from_str(&value.memo).unwrap(),
+                Memo::create_from_str_checked(&value.memo).map_err(|e| e.to_string())?,
                 signed_command::Body::Payment(signed_command::PaymentPayload {
-                    receiver_pk: value.to.try_into().map_err(|_| InvalidBigInt)?,
+                    receiver_pk: value.to.try_into().map_err(|_| invalid("to"))?,
                     amount: Amount::from_u64(value.amount),
                 }),
             ),
-            signer: value.from.try_into().map_err(|_| InvalidBigInt)?,
+            signer: value.from.try_into().map_err(|_| invalid("from"))?,
             signature,
         };
 
@@ -276,7 +350,9 @@ pub enum RpcScanStateSummaryScanStateJob {
         bundle_job_id: SnarkJobId,
         job: Box<RpcScanStateSummaryScanStateJobKind>,
         seq_no: u64,
-        snark: Box<RpcSnarkPoolJobSnarkWorkDone>,
+        /// Who proved the job and for what fee. Mesa scan states no longer
+        /// record this, so it is unknown for scan states received from peers.
+        snark: Option<Box<RpcSnarkPoolJobSnarkWorkDone>>,
     },
 }
 
@@ -402,9 +478,46 @@ pub enum RpcStateGetError {
 
 pub type RpcStateGetResponse = Result<serde_json::Value, RpcStateGetError>;
 pub type RpcStatusGetResponse = Option<RpcNodeStatus>;
+/// Cheap operator telemetry snapshot, assembled on the node thread without
+/// traversing the full state or performing I/O.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RpcMetricsGetResponse {
+    pub chain_id: Option<String>,
+    pub uptime_secs: u64,
+    pub sync_phase: String,
+    pub ready: bool,
+    pub best_tip_height: Option<u32>,
+    pub best_tip_global_slot: Option<u32>,
+    pub highest_peer_tip_height: Option<u32>,
+    pub peers_connecting: usize,
+    pub peers_connected: usize,
+    pub peers_disconnecting: usize,
+    pub peers_disconnected: usize,
+    pub transaction_pool_size: usize,
+    pub transaction_pool_diff_received: u64,
+    pub transaction_pool_diff_broadcasted: u64,
+    pub transactions_added_to_pool: u64,
+    pub snark_pool_jobs: usize,
+    pub snark_pool_completed: usize,
+    pub snark_pool_diff_received: u64,
+    pub snark_pool_diff_broadcasted: u64,
+    pub block_production_delay_buckets: [u64; 7],
+    pub block_production_delay_sum_ms: u64,
+    pub snark_work_received_total: u64,
+    pub verification: crate::verification::VerificationSnapshot,
+    pub block_producer_slots_won: u64,
+    pub block_producer_blocks_produced: u64,
+    pub block_producer_blocks_failed: u64,
+    pub snark_worker_proofs_made: u64,
+    pub snark_worker_proofs_failed: u64,
+    pub snark_worker_proofs_sold: u64,
+    pub ledger_sync_fetched: Option<u64>,
+    pub ledger_sync_estimated: Option<u64>,
+}
 pub type RpcHeartbeatGetResponse = Option<SignedNodeHeartbeat>;
 pub type RpcActionStatsGetResponse = Option<ActionStatsResponse>;
 pub type RpcSyncStatsGetResponse = Option<Vec<SyncStatsSnapshot>>;
+pub type RpcVerificationStatsGetResponse = crate::verification::VerificationSnapshot;
 pub type RpcBlockProducerStatsGetResponse = Option<RpcBlockProducerStats>;
 pub type RpcPeersGetResponse = Vec<RpcPeerInfo>;
 pub type RpcP2pConnectionOutgoingResponse = Result<(), String>;
@@ -421,6 +534,18 @@ pub type RpcTransitionFrontierUserCommandsResponse = Vec<MinaBaseUserCommandStab
 pub type RpcBestChainResponse = Vec<AppliedBlock>;
 pub type RpcConsensusConstantsGetResponse = ConsensusConstants;
 pub type RpcTransactionStatusGetResponse = TransactionStatus;
+
+/// What the node knows of a sender's next nonce (OCaml's
+/// `get_current_nonce` takes the rest from the ledger).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RpcTransactionNonceGetResponse {
+    /// The node has no usable frontier: OCaml answers "Daemon is
+    /// bootstrapping".
+    pub bootstrapping: bool,
+    /// The expected target nonce of the last command the pool holds from the
+    /// sender, if it holds any.
+    pub pool_nonce: Option<u32>,
+}
 pub type RpcPooledUserCommandsResponse = Vec<MinaBaseSignedCommandStableV2>;
 pub type RpcPooledZkappCommandsResponse = Vec<MinaBaseZkappCommandTStableV1WireStableV1>;
 pub type RpcGenesisBlockResponse = Option<ArcBlockWithHash>;
@@ -548,7 +673,11 @@ impl From<Account> for AccountSlim {
 #[derive(Serialize, Debug, Clone)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RpcNodeStatus {
-    /// Network chain identifier (e.g., "mainnet", "devnet").
+    /// Configured network name; chain_id identifies the exact chain.
+    pub network: String,
+    /// Seconds since node state initialization.
+    pub uptime_secs: u64,
+    /// Hex-encoded network chain identifier.
     pub chain_id: Option<String>,
     /// Transition frontier state including best tip and sync status.
     pub transition_frontier: RpcNodeStatusTransitionFrontier,
@@ -574,6 +703,66 @@ pub struct RpcNodeStatus {
     pub block_producer: Option<AccountPublicKey>,
     /// Coinbase receiver public key, if configured.
     pub coinbase_receiver: Option<AccountPublicKey>,
+    /// When the block producer produces next (OCaml's
+    /// `daemonStatus.nextBlockProduction`); `None` without a block producer
+    /// or a best tip.
+    pub next_block_production: Option<RpcNextBlockProduction>,
+}
+
+/// OCaml's `Next_producer_timing`, as GraphQL shows it.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/daemon_rpcs/types.ml#L175-L197>
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RpcNextBlockProduction {
+    /// The best tip's slot, which the answer was worked out from.
+    pub generated_from_consensus_at: RpcConsensusSlot,
+    /// The won slot the producer produces in next, once the VRF evaluator
+    /// has found one; `None` while it evaluates or when no slot is left in
+    /// the evaluated epochs.
+    pub next_won_slot: Option<RpcConsensusSlot>,
+}
+
+/// A slot in OCaml's `Consensus_time` terms, with its slot since genesis.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RpcConsensusSlot {
+    pub epoch: u32,
+    /// The slot within the epoch.
+    pub slot: u32,
+    /// The global slot since the hard fork.
+    pub global_slot: u32,
+    pub global_slot_since_genesis: u32,
+    /// When the slot starts and ends, in milliseconds since the Unix epoch.
+    pub start_time_ms: u64,
+    pub end_time_ms: u64,
+}
+
+impl RpcConsensusSlot {
+    /// OCaml's `Consensus_time.of_global_slot` of a global slot since the hard
+    /// fork: its epoch and slot in it, and its start and end times, from the
+    /// genesis timestamp and the slot duration.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/epoch.ml#L21-L41>
+    pub fn new(
+        global_slot: u32,
+        global_slot_since_genesis: u32,
+        slots_per_epoch: u32,
+        genesis_timestamp_ms: u64,
+        slot_duration_ms: u64,
+    ) -> Option<Self> {
+        let start_time_ms = u64::from(global_slot)
+            .checked_mul(slot_duration_ms)?
+            .checked_add(genesis_timestamp_ms)?;
+        Some(Self {
+            epoch: global_slot.checked_div(slots_per_epoch)?,
+            slot: global_slot.checked_rem(slots_per_epoch)?,
+            global_slot,
+            global_slot_since_genesis,
+            start_time_ms,
+            end_time_ms: start_time_ms.checked_add(slot_duration_ms)?,
+        })
+    }
 }
 
 /// Network configuration information for the node.
@@ -612,12 +801,18 @@ pub struct RpcNodeStatusResources {
     pub transition_frontier: serde_json::Value,
     /// SNARK pool resource usage.
     pub snark_pool: serde_json::Value,
+    /// Reserved for compatibility; the opt-in diagnostic has its own route.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_debug: Option<serde_json::Value>,
 }
 
 /// Transition frontier state including best tip and sync information.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RpcNodeStatusTransitionFrontier {
+    /// Current root of the applied best chain.
+    #[serde(default)]
+    pub root: Option<RpcNodeStatusTransitionFrontierBlockSummary>,
     /// Current best tip block summary.
     pub best_tip: Option<RpcNodeStatusTransitionFrontierBlockSummary>,
     /// Synchronization status.
@@ -642,12 +837,20 @@ pub struct RpcNodeStatusTransitionFrontierSync {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RpcNodeStatusTransitionFrontierBlockSummary {
+    /// Block timestamp as Unix milliseconds (not the last sync time).
+    #[serde(default)]
+    pub timestamp_ms: Option<u64>,
     /// State hash of the block.
     pub hash: StateHash,
     /// Block height.
     pub height: u32,
     /// Global slot number.
     pub global_slot: u32,
+    /// The block's own timestamp, from its protocol state (nanoseconds since
+    /// the Unix epoch), so that a client can show the block's age rather than
+    /// the time of the node's last sync event.
+    #[serde(default)]
+    pub timestamp: Option<redux::Timestamp>,
 }
 
 /// Transaction pool statistics.
@@ -693,7 +896,7 @@ pub struct RpcSnarkerConfig {
     pub fee: CurrencyFeeStableV1,
 }
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RpcSnarkWorker {
     pub time: Option<Timestamp>,
     pub id: Option<String>,
@@ -731,6 +934,16 @@ pub enum RpcSnarkWorkerStatus {
 }
 
 pub type RpcSnarkerWorkersResponse = Vec<RpcSnarkWorker>;
+pub type RpcSnarkWorkerControlGetResponse = crate::external_snark_worker::RpcSnarkWorkerControl;
+/// The worker after the change, or why there was none.
+pub type RpcSnarkWorkerControlSetResponse =
+    Result<crate::external_snark_worker::RpcSnarkWorkerControl, String>;
+pub type RpcProofMemoryGetResponse = crate::proof_memory::ProofMemoryReport;
+pub type RpcSnarkWorkIncludedGetResponse = crate::external_snark_worker::RpcIncludedWork;
+
+/// Why a worker change is refused when the node doesn't allow it.
+pub const WORKER_CONTROL_NOT_ALLOWED: &str =
+    "worker control is off: start the node with --allow-worker-control (never with a public API)";
 
 impl From<&MinaTransactionTransactionStableV2> for RpcScanStateSummaryBlockTransactionKind {
     fn from(value: &MinaTransactionTransactionStableV2) -> Self {
@@ -866,5 +1079,32 @@ pub mod discovery {
                 connection: value.connection,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod consensus_slot_tests {
+    use super::RpcConsensusSlot;
+
+    /// The public OCaml devnet node's `daemonStatus` for its best tip at
+    /// 2026-10-21 22:38 UTC (`consensusTimeBestTip` and
+    /// `globalSlotSinceGenesisBestTip`; genesis timestamp
+    /// 2026-08-19T10:00:00-08:00, 90 s slots, 7140 slots an epoch).
+    #[test]
+    fn consensus_slot_as_ocaml_devnet() {
+        let genesis_ms = 1_787_162_400_000;
+        let slot = RpcConsensusSlot::new(60660, 920220, 7140, genesis_ms, 90_000).unwrap();
+        assert_eq!(
+            slot,
+            RpcConsensusSlot {
+                epoch: 8,
+                slot: 3540,
+                global_slot: 60660,
+                global_slot_since_genesis: 920220,
+                start_time_ms: 1_792_621_800_000,
+                end_time_ms: 1_792_621_890_000,
+            }
+        );
+        assert_eq!(RpcConsensusSlot::new(1, 1, 0, genesis_ms, 90_000), None);
     }
 }

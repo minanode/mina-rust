@@ -132,6 +132,9 @@ impl P2pChannelsTransactionState {
 
                 *current_count += 1;
 
+                mina_core::debug!(meta.time(); kind = "WebRtcTransactionAnnounceReceived",
+                    peer_id = display(peer_id), hash = display(&transaction.hash));
+
                 if current_count >= promised_count {
                     *local = TransactionPropagationState::Responded {
                         time: meta.time(),
@@ -248,7 +251,7 @@ impl P2pChannelsTransactionState {
                 let message = v2::NetworkPoolTransactionPoolDiffVersionedStableV2(
                     std::iter::once(*transaction).collect(),
                 );
-                let nonce = nonce.into();
+                let nonce = u64::from(nonce).into();
                 let message = GossipNetMessageV2::TransactionPoolDiff { message, nonce };
                 if is_local {
                     dispatcher.push(P2pNetworkPubsubAction::Broadcast { message });

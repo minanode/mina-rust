@@ -92,6 +92,20 @@ impl HashesMatrix {
         }
     }
 
+    /// Rebuilds the map with full nodes. Hashes set one at a time in index
+    /// order, as a ledger computes or loads them, leave each B-tree node about
+    /// half full: about 84 bytes a hash on a mainnet ledger, against about 42
+    /// once rebuilt in bulk (PC3a). For a ledger that will change little.
+    pub fn compact(&mut self) {
+        self.matrix = std::mem::take(&mut self.matrix).into_iter().collect();
+    }
+
+    /// Discard ledger-dependent hashes, retaining the immutable empty hashes.
+    pub fn invalidate_all(&mut self) {
+        self.matrix.clear();
+        self.nhashes = 0;
+    }
+
     pub fn invalidate_hashes(&mut self, account_index: AccountIndex) {
         let mut addr = Address::from_index(account_index, self.ledger_depth);
 
@@ -137,9 +151,11 @@ impl HashesMatrix {
 
         Self {
             matrix: std::mem::take(matrix),
-            empty_hashes: std::mem::take(empty_hashes),
+            // A committed mask remains usable; empty subtree lookup still
+            // indexes this vector after its ledger-dependent hashes move out.
+            empty_hashes: empty_hashes.clone(),
             ledger_depth: *ledger_depth,
-            nhashes: *nhashes,
+            nhashes: std::mem::take(nhashes),
         }
     }
 

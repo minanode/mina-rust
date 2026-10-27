@@ -1,0 +1,11 @@
+[
+  { "urls": "stun:<VPS_PUBLIC_IPV4>:3478" },
+  {
+    "urls": [
+      "turn:<VPS_PUBLIC_IPV4>:3478?transport=udp",
+      "turn:<VPS_PUBLIC_IPV4>:3478?transport=tcp"
+    ],
+    "username": "webnode",
+    "credential": "<TURN_PASSWORD>"
+  }
+]
