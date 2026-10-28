@@ -7,6 +7,9 @@ export const release = {
   downloadUrl:
     "https://github.com/minanode/mina-rust/releases/download/v0.20.0",
   notesUrl: "https://github.com/minanode/mina-rust/releases/tag/v0.20.0",
+  /** The Docker image index digest, as the release notes list it. */
+  dockerDigest:
+    "sha256:66507e39fc2890ce37cf9d77b50517960b60887f5e655cfa2de5a35b2eeceab0",
 };
 
 export function archiveName(arch: string) {
@@ -18,6 +21,7 @@ export const releaseLabel = `${release.version} beta for devnet`;
 /** The Docker image, pushed to GHCR at release (docs/release/DOCKER.md). */
 export const dockerImage = "ghcr.io/minanode/mina-rust";
 export const dockerImageRef = `${dockerImage}:${release.version}`;
+export const dockerImagePinned = `${dockerImageRef}@${release.dockerDigest}`;
 
 /** The compose files, served from the site (public/docker/ links to them). */
 export const composeBaseUrl = `${siteOrigin}/docker`;

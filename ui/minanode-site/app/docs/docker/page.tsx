@@ -14,6 +14,7 @@ import {
 import {
   composeBaseUrl,
   dockerImage,
+  dockerImagePinned,
   dockerImageRef,
   release,
 } from "@/content/release";
@@ -38,11 +39,15 @@ const showRelay = false;
 if (!compose.includes(`image: \${MINA_IMAGE:-${image}}`))
   throw new Error(`docker-compose.yml does not default to ${image}`);
 
+// Docker's own copy of the log, limited as in the compose file.
+const logLimits = "--log-opt max-size=10m --log-opt max-file=3";
+
 const run = `mkdir -p ~/mina-state
 docker run -d --name mina --restart unless-stopped \\
   --user "$(id -u):$(id -g)" \\
   -p 127.0.0.1:3000:3000 -p 8302:8302 \\
   -v ~/mina-state:/data \\
+  ${logLimits} \\
   ${image}
 docker logs -f mina`;
 
@@ -51,8 +56,17 @@ docker run -d --name mina2 --restart unless-stopped \\
   --user "$(id -u):$(id -g)" \\
   -p 127.0.0.1:3010:3000 -p 8312:8312 -e MINA_LIBP2P_PORT=8312 \\
   -v ~/mina-state-2:/data \\
+  ${logLimits} \\
   ${image}
 docker logs -f mina2`;
+
+const repository = release.repositoryUrl.replace("https://github.com/", "");
+
+const pull = `docker pull ${image}
+# The Digest line must match the release notes:
+#   Digest: ${release.dockerDigest}`;
+
+const attest = `gh attestation verify oci://${image} -R ${repository}`;
 
 const composeStart = `mkdir -p minanode && cd minanode
 curl -fLO ${composeBaseUrl}/docker-compose.yml
@@ -77,6 +91,7 @@ const options = `docker run -d --name mina --restart unless-stopped \\
   --user "$(id -u):$(id -g)" \\
   -p 127.0.0.1:3000:3000 -p 8302:8302 \\
   -v ~/mina-state:/data -e MINA_VERBOSITY=debug \\
+  ${logLimits} \\
   ${image} \\
   node --network devnet --libp2p-external-ip 203.0.113.7`;
 
@@ -85,6 +100,7 @@ docker run -d --name mina --restart unless-stopped \\
   --user "$(id -u):$(id -g)" \\
   -p 127.0.0.1:3000:3000 -p 8302:8302 \\
   -v ~/.mina:/data \\
+  ${logLimits} \\
   ${image}`;
 
 const report = `docker exec -it mina mina report --no-browser
@@ -178,6 +194,32 @@ export default function DockerPage() {
           code="docker exec mina mina node status"
           label="status of the running node"
         />
+      </DocSection>
+
+      <DocSection id="check-the-image" title="Check the image">
+        <Prose>
+          <p>
+            <C>docker pull</C> prints the image&apos;s digest. Compare it with
+            the one in the{" "}
+            <DocLink href={release.notesUrl}>release notes</DocLink>; each
+            release&apos;s notes list its image&apos;s digest.
+          </p>
+        </Prose>
+        <CodeBlock code={pull} label="pull the image and check its digest" />
+        <Prose>
+          <p>
+            A tag can be moved to another image; a digest can&apos;t. To run
+            exactly the image you checked, use <C>{dockerImagePinned}</C> in
+            place of <C>{image}</C> in the commands on this page. In Compose,
+            set <C>MINA_IMAGE</C> to it in <C>.env</C>.
+          </p>
+          <p>
+            The GitHub CLI checks the image&apos;s build provenance. A passing
+            check shows that the repository&apos;s Docker image workflow built
+            the image from the signed release archives.
+          </p>
+        </Prose>
+        <CodeBlock code={attest} label="check the build provenance" />
       </DocSection>
 
       <DocSection id="compose" title="With Docker Compose">
@@ -394,8 +436,9 @@ export default function DockerPage() {
             <C>docker logs -f mina</C> follows the log. The node also keeps its{" "}
             <DocLink href="/docs/run-a-node/#logs">rotated log files</DocLink>{" "}
             in the work directory, which a new container keeps and{" "}
-            <C>mina report</C> reads. The compose file limits Docker&apos;s own
-            copy of the log to 30 MB.
+            <C>mina report</C> reads. The compose file and the <C>--log-opt</C>{" "}
+            options in the <C>docker run</C> commands above limit Docker&apos;s
+            own copy of the log to 30 MiB.
           </p>
           <p>
             To collect a bug report, run <C>mina report</C> in the container.
@@ -423,8 +466,11 @@ export default function DockerPage() {
             or a crash, unless you stopped it.
           </p>
           <p>
-            To upgrade, pull the new tag and run a new container on the same
-            work directory:
+            To upgrade, pull the new tag, check its digest as in{" "}
+            <DocLink href="/docs/docker/#check-the-image">
+              check the image
+            </DocLink>
+            , and run a new container on the same work directory:
           </p>
         </Prose>
         <CodeBlock code={upgrade} label="upgrade with docker run" />

@@ -5,6 +5,7 @@ import { KeyValueList } from "@minanode/design-system/patterns/key-value-list";
 
 import { DocsPage } from "@/components/docs/docs-page";
 import {
+  C,
   claimedRows,
   DocLink,
   DocSection,
@@ -82,6 +83,29 @@ export default function RequirementsPage() {
       <DocSection id="disk" title="Disk">
         <Prose>
           <p data-claim={requirements.disk.claim}>{requirements.disk.text}</p>
+        </Prose>
+      </DocSection>
+
+      <DocSection id="install-tools" title="Tools to install it">
+        <Prose>
+          <p>Downloading and checking a release archive needs:</p>
+          <ul>
+            <li>
+              <C>curl</C> and <C>tar</C>;
+            </li>
+            <li>
+              <C>sha256sum</C>, from GNU coreutils;
+            </li>
+            <li>
+              OpenSSH 8.2 or newer, for <C>ssh-keygen -Y verify</C>.
+            </li>
+          </ul>
+          <p>
+            <DocLink href="/docs/docker/">Docker</DocLink> needs a working
+            Docker Engine or Docker Desktop that your user can run. Its Compose
+            section also needs the Compose plugin (<C>docker compose</C>) and{" "}
+            <C>curl</C>.
+          </p>
         </Prose>
       </DocSection>
     </DocsPage>

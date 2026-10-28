@@ -13,7 +13,7 @@ export const metadata: Metadata = {
   alternates: { canonical: "/docs/bug-reports/" },
 };
 
-const journal = `journalctl --user -u mina --since "1 hour ago" | mina report --log -`;
+const journal = `journalctl --user -u minanode.service --since "1 hour ago" | mina report --log -`;
 
 export default function BugReportsPage() {
   return (

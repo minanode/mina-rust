@@ -46,6 +46,15 @@ export default function ProducerPage() {
       title="Block producer"
       lead="With a block producer key, the node checks each slot for a win and produces a block in each slot it wins. The more stake the key has, the more slots it wins."
     >
+      <Prose>
+        <p>
+          The commands on this page use the release binary. In Docker, see{" "}
+          <DocLink href="/docs/docker/#block-producer">
+            the Docker page&apos;s block producer section
+          </DocLink>
+          .
+        </p>
+      </Prose>
       <DocSection id="key" title="The key">
         <Prose>
           <p>

@@ -133,7 +133,8 @@ export const requirements = {
     {
       claim: "C62",
       label: "Other software",
-      value: "None: the devnet circuits and the dashboard are inside mina",
+      value:
+        "None at run time: the devnet circuits and the dashboard are inside mina. Installing needs the tools below",
     },
     {
       claim: "C68",
@@ -202,7 +203,7 @@ export const requirements = {
   },
   disk: {
     claim: "C68",
-    text: "A synced devnet node's data measured 237 MB: 132 MB of saved chain state, 70 MB of ledger accounts and 29 MB of proof cache. Logs take up to 200 MB more. 5 GB free leaves room for growth and upgrades.",
+    text: "A synced devnet node's data measured 237 MB: 132 MB of saved chain state, 70 MB of ledger accounts and 29 MB of proof cache. Logs take up to 200 MiB more. 5 GB free leaves room for growth and upgrades.",
   },
 };
 
@@ -242,6 +243,10 @@ export const sourceBuild = {
   },
 };
 
+/** The dashboard's SSH tunnel; Dashboard, viewing it on a server, explains it. */
+export const sshTunnel =
+  "ssh -N -o ExitOnForwardFailure=yes -L 3000:127.0.0.1:3000 you@server";
+
 export const dashboard = {
   remoteNote:
     "The HTTP API and dashboard listen on 127.0.0.1 by default. For a private network such as Tailscale, start the node with --http-addr followed by its private IP address. --http-addr 0.0.0.0 listens on every IPv4 interface.",
@@ -273,7 +278,7 @@ export const run = {
   ],
   logs: {
     claim: "C71",
-    text: "The node logs to the terminal and to mina.log in its work directory. The log rotates at 20 MB and 10 files are kept, so logs take at most 200 MB.",
+    text: "The node logs to the terminal and to mina.log in its work directory. The log rotates at 20 MiB and 10 files are kept, so logs take at most 200 MiB.",
   },
 };
 

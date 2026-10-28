@@ -123,8 +123,20 @@ function Options({ args }: { args: Arg[] }) {
   );
 }
 
+const journalNote = (command: string) => (
+  <>
+    The help text names the systemd unit <C>mina</C>. The unit these docs set
+    up is <C>minanode.service</C>, so read from the journal with{" "}
+    <C>journalctl --user -u minanode.service | mina {command} --log -</C>.{" "}
+    <DocLink href="/docs/bug-reports/#options">Reporting a bug</DocLink> has
+    more.
+  </>
+);
+
 // Notes the binary's help text doesn't carry yet.
 const notes: Record<string, ReactNode> = {
+  report: journalNote("report"),
+  triage: journalNote("triage"),
   "wallet-generate": (
     <>
       It reads the new key&apos;s password from <C>MINA_PRIVKEY_PASS</C>, and

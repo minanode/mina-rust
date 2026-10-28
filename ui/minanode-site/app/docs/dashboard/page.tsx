@@ -12,7 +12,7 @@ import {
   Prose,
   Terms,
 } from "@/components/docs/prose";
-import { dashboard } from "@/content/docs";
+import { dashboard, sshTunnel } from "@/content/docs";
 
 export const metadata: Metadata = {
   title: "The dashboard",
@@ -142,10 +142,7 @@ export default function DashboardPage() {
             dashboard through an SSH tunnel instead: on your own computer, run
           </p>
         </Prose>
-        <CodeBlock
-          code="ssh -N -L 3000:127.0.0.1:3000 you@server"
-          label="SSH tunnel command"
-        />
+        <CodeBlock code={sshTunnel} label="SSH tunnel command" />
         <Prose>
           <p>
             and open <C>http://127.0.0.1:3000</C>. The tunnel stays up until you
@@ -154,10 +151,11 @@ export default function DashboardPage() {
           </p>
           <p>
             If port 3000 is taken on your computer, forward another local port,
-            as in <C>ssh -N -L 127.0.0.1:3010:127.0.0.1:3000 you@server</C>, and
-            open <C>http://127.0.0.1:3010</C>. When the local port is taken,{" "}
-            <C>ssh</C> prints a bind error but keeps running, so check its
-            output if the page fails to load.
+            as in{" "}
+            <C>{sshTunnel.replace("-L 3000", "-L 127.0.0.1:3010")}</C>
+            , and open <C>http://127.0.0.1:3010</C>. When the local port is
+            taken, <C>ssh</C> prints a bind error and exits, because of{" "}
+            <C>ExitOnForwardFailure=yes</C>.
           </p>
           <p>{dashboard.tunnelNote}</p>
           <p>{dashboard.remoteNote}</p>

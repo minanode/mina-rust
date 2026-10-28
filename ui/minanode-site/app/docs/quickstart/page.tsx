@@ -4,10 +4,12 @@ import { CodeBlock } from "@minanode/design-system/patterns/code-block";
 
 import { DocsPage } from "@/components/docs/docs-page";
 import { C, DocLink, DocSection, Prose } from "@/components/docs/prose";
+import { sshTunnel } from "@/content/docs";
 import {
   archiveName,
   release,
   releaseSignerUrl,
+  releaseSigningFingerprint,
   verifyReleaseCommand,
 } from "@/content/release";
 
@@ -37,12 +39,35 @@ export default function QuickstartPage() {
             macOS on Apple silicon also says <C>arm64</C> to <C>uname -m</C>,
             but the archive will not run there.
           </p>
-          <p data-claim="C69">
-            Continue only after a good signature and an <C>OK</C> checksum.{" "}
-            <DocLink href="/docs/install/#check">Verification details</DocLink>.
+          <p>
+            These commands need <C>curl</C>, <C>tar</C>, <C>sha256sum</C> and
+            OpenSSH 8.2 or newer (see{" "}
+            <DocLink href="/docs/requirements/#install-tools">
+              requirements
+            </DocLink>
+            ).
           </p>
         </Prose>
         <CodeBlock code={download} label="download and checksum commands" />
+        <Prose>
+          <p data-claim="C81">
+            Check that the signer file is the release key: this prints its
+            fingerprint, which must be <C>{releaseSigningFingerprint}</C>.{" "}
+            <DocLink href="/docs/install/#check">Verify and check</DocLink> says
+            how to confirm a new or changed key.
+          </p>
+        </Prose>
+        <CodeBlock
+          code="ssh-keygen -lf allowed_signers -E sha256"
+          label="release key fingerprint"
+        />
+        <Prose>
+          <p data-claim="C69">
+            Continue only after a good signature, an <C>OK</C> checksum and a
+            matching fingerprint.{" "}
+            <DocLink href="/docs/install/#check">Verification details</DocLink>.
+          </p>
+        </Prose>
       </DocSection>
       <DocSection id="run" title="2. Unpack and run">
         <CodeBlock
@@ -70,13 +95,14 @@ cd mina-${release.version}
             <DocLink href="http://127.0.0.1:3000">
               http://127.0.0.1:3000
             </DocLink>
-            . On a server, first run this tunnel on your computer.
+            . On a server, first run this tunnel on your computer, as{" "}
+            <DocLink href="/docs/dashboard/#on-a-server">
+              viewing it on a server
+            </DocLink>{" "}
+            explains.
           </p>
         </Prose>
-        <CodeBlock
-          code="ssh -N -L 3000:127.0.0.1:3000 you@server"
-          label="SSH tunnel command"
-        />
+        <CodeBlock code={sshTunnel} label="SSH tunnel command" />
         <Prose>
           <p>
             Next: <DocLink href="/docs/install/">install</DocLink>,{" "}

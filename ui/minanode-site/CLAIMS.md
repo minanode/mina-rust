@@ -348,7 +348,8 @@ independently validated by the public checker.
 ### C62 Nothing else to install
 
 - Page: Requirements, the other software row.
-- Says: "None: the devnet circuits and the dashboard are inside mina".
+- Says: "None at run time: the devnet circuits and the dashboard are inside
+  mina. Installing needs the tools below".
 - Sources: `coordinator: private pre-release evidence; Nothing else to install`
 - Figures: `travel inside`, `embeds`, `on by default for the`
 - Caveat kept: devnet circuits, named.
@@ -433,10 +434,10 @@ independently validated by the public checker.
 - Page: Requirements.
 - Says: "5 GB free"; "A synced devnet node's data measured 237 MB: 132 MB of
   saved chain state, 70 MB of ledger accounts and 29 MB of proof cache. Logs
-  take up to 200 MB more. 5 GB free leaves room for growth and upgrades."
+  take up to 200 MiB more. 5 GB free leaves room for growth and upgrades."
 - Sources: `coordinator: private pre-release evidence; Disk`,
   `coordinator: Mac install test of the RC6 image, Apple M4 Pro, OrbStack, 2026-10-27`
-- Figures: `237 MB`, `132 MB`, `70 MB`, `29 MB`, `200 MB`, `5 GB`
+- Figures: `237 MB`, `132 MB`, `70 MB`, `29 MB`, `200 MiB`, `5 GB`
 - Caveat kept: one node's data after about 10 minutes synced, with a worker and
   a producer tried; 5 GB is headroom, not a measured upper bound on future disk
   use.
@@ -458,7 +459,7 @@ independently validated by the public checker.
 
 ### C81 Release signing key
 
-- Page: Install, verification step.
+- Page: Install, verification step; Quickstart download step.
 - Says: SSH signatures verify the checksum list under release@minanode.org; the
   release key fingerprint is pending until the public key is supplied.
 - Sources: `coordinator: SIGN1 SSH signing decision, 2026-10-24`
@@ -480,11 +481,12 @@ independently validated by the public checker.
 ### C71 Logs
 
 - Page: Run a node, Logs.
-- Says: "The log rotates at 20 MB and 10 files are kept, so logs take at most
-  200 MB."
+- Says: "The log rotates at 20 MiB and 10 files are kept, so logs take at most
+  200 MiB."
 - Sources: `coordinator: private pre-release evidence; Logs`
-- Figures: `20 MB`, `10 files`, `at most 200 MB`
-- Caveat kept: none needed; the code's defaults.
+- Figures: `20 MiB`, `10 files`, `at most 200 MiB`
+- Caveat kept: none needed; the code's defaults (`--log-file-size-mb 20`,
+  converted with `<< 20`, so MiB).
 
 ### C72 Worker fee and job selection
 
