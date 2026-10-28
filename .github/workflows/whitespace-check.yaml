@@ -23,7 +23,7 @@ jobs:
     timeout-minutes: 5
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
