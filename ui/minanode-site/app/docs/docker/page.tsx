@@ -46,12 +46,32 @@ docker run -d --name mina --restart unless-stopped \\
   ${image}
 docker logs -f mina`;
 
+const runSecond = `mkdir -p ~/mina-state-2
+docker run -d --name mina2 --restart unless-stopped \\
+  --user "$(id -u):$(id -g)" \\
+  -p 127.0.0.1:3010:3000 -p 8312:8312 -e MINA_LIBP2P_PORT=8312 \\
+  -v ~/mina-state-2:/data \\
+  ${image}
+docker logs -f mina2`;
+
 const composeStart = `mkdir -p minanode && cd minanode
 curl -fLO ${composeBaseUrl}/docker-compose.yml
 mkdir -p mina-state
 printf 'UID=%s\\nGID=%s\\n' "$(id -u)" "$(id -g)" > .env
 docker compose up -d
 docker compose logs -f`;
+
+const composeSecond = `mkdir -p minanode2 && cd minanode2
+curl -fLO ${composeBaseUrl}/docker-compose.yml
+mkdir -p mina-state
+printf 'UID=%s\\nGID=%s\\n' "$(id -u)" "$(id -g)" > .env
+cat >> .env <<'EOF'
+COMPOSE_PROJECT_NAME=minanode2
+MINA_CONTAINER_NAME=mina2
+MINA_DASHBOARD_PORT=3010
+MINA_LIBP2P_PORT=8312
+EOF
+docker compose up -d`;
 
 const options = `docker run -d --name mina --restart unless-stopped \\
   --user "$(id -u):$(id -g)" \\
@@ -60,7 +80,7 @@ const options = `docker run -d --name mina --restart unless-stopped \\
   ${image} \\
   node --network devnet --libp2p-external-ip 203.0.113.7`;
 
-const reuse = `systemctl --user stop mina.service   # or Ctrl-C in its terminal
+const reuse = `systemctl --user stop minanode.service   # or Ctrl-C in its terminal
 docker run -d --name mina --restart unless-stopped \\
   --user "$(id -u):$(id -g)" \\
   -p 127.0.0.1:3000:3000 -p 8302:8302 \\
@@ -82,7 +102,7 @@ docker compose pull
 docker compose up -d`;
 
 const keygen = `mkdir -p -m 700 keys
-read -rs -p "Key password: " MINA_PRIVKEY_PASS &&
+printf "Key password: " && IFS= read -rs MINA_PRIVKEY_PASS && echo &&
   export MINA_PRIVKEY_PASS
 docker run --rm --user "$(id -u):$(id -g)" -e MINA_PRIVKEY_PASS \\
   -v "$PWD/keys:/keys" ${image} \\
@@ -132,6 +152,24 @@ export default function DockerPage() {
             files there stay yours.
           </p>
           <p>
+            If a container called <C>mina</C> already exists, or another program
+            uses port 3000 or 8302, run this node with its own name, ports and
+            state directory, as below. Two nodes must not share a state
+            directory (see{" "}
+            <DocLink href="/docs/docker/#reuse">
+              reuse a native node&apos;s state
+            </DocLink>
+            ). Then use the new name, here <C>mina2</C>, in the <C>docker</C>{" "}
+            commands on this page, and open the dashboard at{" "}
+            <C>http://127.0.0.1:3010</C>.
+          </p>
+        </Prose>
+        <CodeBlock
+          code={runSecond}
+          label="a node with its own name, ports and state"
+        />
+        <Prose>
+          <p>
             The image runs <C>mina</C>: <C>docker exec mina mina</C> runs a
             second <C>mina</C> command in the same container.
           </p>
@@ -158,7 +196,27 @@ export default function DockerPage() {
             the node with <C>docker compose stop</C> and start it again with{" "}
             <C>docker compose start</C>.
           </p>
+          <p>
+            If you ran the quick start first, stop and remove its container
+            with <C>docker stop mina &amp;&amp; docker rm mina</C>. Its state
+            stays in <C>~/mina-state</C>: to keep that chain, set{" "}
+            <C>MINA_STATE_DIR</C> in <C>.env</C> to its full path, which{" "}
+            <C>echo ~/mina-state</C> prints.
+          </p>
+          <p>
+            If a container called <C>mina</C> already exists, or another program
+            uses port 3000 or 8302, set this node up in its own directory with
+            its own settings in <C>.env</C>, as below. Each directory keeps its
+            own <C>mina-state</C>, so the two nodes never share state. Without
+            its own <C>COMPOSE_PROJECT_NAME</C>, a second{" "}
+            <C>docker compose up -d</C> replaces the first node&apos;s
+            container.
+          </p>
         </Prose>
+        <CodeBlock
+          code={composeSecond}
+          label="a second node, in its own directory"
+        />
         <CodeBlock code={compose} label="docker-compose.yml" />
       </DocSection>
 
@@ -194,7 +252,7 @@ export default function DockerPage() {
             },
             {
               term: "8302:8302",
-              text: "Peers (TCP). Open it in your firewall or router to accept incoming peers.",
+              text: "Peers (TCP), on every network interface on purpose: other nodes must reach it. Open it in your firewall or router to accept incoming peers.",
             },
           ]}
         />
@@ -207,7 +265,8 @@ export default function DockerPage() {
             dashboard through an{" "}
             <DocLink href="/docs/dashboard/#on-a-server">SSH tunnel</DocLink>.
             To use another port on the host, change only the first number, as in{" "}
-            <C>127.0.0.1:3010:3000</C>.
+            <C>127.0.0.1:3010:3000</C>. Worker control works at any port on{" "}
+            <C>127.0.0.1</C>.
           </p>
           <p>
             Other listeners, such as <C>--metrics-port</C>, listen on{" "}

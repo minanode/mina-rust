@@ -1,19 +1,16 @@
 # Docker image release
 
 The image `ghcr.io/minanode/mina-rust` is built from the signed release
-archives, never from source. The public export omits the Docker image workflow.
-Until the release owner approves, installs and enables it, use the
-[manual image procedure](#manual-image-publication). Publishing a GitHub release
-alone does not publish an image.
-
-The workflow sections below describe the proposed automation and apply only
-after it is installed and enabled. The release key never goes to CI: the
-workflow only verifies `SHA256SUMS.sig` against
+archives, never from source, by the
+[Docker image workflow](../../.github/workflows/docker-image.yml) once Actions
+are enabled for the repository (see the one-time settings below). Without it,
+use the [manual image procedure](#manual-image-publication). The release key
+never goes to CI: the workflow only verifies `SHA256SUMS.sig` against
 [allowed_signers](allowed_signers) from the release commit. The image files are
 in [tools/release/docker/](../../tools/release/docker/), and users' instructions
 are at <https://minanode.org/docs/docker/>.
 
-## What the proposed workflow does
+## What the workflow does
 
 | Run                                   | Result                                                    |
 | ------------------------------------- | --------------------------------------------------------- |

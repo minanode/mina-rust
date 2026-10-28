@@ -20,6 +20,9 @@
 #                                 more options for `mina node`
 #   MINA_LIBP2P_PORT=8302         the peer port, inside and outside
 #   MINA_DASHBOARD_PORT=3000      the dashboard's port on this computer
+#   MINA_CONTAINER_NAME=mina      the container's name, if mina is taken
+#   COMPOSE_PROJECT_NAME=minanode another name for a second node, so the
+#                                 two don't replace each other's container
 #
 # A block producer adds docker-compose.block-producer.yml through COMPOSE_FILE
 # in .env (see that file).
@@ -29,7 +32,7 @@ name: minanode
 services:
   mina:
     image: ${MINA_IMAGE:-ghcr.io/minanode/mina-rust:0.20.0}
-    container_name: mina
+    container_name: ${MINA_CONTAINER_NAME:-mina}
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"
     # Replaces the image's default command, `node --network devnet`.
@@ -43,7 +46,8 @@ services:
       # The dashboard and API, on 127.0.0.1 only. A bare "3000:3000" would
       # open them to the network, past ufw's rules.
       - "127.0.0.1:${MINA_DASHBOARD_PORT:-3000}:3000"
-      # Peers. Open it in your firewall or router to accept incoming peers.
+      # Peers, on every interface on purpose: other nodes must reach it.
+      # Open it in your firewall or router to accept incoming peers.
       - "${MINA_LIBP2P_PORT:-8302}:${MINA_LIBP2P_PORT:-8302}"
     volumes:
       # The state dir. Create it first: Docker would make a missing one

@@ -28,12 +28,14 @@ the subject of the private measurement; they do not link to unavailable files.
 
 - Page: home, under the headline; the page description and the Open Graph and
   Twitter text use the same wording.
-- Says: "A community-led second Mina client, checked against OCaml 4.0.2 by
+- Says: "A community-led second Mina client, checked against the OCaml node by
   replaying the chain, checking proofs and comparing fork choice."
 - Sources: `coordinator: private pre-release evidence; Hero lead`
-- Figures: `4.0.2`, `replay`, `block proof`, `fork-choice`
+- Figures: `replay`, `block proof`, `fork-choice`
 - Caveat kept: names the three kinds of check instead of claiming "every step"
-  or that all differences are caught (private evidence).
+  or that all differences are caught (private evidence). The checks ran against
+  OCaml 4.0.2 and the archive comparison (C93) against 4.0.3; the version left
+  the hero on 28 October 2026.
 
 ### C04 Release status
 
@@ -53,62 +55,61 @@ the subject of the private measurement; they do not link to unavailable files.
 ### C84 Devnet sync from scratch
 
 - Page: home, first proof point.
-- Says: "About 1 min. Devnet sync from scratch. From OCaml peers; about 2 min
-  with 12 nodes starting at once."
-- Sources: `coordinator: private pre-release evidence; Devnet sync from scratch`
-- Figures: `47.04 s`, `50.05 s`, `12/12`, `90.05 s`, `122.06 s`
-- Caveat kept: a rounded value, not one measurement. Two STAB1 fresh probes on
-  RC4 took 47 s and 50 s (private run receipt); the LR1b crowd of 12 had a
-  median of 90.05 s and a worst of 122.06 s, hence "about 2 min" for 12 at once.
+- Says: "Under a minute. Devnet sync from scratch. From an empty data
+  directory, via OCaml peers."
+- Sources: `coordinator: RC7 fresh sync matrix, 2026-10-28`,
+  `coordinator: RC7 Mac install tests, 2026-10-27 and 2026-10-28`
+- Figures: `47.12 s`, `47.87 s`, `57.21 s`, `41 s`, `55.1 s`
+- Caveat kept: a general bound. Three RC7 runs on a loaded Linux server took
+  47–57 s, and four Mac Docker tests 41–55 s.
 
 ### C82 Mainnet sync from scratch
 
 - Page: home, second proof point.
-- Says: "Under 3 min. Mainnet sync from scratch. From an empty store, via OCaml
-  peers."
-- Sources:
-  `coordinator: private pre-release evidence; Mainnet sync from scratch`
-- Figures: `154.5 s`, `empty store`, `OCaml peers`, `upper bound`, `145.484 s`,
-  `under 3 min`
-- Caveat kept: "from an empty store". The STAB1 soak on RC4 took at most 154.5
-  s, sampled once a minute (private run receipt, private run receipt); the
-  MN1-F1 run, sampled every five seconds, took 145.5 s. Before 25 October 2026
-  the native build showed "400 s, Mainnet bootstrap" (private evidence, m11).
+- Says: "A few minutes. Mainnet sync from scratch. Most of it is the ledger
+  download from OCaml peers."
+- Sources: `coordinator: RC7 fresh sync matrix, 2026-10-28`,
+  `coordinator: MN-SYNC-AB, 2026-10-27`
+- Figures: `290.2 s`, `298.8 s`, `258.5 s`, `482.5 s`, `199.3 s`, `209.6 s`
+- Caveat kept: the time depends on peers. RC7 took 290 and 299 s on an idle
+  server and 258–483 s under load. An RC4 and main A/B on 27 October found no
+  code regression (medians 199 s and 210 s). The card said "Under 3 min" until
+  28 October 2026.
 
 ### C30 Restart to synced
 
 - Page: home, third proof point.
-- Says: "Under 20 s. Restart to synced. The node replays its saved chain."
-- Sources: `coordinator: private pre-release evidence; Restart to synced`
-- Figures: `12.05 s`, `replayed 297 saved blocks`, `11.59`, `10.44`,
-  `under 20 s`
-- Caveat kept: a bound over three RC4 restarts on devnet: STAB1's scheduled
-  SIGTERM restart, 12.05 s (private run receipt), and LR1b's two frontier
-  restores, 11.59 s and 10.44 s. Before 25 October 2026 the native build showed
-  "16.2–17.3 s, stored state rechecked" (private evidence).
+- Says: "Seconds. Restart to synced. The node replays its saved chain."
+- Sources: `coordinator: RC7 Mac install tests, 2026-10-27 and 2026-10-28`,
+  `coordinator: RC7 smoke, 2026-10-27`
+- Figures: `13.5 s`, `15.6 s`, `27 s`
+- Caveat kept: RC7 restarts took 13.5–15.6 s in the Mac Docker tests and up to
+  27 s on a loaded Linux server. The card said "Under 20 s" until 28 October
+  2026.
 
 ### C85 RAM for a devnet full node
 
 - Page: home, fourth proof point.
-- Says: "About 1 GB. RAM for a devnet full node. Typical use."
-- Sources:
-  `coordinator: private pre-release evidence; RAM for a devnet full node`
-- Figures: `870.6`, `842.2`, `0.90 GB`, `1165.7 MiB`, `about 1 GB`
-- Caveat kept: "typical" is the median of once-a-minute RSS samples while
-  Synced, two devnet nodes on RC4 over about 8 hours (private run receipt,
-  private run receipt). RSS was still rising slowly, so this is remeasured on
-  the next release candidate (private run receipt). The Requirements page keeps
-  its 24 October figures (C64) until then.
+- Says: "Under 1 GB. RAM for a devnet full node. A few hundred MB once
+  synced."
+- Sources: `coordinator: RC7 soak RSS, 2026-10-28`,
+  `coordinator: RC7 Mac install tests, 2026-10-27 and 2026-10-28`
+- Figures: `356 MiB`, `379 MiB`, `270 MiB`, `330 MiB`, `500 MiB`
+- Caveat kept: RC7 devnet follower RSS was 356–379 MiB 1.5–5 h after start;
+  the Mac tests read 270–330 MiB ten minutes after sync; sync peaks near 500
+  MiB. A producer or SNARK worker uses more. The Requirements page keeps its
+  own figures (C64).
 
-### C86 Raspberry Pi 4 sync
+### C86 Raspberry Pi
 
 - Page: home, fourth proof point, the detail line.
-- Says: "A Raspberry Pi 4 syncs in under 5 min."
-- Sources: `coordinator: RC4 Raspberry Pi 4 smoke, 2026-10-25`,
-  `coordinator: private pre-release evidence; Raspberry Pi 4 sync`
-- Figures: `289 s`, `937 MiB`
-- Caveat kept: one devnet run on RC4, Synced in 289 s at 937 MiB; no worker or
-  producer on a Pi is claimed.
+- Says: "It runs on a Raspberry Pi."
+- Sources: `coordinator: RC7 Raspberry Pi 3 and 4 roll, 2026-10-28`,
+  `coordinator: Pi 3 24 h jemalloc run, 2026-10-28`
+- Figures: `Pi 4`, `Pi 3`, `24.0 h`
+- Caveat kept: a devnet full node on a Pi 4 and on a 1 GB Pi 3, both synced on
+  RC7; the Pi 3 ran 24 h without a restart. No worker or producer on a Pi is
+  claimed.
 
 ## What it is and node roles
 
@@ -125,25 +126,24 @@ the subject of the private measurement; they do not link to unavailable files.
 ### C13 Full node
 
 - Page: home, Full node card.
-- Says: "Syncs mainnet and devnet from OCaml peers and follows the tip. 46 of 46
-  sampled tips matched public Auro."
+- Says: "Syncs mainnet and devnet from OCaml peers and follows the tip."
 - Sources: `coordinator: private pre-release evidence; Full node`
 - Figures: `46/46`, `Auro`, `Mainnet and devnet synced`, `Minute-sampled tips`
-- Caveat kept: "sampled" for the tip checks. The tip match is one m11 gate run;
-  the card's "Working" status is the scorecard's "Working, on main". The card
-  was titled "Follower" before 25 October 2026; the mainnet bootstrap figure it
-  used to share is now C82.
+- Caveat kept: the card's "Working" status is the scorecard's "Working, on
+  main". The 46-of-46 Auro tip sample (one m11 gate run) left the card on 28
+  October 2026. The card was titled "Follower" before 25 October 2026.
 
 ### C15 Block producer: public devnet blocks
 
 - Page: home, Block producer card, with an explorer link to 579510.
-- Says: "Its blocks reach devnet's best chain, from a shared producer key."
+- Says: "Its blocks reach devnet's best chain."
 - Sources:
   `coordinator: private pre-release evidence; Block producer: public devnet blocks`
 - Figures: `bestChain(maxLength: 290)`, `12 of the 290`, `579510`,
   `shared devnet producer key`
-- Caveat kept: the shared producer key. No count on the card, so it doesn't go
-  stale; 579510 is one example block. At 2026-10-25T03:02Z, 12 of the 290 blocks
+- Caveat kept: the node produces from a devnet key it shares with another
+  producer; the card stopped naming that on 28 October 2026. No count on the
+  card, so it doesn't go stale; 579510 is one example block. At 2026-10-25T03:02Z, 12 of the 290 blocks
   on Auro's best chain were its own, counted by coinbase receiver (private run
   receipt); the producer's `/stats/block_producer` at the same time (private run
   receipt) listed 22 canonical, 6 orphaned and 21 discarded attempts. Replaces
@@ -159,13 +159,15 @@ the subject of the private measurement; they do not link to unavailable files.
 
 ### C18 SNARK worker
 
-- Page: home, SNARK worker card. The numbers are in proof point C08.
-- Says: "Proves the transaction SNARK work that block producers buy. Devnet
-  producers have bought its bundles."
-- Sources: `coordinator: private pre-release evidence; SNARK worker`
-- Figures: `bought 121 Rust-worker bundles`, `devnet`
-- Caveat kept: devnet. zkApp jobs are not mentioned, so their pending status is
-  not needed.
+- Page: home, SNARK worker card.
+- Says: "Produces the transaction SNARK work that block producers buy. Devnet
+  producers buy its work."
+- Sources: `coordinator: private pre-release evidence; SNARK worker`,
+  `coordinator: devnet worker totals, 2026-10-28T02:20Z`
+- Figures: `4,602 bundles`, `1,069 blocks`, `38.37 MINA`
+- Caveat kept: devnet. No count on the card. At 2026-10-28T02:20Z devnet
+  producers had bought 4,602 of its bundles in 1,069 blocks, 38.37 MINA in
+  fees. zkApp jobs are not mentioned.
 
 ### C21 Web build: browser-signed transactions
 
@@ -188,49 +190,51 @@ the subject of the private measurement; they do not link to unavailable files.
 - Caveat kept: the roles' own statuses on the page say where each was shown;
   block production is "Not yet on mainnet" (C17).
 
-### C05 Mesa mainnet blocks replayed
+### C05 Mainnet replayed
 
 - Page: home, native build, first metric.
-- Says: "15,897. Mesa mainnet blocks replayed. Heights 548148–564044; every
-  staged-ledger hash matched OCaml."
+- Says: "Mainnet. Replayed block by block. Every staged-ledger hash matched
+  OCaml."
 - Sources:
   `coordinator: private pre-release evidence; Mesa mainnet blocks replayed`
 - Figures: `15,897`, `548148`, `564044`
-- Caveat kept: the saved height range is named (OC03); replay is not presented
-  as proof verification (OC04). It was a home page proof point until 25
-  October 2026.
-
-### C08 Rust SNARK bundles bought
-
-- Page: home, native build, second metric.
-- Says: "121. SNARK bundles bought. From its worker, by seven devnet producers
-  in one test."
-- Sources:
-  `coordinator: private pre-release evidence; Rust SNARK bundles bought`
-- Figures: `121`, `seven`, `578143`, `578149`
-- Caveat kept: devnet, and "in one test", so it doesn't read as a live counter.
-  It was a home page proof point, with an explorer link to 578144, until 25
-  October 2026.
+- Caveat kept: 15,897 Mesa mainnet blocks, heights 548148–564044. Replay is not
+  presented as proof verification (OC04). The count left the page on 28 October
+  2026.
 
 ### C40 OCaml syncs from it
 
 - Page: home, native build, third metric.
-- Says: "5m55.84s. OCaml syncs from it. A fresh OCaml devnet node, the Rust node
-  its only peer; one run."
+- Says: "Both ways. OCaml syncs from it. A fresh OCaml node syncs with the Rust
+  node as its only peer."
 - Sources: `coordinator: private pre-release evidence; OCaml syncs from it`
 - Figures: `5m55.84s`, `fresh OCaml devnet daemon`, `only configured peer`,
   `exactly the Rust peer`
-- Caveat kept: devnet, fresh node, our node as its only peer, one run.
+- Caveat kept: devnet, fresh node, our node as its only peer, one run, which
+  took 5m55.84s. The time left the page on 28 October 2026.
+
+### C93 Feeds OCaml's archive
+
+- Page: home, native build, second metric.
+- Says: "Archive. Feeds OCaml's archive. Its archive matched one fed by OCaml
+  on every main-chain block."
+- Sources: `coordinator: archive feed comparison, 2026-10-28`
+- Figures: `161`, `580807–580967`, `0 gaps`, `39 OCaml-only fork blocks`
+- Caveat kept: main chain only. The Rust feed sends best-chain blocks, so fork
+  blocks are only in the OCaml-fed database. Devnet, OCaml 4.0.3 archive and
+  daemon, 161 main-chain heights compared over about 7 hours.
 
 ### C11 Web node and web build
 
-- Page: home, Web node card and web build text.
+- Page: home, Web node card, web build text and the web build's second metric.
 - Says: "The full node in a browser tab, with nothing to install." and "The same
   Rust code, compiled to WebAssembly. It syncs mainnet, verifies proofs, and
-  signs and sends transactions over WebRTC." The card's status is C83.
+  signs and sends transactions over WebRTC." The metric says "No install. Runs
+  in a tab. Open the page and it syncs." The card's status is C83.
 - Sources: `coordinator: private pre-release evidence; Web node and web build`
 - Figures: `WebAssembly`, `full node in a browser tab`, `syncs mainnet`
-- Caveat kept: none needed; "over WebRTC" is C21.
+- Caveat kept: none needed; "over WebRTC" is C21. The web node is "Coming soon"
+  (C83).
 
 ### C83 Web node coming soon
 
@@ -248,23 +252,17 @@ the subject of the private measurement; they do not link to unavailable files.
 ### C24 Download
 
 - Page: home, web build, first metric.
-- Says: "3.1 MB. Download. WASM, Brotli-compressed."
+- Says: "A few MB. Download. WebAssembly, compressed."
 - Sources: `coordinator: private pre-release evidence; Download`
 - Figures: `3.1 MB`, `Brotli`, `not an uncompressed 3 MB WASM binary`
-- Caveat kept: compressed transfer, not the binary's size.
-
-### C25 Peak WASM memory
-
-- Page: home, web build, second metric.
-- Says: "1,171 MiB. Peak WASM memory. Median, linear memory only."
-- Sources: `coordinator: private pre-release evidence; Peak WASM memory`
-- Figures: `1,171`, `median peak WASM linear memory`, `not total Chrome memory`
-- Caveat kept: median, and linear memory only (not total browser memory).
+- Caveat kept: 3.1 MB is the Brotli-compressed transfer, not the binary's
+  size.
 
 ### C07 Devnet block made in a browser
 
 - Page: home, web build, third metric, with C26.
-- Says: "For canonical devnet block 578136".
+- Says: "It produced and proved a devnet block in a tab"; the block is
+  canonical devnet block 578136.
 - Sources:
   `coordinator: private pre-release evidence; Devnet block made in a browser`
 - Figures: `578136`, `five linked descendants`
@@ -275,19 +273,21 @@ the subject of the private measurement; they do not link to unavailable files.
 ### C26 Block proof
 
 - Page: home, web build, third metric.
-- Says: "42.8 s. Block proof. For canonical devnet block 578136, under load."
+- Says: "Block producer. From the browser. It produced and proved a devnet block
+  in a tab."
 - Sources: `coordinator: private pre-release evidence; Block proof`
 - Figures: `42.8 s`, `under load`
-- Caveat kept: under load.
+- Caveat kept: one block, 578136 (C07); its proof took 42.8 s under load. The
+  card said "Under a minute. Block proof." until 28 October 2026.
 
 ## Get started and footer
 
 ### C50 Release state
 
-- Page: home, "Get started" and the three build cards.
-- Says: "Run 0.20.0 beta for devnet"; download and open the dashboard. The
-  browser node is a separate build, marked "Coming soon" (C83); the source card
-  describes building from public source.
+- Page: home, "Get started" and the four build cards.
+- Says: "Run 0.20.0 beta for devnet"; download the archive or run the Docker
+  image, then open the dashboard. The browser node is a separate build, marked
+  "Coming soon" (C83); the source card describes building from public source.
 - Sources: `coordinator: DOCS-V launch copy, 2026-10-24`
 - Figures: `0.20.0`
 - Caveat kept: Planned public repository and release availability are unverified
@@ -302,6 +302,17 @@ the subject of the private measurement; they do not link to unavailable files.
 - Figures: `x86-64`, `ARM64`, `travel inside`
 - Caveat kept: Archive contents were checked locally. Public availability is
   unverified until publish (C69).
+
+### C92 Docker image
+
+- Page: home, "Get started", Docker image card.
+- Says: "Docker image. For x86-64 and ARM64. With Docker Desktop it also runs on
+  macOS and Windows."
+- Sources: `coordinator: RC7 Mac install tests, 2026-10-27 and 2026-10-28`
+- Figures: `linux/amd64`, `linux/arm64`, `Apple silicon`
+- Caveat kept: four install tests ran it on Apple-silicon Macs. Windows is
+  untested, as on the Docker page. Public availability is unverified until
+  publish (C69).
 
 ## Docs pages
 
@@ -354,14 +365,16 @@ independently validated by the public checker.
 ### C64 Full node memory
 
 - Page: Requirements.
-- Says: "Devnet full node, x86_64: typical 1.2 GB, peak 1.5 GB over 10 h.
-  Mainnet full node, x86_64: typical 1.3 GB, peak 2.0 GB over 24 h on an older
-  build. Suggested full node: 2 cores, 4 GB RAM."
-- Sources: `coordinator: RSS samples, 2026-10-24`
-- Figures: `1.2 GB`, `1.5 GB`, `1.3 GB`, `2.0 GB`
-- Caveat kept: Typical is median RSS; peak is the highest once-a-minute sample.
-  Rounded decimal GB. The mainnet measurement used an older build; this release
-  is devnet only.
+- Says: "Devnet full node, x86_64: about 360 to 380 MiB over 9 hours; peak 644
+  MiB. Mainnet full node, x86_64: about 1.2 GiB over 9 hours; peak 2.6 GiB.
+  Full node: 1 core and 2 GiB RAM to try; 2 cores and 4 GiB suggested."
+- Sources: `coordinator: RC7 soak RSS and VmHWM, 2026-10-28T07:4xZ`,
+  `coordinator: RC7 release README minimums`
+- Figures: `356 MiB`, `379 MiB`, `644 MiB`, `1154 MiB`, `1180 MiB`, `2615 MiB`
+- Caveat kept: RC7 nodes about 9 hours after a restart; the range is RSS read
+  during the run, the peak is VmHWM since start, which includes the restore.
+  The minimums match the release archive's README.txt. Until 28 October 2026
+  the rows were 24 October RSS medians in decimal GB.
 
 ### C65 Raspberry Pi 4
 
@@ -380,24 +393,28 @@ independently validated by the public checker.
 ### C66 SNARK worker memory
 
 - Page: Requirements.
-- Says: "Devnet node with SNARK worker: typical 3.2 GB, peak 3.7 GB over 10 h.
-  Suggested machine: 4 or more cores, 8 GB RAM."
-- Sources: `coordinator: RSS samples, 2026-10-24`
-- Figures: `3.2 GB`, `3.7 GB`
-- Caveat kept: Typical is median RSS; peak is the highest once-a-minute sample.
-  Rounded decimal GB; machine capacity is not RSS.
+- Says: "Devnet node with SNARK worker: about 2.0 to 2.2 GiB over 9 hours;
+  peak 2.6 GiB. SNARK worker: 4 cores and 8 GiB RAM to try; 8 cores and 16 GiB
+  suggested."
+- Sources: `coordinator: RC7 soak RSS and VmHWM, 2026-10-28T07:4xZ`,
+  `coordinator: RC7 release README minimums`
+- Figures: `2005 MiB`, `2182 MiB`, `2634 MiB`
+- Caveat kept: one devnet node with its worker on, about 9 hours after a
+  restart; machine capacity is not RSS.
 
 ### C67 Block producer memory
 
 - Page: Requirements.
-- Says: "Devnet block producer: typical 2.1 GB, peak 3.4 GB over 10 h, including
-  the block prover. Suggested machine: 4 or more cores, 8 GB RAM. A block must
-  be proved within its 90-second slot."
-- Sources: `coordinator: RSS samples, 2026-10-24`,
+- Says: "Devnet block producer: about 1.3 GiB over 9 hours; peak 2.7 GiB,
+  including the block prover. Block producer: 4 cores and 8 GiB RAM to try; 8
+  cores and 16 GiB suggested. A block must be proved within its 90-second
+  slot."
+- Sources: `coordinator: RC7 soak RSS and VmHWM, 2026-10-28T07:4xZ`,
+  `coordinator: RC7 release README minimums`,
   `coordinator: private pre-release evidence; Block producer memory`
-- Figures: `2.1 GB`, `3.4 GB`
-- Caveat kept: Typical is median RSS; peak is the highest once-a-minute sample
-  and can miss a shorter prover peak. Rounded decimal GB.
+- Figures: `1260 MiB`, `1318 MiB`, `2760 MiB`
+- Caveat kept: one devnet producer about 9 hours after a restart; the peak is
+  VmHWM since start, which includes its block proofs.
 
 ### C89 Apple M4 under Docker
 
@@ -570,7 +587,7 @@ independently validated by the public checker.
 - Figures: `2.31`, `cargo-zigbuild`
 - Caveat kept: the page's native build is not the archive build.
 
-### C85 Light best tip size
+### C90 Light best tip size
 
 - Page: Light client endpoints, `GET /light/best-tip`.
 - Says: "The answer is 23,546 bytes in binprot and 32,344 bytes in JSON."
@@ -580,7 +597,7 @@ independently validated by the public checker.
   and 290 body hashes, so the size is the same at every tip of a full frontier.
   Both sizes were measured again on 26 October 2026.
 
-### C86 Light account size
+### C91 Light account size
 
 - Page: Light client endpoints, `GET /light/account/{public_key}`.
 - Says: "An answer for an account without a zkApp is about 4.8 KB."
@@ -619,6 +636,10 @@ independently validated by the public checker.
 
 The site was trimmed to a minimal page on 23 October 2026. These claims were on
 the first version and are gone, with later removals listed first:
+
+- On 28 October 2026, when the home page moved to general statements: the SNARK
+  bundle count (C08, "121 SNARK bundles bought") and peak WASM memory (C25,
+  "1,171 MiB"). The numbers behind the remaining cards stay in their entries.
 
 - On 25 October 2026: the footer's "As of" date (C52) and credit line (C53,
   "Builds on the Rust node begun at o1Labs."), removed at the owner's request.

@@ -1,11 +1,11 @@
-// Every number and claim on minanode.org lives in this file, tagged with a
-// claim id. CLAIMS.md maps each id to its source line in
-// the private qualification notes, the private qualification notes or a research note, with
-// the few words of caveat that have to stay with it. Elements that render a
-// claim carry `data-claim` (space-separated when one element holds several),
-// so the page can be checked against CLAIMS.md (scripts/check-claims.mjs).
+// Every claim on minanode.org lives in this file, tagged with a claim id.
+// CLAIMS.md maps each id to the evidence behind it, from the private
+// qualification notes or a research note. Elements that render a claim carry
+// `data-claim` (space-separated when one element holds several), so the page
+// can be checked against CLAIMS.md (scripts/check-claims.mjs).
 //
-// Keep the inline caveats. Do not add a number here without a source line.
+// The home page shows direction, not test results: keep its claims general
+// enough to stay true between releases, with the measurements in CLAIMS.md.
 
 import { release, releaseLabel } from "./release";
 
@@ -32,7 +32,7 @@ export const hero = {
   },
   lead: {
     claim: "C03",
-    text: "A community-led second Mina client, checked against OCaml 4.0.2 by replaying the chain, checking proofs and comparing fork choice.",
+    text: "A community-led second Mina client, checked against the OCaml node by replaying the chain, checking proofs and comparing fork choice.",
   },
 };
 
@@ -45,32 +45,32 @@ export type Metric = {
   hrefLabel?: string;
 };
 
-/** The four proof points under the hero: rounded bounds the release
- * candidate meets, so they stay true between measurements. */
+/** The four proof points under the hero: general statements the release
+ * meets, so they stay true between measurements. */
 export const proofPoints: Metric[] = [
   {
     claim: "C84",
-    value: "About 1 min",
+    value: "Under a minute",
     label: "Devnet sync from scratch",
-    detail: "From OCaml peers; about 2 min with 12 nodes starting at once.",
+    detail: "From an empty data directory, via OCaml peers.",
   },
   {
     claim: "C82",
-    value: "Under 3 min",
+    value: "A few minutes",
     label: "Mainnet sync from scratch",
-    detail: "From an empty store, via OCaml peers.",
+    detail: "Most of it is the ledger download from OCaml peers.",
   },
   {
     claim: "C30",
-    value: "Under 20 s",
+    value: "Seconds",
     label: "Restart to synced",
     detail: "The node replays its saved chain.",
   },
   {
     claim: "C85 C86",
-    value: "About 1 GB",
+    value: "Under 1 GB",
     label: "RAM for a devnet full node",
-    detail: "Typical use. A Raspberry Pi 4 syncs in under 5 min.",
+    detail: "A few hundred MB once synced. It runs on a Raspberry Pi.",
   },
 ];
 
@@ -97,7 +97,7 @@ export const roles: Role[] = [
     title: "Full node",
     status: "live",
     statusLabel: "Working",
-    text: "Syncs mainnet and devnet from OCaml peers and follows the tip. 46 of 46 sampled tips matched public Auro.",
+    text: "Syncs mainnet and devnet from OCaml peers and follows the tip.",
   },
   {
     id: "block-producer",
@@ -105,7 +105,7 @@ export const roles: Role[] = [
     title: "Block producer",
     status: "devnet",
     statusLabel: "Public devnet",
-    text: "Its blocks reach devnet's best chain, from a shared producer key. Not yet on mainnet.",
+    text: "Its blocks reach devnet's best chain. Not yet on mainnet.",
     link: { height: 579510 },
   },
   {
@@ -114,7 +114,7 @@ export const roles: Role[] = [
     title: "SNARK worker",
     status: "devnet",
     statusLabel: "Public devnet",
-    text: "Proves the transaction SNARK work that block producers buy. Devnet producers have bought its bundles.",
+    text: "Produces the transaction SNARK work that block producers buy. Devnet producers buy its work.",
   },
   {
     id: "web-node",
@@ -146,21 +146,21 @@ export const builds: Build[] = [
     metrics: [
       {
         claim: "C05",
-        value: "15,897",
-        label: "Mesa mainnet blocks replayed",
-        detail: "Heights 548148–564044; every staged-ledger hash matched OCaml.",
+        value: "Mainnet",
+        label: "Replayed block by block",
+        detail: "Every staged-ledger hash matched OCaml.",
       },
       {
-        claim: "C08",
-        value: "121",
-        label: "SNARK bundles bought",
-        detail: "From its worker, by seven devnet producers in one test.",
+        claim: "C93",
+        value: "Archive",
+        label: "Feeds OCaml's archive",
+        detail: "Its archive matched one fed by OCaml on every main-chain block.",
       },
       {
         claim: "C40",
-        value: "5m55.84s",
+        value: "Both ways",
         label: "OCaml syncs from it",
-        detail: "A fresh OCaml devnet node, the Rust node its only peer; one run.",
+        detail: "A fresh OCaml node syncs with the Rust node as its only peer.",
       },
     ],
   },
@@ -175,21 +175,21 @@ export const builds: Build[] = [
     metrics: [
       {
         claim: "C24",
-        value: "3.1 MB",
+        value: "A few MB",
         label: "Download",
-        detail: "WASM, Brotli-compressed.",
+        detail: "WebAssembly, compressed.",
       },
       {
-        claim: "C25",
-        value: "1,171 MiB",
-        label: "Peak WASM memory",
-        detail: "Median, linear memory only.",
+        claim: "C11",
+        value: "No install",
+        label: "Runs in a tab",
+        detail: "Open the page and it syncs.",
       },
       {
         claim: "C26 C07",
-        value: "42.8 s",
-        label: "Block proof",
-        detail: "For canonical devnet block 578136, under load.",
+        value: "Block producer",
+        label: "From the browser",
+        detail: "It produced and proved a devnet block in a tab.",
       },
     ],
   },
@@ -198,7 +198,7 @@ export const builds: Build[] = [
 export const getStarted = {
   claim: "C50",
   title: `Run ${releaseLabel}`,
-  lead: "Download the archive for your CPU, run the node and open its dashboard.",
+  lead: "Download the archive for your CPU or run the Docker image, then open its dashboard.",
   items: [
     {
       claim: "C50 C56",
@@ -206,6 +206,13 @@ export const getStarted = {
       status: "devnet" as Status,
       statusLabel: "Available",
       body: "Linux builds for x86-64 and ARM64, with the devnet prover circuits inside.",
+    },
+    {
+      claim: "C50 C92",
+      title: "Docker image",
+      status: "devnet" as Status,
+      statusLabel: "Available",
+      body: "For x86-64 and ARM64. With Docker Desktop it also runs on macOS and Windows.",
     },
     {
       claim: "C50 C83",

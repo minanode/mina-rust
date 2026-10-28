@@ -162,11 +162,12 @@ Check the public release downloads and `https://minanode.org/allowed_signers`
 from a clean machine using the
 [install guide](https://minanode.org/docs/install/#check).
 
-The public export omits the Docker image workflow. Publishing a release does not
-publish an image automatically. The release owner can use the
-[manual image procedure](DOCKER.md#manual-image-publication) to build
-`ghcr.io/minanode/mina-rust` from these signed archives. Installing and enabling
-the proposed workflow requires a separate owner decision.
+Publishing a release starts the [Docker image workflow](DOCKER.md) when the
+tagged commit contains it. A tag older than the workflow, such as `v0.20.0`,
+starts nothing: run the workflow by hand with the version, the release commit
+and `push` ticked. The
+[manual image procedure](DOCKER.md#manual-image-publication) builds
+`ghcr.io/minanode/mina-rust` from the same signed archives without it.
 
 Signature formats and configuration:
 [OpenSSH](https://man.openbsd.org/ssh-keygen#ALLOWED_SIGNERS) and

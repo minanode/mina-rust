@@ -17,7 +17,7 @@ export function GetStarted() {
             <span data-claim={getStarted.claim}>{getStarted.lead}</span>
           }
         />
-        <ul className="grid gap-4 md:grid-cols-3">
+        <ul className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           {getStarted.items.map(item => (
             <li
               key={item.title}

@@ -171,10 +171,14 @@ python3 tools/demo/sync-matrix.py --network devnet --runs 5 \\
         <Prose>
           <p>
             The node saves the chain state as it goes, and a restart picks up
-            from it instead of syncing from the start. It checks the saved state
-            first: if the state is too old or fails a check, the node syncs
-            afresh and says why in its log. If restoring it crashes the node
-            three times, the node deletes it. A stop during a restore (Ctrl-C,{" "}
+            from it instead of syncing from the start. The first save comes a
+            few seconds after the node first syncs, then one every 30 minutes;
+            the log says <C>checkpoint written</C> each time. A node stopped
+            before its first save syncs from the start again. It checks the
+            saved state first: if the state is too old or fails a check, the
+            node syncs afresh and says why in its log. If restoring it crashes
+            the node three times, the node deletes it. A stop during a restore
+            (Ctrl-C,{" "}
             <C>systemctl stop</C>, <C>docker stop</C>) doesn&apos;t count.
           </p>
           <p>
@@ -214,7 +218,10 @@ python3 tools/demo/sync-matrix.py --network devnet --runs 5 \\
             synced. Stop a node running in a terminal first, with Ctrl-C.
           </p>
           <p>
-            Save this as <C>~/.config/systemd/user/mina.service</C>:
+            Create its directory with <C>mkdir -p ~/.config/systemd/user</C>,
+            then save this as <C>~/.config/systemd/user/minanode.service</C>.
+            The name keeps it apart from the OCaml package&apos;s{" "}
+            <C>mina.service</C>.
           </p>
         </Prose>
         <CodeBlock
@@ -238,12 +245,10 @@ WantedBy=default.target`}
           </p>
         </Prose>
         <CodeBlock
-          code={`mkdir -p ~/.config/systemd/user
-# Save the unit above, then:
-systemctl --user daemon-reload
-systemctl --user enable --now mina.service
+          code={`systemctl --user daemon-reload
+systemctl --user enable --now minanode.service
 loginctl enable-linger "$USER"
-journalctl --user -u mina.service -f`}
+journalctl --user -u minanode.service -f`}
           label="start the service and follow its log"
         />
         <Prose>
@@ -256,13 +261,13 @@ journalctl --user -u mina.service -f`}
             The dashboard stays at <C>http://127.0.0.1:3000</C>; on a server,
             use the{" "}
             <DocLink href="/docs/dashboard/#on-a-server">SSH tunnel</DocLink>.
-            Stop the service with <C>systemctl --user stop mina.service</C>. For
+            Stop the service with <C>systemctl --user stop minanode.service</C>. For
             a bug report, take the log from the journal:
           </p>
         </Prose>
         <CodeBlock
           code={`mina node status
-journalctl --user -u mina.service | mina report --log -`}
+journalctl --user -u minanode.service | mina report --log -`}
           label="service status and report"
         />
       </DocSection>
@@ -275,6 +280,18 @@ journalctl --user -u mina.service | mina report --log -`}
             connected but have not sent a tip. Bootstrap fetches ledgers and
             blocks. Catchup applies blocks to reach the tip. Synced means the
             node has caught up. Starting means it has not reported a phase yet.
+          </p>
+          <p>
+            Warnings such as <C>Ledger unavailable</C> or{" "}
+            <C>TransactionPoolFetchAccountsFailed</C> before the first Synced
+            are normal: the transaction pool asks for accounts before the
+            ledger is ready. If they keep coming after Synced, collect a report.
+            A first start also logs{" "}
+            <C>no ledger to copy for sync, starting from an empty one</C> and a
+            stray <C>[-] no FUZZER conf specified</C> line. Kad warnings such as{" "}
+            <C>Skipping updates to Kad entry multiaddress list</C> can repeat at
+            any time, and a producer key with no stake logs{" "}
+            <C>Empty delegator table</C>. All of these are harmless.
           </p>
           <p>
             Check the peer count, target height and log progress before
@@ -322,15 +339,23 @@ mina report -d ~/.mina --node http://127.0.0.1:3000 \\
           label="node with separate ports and data"
         />
         <Prose>
-          <h3>Command not found</h3>
+          <h3>Command not found, or another mina</h3>
           <p>
             Try the installed binary by its full path. Add its directory to PATH
             in this shell, and in your shell startup file for later shells.
+          </p>
+          <p>
+            If <C>mina --version</C> prints anything but this release&apos;s{" "}
+            <C>mina</C> line, another program called <C>mina</C>, such as the
+            OCaml node, comes first on PATH. <C>command -v mina</C> shows which
+            one runs. Put <C>~/.local/bin</C> first, as below, or use the full
+            path.
           </p>
         </Prose>
         <CodeBlock
           code={`~/.local/bin/mina --version
 export PATH="$HOME/.local/bin:$PATH"
+command -v mina
 mina --version`}
           label="check the install and set PATH"
         />

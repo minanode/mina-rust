@@ -123,6 +123,18 @@ function Options({ args }: { args: Arg[] }) {
   );
 }
 
+// Notes the binary's help text doesn't carry yet.
+const notes: Record<string, ReactNode> = {
+  "wallet-generate": (
+    <>
+      It reads the new key&apos;s password from <C>MINA_PRIVKEY_PASS</C>, and
+      stops if that is unset or empty.{" "}
+      <DocLink href="/docs/block-producer/#key">The key</DocLink> shows how to
+      set it.
+    </>
+  ),
+};
+
 export default function CliPage() {
   return (
     <DocsPage
@@ -132,7 +144,10 @@ export default function CliPage() {
     >
       <Prose>
         <p>
-          The same text is printed by <C>mina &lt;command&gt; --help</C>. An
+          The same text is printed by <C>mina &lt;command&gt; --help</C>,
+          apart from the notes this page adds to some commands. Every
+          command also takes <C>-h</C> or <C>--help</C>, and <C>mina</C> itself
+          takes <C>-V</C> or <C>--version</C>; they are not listed below. An
           option with an environment variable may be set by that variable
           instead; the option on the command line takes precedence. Before
           opening the HTTP port to other machines, read{" "}
@@ -165,6 +180,7 @@ export default function CliPage() {
                   <Text text={paragraph} />
                 </p>
               ))}
+            {notes[command.id] ? <p>{notes[command.id]}</p> : null}
           </Prose>
           <CodeBlock code={command.usage} label="usage" />
           {command.subcommands.length ? (

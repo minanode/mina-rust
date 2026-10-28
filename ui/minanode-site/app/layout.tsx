@@ -9,7 +9,7 @@ import "./globals.css";
 
 const title = "minanode: a second Mina client, in Rust";
 const description =
-  "A community-led second Mina client: a native node in Rust and a full node in the browser, checked against OCaml 4.0.2 by replaying the chain, checking proofs and comparing fork choice.";
+  "A community-led second Mina client: a native node in Rust and a full node in the browser, checked against the OCaml node by replaying the chain, checking proofs and comparing fork choice.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteOrigin),

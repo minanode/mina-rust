@@ -126,7 +126,13 @@ tar -xzf ${archiveName("x86_64")} -C mina-${release.version}`}
           <p>
             <C>--version</C> prints one line, <C>mina {release.version}</C> and
             the WebRTC backend. <C>build-info</C> prints the version, build
-            time, commit, Rust version and WebRTC backend, one per line. Next:{" "}
+            time, commit, Rust version and WebRTC backend, one per line. If{" "}
+            <C>mina --version</C> by name prints something else, another{" "}
+            <C>mina</C> comes first on PATH: see{" "}
+            <DocLink href="/docs/run-a-node/#troubleshooting">
+              troubleshooting
+            </DocLink>
+            . Next:{" "}
             <DocLink href="/docs/run-a-node/">run a node</DocLink>.
           </p>
         </Prose>
@@ -140,19 +146,19 @@ tar -xzf ${archiveName("x86_64")} -C mina-${release.version}`}
           </p>
         </Prose>
         <CodeBlock
-          code={`systemctl --user stop mina.service
+          code={`systemctl --user stop minanode.service
 cp ~/.local/bin/mina ~/.local/bin/mina.previous
 install -m 755 mina-${release.version}/mina ~/.local/bin/mina
-systemctl --user start mina.service`}
+systemctl --user start minanode.service`}
           label="replace the binary"
         />
         <Prose>
           <p>To roll back this binary replacement:</p>
         </Prose>
         <CodeBlock
-          code={`systemctl --user stop mina.service
+          code={`systemctl --user stop minanode.service
 install -m 755 ~/.local/bin/mina.previous ~/.local/bin/mina
-systemctl --user start mina.service`}
+systemctl --user start minanode.service`}
           label="restore the previous binary"
         />
         <Prose>
@@ -172,8 +178,8 @@ systemctl --user start mina.service`}
           </p>
         </Prose>
         <CodeBlock
-          code={`systemctl --user disable --now mina.service
-rm ~/.config/systemd/user/mina.service
+          code={`systemctl --user disable --now minanode.service
+rm ~/.config/systemd/user/minanode.service
 systemctl --user daemon-reload`}
           label="remove the user service"
         />

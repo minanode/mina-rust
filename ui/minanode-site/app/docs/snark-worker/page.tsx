@@ -36,9 +36,17 @@ export default function WorkerPage() {
           <p>
             Without a key yet, make one with <C>mina wallet generate</C>, as for{" "}
             <DocLink href="/docs/block-producer/#key">a block producer</DocLink>
-            . The worker uses only its public key.
+            . Set <C>MINA_PRIVKEY_PASS</C> first, as that section shows: the
+            command reads the key&apos;s password from it. The worker uses only
+            the public key.
           </p>
-          <p data-claim={worker.feeRule.claim}>{worker.feeRule.text}</p>
+          <p
+            id="fee-rule"
+            className="scroll-mt-24"
+            data-claim={worker.feeRule.claim}
+          >
+            {worker.feeRule.text}
+          </p>
           <p>
             <C>--allow-worker-control</C> lets anyone who can reach the
             node&apos;s HTTP port choose where the fees go. On a server, use an{" "}
@@ -50,7 +58,7 @@ export default function WorkerPage() {
       <DocSection id="flags" title="Start it with flags">
         <CodeBlock
           code={`mina node --network devnet \\
-  --run-snarker B62q... --snarker-fee 0.004`}
+  --run-snarker B62q... --snarker-fee 1`}
           label="start command with a worker"
         />
         <Prose>
@@ -58,6 +66,19 @@ export default function WorkerPage() {
             <span data-claim={worker.fee.claim}>{worker.fee.text}</span> The
             flags set the worker at every start, and win over a setting saved
             from the dashboard.
+          </p>
+          <p>
+            The example asks 1 MINA because a new key has no account on chain
+            yet, and such a key needs at least that. A key that already has an
+            account may ask less.
+          </p>
+          <p>
+            If the node runs as the user service, add these flags to its start
+            command with a drop-in file, as the{" "}
+            <DocLink href="/docs/block-producer/#service">
+              block producer page
+            </DocLink>{" "}
+            shows for its flags. The worker needs no password file.
           </p>
           <p>
             If this node also produces blocks,{" "}

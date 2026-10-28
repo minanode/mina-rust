@@ -49,6 +49,7 @@ for (const section of claimsMd.split(/^### /m).slice(1)) {
     return m ? m[1] : "";
   };
   const ticks = text => [...text.matchAll(/`([^`]+)`/g)].map(m => m[1]);
+  if (entries.has(id)) problems.push(`${id}: more than one entry in CLAIMS.md`);
   entries.set(id, { sources: ticks(field("Sources")), figures: ticks(field("Figures")) });
 }
 

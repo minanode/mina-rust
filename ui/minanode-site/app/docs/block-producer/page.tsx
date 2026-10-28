@@ -20,10 +20,24 @@ export const metadata: Metadata = {
   alternates: { canonical: "/docs/block-producer/" },
 };
 
-const start = `read -rs -p "Key password: " MINA_PRIVKEY_PASS &&
+const start = `printf "Key password: " && IFS= read -rs MINA_PRIVKEY_PASS && echo &&
   export MINA_PRIVKEY_PASS
 mina node --network devnet \\
   --producer-key ~/keys/producer-key`;
+
+const service = `systemctl --user stop minanode.service
+(umask 077 && printf "Key password: " && IFS= read -rs P && echo &&
+  printf "MINA_PRIVKEY_PASS='%s'\\n" "$P" > ~/keys/producer.env)
+mkdir -p ~/.config/systemd/user/minanode.service.d
+cat > ~/.config/systemd/user/minanode.service.d/producer.conf <<'EOF'
+[Service]
+EnvironmentFile=%h/keys/producer.env
+ExecStart=
+ExecStart=%h/.local/bin/mina node --network devnet \\
+  --disable-filesystem-logging --producer-key %h/keys/producer-key
+EOF
+systemctl --user daemon-reload
+systemctl --user start minanode.service`;
 
 export default function ProducerPage() {
   return (
@@ -40,14 +54,16 @@ export default function ProducerPage() {
             epoch&apos;s staking ledger.
           </p>
           <p>
-            To make a new key, choose a password, then write the key file. The
+            To make a new key, choose a password, then write the key file.{" "}
+            <C>mina wallet generate</C> reads the password from{" "}
+            <C>MINA_PRIVKEY_PASS</C> and stops if it is unset or empty. The
             command prints the public key and saves it next to the file, in{" "}
             <C>producer-key.pub</C>.
           </p>
         </Prose>
         <CodeBlock
           code={`mkdir -p -m 700 ~/keys
-read -rs -p "Key password: " MINA_PRIVKEY_PASS &&
+printf "Key password: " && IFS= read -rs MINA_PRIVKEY_PASS && echo &&
   export MINA_PRIVKEY_PASS
 mina wallet generate --output ~/keys/producer-key`}
           label="key commands"
@@ -112,6 +128,26 @@ mina wallet generate --output ~/keys/producer-key`}
             A block producer keeps proofs in memory, not in the{" "}
             <DocLink href="/docs/run-a-node/#proof-cache">proof cache</DocLink>.{" "}
             <C>--proof-cache</C> turns the cache on.
+          </p>
+        </Prose>
+      </DocSection>
+
+      <DocSection id="service" title="Under the user service">
+        <Prose>
+          <p>
+            If the node runs as the{" "}
+            <DocLink href="/docs/run-a-node/#service">user service</DocLink>,
+            don&apos;t start a second one in a terminal. Give the service the
+            producer flags instead, with a drop-in file that replaces its start
+            command, and keep the password in a file only you can read:
+          </p>
+        </Prose>
+        <CodeBlock code={service} label="producer flags for the user service" />
+        <Prose>
+          <p>
+            To go back to a plain full node, delete{" "}
+            <C>~/.config/systemd/user/minanode.service.d/producer.conf</C>, then
+            run <C>systemctl --user daemon-reload</C> and restart the service.
           </p>
         </Prose>
       </DocSection>

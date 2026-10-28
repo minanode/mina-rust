@@ -4,7 +4,14 @@ import { CodeBlock } from "@minanode/design-system/patterns/code-block";
 
 import { DocsPage } from "@/components/docs/docs-page";
 import { Screenshot } from "@/components/docs/screenshot";
-import { C, Caution, DocSection, Prose, Terms } from "@/components/docs/prose";
+import {
+  C,
+  Caution,
+  DocLink,
+  DocSection,
+  Prose,
+  Terms,
+} from "@/components/docs/prose";
 import { dashboard } from "@/content/docs";
 
 export const metadata: Metadata = {
@@ -85,6 +92,14 @@ export default function DashboardPage() {
             The pages read only this node, and nothing loads from elsewhere.{" "}
             <C>--no-dashboard</C> turns the dashboard off; the API stays on.
           </p>
+          <p>
+            While the worker is off, the SNARK worker page&apos;s fee field
+            starts at the lowest fee on offer in the pool, or 0.1 MINA if there
+            is none. A key with no account on chain needs a fee of at least 1
+            MINA (
+            <DocLink href="/docs/snark-worker/#fee-rule">the rule</DocLink>), so
+            raise it for a new key.
+          </p>
         </Prose>
       </DocSection>
 
@@ -136,6 +151,13 @@ export default function DashboardPage() {
             and open <C>http://127.0.0.1:3000</C>. The tunnel stays up until you
             press Ctrl-C. Worker control works through it, because your browser
             sees the dashboard at a loopback address.
+          </p>
+          <p>
+            If port 3000 is taken on your computer, forward another local port,
+            as in <C>ssh -N -L 127.0.0.1:3010:127.0.0.1:3000 you@server</C>, and
+            open <C>http://127.0.0.1:3010</C>. When the local port is taken,{" "}
+            <C>ssh</C> prints a bind error but keeps running, so check its
+            output if the page fails to load.
           </p>
           <p>{dashboard.tunnelNote}</p>
           <p>{dashboard.remoteNote}</p>

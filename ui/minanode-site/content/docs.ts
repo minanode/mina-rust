@@ -149,23 +149,22 @@ export const requirements = {
     {
       claim: "C64",
       label: "Devnet full node, x86_64",
-      value: "Typical 1.2 GB; peak 1.5 GB over 10 hours",
+      value: "About 360 to 380 MiB over 9 hours; peak 644 MiB",
     },
     {
       claim: "C64",
       label: "Mainnet full node, x86_64",
-      value: "Typical 1.3 GB; peak 2.0 GB over 24 hours, on an older build",
+      value: "About 1.2 GiB over 9 hours; peak 2.6 GiB",
     },
     {
       claim: "C67",
       label: "Devnet block producer",
-      value:
-        "Typical 2.1 GB; peak 3.4 GB over 10 hours, including the block prover",
+      value: "About 1.3 GiB over 9 hours; peak 2.7 GiB, including the block prover",
     },
     {
       claim: "C66",
       label: "Devnet node with SNARK worker",
-      value: "Typical 3.2 GB; peak 3.7 GB over 10 hours",
+      value: "About 2.0 to 2.2 GiB over 9 hours; peak 2.6 GiB",
     },
     {
       claim: "C65",
@@ -181,17 +180,25 @@ export const requirements = {
     },
   ],
   machine: [
-    { claim: "C64", label: "Full node", value: "2 cores, 4 GB RAM" },
-    { claim: "C66", label: "SNARK worker", value: "4 or more cores, 8 GB RAM" },
+    {
+      claim: "C64",
+      label: "Full node",
+      value: "1 core and 2 GiB RAM to try; 2 cores and 4 GiB suggested",
+    },
+    {
+      claim: "C66",
+      label: "SNARK worker",
+      value: "4 cores and 8 GiB RAM to try; 8 cores and 16 GiB suggested",
+    },
     {
       claim: "C67",
       label: "Block producer",
-      value: "4 or more cores, 8 GB RAM",
+      value: "4 cores and 8 GiB RAM to try; 8 cores and 16 GiB suggested",
     },
   ],
   memoryNote: {
     claim: "C64 C65 C66 C67 C89",
-    text: "The x86_64 rows are RSS sampled once a minute on 24 October 2026, in rounded GB, where 1 GB is 1,000,000,000 bytes. Typical means the median; peak means the highest sample. The ARM64 rows are shorter runs. The Pi 4 rows give each run's mean and 95th percentile of RSS sampled every 30 seconds, from 30 minutes after sync to the end of the run. The Apple M4 rows are docker stats samples taken every 10 seconds, the producer and worker ones as the range seen. A block producer must also prove each block within its 90-second slot, so a faster CPU gives it more margin.",
+    text: "The x86_64 rows are 0.20.0 nodes on 27 and 28 October 2026: the range of RSS over 9 hours of running, and the peak, the process's high-water mark since it started, which includes restoring its saved chain. The ARM64 rows are shorter runs. The Pi 4 rows give each run's mean and 95th percentile of RSS sampled every 30 seconds, from 30 minutes after sync to the end of the run. The Apple M4 rows are docker stats samples taken every 10 seconds, the producer and worker ones as the range seen. A block producer must also prove each block within its 90-second slot, so a faster CPU gives it more margin.",
   },
   disk: {
     claim: "C68",
@@ -298,11 +305,11 @@ export const producer = {
 
 export const lightEndpoints = {
   bestTipSize: {
-    claim: "C85",
+    claim: "C90",
     text: "The answer is 23,546 bytes in binprot and 32,344 bytes in JSON.",
   },
   accountSize: {
-    claim: "C86",
+    claim: "C91",
     text: "An answer for an account without a zkApp is about 4.8 KB.",
   },
   limits: [

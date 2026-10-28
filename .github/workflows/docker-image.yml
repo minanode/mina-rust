@@ -1,0 +1,373 @@
+# Build the minanode image from a GitHub release's archives and push it to
+# ghcr.io/minanode/mina-rust. Release-day steps: docs/release/DOCKER.md.
+#
+# - A published release (not a pre-release) is verified, built for
+#   linux/amd64 and linux/arm64, pushed as VERSION and attested. Then the
+#   shared tags, MAJOR.MINOR and latest, move to that digest if it is the
+#   newest release for them (tools/release/docker/move-shared-tags.sh).
+# - A published pre-release gets a dry run: verified and built, not pushed.
+# - Run it by hand (workflow_dispatch) with a version and push: false for a
+#   dry run, or push: true to push that release's image, with the same
+#   shared-tag rule. A pre-release pushed by hand gets only its VERSION tag.
+#
+# The release key never comes here: the job only verifies SHA256SUMS.sig
+# with docs/release/allowed_signers from the release commit. That commit is
+# fixed before anything is downloaded: the release event's own commit, or
+# the commit given by hand. The tag must still point to it, and it must be
+# in the default branch's history. The image is built from the signed
+# archives, never from source, with the tooling of this workflow's own
+# commit.
+
+name: Docker image
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, without the v (e.g. 0.20.0)"
+        required: true
+        type: string
+      commit:
+        description: "The release's full commit ID, from its verified tag (git rev-parse 'vVERSION^{commit}')"
+        required: true
+        type: string
+      push:
+        description: "Push to GHCR (false: a dry run that only verifies and builds)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+# One run per version. A push is never cancelled; a second run for the same
+# version waits for it. Runs for different versions build and push their
+# VERSION tags in parallel; only the shared-tags job is serialized across
+# versions.
+concurrency:
+  group: docker-image-${{ github.event.release.tag_name || format('v{0}', inputs.version) }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/minanode/mina-rust
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      push: ${{ steps.plan.outputs.push }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      commit: ${{ steps.plan.outputs.commit }}
+    steps:
+      - name: Work out the version and whether to push
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_SHA: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_COMMIT: ${{ inputs.commit }}
+          INPUT_PUSH: ${{ inputs.push }}
+        run: |
+          set -euo pipefail
+          # The release commit: for a release event, the commit GitHub
+          # recorded for it (a rerun keeps it); by hand, the one given.
+          if [ "$EVENT" = release ]; then
+            tag=$RELEASE_TAG
+            version=${tag#v}
+            commit=$RELEASE_SHA
+          else
+            version=$INPUT_VERSION
+            tag=v$version
+            commit=$INPUT_COMMIT
+          fi
+          if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] ||
+              [ "$tag" != "v$version" ]; then
+            echo "::error::not a release version: $tag"
+            exit 1
+          fi
+          if ! [[ $commit =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::not a full commit ID: $commit"
+            exit 1
+          fi
+          # A tag moved since then, or a commit outside the reviewed
+          # history, stops the run: the trust file comes from this commit.
+          tagged=$(gh api "repos/$REPO/commits/$tag" --jq .sha)
+          if [ "$tagged" != "$commit" ]; then
+            echo "::error::$tag points to $tagged, not to the release commit $commit"
+            exit 1
+          fi
+          status=$(gh api "repos/$REPO/compare/$commit...$DEFAULT_BRANCH" --jq .status)
+          if [ "$status" != ahead ] && [ "$status" != identical ]; then
+            echo "::error::$commit is not in the history of $DEFAULT_BRANCH ($status)"
+            exit 1
+          fi
+          # The release must be published: its assets are what we build.
+          info=$(gh release view "$tag" --repo "$REPO" --json isDraft,isPrerelease)
+          if [ "$(jq -r .isDraft <<<"$info")" != false ]; then
+            echo "::error::release $tag is a draft or missing"
+            exit 1
+          fi
+          prerelease=$(jq -r .isPrerelease <<<"$info")
+          if [ "$EVENT" = release ]; then
+            if [ "$prerelease" = true ]; then push=false; else push=true; fi
+          else
+            push=$INPUT_PUSH
+          fi
+          {
+            echo "version=$version"
+            echo "push=$push"
+            echo "prerelease=$prerelease"
+            echo "commit=$commit"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Docker image for $tag"
+            echo
+            echo "- commit: $commit"
+            echo "- pre-release: $prerelease"
+            echo "- push: $push"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  dry-run:
+    name: Verify and build (dry run)
+    needs: plan
+    if: needs.plan.outputs.push != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # The build tooling comes from this workflow's commit (main for a run
+      # by hand), so a release tagged before it existed can still be built.
+      # The trust file and the build commit come from the release commit
+      # fixed by the plan job.
+      - name: Check out the build tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download and verify the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          COMMIT: ${{ needs.plan.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release" && cd "$RUNNER_TEMP/release"
+          gh release download "v$VERSION" --repo "$REPO" \
+            --pattern "mina-$VERSION-linux-x86_64.tar.gz" \
+            --pattern "mina-$VERSION-linux-arm64.tar.gz" \
+            --pattern SHA256SUMS --pattern SHA256SUMS.sig
+          # The tag must still point to the release commit the plan fixed.
+          tagged=$(gh api "repos/$REPO/commits/v$VERSION" --jq .sha)
+          if [ "$tagged" != "$COMMIT" ]; then
+            echo "::error::v$VERSION points to $tagged, not to the release commit $COMMIT"
+            exit 1
+          fi
+          # docs/release/allowed_signers as of the release commit.
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/$REPO/contents/docs/release/allowed_signers?ref=$COMMIT" \
+            > "$RUNNER_TEMP/allowed_signers"
+          ssh-keygen -Y verify -f "$RUNNER_TEMP/allowed_signers" \
+            -I release@minanode.org -n file -s SHA256SUMS.sig < SHA256SUMS
+          sha256sum -c --strict SHA256SUMS
+          for arch in x86_64 arm64; do
+            # One JSON object; exact strings: commit, version and target.
+            if ! tar -xzOf "mina-$VERSION-linux-$arch.tar.gz" build-info.json |
+                jq -se --arg c "$COMMIT" --arg v "$VERSION" --arg t "linux-$arch" \
+                  'length == 1 and (.[0] | type == "object" and .commit == $c and .version == $v and .target == $t)' \
+                  > /dev/null; then
+              echo "::error::the $arch archive's build-info.json is not commit $COMMIT, version $VERSION, target linux-$arch"
+              exit 1
+            fi
+          done
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build both architectures (no push)
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          # build-image.sh checks the signature again, with the tag's file.
+          tools/release/docker/build-image.sh "$VERSION" "$RUNNER_TEMP/release" \
+            --signers "$RUNNER_TEMP/allowed_signers" \
+            --tool docker --platform linux/amd64,linux/arm64 --no-load
+          echo "Dry run: verified and built v$VERSION for linux/amd64 and linux/arm64; nothing pushed." \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Verify, build, push and attest
+    needs: plan
+    if: needs.plan.outputs.push == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      # The build tooling comes from this workflow's commit (main for a run
+      # by hand), so a release tagged before it existed can still be built.
+      # The trust file and the build commit come from the release commit
+      # fixed by the plan job.
+      - name: Check out the build tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download and verify the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          COMMIT: ${{ needs.plan.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release" && cd "$RUNNER_TEMP/release"
+          gh release download "v$VERSION" --repo "$REPO" \
+            --pattern "mina-$VERSION-linux-x86_64.tar.gz" \
+            --pattern "mina-$VERSION-linux-arm64.tar.gz" \
+            --pattern SHA256SUMS --pattern SHA256SUMS.sig
+          # The tag must still point to the release commit the plan fixed.
+          tagged=$(gh api "repos/$REPO/commits/v$VERSION" --jq .sha)
+          if [ "$tagged" != "$COMMIT" ]; then
+            echo "::error::v$VERSION points to $tagged, not to the release commit $COMMIT"
+            exit 1
+          fi
+          # docs/release/allowed_signers as of the release commit.
+          gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/$REPO/contents/docs/release/allowed_signers?ref=$COMMIT" \
+            > "$RUNNER_TEMP/allowed_signers"
+          ssh-keygen -Y verify -f "$RUNNER_TEMP/allowed_signers" \
+            -I release@minanode.org -n file -s SHA256SUMS.sig < SHA256SUMS
+          sha256sum -c --strict SHA256SUMS
+          for arch in x86_64 arm64; do
+            # One JSON object; exact strings: commit, version and target.
+            if ! tar -xzOf "mina-$VERSION-linux-$arch.tar.gz" build-info.json |
+                jq -se --arg c "$COMMIT" --arg v "$VERSION" --arg t "linux-$arch" \
+                  'length == 1 and (.[0] | type == "object" and .commit == $c and .version == $v and .target == $t)' \
+                  > /dev/null; then
+              echo "::error::the $arch archive's build-info.json is not commit $COMMIT, version $VERSION, target linux-$arch"
+              exit 1
+            fi
+          done
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s\n' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      # Only the VERSION tag here. The shared tags move in the shared-tags
+      # job, to this digest, once this push and its attestation are done.
+      - name: Build and push both architectures
+        id: build
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          # build-image.sh checks the signature again, with the tag's file.
+          tools/release/docker/build-image.sh "$VERSION" "$RUNNER_TEMP/release" \
+            --signers "$RUNNER_TEMP/allowed_signers" \
+            --tool docker --push "$IMAGE:$VERSION" \
+            --metadata-file "$RUNNER_TEMP/metadata.json"
+          digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/metadata.json")
+          if ! printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::no image digest in the build metadata"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+          # A storage record needs artifact-metadata: write as well.
+          create-storage-record: false
+
+      - name: Record the digest
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### Pushed"
+            echo
+            echo "For the release notes:"
+            echo
+            echo '```'
+            echo "$IMAGE:$VERSION"
+            echo "$IMAGE@$DIGEST"
+            echo '```'
+            echo
+            echo "Verify: \`gh attestation verify oci://$IMAGE:$VERSION -R $GITHUB_REPOSITORY\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Moves MAJOR.MINOR and latest to the digest just pushed and attested, if
+  # this version is the newest published full release for them. One group
+  # for every version, so two runs never move them at once; the newest
+  # release is read again from GitHub just before the move, so a slow run for
+  # an older release can't move them back. A run waiting here is replaced if
+  # a third one arrives; it only leaves the tags where they were (never
+  # older), and a run by hand with push: true moves them.
+  shared-tags:
+    name: Move the shared tags
+    needs: [plan, publish]
+    if: needs.plan.outputs.push == 'true' && needs.plan.outputs.prerelease == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    concurrency:
+      group: docker-image-shared-tags
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out the tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        env:
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s\n' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      - name: Move MAJOR.MINOR and latest if this is the newest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          set -euo pipefail
+          tools/release/docker/move-shared-tags.sh "$VERSION" \
+            --digest "$DIGEST" --image "$IMAGE" --repo "$REPO" |
+            tee "$RUNNER_TEMP/shared-tags.txt"
+          {
+            echo "### Shared tags"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/shared-tags.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -6,13 +6,13 @@ import { spawnSync } from "node:child_process";
 
 const site = resolve(new URL("..", import.meta.url).pathname);
 
-function check(sources) {
+function check(sources, extraClaims = "") {
   const scratch = mkdtempSync(join(site, ".claims-test-"));
   try {
     mkdirSync(join(scratch, "scripts"));
     mkdirSync(join(scratch, "out"));
     copyFileSync(join(site, "scripts/check-claims.mjs"), join(scratch, "scripts/check-claims.mjs"));
-    writeFileSync(join(scratch, "CLAIMS.md"), `### C01 Test claim\n\n- Sources:${sources}\n- Figures: \`123\`\n- Caveat kept: private measurement.\n`);
+    writeFileSync(join(scratch, "CLAIMS.md"), `### C01 Test claim\n\n- Sources:${sources}\n- Figures: \`123\`\n- Caveat kept: private measurement.\n${extraClaims}`);
     writeFileSync(join(scratch, "out/index.html"), '<p data-claim="C01">123</p>');
     return spawnSync(process.execPath, [join(scratch, "scripts/check-claims.mjs")], { encoding: "utf8" });
   } finally {
@@ -38,4 +38,10 @@ test("an unknown wrapped source is not accepted as coordinator evidence", () => 
   const result = check("\n  `unknown-source`");
   assert.equal(result.status, 1);
   assert.match(result.stdout, /cannot read source reference unknown-source/);
+});
+
+test("an ID with two entries fails", () => {
+  const result = check(" `coordinator: private pre-release measurement`", "\n### C01 Another claim\n\n- Sources: `coordinator: other`\n- Figures: none\n");
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /C01: more than one entry in CLAIMS.md/);
 });

@@ -4,7 +4,12 @@ import { CodeBlock } from "@minanode/design-system/patterns/code-block";
 import { KeyValueList } from "@minanode/design-system/patterns/key-value-list";
 
 import { DocsPage } from "@/components/docs/docs-page";
-import { C, claimedRows, DocSection, Prose } from "@/components/docs/prose";
+import {
+  claimedRows,
+  DocLink,
+  DocSection,
+  Prose,
+} from "@/components/docs/prose";
 import { requirements } from "@/content/docs";
 
 export const metadata: Metadata = {
@@ -24,6 +29,15 @@ export default function RequirementsPage() {
           rows={claimedRows(requirements.system)}
         />
         <Prose>
+          <p>
+            The CPU and glibc checks below are for the Linux archives. On macOS
+            or Windows, run the node in Docker instead, as its{" "}
+            <DocLink href="/docs/docker/#macos-and-windows">
+              macOS and Windows
+            </DocLink>{" "}
+            section explains. The image brings its own C library, so the glibc
+            check does not apply there.
+          </p>
           <p data-claim={requirements.cpu.claim}>{requirements.cpu.text}</p>
         </Prose>
         <CodeBlock
