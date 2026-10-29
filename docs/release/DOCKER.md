@@ -115,7 +115,9 @@ its commit and `push` unticked.
    (ghcr.io/minanode/mina-rust@sha256:...)
    ```
 
-5. Verify from a clean machine, without logging in:
+5. Verify from a clean machine, without a registry login.
+   `gh attestation verify` still needs a GitHub CLI login (`gh auth login`);
+   without one it stops before checking anything:
 
    ```sh
    gh attestation verify oci://ghcr.io/minanode/mina-rust:0.20.0 \

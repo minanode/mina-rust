@@ -140,7 +140,7 @@ MINA_NODE_ARGS=--libp2p-external-ip 203.0.113.7
 EOF
 docker compose up -d`;
 
-const build = `git clone ${release.repositoryUrl} mina-rust
+const build = `git clone --branch v${release.version} ${release.repositoryUrl} mina-rust
 cd mina-rust
 mkdir release && cd release
 url=${release.downloadUrl}
@@ -214,9 +214,11 @@ export default function DockerPage() {
             set <C>MINA_IMAGE</C> to it in <C>.env</C>.
           </p>
           <p>
-            The GitHub CLI checks the image&apos;s build provenance. A passing
-            check shows that the repository&apos;s Docker image workflow built
-            the image from the signed release archives.
+            The GitHub CLI checks the image&apos;s build provenance. It needs a
+            GitHub login: run <C>gh auth login</C> first, or run the check on a
+            computer where <C>gh</C> is already signed in. A passing check shows
+            that the repository&apos;s Docker image workflow built the image
+            from the signed release archives.
           </p>
         </Prose>
         <CodeBlock code={attest} label="check the build provenance" />

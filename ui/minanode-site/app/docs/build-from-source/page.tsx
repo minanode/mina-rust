@@ -34,7 +34,7 @@ tar -xJf node-v24.11.0-linux-x64.tar.xz \\
   -C ~/.local/node --strip-components=1
 export PATH="$HOME/.local/node/bin:$HOME/.cargo/bin:$PATH"`;
 
-const build = `git clone ${release.repositoryUrl} mina-rust
+const build = `git clone --branch v${release.version} ${release.repositoryUrl} mina-rust
 cd mina-rust
 cd ui && npm ci && npm run build:dashboard && cd ..
 CARGO_BUILD_JOBS=8 cargo build --release --locked \\
@@ -66,7 +66,12 @@ export default function BuildFromSourcePage() {
 
       <DocSection id="build" title="2. Build">
         <Prose>
-          <p>Run these commands in one shell.</p>
+          <p>
+            Run these commands in one shell. The clone checks out the release
+            tag, <C>v{release.version}</C>, and git notes that the checkout is a
+            detached HEAD. Without <C>--branch</C>, it builds the newest code on
+            the default branch instead.
+          </p>
         </Prose>
         <CodeBlock code={build} label="build commands" />
         <Prose>
@@ -80,11 +85,6 @@ export default function BuildFromSourcePage() {
           </p>
           <p data-claim={sourceBuild.measurements.claim}>
             {sourceBuild.measurements.text}
-          </p>
-          <p>
-            Node.js 24.11.0 prints engine warnings for some test dependencies
-            that ask for a newer patch version. The warnings do not stop the
-            dashboard build.
           </p>
         </Prose>
       </DocSection>
