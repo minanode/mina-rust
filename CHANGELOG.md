@@ -121,6 +121,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Web node**: the Send page keeps the payments this tab sent across a role
+  change's restart and a reload, in the tab's sessionStorage, and the next
+  payment takes the nonce after them. It keeps the hash, sender, recipient,
+  amount, fee, nonce, time sent and status, never a key or the memo: at most
+  20 payments, and none that is done and sent more than a day ago.
 - **Web node**: a second tab of the same browser, which can't open the
   frontier store the first tab holds, now says so: one caution banner, and the
   Overview and Start-up show the store as not available in this tab, with no
