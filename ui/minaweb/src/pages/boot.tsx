@@ -10,7 +10,8 @@ import { PageHeader } from "@minanode/design-system/patterns/page-header";
 import { restoreHeadline } from "@minanode/node-client";
 import { useNodeStatus, useSyncRestore } from "@minanode/node-client/react";
 
-import { BootFailureAlert, BootSteps } from "../app/boot-screen";
+import { BootFailureAlert } from "../app/boot-screen";
+import { BootSteps } from "../app/boot-steps";
 import { useBoot } from "../app/boot-context";
 import { resetFrontierStore } from "../boot/boot";
 import { SAVED_CHAIN_DOCS_URL, storeLabel, storeState } from "../lib/store";

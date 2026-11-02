@@ -56,6 +56,7 @@ import {
   type KeyGlue,
 } from "../roles/keys";
 import { readSharing } from "./sharing";
+import { pendingSteps, type Step, type StepId } from "./steps";
 import {
   readRole,
   rolesAllowed,
@@ -91,19 +92,7 @@ export interface WebNodeGlue extends Partial<KeyGlue>, Partial<KeyFileGlue> {
   webrtc_peer_stats?(): Promise<unknown>;
 }
 
-export type StepId =
-  "check" | "download" | "start" | "connect" | "ledgers" | "blocks";
-
-export type StepState = "done" | "current" | "stopped" | "skipped" | "pending";
-
-export interface Step {
-  id: StepId;
-  label: string;
-  state: StepState;
-  detail: string | null;
-  startedAt: number | null;
-  endedAt: number | null;
-}
+export type { Step, StepId, StepState } from "./steps";
 
 export interface BootSnapshot {
   steps: Step[];
@@ -152,15 +141,6 @@ export interface ConnectCounts {
   /** When the node started dialling, ms since the epoch. */
   since: number;
 }
-
-const LABELS: Record<StepId, string> = {
-  check: "Check the browser",
-  download: "Download the node",
-  start: "Compile and start the node",
-  connect: "Connect to a peer",
-  ledgers: "Sync the ledgers",
-  blocks: "Sync the blocks",
-};
 
 /** How long without a connected peer before the screen says why. */
 export const PEER_WAIT_MS = 45_000;
@@ -294,14 +274,7 @@ export class Boot {
 
   constructor(private readonly config: BuildConfig) {
     this.snapshot = {
-      steps: (Object.keys(LABELS) as StepId[]).map(id => ({
-        id,
-        label: LABELS[id],
-        state: "pending",
-        detail: null,
-        startedAt: null,
-        endedAt: null,
-      })),
+      steps: pendingSteps(),
       failure: null,
       download: null,
       client: null,
