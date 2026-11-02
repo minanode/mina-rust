@@ -1,6 +1,12 @@
 use redux::ActionMeta;
 
-use crate::{ledger::hash_subtree_at_depth, Store};
+use crate::{
+    ledger::{
+        hash_subtree_at_depth, ledger_empty_hash_at_depth, tree_height_for_num_accounts,
+        LedgerAddress, LEDGER_DEPTH,
+    },
+    Store,
+};
 
 use super::{
     child_hashes_query_depth, TransitionFrontierSyncLedgerSnarkedAction,
@@ -22,7 +28,49 @@ impl TransitionFrontierSyncLedgerSnarkedAction {
             TransitionFrontierSyncLedgerSnarkedAction::PeerQueryNumAccountsError { .. } => {}
             TransitionFrontierSyncLedgerSnarkedAction::PeerQueryNumAccountsSuccess { .. } => {}
             TransitionFrontierSyncLedgerSnarkedAction::NumAccountsReceived { .. } => {}
-            TransitionFrontierSyncLedgerSnarkedAction::NumAccountsAccepted { .. } => {}
+            TransitionFrontierSyncLedgerSnarkedAction::NumAccountsAccepted {
+                num_accounts,
+                contents_hash,
+                ..
+            } => {
+                let Some(hash) = store
+                    .state()
+                    .transition_frontier
+                    .sync
+                    .ledger()
+                    .and_then(|s| s.snarked())
+                    .map(|s| s.ledger_hash().clone())
+                else {
+                    return;
+                };
+                // NumAccounts authenticated the content root and all the empty
+                // right siblings above it. We skip querying those levels, so
+                // clear their old contents before starting at the content root.
+                // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/syncable_ledger/syncable_ledger.ml#L795-L842>
+                let mut address = LedgerAddress::first(
+                    LEDGER_DEPTH - tree_height_for_num_accounts(*num_accounts),
+                );
+                while let Some(parent) = address.parent() {
+                    let right = parent.child_right();
+                    let empty = ledger_empty_hash_at_depth(right.length());
+                    if store
+                        .service
+                        .accounts_set(hash.clone(), &right, &empty, vec![])
+                        .as_ref()
+                        != Ok(&empty)
+                    {
+                        mina_core::error!(mina_core::log::system_time(); "Could not clear verified empty ledger suffix");
+                        return;
+                    }
+                    address = parent;
+                }
+                store.dispatch(
+                    TransitionFrontierSyncLedgerSnarkedAction::NumAccountsSuccess {
+                        num_accounts: *num_accounts,
+                        contents_hash: contents_hash.clone(),
+                    },
+                );
+            }
             TransitionFrontierSyncLedgerSnarkedAction::NumAccountsRejected { .. } => {}
             TransitionFrontierSyncLedgerSnarkedAction::NumAccountsSuccess { .. } => {}
 
@@ -91,10 +139,38 @@ impl TransitionFrontierSyncLedgerSnarkedAction {
                 }
 
                 // TODO: for async ledger this needs an intermediary action
-                let previous_hashes = store
-                    .service()
-                    .child_hashes_get(snarked_ledger_hash, address, levels)
-                    .unwrap();
+                let Ok(mut previous_hashes) =
+                    store
+                        .service()
+                        .child_hashes_get(snarked_ledger_hash.clone(), address, levels)
+                else {
+                    mina_core::error!(mina_core::log::system_time(); "Could not read sync ledger child hashes");
+                    return;
+                };
+
+                // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/syncable_ledger/syncable_ledger.ml#L795-L813>
+                // Empty contents are not a valid RPC request. The verified
+                // hash is all we need to remove this subtree locally.
+                let depth = address.length() + levels;
+                let empty = ledger_empty_hash_at_depth(depth);
+                for ((child, expected), previous) in address
+                    .iter_children(depth)
+                    .zip(hashes)
+                    .zip(&mut previous_hashes)
+                {
+                    if expected == &empty && previous != &empty {
+                        if store
+                            .service
+                            .accounts_set(snarked_ledger_hash.clone(), &child, &empty, vec![])
+                            .as_ref()
+                            != Ok(&empty)
+                        {
+                            mina_core::error!(mina_core::log::system_time(); "Could not clear verified empty ledger subtree");
+                            return;
+                        }
+                        *previous = empty.clone();
+                    }
+                }
 
                 store.dispatch(
                     TransitionFrontierSyncLedgerSnarkedAction::ChildHashesAccepted {

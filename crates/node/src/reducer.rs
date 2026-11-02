@@ -246,6 +246,8 @@ pub fn reducer(
         }
     }
 
+    crate::bootstrap_status::BootstrapStatus::observe(state, action.action(), time);
+
     // must be the last.
     state.action_applied(action);
 }

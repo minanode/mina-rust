@@ -193,3 +193,34 @@ test("the devnet node's /status reads as synced, a block above its peers", () =>
     "Its newest block is 10 s old; the highest peer tip is 1 block below ours.",
   );
 });
+
+test("local ledger recovery is unhealthy until a fresh commit", () => {
+  const status = parseStatus({
+    transition_frontier: {
+      ledger_recovery: {
+        error: "staged ledger hash mismatch",
+        block_hash: "block",
+        recovered_at: null,
+      },
+      sync: { phase: "Bootstrap" },
+    },
+  });
+  expect(status.ledgerRecovery?.active).toBe(true);
+  expect(
+    syncView(
+      { ...base, ledgerRecoveryError: status.ledgerRecovery?.error },
+      now,
+    ),
+  ).toMatchObject({
+    tone: "error",
+    label: "Recovering ledger",
+    detail: "staged ledger hash mismatch",
+  });
+  expect(
+    parseStatus({
+      transition_frontier: {
+        ledger_recovery: { error: "past fault", recovered_at: 1000 },
+      },
+    }).ledgerRecovery?.active,
+  ).toBe(false);
+});

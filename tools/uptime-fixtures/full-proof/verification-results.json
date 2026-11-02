@@ -1,0 +1,110 @@
+{
+  "verifier_sha256": "405d9137901a3bd883676e15f2161396fe2dd04160b8771d61dfafaf8f208232",
+  "config_sha256": "331f34ee5ee1be30ee7e40ea8575cd9c093020c4fc4582e5c15649827c0e60e7",
+  "input_sha256": "1f2c4af58fde21ba39ef66ff19cdf30fdd4a365a585c9e3c832ccc9d826fc515",
+  "stdout_sha256": "b1e9c09fc9dfa3be569aea6512ce4184454e2dae26dea423b99e12e2ddee8b50",
+  "validation_enabled": true,
+  "signature_kind": "testnet",
+  "started_at_unix": 1793217053.8444538,
+  "elapsed_seconds": 132.80028557777405,
+  "exit_code": 0,
+  "results": [
+    {
+      "case": "control-absent-work",
+      "submitted_at": "2026-10-28T19:33:44.045353+00:00",
+      "block_hash": "3NKf6wVnyhSodd9pvbWSrvNkbiBFdReqZBga7QbDPsv5buZBmiFS",
+      "submitter": "B62qoXiHy6LQ1o4gifPapefqEZjF4QBKoJAj9JCvZLPRGM3y2zbTRFp",
+      "state_hash": "3NKf6wVnyhSodd9pvbWSrvNkbiBFdReqZBga7QbDPsv5buZBmiFS",
+      "parent": "3NKLjRZpBiYaLMPE9uYhxoUY3RX22RfYFDAgifNdhtmA69wP3HfH",
+      "height": 581348,
+      "slot": 926819,
+      "verified": true,
+      "validation_error": null
+    },
+    {
+      "case": "control-truncated-work",
+      "submitted_at": "2026-10-28T19:33:44.045353+00:00",
+      "block_hash": "3NKf6wVnyhSodd9pvbWSrvNkbiBFdReqZBga7QbDPsv5buZBmiFS",
+      "submitter": "B62qoXiHy6LQ1o4gifPapefqEZjF4QBKoJAj9JCvZLPRGM3y2zbTRFp",
+      "state_hash": null,
+      "parent": null,
+      "height": null,
+      "slot": null,
+      "verified": true,
+      "validation_error": "Fail to decode snark work"
+    },
+    {
+      "case": "control-wrong-submitter",
+      "submitted_at": "2026-10-28T19:33:44.045353+00:00",
+      "block_hash": "3NKf6wVnyhSodd9pvbWSrvNkbiBFdReqZBga7QbDPsv5buZBmiFS",
+      "submitter": "B62qra4RksF1rLx8gULmbxbpWxMKWhFrPgPbLoXaPGz3GJyGZQG6pE8",
+      "state_hash": null,
+      "parent": null,
+      "height": null,
+      "slot": null,
+      "verified": true,
+      "validation_error": "proof's sok message digest does not match the sok message"
+    },
+    {
+      "case": "devnet-581352-signed",
+      "submitted_at": "2026-10-28T19:48:13.740223+00:00",
+      "block_hash": "3NKMCEe4Wx3XJ9CENmnoEq2VzXQpedVavNco845zMxDFF8oirUUT",
+      "submitter": "B62qoXiHy6LQ1o4gifPapefqEZjF4QBKoJAj9JCvZLPRGM3y2zbTRFp",
+      "state_hash": "3NKMCEe4Wx3XJ9CENmnoEq2VzXQpedVavNco845zMxDFF8oirUUT",
+      "parent": "3NKDkwpDMVmodrw8egvRUPiwq6BoHSTMdN2AWqv1BAPsFLoKQBWX",
+      "height": 581352,
+      "slot": 926828,
+      "verified": true,
+      "validation_error": null
+    },
+    {
+      "case": "devnet-581348-coinbase",
+      "submitted_at": "2026-10-28T19:33:44.045353+00:00",
+      "block_hash": "3NKf6wVnyhSodd9pvbWSrvNkbiBFdReqZBga7QbDPsv5buZBmiFS",
+      "submitter": "B62qoXiHy6LQ1o4gifPapefqEZjF4QBKoJAj9JCvZLPRGM3y2zbTRFp",
+      "state_hash": "3NKf6wVnyhSodd9pvbWSrvNkbiBFdReqZBga7QbDPsv5buZBmiFS",
+      "parent": "3NKLjRZpBiYaLMPE9uYhxoUY3RX22RfYFDAgifNdhtmA69wP3HfH",
+      "height": 581348,
+      "slot": 926819,
+      "verified": true,
+      "validation_error": null
+    },
+    {
+      "case": "control-corrupt-proof",
+      "submitted_at": "2026-10-28T19:33:44.045353+00:00",
+      "block_hash": "3NKf6wVnyhSodd9pvbWSrvNkbiBFdReqZBga7QbDPsv5buZBmiFS",
+      "submitter": "B62qoXiHy6LQ1o4gifPapefqEZjF4QBKoJAj9JCvZLPRGM3y2zbTRFp",
+      "state_hash": null,
+      "parent": null,
+      "height": null,
+      "slot": null,
+      "verified": true,
+      "validation_error": "(Pickles.verify dlog_check)"
+    },
+    {
+      "case": "devnet-581351-signed",
+      "submitted_at": "2026-10-28T19:40:43.238011+00:00",
+      "block_hash": "3NKDkwpDMVmodrw8egvRUPiwq6BoHSTMdN2AWqv1BAPsFLoKQBWX",
+      "submitter": "B62qoXiHy6LQ1o4gifPapefqEZjF4QBKoJAj9JCvZLPRGM3y2zbTRFp",
+      "state_hash": "3NKDkwpDMVmodrw8egvRUPiwq6BoHSTMdN2AWqv1BAPsFLoKQBWX",
+      "parent": "3NLZnu56rYCUJwKFBe9YTWYhcZBrdiQor8nuTK6JeMS4R8XVRrp3",
+      "height": 581351,
+      "slot": 926825,
+      "verified": true,
+      "validation_error": null
+    },
+    {
+      "case": "control-unrelated-work",
+      "submitted_at": "2026-10-28T19:33:44.045353+00:00",
+      "block_hash": "3NKf6wVnyhSodd9pvbWSrvNkbiBFdReqZBga7QbDPsv5buZBmiFS",
+      "submitter": "B62qoXiHy6LQ1o4gifPapefqEZjF4QBKoJAj9JCvZLPRGM3y2zbTRFp",
+      "state_hash": "3NKf6wVnyhSodd9pvbWSrvNkbiBFdReqZBga7QbDPsv5buZBmiFS",
+      "parent": "3NKLjRZpBiYaLMPE9uYhxoUY3RX22RfYFDAgifNdhtmA69wP3HfH",
+      "height": 581348,
+      "slot": 926819,
+      "verified": true,
+      "validation_error": null
+    }
+  ],
+  "controls_are_derived_not_daemon_captures": true
+}

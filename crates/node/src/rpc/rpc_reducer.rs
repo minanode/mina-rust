@@ -65,6 +65,36 @@ impl RpcState {
                 let dispatcher = state_context.into_dispatcher();
                 dispatcher.push(RpcEffectfulAction::HeartbeatGet { rpc_id: *rpc_id });
             }
+            RpcAction::ReportingSnapshotGet {
+                rpc_id,
+                produced_block_watch,
+            } => {
+                let mut state_context =
+                    crate::Substate::<crate::State>::from_compatible_substate(state_context);
+                if let Ok(state) = state_context.get_substate_mut() {
+                    if let Some(bp) = state.block_producer.as_mut() {
+                        use super::RpcReportingProducedBlockWatch as Watch;
+                        match produced_block_watch {
+                            Some(Watch::Start { subscription }) => {
+                                bp.uptime_produced_block = Some(
+                                    crate::block_producer::UptimeProducedBlock::new(*subscription),
+                                );
+                            }
+                            Some(Watch::Cancel { subscription })
+                                if bp
+                                    .uptime_produced_block
+                                    .as_ref()
+                                    .is_some_and(|waiter| waiter.subscription == *subscription) =>
+                            {
+                                bp.uptime_produced_block = None;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                let dispatcher = state_context.into_dispatcher();
+                dispatcher.push(RpcEffectfulAction::ReportingSnapshotGet { rpc_id: *rpc_id });
+            }
             RpcAction::ActionStatsGet { rpc_id, query } => {
                 let dispatcher = state_context.into_dispatcher();
                 dispatcher.push(RpcEffectfulAction::ActionStatsGet {
@@ -283,6 +313,20 @@ impl RpcState {
                 };
 
                 let block = match query {
+                    RpcScanStateSummaryGetQuery::Graphql(hash) => {
+                        if transition_frontier.bootstrap.in_progress
+                            || transition_frontier.is_bootstrapping(meta.time())
+                        {
+                            None
+                        } else if let Some(hash) = hash {
+                            transition_frontier
+                                .best_chain
+                                .iter()
+                                .find(|b| b.hash() == hash)
+                        } else {
+                            transition_frontier.best_tip_breadcrumb()
+                        }
+                    }
                     RpcScanStateSummaryGetQuery::ForBestTip => {
                         transition_frontier.best_tip_breadcrumb()
                     }
@@ -306,16 +350,14 @@ impl RpcState {
                         });
                         dispatcher.push(RpcAction::ScanStateSummaryGetSuccess {
                             rpc_id: *rpc_id,
-                            scan_state: Ok(Vec::new()),
+                            scan_state: Ok(Default::default()),
                         });
                         return;
                     }
                 };
 
                 dispatcher.push(LedgerReadAction::Init {
-                    request: LedgerReadRequest::ScanStateSummary(
-                        block.staged_ledger_hashes().clone(),
-                    ),
+                    request: query.ledger_read(block.staged_ledger_hashes().clone()),
                     callback: LedgerReadInitCallback::RpcScanStateSummaryGetPending {
                         callback: redux::callback!(
                             on_ledger_read_init_rpc_scan_state_summary_get_pending((rpc_id: RequestId<RpcIdType>, block: AppliedBlock)) -> crate::Action{
@@ -542,6 +584,12 @@ impl RpcState {
 
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
                 let Some(best_tip) = state.transition_frontier.best_tip() else {
+                    dispatcher.push(RpcAction::LedgerAccountsGetPending { rpc_id: *rpc_id });
+                    dispatcher.push(RpcAction::LedgerAccountsGetSuccess {
+                        rpc_id: *rpc_id,
+                        account_query: account_query.clone(),
+                        accounts: vec![],
+                    });
                     return;
                 };
                 let ledger_hash = match account_query {
@@ -834,6 +882,35 @@ impl RpcState {
                 dispatcher.push(RpcEffectfulAction::PooledUserCommands {
                     rpc_id: *rpc_id,
                     user_commands: user_commands.into_iter().map(|(_, tx)| tx).collect(),
+                });
+            }
+            RpcAction::BestChainHeadersGet { rpc_id, query } => {
+                let (dispatcher, state) = state_context.into_dispatcher_and_state();
+                let response = super::best_chain_headers(
+                    state.config.consensus_constants.k,
+                    &state.transition_frontier.best_chain,
+                    query,
+                );
+                dispatcher.push(RpcEffectfulAction::BestChainHeadersGet {
+                    rpc_id: *rpc_id,
+                    response,
+                });
+            }
+            RpcAction::BestChainBlockGet { rpc_id, query } => {
+                let (dispatcher, state) = state_context.into_dispatcher_and_state();
+                let response =
+                    super::best_chain_block(&state.transition_frontier.best_chain, query);
+                dispatcher.push(RpcEffectfulAction::BestChainBlockGet {
+                    rpc_id: *rpc_id,
+                    response,
+                });
+            }
+            RpcAction::SyncProgressGet { rpc_id } => {
+                let (dispatcher, state) = state_context.into_dispatcher_and_state();
+                let response = super::sync_progress(state);
+                dispatcher.push(RpcEffectfulAction::SyncProgressGet {
+                    rpc_id: *rpc_id,
+                    response,
                 });
             }
             RpcAction::LightBestTipGet { rpc_id } => {
@@ -1240,7 +1317,7 @@ fn best_chain_ledgers(
 /// The fork inputs at `spec` and what the ledger service needs to export
 /// the fork block's staged ledger and its two epoch ledgers.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_lib/mina_lib.ml#L2946-L2987>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_lib/mina_lib.ml#L2949-L2990>
 fn hard_fork_export_request(
     state: &crate::State,
     spec: &HardForkBlockSpec,
@@ -1263,7 +1340,7 @@ fn hard_fork_export_request(
 /// The ledger `kind` names at the best tip, with what the ledger service
 /// needs to rebuild it if it is a snarked ledger it doesn't hold.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_lib/mina_lib.ml#L680-L760>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_lib/mina_lib.ml#L681-L761>
 fn ledger_export_request(
     state: &crate::State,
     kind: LedgerExportKind,

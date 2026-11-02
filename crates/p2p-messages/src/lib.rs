@@ -13,6 +13,7 @@ pub mod core;
 pub mod gossip;
 pub mod keys;
 pub mod list;
+pub mod nesting;
 pub mod number;
 pub mod phantom;
 pub mod rpc;

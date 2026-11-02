@@ -1062,7 +1062,7 @@ impl GenericTransaction for Transaction {
 /// types and implements conversion to/from the p2p wire format
 /// [`MinaTransactionTransactionStableV2`].
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/5da42ccd72e791f164d4d200cf1ce300262873b3/src/lib/transaction/transaction.ml#L8-L11>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transaction/transaction.ml#L8-L11>
 #[derive(Clone, Debug, PartialEq, derive_more::From)]
 pub enum Transaction {
     /// User-initiated transaction: signed command or zkApp command

@@ -210,11 +210,17 @@ pub mod field {
             .expect("invalid param")
     }
 
+    /// `x / y` for a constant `x`: snarky's `Field.Checked.div` is `inv y`,
+    /// one witness, then a scale by the constant. Its `inv` witnesses 0 for
+    /// `y` 0, whose constraint `y * inv = 1` then fails, so the proof fails
+    /// rather than the prover panicking. Otherwise the value is `x / y`.
+    ///
+    /// snarky: <https://github.com/o1-labs/snarky/blob/9f55ef7c2f2570365aeb24b6ddfc713f48be3117/src/base/utils.ml#L115-L141>
     pub fn div<F>(x: F, y: F, w: &mut Witness<F>) -> F
     where
         F: FieldWitness,
     {
-        w.exists(x / y)
+        w.exists(x * y.inverse().unwrap_or_else(F::zero))
     }
 
     // TODO: Do we need `div` above ?
@@ -284,6 +290,27 @@ pub mod field {
 
     pub fn assert_lt<F: FieldWitness>(bit_length: u64, x: F, y: F, w: &mut Witness<F>) {
         compare(bit_length, x, y, w);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use ark_ff::{One, Zero};
+        use mina_curves::pasta::Fp;
+
+        use super::*;
+
+        /// One witness, as snarky's `inv` then a scale: `x / y`, or 0 for
+        /// `y` 0 where `x / y` panics.
+        #[test]
+        fn div_is_total() {
+            let mut w = Witness::<Fp>::empty();
+            assert_eq!(
+                div(Fp::one(), Fp::from(7u64), &mut w),
+                Fp::one() / Fp::from(7u64)
+            );
+            assert_eq!(div(Fp::one(), Fp::zero(), &mut w), Fp::zero());
+            assert_eq!(w.aux(), [Fp::one() / Fp::from(7u64), Fp::zero()]);
+        }
     }
 }
 

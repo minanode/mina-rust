@@ -84,6 +84,18 @@ impl P2pStreamingRpcResponseFull {
 }
 
 impl P2pStreamingRpcResponse {
+    /// Whether the part is within what a valid response can hold, before
+    /// it is kept: a scan state's tree count is the sender's, and the parts
+    /// are gathered until that many trees have come.
+    pub fn is_within_bounds(&self) -> bool {
+        match self {
+            Self::StagedLedgerParts(StagedLedgerPartsResponse::ScanStateBase(base)) => {
+                base.trees_within_bound()
+            }
+            Self::StagedLedgerParts(_) => true,
+        }
+    }
+
     pub fn kind(&self) -> P2pStreamingRpcKind {
         match self {
             Self::StagedLedgerParts(_) => P2pStreamingRpcKind::StagedLedgerParts,

@@ -122,6 +122,7 @@ fn state() -> State {
             timeouts: Default::default(),
             limits: Default::default(),
             peer_discovery: false,
+            seed_only: false,
             meshsub: Default::default(),
             catchup_rpc: Default::default(),
         },
@@ -131,6 +132,7 @@ fn state() -> State {
         archive: None,
         block_producer: None,
         global: crate::config::GlobalConfig {
+            snark_work_fee: None,
             build: Box::new(crate::config::BuildEnv::get()),
             snarker: None,
             consensus_constants: constants.clone(),
@@ -1794,7 +1796,7 @@ fn commitments_undercut_dearer_stored_work() {
 /// protocol, as work for a job that had none. A zkApp bundle goes first,
 /// then an ordinary job; a job whose stored work is as cheap as ours is left
 /// alone.
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/snark_pool_diff.ml#L185-L208>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/snark_pool_diff.ml#L185-L208>
 #[test]
 fn our_worker_undercuts_dearer_stored_work() {
     use crate::external_snark_worker::{ExternalSnarkWorkerAction, ExternalSnarkWorkerState};
@@ -2186,6 +2188,18 @@ fn the_worker_starts_reprices_and_stops_at_runtime() {
         ["kill".to_owned(), "save off".to_owned()]
     );
     assert!(store.state().config.snarker.is_none());
+    assert_eq!(
+        store
+            .state()
+            .config
+            .snark_work_fee
+            .as_ref()
+            .unwrap()
+            .0
+            .as_u64(),
+        NEW_FEE,
+        "uptime retains the worker fee when the ordinary worker stops"
+    );
     for id in &ids[..2] {
         assert_eq!(commitment_of(&store, id), None);
     }
@@ -2665,4 +2679,677 @@ fn rc7_a_refused_worker_fee_is_warned_once_per_key_and_fee() {
         ProverAccount::Present { can_receive: true },
         Timestamp::ZERO
     ));
+}
+
+/// The job the uptime service proves (UPTIME-0201A): in the best tip's job
+/// order, the first Transition whose target second-pass ledger is the
+/// block's staged ledger hash. Any job whose protocol state the frontier
+/// lacks fails the whole list, as OCaml's `all_work_pairs` does.
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/uptime_service/uptime_service.ml#L224-L328>
+#[test]
+fn uptime_job_is_the_first_transition_at_the_block_ledger() {
+    use crate::{rpc::RpcReportingUptimeJob as Job, rpc_effectful::reporting_uptime_job};
+
+    let mut state = state();
+    let tip = state.transition_frontier.best_tip().unwrap().clone();
+    let ledger = tip.staged_ledger_hashes().non_snark.ledger_hash.clone();
+    let prover = works()[0].prover.clone();
+    // Distinct captured statements, retargeted; the state hash is the tip's,
+    // in the frontier, unless `known` is false.
+    let statements = works()
+        .iter()
+        .flat_map(|work| match Snark::from(work.clone()).statement() {
+            v2::TransactionSnarkWorkStatementStableV2::One(s) => vec![s],
+            v2::TransactionSnarkWorkStatementStableV2::Two((a, b)) => vec![a, b],
+        })
+        .collect::<Vec<_>>();
+    assert!(statements.len() >= 5);
+    let base = |i: usize, at_ledger: bool, known: bool| {
+        let mut statement = statements[i].clone();
+        if at_ledger {
+            statement.0.target.second_pass_ledger = ledger.clone();
+        }
+        let OneOrTwo::One(AvailableJobMessage::Base(mut base)) = job_for_statement(
+            &v2::TransactionSnarkWorkStatementStableV2::One(statement),
+            &prover,
+        ) else {
+            unreachable!()
+        };
+        if known {
+            base.state_hash.0 = tip.hash().clone();
+        }
+        AvailableJobMessage::Base(base)
+    };
+    let insert = |state: &mut State, order: usize, job: OneOrTwo<AvailableJobMessage>| {
+        state.snark_pool.insert(JobState {
+            time: Timestamp::ZERO,
+            id: (&job).into(),
+            job,
+            commitment: None,
+            snark: None,
+            order,
+        });
+    };
+
+    assert_eq!(reporting_uptime_job(&state, &tip), Job::NoJobs);
+    // Inserted out of order: the order field, not the ID, decides.
+    insert(&mut state, 2, OneOrTwo::One(base(0, true, true)));
+    insert(&mut state, 0, OneOrTwo::One(base(1, false, true)));
+    assert_eq!(
+        reporting_uptime_job(&state, &tip),
+        Job::Transition {
+            pair: (&OneOrTwo::One(base(0, true, true))).into(),
+            index: 0,
+            zkapp: false,
+        }
+    );
+    insert(
+        &mut state,
+        1,
+        OneOrTwo::Two((base(2, false, true), base(3, true, true))),
+    );
+    assert_eq!(
+        reporting_uptime_job(&state, &tip),
+        Job::Transition {
+            pair: (&OneOrTwo::Two((base(2, false, true), base(3, true, true)))).into(),
+            index: 1,
+            zkapp: false,
+        }
+    );
+
+    // A later job's unknown protocol state fails the list.
+    insert(&mut state, 3, OneOrTwo::One(base(4, false, false)));
+    assert!(matches!(
+        reporting_uptime_job(&state, &tip),
+        Job::Unavailable(_)
+    ));
+
+    // Jobs of another block are not the best tip's.
+    let mut state = self::state();
+    insert(&mut state, 0, OneOrTwo::One(base(1, false, true)));
+    assert_eq!(
+        reporting_uptime_job(&state, &tip),
+        Job::NoMatchingTransition
+    );
+    state.snark_pool.jobs_tip = Some(v2::StateHash::zero());
+    assert!(matches!(
+        reporting_uptime_job(&state, &tip),
+        Job::Unavailable(_)
+    ));
+}
+
+/// The three OCaml full-proof blocks with their ordered candidate summaries.
+/// Only selected-job.bin contains a complete real witness; other candidates
+/// reconstruct the kind and target used by selection, not proof witnesses.
+#[test]
+fn uptime_selection_matches_all_full_proof_captures() {
+    use crate::{rpc::RpcReportingUptimeJob, rpc_effectful::reporting_uptime_job};
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use mina_p2p_messages::binprot::BinProtRead;
+    for (name, expected_bundle, expected_index) in [
+        ("devnet-581348-coinbase", 311, 1),
+        ("devnet-581351-signed", 307, 0),
+        ("devnet-581352-signed", 305, 1),
+    ] {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tools/uptime-fixtures/full-proof")
+            .join(name);
+        let read = |file| std::fs::read(dir.join(file)).unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&read("uptime-1.json")).unwrap();
+        let bytes = STANDARD
+            .decode(report["data"]["block"].as_str().unwrap())
+            .unwrap();
+        let block = v2::MinaBlockBlockStableV2::binprot_read(&mut bytes.as_slice()).unwrap();
+        let tip = mina_core::block::BlockWithHash::try_new(std::sync::Arc::new(block)).unwrap();
+        let selected = v2::SnarkWorkerWorkerRpcsVersionedGetWorkV2TResponseA0Single::binprot_read(
+            &mut read("selected-job.bin").as_slice(),
+        )
+        .unwrap();
+        let v2::SnarkWorkerWorkerRpcsVersionedGetWorkV2TResponseA0Single::Transition(
+            statement,
+            witness,
+        ) = selected
+        else {
+            panic!("OCaml selects a Transition")
+        };
+        let work = STANDARD
+            .decode(report["data"]["snark_work"].as_str().unwrap())
+            .unwrap();
+        let proof = v2::LedgerProofProdStableV2::binprot_read(&mut work.as_slice()).unwrap();
+        let selection: serde_json::Value = serde_json::from_slice(&read("selection.json")).unwrap();
+        let mut state = state();
+        let known = state.transition_frontier.best_tip().unwrap().hash().clone();
+        state.snark_pool.jobs_tip = Some(tip.hash().clone());
+        let prover = works()[0].prover.clone();
+        let mut bundles = std::collections::BTreeMap::<usize, Vec<AvailableJobMessage>>::new();
+        for candidate in selection["candidates"].as_array().unwrap() {
+            let order = candidate["bundle_index"].as_u64().unwrap() as usize;
+            let job_index = candidate["job_index"].as_u64().unwrap() as usize;
+            let job = if candidate["kind"] == "Merge" {
+                AvailableJobMessage::Merge {
+                    left: proof.clone(),
+                    right: proof.clone(),
+                }
+            } else {
+                let mut stmt = statement.clone();
+                stmt.0.target.second_pass_ledger = candidate["target_second_pass_ledger"]
+                    .as_str()
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                let OneOrTwo::One(AvailableJobMessage::Base(mut base)) = job_for_statement(
+                    &v2::TransactionSnarkWorkStatementStableV2::One(stmt),
+                    &prover,
+                ) else {
+                    unreachable!()
+                };
+                base.state_hash.0 = known.clone();
+                if (order, job_index) == (expected_bundle, expected_index) {
+                    base.transaction_with_status.data = witness.transaction.clone();
+                }
+                AvailableJobMessage::Base(base)
+            };
+            bundles.entry(order).or_default().push(job);
+        }
+        // Reverse insertion order distinguishes scan-state order from ID order.
+        for (order, mut jobs) in bundles.into_iter().rev() {
+            let job = match jobs.len() {
+                1 => OneOrTwo::One(jobs.remove(0)),
+                2 => {
+                    let second = jobs.pop().unwrap();
+                    OneOrTwo::Two((jobs.pop().unwrap(), second))
+                }
+                _ => panic!("One_or_two"),
+            };
+            let mut id: mina_core::snark::SnarkJobId = (&job).into();
+            // Candidate summaries omit source hashes: a unique synthetic ID
+            // prevents unrelated equal-target candidates overwriting each other.
+            id.source.first_pass_ledger = mina_curves::pasta::Fp::from(order as u64).into();
+            state.snark_pool.insert(JobState {
+                id,
+                job,
+                time: Timestamp::ZERO,
+                order,
+                commitment: None,
+                snark: None,
+            });
+        }
+        let RpcReportingUptimeJob::Transition { pair, index, zkapp } =
+            reporting_uptime_job(&state, &tip)
+        else {
+            panic!("{name}: no selected job")
+        };
+        assert_eq!(
+            (state.snark_pool.get(&pair).unwrap().order, index),
+            (expected_bundle, expected_index),
+            "{name}"
+        );
+        assert!(!zkapp);
+        let AvailableJobMessage::Base(base) = state
+            .snark_pool
+            .get(&pair)
+            .unwrap()
+            .job
+            .iter()
+            .nth(index)
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            base.statement, statement,
+            "{name}: complete selected statement"
+        );
+    }
+}
+
+/// `n` works of `prover` at `fee` with distinct statements, so distinct jobs:
+/// the captured proof with its source ledger changed (proof checks are
+/// injected here). `first` makes sets that don't overlap.
+fn distinct_jobs_works(prover: &v2::NonZeroCurvePoint, fee: u64, first: u64, n: u64) -> Vec<Snark> {
+    let wire = one_and_two_work().remove(0).to_wire().unwrap();
+    (first..first + n)
+        .map(|i| {
+            let mut wire = wire.clone();
+            let v2::TransactionSnarkWorkTStableV2Proofs::One(proof) = &mut wire.proofs else {
+                unreachable!()
+            };
+            proof.0.statement.source.first_pass_ledger =
+                v2::LedgerHash::from_fp(mina_curves::pasta::Fp::from(i + 1));
+            wire.prover = prover.clone();
+            wire.fee = v2::CurrencyFeeStableV1(fee.into());
+            Snark::from(wire)
+        })
+        .collect()
+}
+
+/// A store whose pool holds `works`, each stored for a job of its own, in
+/// order, with its prover's account checked at the best tip, as admission
+/// leaves it. Jobs of works by `ours` (our worker's key) carry our
+/// commitment, made before the proof.
+fn store_with_stored_works(
+    works: &[Snark],
+    ours: &crate::account::AccountPublicKey,
+) -> crate::Store<Service> {
+    let our_key: v2::NonZeroCurvePoint = ours.clone().into();
+    let mut state = state();
+    let tip = state.transition_frontier.best_tip().unwrap().hash().clone();
+    state.config.snarker = Some(our_snarker(ours.clone()));
+    for (order, work) in works.iter().enumerate() {
+        state.snark_pool.insert(job_state(work, order, None));
+        if work.snarker == our_key {
+            state.snark_pool.set_commitment(JobCommitment {
+                commitment: mina_core::snark::SnarkJobCommitment::new(
+                    order as u64,
+                    work.job_id(),
+                    work.fee.clone(),
+                    our_key.clone(),
+                ),
+                received_t: Timestamp::ZERO,
+                sender: state.p2p.my_id(),
+            });
+        }
+        state.snark_pool.set_snark_work(SnarkWork {
+            work: work.clone(),
+            received_t: Timestamp::ZERO,
+            sender: state.p2p.my_id(),
+        });
+        state.snark_pool.prover_accounts.insert(
+            work.snarker.clone().into(),
+            (tip.clone(), ProverAccount::Present { can_receive: true }),
+        );
+    }
+    redux::Store::new(
+        crate::reducer,
+        effects,
+        Service {
+            now: redux::Instant::now(),
+            batches: Vec::new(),
+            account: Ok(ProverAccount::Present { can_receive: true }),
+            delay_accounts: false,
+            account_requests: Vec::new(),
+            worker_effects: Vec::new(),
+            random_choices: Vec::new(),
+        },
+        redux::SystemTime::UNIX_EPOCH,
+        state,
+    )
+}
+
+/// The jobs of the pool, for a new best tip with the same work to do.
+fn pool_jobs(store: &crate::Store<Service>) -> Vec<OneOrTwo<AvailableJobMessage>> {
+    let mut jobs = store
+        .state()
+        .snark_pool
+        .jobs_iter()
+        .map(|job| (job.order, job.job.clone()))
+        .collect::<Vec<_>>();
+    jobs.sort_by_key(|(order, _)| *order);
+    jobs.into_iter().map(|(_, job)| job).collect()
+}
+
+/// Jobs that hold our commitment and no work, with our worker not on them:
+/// kept from the worker for as long as they stay in the scan state.
+fn held_without_work(store: &crate::Store<Service>, our_key: &v2::NonZeroCurvePoint) -> usize {
+    let working = store.state().external_snark_worker.working_job_id();
+    store
+        .state()
+        .snark_pool
+        .jobs_iter()
+        .filter(|job| {
+            working != Some(&job.id)
+                && job.snark.is_none()
+                && job
+                    .commitment
+                    .as_ref()
+                    .is_some_and(|c| &c.commitment.snarker == our_key)
+        })
+        .count()
+}
+
+fn answer_account_reads(store: &mut crate::Store<Service>, account: ProverAccount) {
+    let pending = store
+        .state()
+        .ledger
+        .read
+        .pending_requests()
+        .map(|(id, _, _)| id)
+        .collect::<Vec<_>>();
+    for id in pending {
+        store.dispatch(crate::ledger::read::LedgerReadAction::Success {
+            id,
+            response: crate::ledger::read::LedgerReadResponse::SnarkPoolProver(Ok(account)),
+        });
+    }
+}
+
+/// SNARK-POOL-OWN-WORK, as on mainnet on 2026-10-30: our SNARK worker's node
+/// stored 261 works, most of them its worker's, when a block came. Each
+/// stored work's revalidation read its prover's account: the first 256
+/// reads filled the ledger reads' capacity, the other 5 were refused as
+/// busy, and their works, the newest, were dropped while our commitments,
+/// which never time out, kept their jobs from the worker. Now a new best tip
+/// reads each prover's account once, as OCaml does, and every work stays.
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/snark_pool.ml#L167-L198>
+#[test]
+fn a_new_best_tip_keeps_the_work_of_a_pool_larger_than_the_read_capacity() {
+    let ours = crate::account::AccountSecretKey::deterministic(8).public_key();
+    let our_key: v2::NonZeroCurvePoint = ours.clone().into();
+    let other: v2::NonZeroCurvePoint = crate::account::AccountSecretKey::deterministic(9)
+        .public_key()
+        .into();
+    let mut works = distinct_jobs_works(&other, 0, 0, 20);
+    works.extend(distinct_jobs_works(&our_key, OUR_FEE, 20, 280));
+    let mut store = store_with_stored_works(&works, &ours);
+    assert_eq!(
+        store.state().snark_pool.completed_snarks_iter().count(),
+        300
+    );
+
+    // The ledger answers after the block's actions are done, as the ledger
+    // service does.
+    store.service.delay_accounts = true;
+    let jobs = pool_jobs(&store);
+    advance_tip(&mut store, jobs);
+    assert_eq!(store.service.account_requests.len(), 2, "a read per prover");
+    let pool = &store.state().snark_pool;
+    assert_eq!(
+        pool.completed_snarks_iter().count(),
+        0,
+        "unchecked until read"
+    );
+    assert_eq!(
+        pool.jobs_iter().filter(|job| job.snark.is_some()).count(),
+        300
+    );
+    assert_eq!(pool.admission_stats.revalidation_removed, 0);
+    assert_eq!(held_without_work(&store, &our_key), 0);
+
+    answer_account_reads(&mut store, ProverAccount::Present { can_receive: true });
+    let pool = &store.state().snark_pool;
+    assert_eq!(pool.completed_snarks_iter().count(), 300);
+    assert_eq!(pool.admission_stats.revalidation_removed, 0);
+    assert_eq!(held_without_work(&store, &our_key), 0);
+}
+
+/// A revalidation whose account read fails (busy, or no ledger) keeps the
+/// prover's works, unused until a later read succeeds; the periodic check
+/// reads again. Our worker's own proof is admitted while the reads are full.
+#[test]
+fn a_failed_revalidation_read_keeps_the_works_and_is_read_again() {
+    use crate::external_snark_worker::{ExternalSnarkWorkerAction, ExternalSnarkWorkerState};
+
+    let ours = crate::account::AccountSecretKey::deterministic(8).public_key();
+    let our_key: v2::NonZeroCurvePoint = ours.clone().into();
+    let works = distinct_jobs_works(&our_key, OUR_FEE, 0, 4);
+    let mut store = store_with_stored_works(&works[..3], &ours);
+    // The fourth job is the one our worker is proving.
+    edit_state(&mut store, |state| {
+        let job = job_state(&works[3], 3, None);
+        let id = job.id.clone();
+        state.snark_pool.insert(job);
+        state.snark_pool.set_commitment(JobCommitment {
+            commitment: mina_core::snark::SnarkJobCommitment::new(
+                3,
+                id.clone(),
+                works[3].fee.clone(),
+                our_key.clone(),
+            ),
+            received_t: Timestamp::ZERO,
+            sender: state.p2p.my_id(),
+        });
+        state.external_snark_worker.0.state =
+            ExternalSnarkWorkerState::Working(id, JobSummary::Tx(1));
+    });
+
+    // Other reads fill the ledger reads' capacity.
+    let mut fillers = Vec::new();
+    edit_state(&mut store, |state| {
+        while state.ledger.read.is_total_cost_under_limit() {
+            let request = crate::ledger::read::LedgerReadRequest::GetNumAccounts(
+                state
+                    .transition_frontier
+                    .best_tip()
+                    .unwrap()
+                    .merkle_root_hash()
+                    .clone(),
+            );
+            fillers.push(state.ledger.read.add(Timestamp::ZERO, request));
+        }
+    });
+    let jobs = pool_jobs(&store);
+    advance_tip(&mut store, jobs);
+    let pool = &store.state().snark_pool;
+    assert_eq!(pool.admission_stats.revalidation_deferred, 1);
+    assert_eq!(pool.admission_stats.revalidation_removed, 0);
+    assert_eq!(
+        pool.jobs_iter().filter(|job| job.snark.is_some()).count(),
+        3
+    );
+    assert_eq!(pool.completed_snarks_iter().count(), 0);
+    assert_eq!(held_without_work(&store, &our_key), 0);
+
+    // Our worker's proof is not refused as busy: it is admitted, and with it
+    // our account is checked at this tip.
+    store.dispatch(ExternalSnarkWorkerAction::WorkResult {
+        result: works[3].clone(),
+    });
+    let pool = &store.state().snark_pool;
+    assert_eq!(pool.admission_stats.busy, 0);
+    assert_eq!(pool.completed_snarks_iter().count(), 4);
+    assert_eq!(held_without_work(&store, &our_key), 0);
+
+    // Another prover's works, deferred, are read again by the periodic check
+    // once the reads are free.
+    let other: v2::NonZeroCurvePoint = crate::account::AccountSecretKey::deterministic(9)
+        .public_key()
+        .into();
+    let peer_works = distinct_jobs_works(&other, 0, 10, 2);
+    edit_state(&mut store, |state| {
+        for (i, work) in peer_works.iter().enumerate() {
+            state.snark_pool.insert(job_state(work, 10 + i, None));
+            state.snark_pool.set_snark_work(SnarkWork {
+                work: work.clone(),
+                received_t: Timestamp::ZERO,
+                sender: PeerId::from_bytes([4; 32]),
+            });
+        }
+    });
+    let jobs = pool_jobs(&store);
+    advance_tip(&mut store, jobs);
+    let deferred = store
+        .state()
+        .snark_pool
+        .admission_stats
+        .revalidation_deferred;
+    assert_eq!(deferred, 3, "both provers deferred at this tip");
+    assert_eq!(store.state().snark_pool.completed_snarks_iter().count(), 0);
+    edit_state(&mut store, |state| {
+        for id in fillers {
+            state.ledger.read.remove(id);
+        }
+    });
+    // Enabling conditions see the last action's time: move it on first.
+    store.service.now += std::time::Duration::from_secs(10);
+    store.dispatch(SnarkPoolAction::P2pSendAll);
+    assert!(store.dispatch(SnarkPoolAction::CheckTimeouts));
+    let pool = &store.state().snark_pool;
+    assert_eq!(pool.completed_snarks_iter().count(), 6);
+    assert_eq!(pool.admission_stats.revalidation_removed, 0);
+    // Checked now: the next check reads nothing.
+    let reads = store.service.account_requests.len();
+    store.service.now += std::time::Duration::from_secs(10);
+    store.dispatch(SnarkPoolAction::P2pSendAll);
+    assert!(store.dispatch(SnarkPoolAction::CheckTimeouts));
+    assert_eq!(store.service.account_requests.len(), reads);
+}
+
+/// Our worker's proof that the pool refuses leaves its job scheduled: our
+/// commitment stays, and the worker goes on to other jobs and does not
+/// prove it again, as OCaml's selector keeps a job it handed out until the
+/// job leaves the best tip's available jobs (SNARK-POOL-OWN-WORK). A refusal
+/// because a proof as cheap was stored meanwhile leaves the job with that
+/// work.
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/work_selector/work_lib.ml#L142-L173>
+#[test]
+fn own_work_refused_at_admission_keeps_its_job_scheduled() {
+    use crate::external_snark_worker::ExternalSnarkWorkerAction;
+
+    let ours = crate::account::AccountSecretKey::deterministic(8).public_key();
+    let our_key: v2::NonZeroCurvePoint = ours.clone().into();
+    for refusal in ["no ledger", "cannot receive", "not cheaper"] {
+        let (mut store, ids, works) = control_store(true);
+        store.dispatch(ExternalSnarkWorkerAction::Configure {
+            setting: setting(&ours, OUR_FEE),
+        });
+        store.dispatch(ExternalSnarkWorkerAction::Start);
+        store.dispatch(ExternalSnarkWorkerAction::Started);
+        assert_eq!(
+            commitment_of(&store, &ids[0]),
+            Some((our_key.clone(), OUR_FEE))
+        );
+        match refusal {
+            "no ledger" => {
+                store.service.account = Err("best-tip staged ledger unavailable".into());
+            }
+            "cannot receive" => {
+                store.service.account = Ok(ProverAccount::Present { can_receive: false });
+            }
+            _ => {
+                // A peer's proof at our fee is stored while ours is made.
+                let mut peer = works[0].clone();
+                peer.fee = v2::CurrencyFeeStableV1(OUR_FEE.into());
+                let tip = store
+                    .state()
+                    .transition_frontier
+                    .best_tip()
+                    .unwrap()
+                    .hash()
+                    .clone();
+                edit_state(&mut store, |state| {
+                    state.snark_pool.prover_accounts.insert(
+                        peer.snarker.clone().into(),
+                        (tip, ProverAccount::Present { can_receive: true }),
+                    );
+                });
+                store.dispatch(SnarkPoolAction::WorkAdd {
+                    snark: peer,
+                    sender: PeerId::from_bytes([4; 32]),
+                    is_sender_local: false,
+                });
+            }
+        }
+        store.dispatch(ExternalSnarkWorkerAction::WorkResult {
+            result: our_work(&our_key, OUR_FEE, &works[0]),
+        });
+        let pool = &store.state().snark_pool;
+        assert_eq!(
+            pool.admission_stats.forwarded,
+            u64::from(refusal == "not cheaper")
+        );
+        // The worker went on to the next job.
+        assert_eq!(
+            store.state().external_snark_worker.working_job_id(),
+            Some(&ids[1]),
+            "{refusal}"
+        );
+        assert_eq!(
+            commitment_of(&store, &ids[0]),
+            Some((our_key.clone(), OUR_FEE)),
+            "{refusal}"
+        );
+        if refusal == "not cheaper" {
+            assert_ne!(stored_work(&store, &ids[0]).unwrap().0, our_key);
+        } else {
+            assert_eq!(stored_work(&store, &ids[0]), None, "{refusal}");
+        }
+        assert!(
+            !pool.should_create_commitment(&ids[0], OUR_FEE),
+            "{refusal}"
+        );
+        assert!(
+            !pool
+                .jobs_to_prove_iter(OUR_FEE, false)
+                .any(|job| job.id == ids[0]),
+            "{refusal}"
+        );
+        assert_eq!(
+            held_without_work(&store, &our_key),
+            usize::from(refusal != "not cheaper"),
+            "{refusal}"
+        );
+    }
+}
+
+/// Our worker's stored proof that a new best tip's prover rule refuses is
+/// dropped, and its job keeps our commitment, as does a job our commitment
+/// holds whose other prover's proof is refused: OCaml's selector keeps them
+/// scheduled (SNARK-POOL-OWN-WORK). Each prover is read once.
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/work_selector/work_lib.ml#L142-L173>
+#[test]
+fn own_work_refused_at_a_new_best_tip_keeps_its_job_scheduled() {
+    let ours = crate::account::AccountSecretKey::deterministic(8).public_key();
+    let our_key: v2::NonZeroCurvePoint = ours.clone().into();
+    let mut works = distinct_jobs_works(&our_key, OUR_FEE, 0, 3);
+    let other: v2::NonZeroCurvePoint = crate::account::AccountSecretKey::deterministic(9)
+        .public_key()
+        .into();
+    works.extend(distinct_jobs_works(&other, 1, 3, 1));
+    let mut store = store_with_stored_works(&works, &ours);
+    // Job 3 also carries our commitment: our proof was replaced by the
+    // other prover's cheaper one.
+    edit_state(&mut store, |state| {
+        state.snark_pool.set_commitment(JobCommitment {
+            commitment: mina_core::snark::SnarkJobCommitment::new(
+                3,
+                works[3].job_id(),
+                v2::CurrencyFeeStableV1(OUR_FEE.into()),
+                our_key.clone(),
+            ),
+            received_t: Timestamp::ZERO,
+            sender: state.p2p.my_id(),
+        });
+    });
+
+    // Our account can no longer receive; the other prover's has gone, and
+    // its fee can't pay for one.
+    store.service.delay_accounts = true;
+    let jobs = pool_jobs(&store);
+    advance_tip(&mut store, jobs);
+    let requests = store
+        .state()
+        .ledger
+        .read
+        .pending_requests()
+        .map(|(id, request, _)| {
+            let crate::ledger::read::LedgerReadRequest::SnarkPoolProver(request) = request else {
+                unreachable!()
+            };
+            (id, request.work.snarker.clone())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 2);
+    for (id, prover) in requests {
+        let account = if prover == our_key {
+            ProverAccount::Present { can_receive: false }
+        } else {
+            ProverAccount::Missing
+        };
+        store.dispatch(crate::ledger::read::LedgerReadAction::Success {
+            id,
+            response: crate::ledger::read::LedgerReadResponse::SnarkPoolProver(Ok(account)),
+        });
+    }
+    let pool = &store.state().snark_pool;
+    assert_eq!(pool.admission_stats.revalidation_removed, 4);
+    for work in &works {
+        let job = pool.get(&work.job_id()).unwrap();
+        assert!(job.snark.is_none());
+        assert_eq!(
+            job.commitment.as_ref().map(|c| &c.commitment.snarker),
+            Some(&our_key)
+        );
+        assert!(!pool.should_create_commitment(&job.id, OUR_FEE));
+    }
+    assert_eq!(held_without_work(&store, &our_key), 4);
 }

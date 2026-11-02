@@ -30,6 +30,8 @@ pub enum BlockProducerVrfEvaluatorAction {
     ProcessSlotEvaluationSuccess {
         vrf_output: VrfEvaluationOutput,
         staking_ledger_hash: LedgerHash,
+        /// The generation of the evaluation that requested the slot.
+        generation: u64,
     },
     #[action_event(level = trace)]
     InitializeEvaluator { best_tip: ArcBlockWithHash },
@@ -46,7 +48,7 @@ pub enum BlockProducerVrfEvaluatorAction {
         root_block_epoch: u32,
         best_tip_slot: u32,
         best_tip_global_slot: u32,
-        next_epoch_first_slot: u32,
+        next_epoch_first_slot: Option<u32>,
         staking_epoch_data:
             Box<ConsensusProofOfStakeDataEpochDataStakingValueVersionedValueStableV1>,
         next_epoch_data: Box<ConsensusProofOfStakeDataEpochDataNextValueVersionedValueStableV1>,
@@ -57,17 +59,18 @@ pub enum BlockProducerVrfEvaluatorAction {
         best_tip_epoch: u32,
         best_tip_slot: u32,
         best_tip_global_slot: u32,
-        next_epoch_first_slot: u32,
+        next_epoch_first_slot: Option<u32>,
         staking_epoch_data: EpochData,
         producer: AccountPublicKey,
     },
     /// Constructing delegator table.
     #[action_event(level = debug)]
     BeginDelegatorTableConstruction,
-    /// Delegator table constructed.
+    /// Delegator table constructed, or `None` if no complete ledger with the
+    /// requested hash is available: a missing ledger is not an empty table.
     #[action_event(level = debug)]
     FinalizeDelegatorTableConstruction {
-        delegator_table: Arc<DelegatorTable>,
+        delegator_table: Option<Arc<DelegatorTable>>,
     },
     /// Selecting starting slot.
     #[action_event(level = debug, fields(current_global_slot, best_tip_height))]
@@ -78,7 +81,7 @@ pub enum BlockProducerVrfEvaluatorAction {
         best_tip_global_slot: u32,
         best_tip_epoch: u32,
         staking_epoch_data: EpochData,
-        next_epoch_first_slot: u32,
+        next_epoch_first_slot: Option<u32>,
     },
     /// Starting epoch evaluation.
     #[action_event(level = info, fields(evaluation_epoch, best_tip_epoch, best_tip_slot, best_tip_global_slot))]
@@ -127,15 +130,16 @@ impl redux::EnablingCondition<crate::State> for BlockProducerVrfEvaluatorAction 
             BlockProducerVrfEvaluatorAction::ProcessSlotEvaluationSuccess {
                 vrf_output,
                 staking_ledger_hash,
-                ..
+                generation,
             } => state.block_producer.with(false, |this| {
                 if this.vrf_evaluator.is_slot_requested() {
                     if let Some(current_evaluation) = this.vrf_evaluator.current_evaluation() {
-                        current_evaluation
-                            .latest_evaluated_slot
-                            .checked_add(1)
-                            .expect("overflow")
-                            == vrf_output.global_slot()
+                        // A response of an interrupted evaluation, even for
+                        // the same slot and ledger, carries an older
+                        // generation and may use another seed or stake.
+                        current_evaluation.generation == *generation
+                            && current_evaluation.latest_evaluated_slot.checked_add(1)
+                                == Some(vrf_output.global_slot())
                             && current_evaluation.epoch_data.ledger == *staking_ledger_hash
                     } else {
                         false

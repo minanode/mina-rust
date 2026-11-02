@@ -80,6 +80,9 @@ export function matchRoute(pathname: string): Route {
 
 const listeners = new Set<() => void>();
 
+/** Sent on each in-app navigation. */
+export const NAVIGATE_EVENT = "minanode:navigate";
+
 function subscribe(listener: () => void) {
   listeners.add(listener);
   window.addEventListener("popstate", listener);
@@ -95,6 +98,8 @@ export function navigate(to: string, { replace = false } = {}) {
   else window.history.pushState(null, "", to);
   window.scrollTo({ top: 0 });
   for (const listener of listeners) listener();
+  // An app that shows this app's pages (minaweb) follows its links.
+  window.dispatchEvent(new Event(NAVIGATE_EVENT));
 }
 
 export function usePathname(): string {

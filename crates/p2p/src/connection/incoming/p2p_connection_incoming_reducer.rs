@@ -36,6 +36,10 @@ impl P2pConnectionIncomingState {
         let time = meta.time();
         let peer_id = *action.peer_id();
         let p2p_state = state_context.get_substate_mut()?;
+        if p2p_state.config.seed_only && matches!(action, P2pConnectionIncomingAction::Init { .. })
+        {
+            return Ok(());
+        }
         let my_id = p2p_state.my_id();
 
         match action {

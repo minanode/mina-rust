@@ -61,7 +61,7 @@ pub(super) fn push_outcome(recent: &mut VecDeque<WorkerOutcome>, outcome: Worker
 
 /// Why work at `fee` (nanomina) for a prover with `account` would be
 /// refused by OCaml's snark pool, and by ours, in the operator's words.
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/snark_pool.ml#L370-L424>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/snark_pool.ml#L370-L424>
 pub fn fee_rule_problem(fee: u64, account: ProverAccount) -> Option<String> {
     let creation_fee = mina_core::constants::constraint_constants().account_creation_fee;
     match check_prover(fee, creation_fee, account) {
@@ -191,6 +191,9 @@ impl State {
             public_key = next.as_ref().map(|c| c.public_key.to_string()).unwrap_or_default(),
             fee = next.as_ref().map(|c| c.fee.0.as_u64()).unwrap_or_default(),
             strategy = next.as_ref().map(|c| format!("{:?}", c.strategy)).unwrap_or_default());
+        if let Some(config) = next.as_ref().or(previous.as_ref()) {
+            self.config.snark_work_fee = Some(config.fee.clone());
+        }
         self.config.snarker = next;
 
         // The file is rewritten, or deleted: a warning about it is moot.

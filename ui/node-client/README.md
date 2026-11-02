@@ -47,30 +47,65 @@ try {
 - `fetch`: the fetch to use (tests, other runtimes). The default is the global
   one.
 - `timeoutMs`: how long to wait for an answer before giving up (default 15 s).
+- `transport`: how to reach the node instead of HTTP to `baseUrl`. The other
+  options are then unused. See "A web node in the page" below.
 
-| Method                                  | Request                                          | Returns                                   |
-| --------------------------------------- | ------------------------------------------------ | ----------------------------------------- |
-| `status()`                              | `GET /status`                                    | `NodeStatus`                              |
-| `buildInfo()`                           | `GET /build_env`                                 | `BuildInfo`                               |
-| `syncRestore()`                         | `GET /stats/sync?limit=1`                        | `RestoreSummary \| null`                  |
-| `producerStats()`                       | `GET /stats/block_producer`                      | `ProducerStats \| null` (no producer)     |
-| `workerControl()`                       | `GET /snarker/control`                           | `WorkerControl`                           |
-| `changeWorker(change)`                  | `POST /snarker/control` with the control header  | `WorkerControl` after the change          |
-| `includedWork()`                        | `GET /snarker/included`                          | `IncludedWork`, with the tip and market   |
-| `report(options?)`                      | `POST /report` with the report header            | `Report`: title, markdown, issue link     |
-| `crashNotice()`                         | `POST /report/crash` with the report header      | `CrashNotice \| null`                     |
-| `transactionPool()`                     | `GET /transaction-pool`                          | `PendingTransaction[]`, highest fee first |
-| `peers()`                               | `GET /state/peers`                               | `Peer[]`                                  |
-| `raw(route)`                            | `GET /status` or `GET /build_env` (`RAW_ROUTES`) | the JSON as it comes                      |
-| `bestChain(length?)`                    | GraphQL `bestChain` (default 20 blocks)          | `Block[]`, newest first                   |
-| `block(id)`                             | GraphQL `block` by height or state hash          | `Block \| null`                           |
-| `account(publicKey)`                    | GraphQL `account`                                | `Account \| null`                         |
-| `getJson(path, parse)`                  | any GET                                          | what `parse` returns                      |
-| `postJson(path, body, parse, headers?)` | any POST of JSON                                 | what `parse` returns                      |
-| `graphql(query, variables, parse)`      | `POST /graphql`                                  | `parse(data)`; an error throws `refused`  |
-| `url(path)`                             | none                                             | `path` on the node, for links             |
+| Method                                  | Request                                                                             | Returns                                                            |
+| --------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `status()`                              | `GET /status`                                                                       | `NodeStatus`                                                       |
+| `buildInfo()`                           | `GET /build_env`                                                                    | `BuildInfo`                                                        |
+| `syncRestore()`                         | `GET /stats/sync?limit=1`                                                           | `RestoreSummary \| null`                                           |
+| `producerStats()`                       | `GET /stats/block_producer`                                                         | `ProducerStats \| null` (no producer)                              |
+| `verification(page?)`                   | `GET /stats/verification`: a limit (default 20, at most 128) or `{ limit, offset }` | `Verification`: receipts, newest first, and the last proof checked |
+| `ledgerSync()`                          | `GET /state/message-progress`                                                       | `LedgerSync`: the bootstrap's ledgers                              |
+| `syncBlocks()`                          | `GET /stats/sync?limit=1`                                                           | `SyncBlocks \| null`: the sync's blocks                            |
+| `workerControl()`                       | `GET /snarker/control`                                                              | `WorkerControl`                                                    |
+| `changeWorker(change)`                  | `POST /snarker/control` with the control header                                     | `WorkerControl` after the change                                   |
+| `includedWork()`                        | `GET /snarker/included`                                                             | `IncludedWork`, with the tip and market                            |
+| `report(options?)`                      | `POST /report` with the report header                                               | `Report`: title, markdown, issue link                              |
+| `crashNotice()`                         | `POST /report/crash` with the report header                                         | `CrashNotice \| null`                                              |
+| `transactionPool()`                     | `GET /transaction-pool`                                                             | `PendingTransaction[]`, highest fee first                          |
+| `peers()`                               | `GET /state/peers`                                                                  | `Peer[]`                                                           |
+| `raw(route)`                            | `GET /status` or `GET /build_env` (`RAW_ROUTES`)                                    | the JSON as it comes                                               |
+| `bestChain(length?)`                    | GraphQL `bestChain` (default 20 blocks)                                             | `Block[]`, newest first                                            |
+| `block(id)`                             | GraphQL `block` by height or state hash                                             | `Block \| null`                                                    |
+| `account(publicKey)`                    | GraphQL `account`                                                                   | `Account \| null`                                                  |
+| `getJson(path, parse)`                  | any GET                                                                             | what `parse` returns                                               |
+| `postJson(path, body, parse, headers?)` | any POST of JSON                                                                    | what `parse` returns                                               |
+| `graphql(query, variables, parse)`      | `POST /graphql`                                                                     | `parse(data)`; an error throws `refused`                           |
+| `url(path)`                             | none                                                                                | `path` on the node, for links                                      |
 
 Every method takes an optional `AbortSignal` as its last argument.
+
+### A web node in the page
+
+A web node has no HTTP server: the page talks to the `RpcSender` that the WASM's
+`run()` resolves to. `createWebNodeTransport(rpc, { buildEnv })` answers the
+routes it has from it, with the JSON the HTTP API sends, so every method above
+and every hook below works on it where the data exists:
+
+```ts
+const rpc = await wasm.run(
+  null,
+  seedUrls,
+  relays,
+  genesisUrl,
+  "devnet",
+  null,
+  null,
+  null,
+  {},
+);
+const node = createNodeClient({
+  transport: createWebNodeTransport(rpc, { buildEnv: () => wasm.build_env() }),
+});
+```
+
+It serves `/status`, `/build_env`, `/stats/sync`, `/stats/block_producer`,
+`/stats/verification`, `/state/peers`, `/state/message-progress` and
+`/transaction-pool`. The rest (GraphQL, so `bestChain`, `block` and `account`;
+the SNARK worker's control; the bug report) fail as `absent`, saying so. Its
+`baseUrl` is `webnode:`. `httpTransport(options)` is the HTTP one, the default.
 
 ### Errors
 
@@ -212,6 +247,9 @@ the last answer and asks again only on `refresh()`.
 | `useProducerStats(ms?)`                 | `producerStats()`                                                     | 10 s             |
 | `useTransactionPool(ms?)`               | `transactionPool()`                                                   | 5 s              |
 | `usePeers(ms?)`                         | `peers()`                                                             | 5 s              |
+| `useVerification(limit?, ms?)`          | `verification(limit)`                                                 | 10 s             |
+| `useLedgerSync(ms?, { paused })`        | `ledgerSync()`                                                        | 2 s              |
+| `useSyncBlocks(ms?, { paused })`        | `syncBlocks()`                                                        | 2 s              |
 | `useBestChain(length?, ms?)`            | `bestChain(length)`                                                   | 10 s             |
 | `useBlock(id \| null)`                  | `block(id)`; null asks nothing                                        | 60 s             |
 | `useAccount(publicKey \| null, ms?)`    | `account(publicKey)`; null asks nothing                               | 30 s             |

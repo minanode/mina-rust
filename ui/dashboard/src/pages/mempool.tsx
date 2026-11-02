@@ -1,22 +1,12 @@
 import { Layers } from "lucide-react";
 
-import {
-  tableRegion,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@minanode/design-system/components/table";
 import { EmptyState } from "@minanode/design-system/patterns/empty-state";
-import { Hash } from "@minanode/design-system/patterns/hash";
 import { MetricCard } from "@minanode/design-system/patterns/metric-card";
-import { Amount } from "@minanode/design-system/patterns/amount";
 import { PageHeader } from "@minanode/design-system/patterns/page-header";
 import { PageSection } from "@minanode/design-system/patterns/page-section";
-import { formatCount, formatMina, plural } from "@minanode/node-client";
+import { formatCount, plural } from "@minanode/node-client";
 import { useNodeStatus, useTransactionPool } from "@minanode/node-client/react";
+import { PendingTransactionsTable } from "../components/pending-transactions";
 import { Loaded, PolledAge } from "../components/states";
 
 const POLL_MS = 5_000;
@@ -83,73 +73,7 @@ export function MempoolPage() {
                 }
               />
             ) : (
-              <Table
-                className="[&_td]:align-middle [&_td]:whitespace-nowrap"
-                containerProps={tableRegion("Pending transactions")}
-              >
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Hash</TableHead>
-                    <TableHead>Kind</TableHead>
-                    <TableHead>From</TableHead>
-                    <TableHead>To</TableHead>
-                    <TableHead className="text-right">Amount</TableHead>
-                    <TableHead className="text-right">Fee</TableHead>
-                    <TableHead className="text-right">Nonce</TableHead>
-                    <TableHead>Memo</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {list.map((t, i) => (
-                    <TableRow key={t.hash ?? i}>
-                      <TableCell>
-                        {t.hash ? (
-                          <Hash value={t.hash} label="transaction hash" />
-                        ) : (
-                          "–"
-                        )}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap">
-                        {t.kind}
-                      </TableCell>
-                      <TableCell>
-                        {t.sender ? (
-                          <Hash value={t.sender} copy={false} />
-                        ) : (
-                          "–"
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {t.receiver ? (
-                          <Hash value={t.receiver} copy={false} />
-                        ) : (
-                          "–"
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Amount
-                          unit="MINA"
-                          value={
-                            t.amount !== null ? formatMina(t.amount) : null
-                          }
-                        />
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Amount
-                          unit="MINA"
-                          value={t.fee !== null ? formatMina(t.fee) : null}
-                        />
-                      </TableCell>
-                      <TableCell className="text-right font-mono tabular-nums">
-                        {t.nonce ?? "–"}
-                      </TableCell>
-                      <TableCell className="max-w-48 truncate text-muted-foreground">
-                        {t.memo || "–"}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+              <PendingTransactionsTable list={list} />
             )
           }
         </Loaded>

@@ -45,18 +45,25 @@ pub use hard_fork::*;
 
 mod light;
 pub use light::*;
+
+mod chain_view;
+pub use chain_view::*;
+#[cfg(test)]
+mod chain_view_tests;
 #[cfg(test)]
 mod light_tests;
 
 mod heartbeat;
-pub use heartbeat::{NodeHeartbeat, ProducedBlockInfo, SignedNodeHeartbeat};
+pub use heartbeat::{
+    NodeHeartbeat, NodeStatus as HeartbeatNodeStatus, ProducedBlockInfo, SignedNodeHeartbeat,
+};
 
 pub use mina_core::requests::{RpcId, RpcIdType};
 
 /// The answer to a transaction submission while the node has no usable
 /// transition frontier, OCaml's text.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L365-L366>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/mina_graphql.ml#L365-L366>
 pub const TRANSACTION_INJECT_BOOTSTRAPPING: &str = "Daemon is bootstrapping";
 
 use ledger::scan_state::scan_state::{transaction_snark::OneOrTwo, AvailableJobMessage};
@@ -94,6 +101,7 @@ use crate::{
 pub enum RpcRequest {
     StateGet(Option<String>),
     StatusGet,
+    GraphqlStatusGet,
     MemoryDebugGet,
     MetricsGet,
     HeartbeatGet,
@@ -160,6 +168,18 @@ pub enum RpcRequest {
     LightBestTip,
     /// LN2: one account with its Merkle path in a best-chain block's ledger.
     LightAccount(RpcLightAccountQuery),
+    /// MINAWEB-RPC1: the best chain's headers and counts, newest first.
+    BestChainHeadersGet(RpcBestChainHeadersQuery),
+    /// MINAWEB-RPC1: one best-chain block, with what it applied.
+    BestChainBlockGet(RpcBestChainBlockQuery),
+    /// MINAWEB-RPC1: a sync's progress, ledger by ledger and block by block.
+    SyncProgressGet,
+    /// What the opt-in uptime, node status and node error reporters send
+    /// (R43e.2), sampled at once.
+    ReportingSnapshotGet {
+        /// Only the uptime reporter changes its local production subscription.
+        produced_block_watch: Option<RpcReportingProducedBlockWatch>,
+    },
 }
 
 /// Maximum last-epoch delegators returned per public GraphQL lookup.
@@ -250,9 +270,31 @@ pub struct SyncStatsQuery {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum RpcScanStateSummaryGetQuery {
+    /// GraphQL `scanState`: only the block hash and the tree counters.
+    Graphql(Option<StateHash>),
     ForBestTip,
     ForBlockWithHash(StateHash),
     ForBlockWithHeight(u32),
+}
+
+impl RpcScanStateSummaryGetQuery {
+    /// Whether the answer needs only the tree counters, not the jobs.
+    pub fn is_metrics_only(&self) -> bool {
+        matches!(self, Self::Graphql(_))
+    }
+
+    /// The ledger read this query needs for a block's staged ledger.
+    pub fn ledger_read(
+        &self,
+        staged_ledger_hash: mina_p2p_messages::v2::MinaBaseStagedLedgerHashStableV1,
+    ) -> crate::ledger::read::LedgerReadRequest {
+        use crate::ledger::read::LedgerReadRequest;
+        if self.is_metrics_only() {
+            LedgerReadRequest::ScanStateMetrics(staged_ledger_hash)
+        } else {
+            LedgerReadRequest::ScanStateSummary(staged_ledger_hash)
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -293,6 +335,7 @@ pub struct RpcPeerInfo {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RpcScanStateSummary {
+    pub trees: Vec<(u64, u64, u64)>,
     pub block: RpcScanStateSummaryBlock,
     pub scan_state: Vec<Vec<RpcScanStateSummaryScanStateJob>>,
 }
@@ -478,6 +521,24 @@ pub enum RpcStateGetError {
 
 pub type RpcStateGetResponse = Result<serde_json::Value, RpcStateGetError>;
 pub type RpcStatusGetResponse = Option<RpcNodeStatus>;
+/// Bounded status projection: no peer, resource or ledger scans.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RpcGraphqlStatusResponse {
+    pub bootstrap: crate::bootstrap_status::BootstrapStatus,
+    pub pool_size: usize,
+    pub pool_max_size: usize,
+    pub pool_min_fee: Option<String>,
+}
+impl RpcGraphqlStatusResponse {
+    pub fn from_state(state: &crate::State) -> Self {
+        Self {
+            bootstrap: state.transition_frontier.bootstrap.clone(),
+            pool_size: state.transaction_pool.size(),
+            pool_max_size: state.transaction_pool.max_size(),
+            pool_min_fee: state.transaction_pool.minimum_fee_per_weight_unit(),
+        }
+    }
+}
 /// Cheap operator telemetry snapshot, assembled on the node thread without
 /// traversing the full state or performing I/O.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -515,12 +576,110 @@ pub struct RpcMetricsGetResponse {
     pub ledger_sync_estimated: Option<u64>,
 }
 pub type RpcHeartbeatGetResponse = Option<SignedNodeHeartbeat>;
+pub type RpcReportingSnapshotGetResponse = RpcReportingSnapshot;
+
+/// One consistent sample of the node for the opt-in reporters (R43e.2).
+/// Uptime, node status and node error reports read nothing else from the
+/// state machine, so each report is built from a single instant.
+#[derive(Serialize, Debug, Clone)]
+pub struct RpcReportingSnapshot {
+    pub time: Timestamp,
+    /// The chain ID, in hex, once the P2P layer is up.
+    pub chain_id: Option<String>,
+    /// Our libp2p peer ID (`12D3KooW…`), once the P2P layer is up: OCaml's
+    /// reporters need the node to be a gossip peer.
+    pub peer_id: Option<String>,
+    /// Peers with a ready connection.
+    pub peer_count: usize,
+    /// The best tip, with its proofs, once the node participates: not while
+    /// it bootstraps, when OCaml has no transition frontier (and this node's
+    /// holds the genesis block).
+    pub best_tip: Option<ArcBlockWithHash>,
+    /// The greatest height of the blocks received from peers whose proofs
+    /// were verified, among those still held as candidates: OCaml's
+    /// `max_blocklength_observed` counts gossip blocks that pass initial
+    /// validation, not genesis or our own. The reporter keeps the maximum
+    /// across samples, as that gauge only grows.
+    pub max_observed_block_height: Option<u32>,
+    /// The same over all received candidate blocks, verified or not.
+    pub max_observed_unvalidated_block_height: Option<u32>,
+    /// `Bootstrap`, `Catchup` or `Synced` once a sync has started, in
+    /// OCaml's sense: the first sync, catching up from genesis included, is
+    /// a bootstrap.
+    pub sync_phase: Option<String>,
+    pub block_producer: Option<AccountPublicKey>,
+    /// When this node next produces a block, if it knows.
+    pub next_production_time: Option<Timestamp>,
+    /// The first local completion for the active uptime waiter, retained
+    /// independently of later local completions and frontier changes.
+    pub produced_block: Option<RpcReportingProducedBlock>,
+    /// The first configured external address.
+    pub external_ip: Option<String>,
+    /// Which SNARK job the uptime service would prove for `best_tip`, when
+    /// there is one.
+    pub uptime_job: Option<RpcReportingUptimeJob>,
+    /// The selected witness, captured with the block rather than looked up
+    /// again after a tip change. Only the reporter requests this snapshot.
+    pub uptime_spec: Option<
+        Box<mina_p2p_messages::v2::SnarkWorkerWorkerRpcsVersionedGetWorkV2TResponseA0Single>,
+    >,
+    pub snark_work_fee: Option<mina_p2p_messages::v2::CurrencyFeeStableV1>,
+}
+
+/// The job OCaml's uptime service picks to prove for a best-tip submission:
+/// from the best tip's scan-state jobs, in order, the first Transition whose
+/// target second-pass ledger is the block's staged ledger hash.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/uptime_service/uptime_service.ml#L224-L328>
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub enum RpcReportingUptimeJob {
+    /// OCaml's `all_work_pairs` error: a job's protocol state is not in the
+    /// frontier. Here also when the SNARK pool's jobs are another block's.
+    /// OCaml sends nothing then.
+    Unavailable(String),
+    /// No jobs (`Ok []`): OCaml sends the block alone.
+    NoJobs,
+    /// No Transition job ends at the block's ledger: OCaml sends the block
+    /// alone.
+    NoMatchingTransition,
+    /// The job to prove: its pair in the SNARK pool and its place in it.
+    Transition {
+        pair: mina_core::snark::SnarkJobId,
+        index: usize,
+        /// A zkApp command, proved as segments rather than as one
+        /// transaction.
+        zkapp: bool,
+    },
+}
+
+/// Control the single uptime subscription in state-machine action order.
+/// Cancellation is scoped so an interrupted iteration cannot clear a new one.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+pub enum RpcReportingProducedBlockWatch {
+    Start { subscription: u64 },
+    Cancel { subscription: u64 },
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct RpcReportingProducedBlock {
+    pub block: ArcBlockWithHash,
+    /// The waiter that owns this first completion.
+    pub subscription: u64,
+    /// Start of the block's won slot.
+    pub slot_time: Timestamp,
+}
 pub type RpcActionStatsGetResponse = Option<ActionStatsResponse>;
 pub type RpcSyncStatsGetResponse = Option<Vec<SyncStatsSnapshot>>;
 pub type RpcVerificationStatsGetResponse = crate::verification::VerificationSnapshot;
 pub type RpcBlockProducerStatsGetResponse = Option<RpcBlockProducerStats>;
 pub type RpcPeersGetResponse = Vec<RpcPeerInfo>;
 pub type RpcP2pConnectionOutgoingResponse = Result<(), String>;
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct RpcScanStateSummaryData {
+    pub jobs: Vec<Vec<RpcScanStateSummaryScanStateJob>>,
+    pub trees: Vec<(u64, u64, u64)>,
+}
+
 pub type RpcScanStateSummaryGetResponse = Result<RpcScanStateSummary, String>;
 pub type RpcSnarkPoolGetResponse = Vec<RpcSnarkPoolJobSummary>;
 pub type RpcSnarkPoolCompletedJobsResponse = Vec<TransactionSnarkWorkTStableV2>;
@@ -673,6 +832,7 @@ impl From<Account> for AccountSlim {
 #[derive(Serialize, Debug, Clone)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RpcNodeStatus {
+    pub bootstrap: crate::bootstrap_status::BootstrapStatus,
     /// Configured network name; chain_id identifies the exact chain.
     pub network: String,
     /// Seconds since node state initialization.
@@ -810,6 +970,9 @@ pub struct RpcNodeStatusResources {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RpcNodeStatusTransitionFrontier {
+    /// Last ledger fault and whether a fresh sync has committed successfully.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ledger_recovery: Option<crate::transition_frontier::LedgerRecovery>,
     /// Current root of the applied best chain.
     #[serde(default)]
     pub root: Option<RpcNodeStatusTransitionFrontierBlockSummary>,
@@ -857,6 +1020,8 @@ pub struct RpcNodeStatusTransitionFrontierBlockSummary {
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RpcNodeStatusTransactionPool {
+    pub max_size: usize,
+    pub minimum_fee_per_weight_unit: Option<String>,
     /// Total number of transactions in the pool.
     pub transactions: usize,
     /// Number of transactions ready for propagation.
@@ -982,6 +1147,8 @@ pub enum GetBlockQuery {
 }
 
 pub type RpcGetBlockResponse = Option<AppliedBlock>;
+pub type RpcBestChainHeadersGetResponse = RpcBestChainHeaders;
+pub type RpcSyncProgressGetResponse = RpcSyncProgress;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PooledCommandsQuery<ID> {

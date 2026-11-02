@@ -84,6 +84,16 @@ impl Stats {
         Ok(JsValue::from_serde(&res).unwrap_or_default())
     }
 
+    /// MINAWEB-RPC1: how far a sync has got, ledger by ledger and block by
+    /// block, with consensus `k`.
+    pub async fn sync_progress(&self) -> JsValue {
+        let res = self
+            .sender
+            .oneshot_request::<RpcSyncProgressGetResponse>(RpcRequest::SyncProgressGet)
+            .await;
+        JsValue::from_serde(&res).unwrap_or_default()
+    }
+
     pub async fn block_producer(&self) -> JsValue {
         let res = self
             .sender

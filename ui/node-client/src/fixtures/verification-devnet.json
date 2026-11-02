@@ -1,0 +1,124 @@
+{
+  "$comment": "GET /stats/verification?limit=3 from a devnet relay node, 2026-10-28.",
+  "capacity": 1024,
+  "verifiedSinceStart": 534,
+  "failuresSinceStart": 0,
+  "proofFailuresSinceStart": 0,
+  "appliedSinceStart": 748,
+  "proofTimeCount": 534,
+  "proofTimeSumSeconds": 87.35295960100005,
+  "proofTimeBuckets": [0, 0, 525, 534, 534, 534, 534, 534],
+  "recentFailures": [],
+  "recentFailureCount": 0,
+  "medianProofTimeMs": 158.46938649999998,
+  "lastVerified": {
+    "block": {
+      "stateHash": "3NLHubJMdYJi5byZkmjjsMm8poJXAcyhDUUiq4aSkGEFoLDcYLVL",
+      "height": 581310
+    },
+    "network": "devnet",
+    "arrival": "gossip",
+    "receivedAt": 1793209330764,
+    "applied": true,
+    "appliedCounted": true,
+    "blockProof": {
+      "status": "passed",
+      "checkedAt": 1793209330917,
+      "elapsedMs": 151.739984
+    },
+    "deltaChain": {
+      "status": "passed",
+      "checkedAt": 1793209330764,
+      "elapsedMs": null
+    },
+    "bodyReference": {
+      "status": "passed",
+      "checkedAt": 1793209330918,
+      "elapsedMs": 0.0152
+    },
+    "verifierKey": "3af212169e863c13ad319aad24d5a66afeea58dbb123169e386d4661914f38b5"
+  },
+  "receipts": [
+    {
+      "block": {
+        "stateHash": "3NLHubJMdYJi5byZkmjjsMm8poJXAcyhDUUiq4aSkGEFoLDcYLVL",
+        "height": 581310
+      },
+      "network": "devnet",
+      "arrival": "gossip",
+      "receivedAt": 1793209330764,
+      "applied": true,
+      "appliedCounted": true,
+      "blockProof": {
+        "status": "passed",
+        "checkedAt": 1793209330917,
+        "elapsedMs": 151.739984
+      },
+      "deltaChain": {
+        "status": "passed",
+        "checkedAt": 1793209330764,
+        "elapsedMs": null
+      },
+      "bodyReference": {
+        "status": "passed",
+        "checkedAt": 1793209330918,
+        "elapsedMs": 0.0152
+      },
+      "verifierKey": "3af212169e863c13ad319aad24d5a66afeea58dbb123169e386d4661914f38b5"
+    },
+    {
+      "block": {
+        "stateHash": "3NKrCuWrLNFaZjTKeoMt5uKtkZKCkvr9XEP55h1aHEDzSZmAZzsN",
+        "height": 581309
+      },
+      "network": "devnet",
+      "arrival": "gossip",
+      "receivedAt": 1793209240533,
+      "applied": false,
+      "appliedCounted": false,
+      "blockProof": {
+        "status": "passed",
+        "checkedAt": 1793209240737,
+        "elapsedMs": 203.011771
+      },
+      "deltaChain": {
+        "status": "passed",
+        "checkedAt": 1793209240533,
+        "elapsedMs": null
+      },
+      "bodyReference": {
+        "status": "passed",
+        "checkedAt": 1793209240533,
+        "elapsedMs": null
+      },
+      "verifierKey": "3af212169e863c13ad319aad24d5a66afeea58dbb123169e386d4661914f38b5"
+    },
+    {
+      "block": {
+        "stateHash": "3NKsNcWy2bqxRBmzSkZafrn8jc7o8StZxKGmAmTRo7EQme9J62Zk",
+        "height": 581309
+      },
+      "network": "devnet",
+      "arrival": "gossip",
+      "receivedAt": 1793209240214,
+      "applied": false,
+      "appliedCounted": false,
+      "blockProof": {
+        "status": "passed",
+        "checkedAt": 1793209240437,
+        "elapsedMs": 191.82702600000002
+      },
+      "deltaChain": {
+        "status": "passed",
+        "checkedAt": 1793209240214,
+        "elapsedMs": null
+      },
+      "bodyReference": {
+        "status": "passed",
+        "checkedAt": 1793209240214,
+        "elapsedMs": null
+      },
+      "verifierKey": "3af212169e863c13ad319aad24d5a66afeea58dbb123169e386d4661914f38b5"
+    }
+  ]
+}

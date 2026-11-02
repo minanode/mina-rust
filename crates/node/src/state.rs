@@ -299,10 +299,14 @@ impl State {
             ledger: LedgerState::new(config.ledger),
             snark_pool: SnarkPoolState::new(),
             snark: SnarkState::new(config.snark),
-            transition_frontier: TransitionFrontierState::new(
-                config.transition_frontier,
-                config.archive.is_some(),
-            ),
+            transition_frontier: {
+                let mut frontier = TransitionFrontierState::new(
+                    config.transition_frontier,
+                    config.archive.is_some(),
+                );
+                frontier.bootstrap = crate::bootstrap_status::BootstrapStatus::new(now.into());
+                frontier
+            },
             external_snark_worker: ExternalSnarkWorkers::new(now),
             block_producer: BlockProducerState::new(now, config.block_producer),
             rpc: RpcState::new(),
@@ -354,8 +358,16 @@ impl State {
     }
 
     fn cur_slot(&self, initial_slot: impl FnOnce(&ArcBlockWithHash) -> u32) -> Option<u32> {
+        self.cur_slot_at(self.time(), initial_slot)
+    }
+
+    fn cur_slot_at(
+        &self,
+        time: redux::Timestamp,
+        initial_slot: impl FnOnce(&ArcBlockWithHash) -> u32,
+    ) -> Option<u32> {
         let genesis = self.genesis_block()?;
-        let diff_ns = u64::from(self.time()).saturating_sub(u64::from(genesis.timestamp()));
+        let diff_ns = u64::from(time).saturating_sub(u64::from(genesis.timestamp()));
         let diff_ms = diff_ns / 1_000_000;
         let slots = diff_ms
             .checked_div(constraint_constants().block_window_duration_ms)
@@ -372,6 +384,12 @@ impl State {
     /// It's not equal to global slot of the best tip.
     pub fn cur_global_slot(&self) -> Option<u32> {
         self.cur_slot(|b| b.global_slot())
+    }
+
+    /// Slot at an action's execution time, even if the previous action was
+    /// before a long sleep. Used when accepting asynchronous epoch data.
+    pub fn cur_global_slot_at(&self, time: redux::Timestamp) -> Option<u32> {
+        self.cur_slot_at(time, |b| b.global_slot())
     }
 
     pub fn current_slot(&self) -> Option<u32> {
@@ -415,7 +433,8 @@ impl State {
     }
 
     /// Whether to prove the genesis block now: we won a slot of the genesis
-    /// epoch that starts within two minutes, or has started and not ended.
+    /// epoch, or of the epoch after it, that starts within two minutes, or
+    /// has started and not ended.
     ///
     /// This used to ask whether the slot would be due for production two
     /// minutes from now, which stops being true two minutes before the slot
@@ -425,7 +444,13 @@ impl State {
     /// OCaml proves the genesis block one block window before a later won
     /// slot, and at once for the current one.
     ///
+    /// The epoch after the genesis epoch counts too: with no block yet, the
+    /// genesis block selects its next epoch data for it, and OCaml proves
+    /// the genesis block whenever it is the best tip. Later epochs have no
+    /// data on the genesis block (BP-MN-3A).
+    ///
     /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/block_producer/block_producer.ml#L1159-L1230>
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/block_producer/block_producer.ml#L1059-L1070>
     pub fn producing_block_after_genesis(&self) -> bool {
         const GENESIS_PROOF_LEAD: Duration = Duration::from_secs(2 * 60);
         self.block_producer.with(false, |bp| {
@@ -437,7 +462,7 @@ impl State {
                 .as_u32()
                 .checked_div(slot.slots_per_epoch.as_u32())
                 .expect("division by 0");
-            self.current_epoch() <= Some(epoch)
+            self.current_epoch() <= epoch.checked_add(1)
         })
     }
 

@@ -7,6 +7,7 @@ use utoipa_axum::router::OpenApiRouter;
 
 use super::{openapi, AppState};
 
+pub mod chain;
 pub mod discovery;
 pub mod graphql;
 mod graphql_body;
@@ -35,6 +36,7 @@ pub fn openapi_router() -> OpenApiRouter<AppState> {
         .merge(status::routes())
         .merge(state::routes())
         .merge(stats::routes())
+        .merge(chain::routes())
         .merge(scan_state::routes())
         .merge(snark_pool::routes())
         .merge(snarker::routes())

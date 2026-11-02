@@ -66,6 +66,7 @@ mod state_filter;
 pub use sender::RpcSender;
 
 pub mod ledger;
+pub mod roles;
 pub mod state;
 pub mod stats;
 pub mod transaction_pool;
@@ -339,6 +340,10 @@ impl mina_node::rpc_effectful::RpcService for NodeService {
         Ok(())
     }
     rpc_service_impl!(respond_status_get, RpcStatusGetResponse);
+    rpc_service_impl!(
+        respond_graphql_status_get,
+        mina_node::rpc::RpcGraphqlStatusResponse
+    );
     rpc_service_impl!(respond_metrics_get, mina_node::rpc::RpcMetricsGetResponse);
     rpc_service_impl!(
         respond_snark_work_coverage_get,
@@ -349,6 +354,10 @@ impl mina_node::rpc_effectful::RpcService for NodeService {
     rpc_service_impl!(
         respond_proof_memory_get,
         mina_node::rpc::RpcProofMemoryGetResponse
+    );
+    rpc_service_impl!(
+        respond_reporting_snapshot_get,
+        mina_node::rpc::RpcReportingSnapshotGetResponse
     );
 
     rpc_service_impl!(respond_sync_stats_get, RpcSyncStatsGetResponse);
@@ -486,11 +495,58 @@ impl mina_node::rpc_effectful::RpcService for NodeService {
     rpc_service_impl!(respond_hard_fork_config, RpcHardForkExportResponse);
     rpc_service_impl!(respond_light_best_tip, RpcLightBestTipResponse);
     rpc_service_impl!(respond_light_account, RpcLightAccountResponse);
+    rpc_service_impl!(
+        respond_best_chain_headers,
+        mina_node::rpc::RpcBestChainHeadersGetResponse
+    );
+    rpc_service_impl!(
+        respond_best_chain_block,
+        mina_node::rpc::RpcBestChainBlockGetResponse
+    );
+    rpc_service_impl!(
+        respond_sync_progress,
+        mina_node::rpc::RpcSyncProgressGetResponse
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::strip_root_field;
+
+    #[tokio::test]
+    async fn empty_best_chain_releases_the_role_responder() {
+        use super::*;
+
+        // Exercise the same response implementation as NodeService without
+        // starting networking or a ledger service.
+        struct Service {
+            rpc: RpcService,
+        }
+        impl Service {
+            rpc_service_impl!(respond_best_chain, RpcBestChainResponse);
+        }
+        let mut service = Service {
+            rpc: RpcService::new(),
+        };
+        let roles = service.rpc.req_sender().roles();
+        let read = roles.inclusion("not-in-an-empty-chain", 1);
+        let reply = async {
+            let request = service.rpc.req_receiver.recv().await.unwrap();
+            let Event::Rpc(id, request) = service.rpc.process_request(request) else {
+                panic!("expected RPC event");
+            };
+            assert!(matches!(*request, RpcRequest::BestChain(1)));
+            assert_eq!(service.rpc.pending.len(), 1);
+            service.respond_best_chain(id, vec![]).unwrap();
+            assert!(service.rpc.pending.is_empty());
+        };
+        let (answer, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(read, reply)
+        })
+        .await
+        .expect("role read must complete");
+        assert!(answer.is_none());
+    }
 
     #[test]
     fn strip_root_field_test() {

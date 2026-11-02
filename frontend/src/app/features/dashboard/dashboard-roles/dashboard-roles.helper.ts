@@ -115,6 +115,7 @@ const DISCARD_REASONS: Record<string, string> = {
   ProofGenerationFailed: 'its proof failed',
   ProofVerificationFailed: 'its proof did not verify',
   WonSlotExpired: 'the slot passed before it was ready',
+  EpochDataChanged: 'the chain changed its epoch data',
 };
 
 function discardReason(reason: string | undefined): string {

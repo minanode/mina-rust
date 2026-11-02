@@ -708,6 +708,160 @@ mod tests {
     // OCaml 4.0.2 `mina ledger hash` of the empty mainnet ledger.
     const EMPTY_ROOT: &str = "jwkaDMeSMeL94hwJg6EYtSRD6gxB1BHpXnGKnZ1VW6jthKzgcef";
 
+    // OCaml oracle: tools/ocaml-test-vectors/ledger_roots.py, merkle-path-8.
+    const EIGHT_ACCOUNTS_ROOT: &str = "jwpjaD1uVj5Z7JxX2dbPPMuvZuipXb5nb3SNv9MaD5jcgah69F7";
+
+    fn subtree_fixture(n: u64) -> Vec<Box<Account>> {
+        (0..n)
+            .map(|i| {
+                let mut account = Account::empty();
+                account.token_id = TokenId::from(i);
+                Box::new(account)
+            })
+            .collect()
+    }
+
+    // Rebuild from the test's input accounts, never the mask's cached hash or
+    // observed contents. Root-first comparison catches stale caches before
+    // checking every leaf and Merkle path, including deleted leaves.
+    fn assert_rebuilt_subtree_view(mask: &mut Mask, view: &[Option<Box<Account>>]) {
+        let mut rebuilt = Database::<V2>::create(35);
+        for (index, account) in view.iter().enumerate() {
+            if let Some(account) = account {
+                rebuilt
+                    .set_at_index(AccountIndex(index as u64), account.clone())
+                    .unwrap();
+            }
+        }
+        assert_eq!(mask.merkle_root(), rebuilt.merkle_root());
+        for index in 0..view.len() {
+            let index = AccountIndex(index as u64);
+            assert_eq!(mask.get_at_index(index), rebuilt.get_at_index(index));
+            assert_eq!(
+                mask.merkle_path_at_index(index),
+                rebuilt.merkle_path_at_index(index)
+            );
+        }
+    }
+
+    #[test]
+    fn ocaml_404_subtree_overwrite_notifies_cached_child() {
+        // REVIEW-227-F1: same-length replacement must notify a child which
+        // owns an unchanged account and has already cached its Merkle root.
+        let accounts = subtree_fixture(8);
+        let mut root = Mask::create(35);
+        for (index, account) in accounts.iter().enumerate() {
+            root.set_at_index(AccountIndex(index as u64), account.clone())
+                .unwrap();
+        }
+        let mut changed = accounts[0].clone();
+        changed.balance = crate::scan_state::currency::Balance::from_u64(123);
+        root.set_at_index(AccountIndex(0), changed).unwrap();
+        let mut child = root.make_child();
+        child
+            .set_at_index(AccountIndex(1), accounts[1].clone())
+            .unwrap();
+        child.merkle_root();
+
+        root.set_all_accounts_rooted_at(Address::root(), &accounts)
+            .unwrap();
+        let view: Vec<_> = accounts.into_iter().map(Some).collect();
+        for mask in [&mut root, &mut child] {
+            assert_rebuilt_subtree_view(mask, &view);
+            assert_eq!(
+                mina_p2p_messages::v2::LedgerHash::from_fp(mask.merkle_root()).to_string(),
+                EIGHT_ACCOUNTS_ROOT
+            );
+        }
+    }
+
+    fn cached_mask_chain_subtree_replacement(clear: bool) {
+        for disk in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let accounts = subtree_fixture(16);
+            let mut root = Mask::create(35);
+            for (index, account) in accounts.iter().enumerate() {
+                root.set_at_index(AccountIndex(index as u64), account.clone())
+                    .unwrap();
+            }
+            if disk {
+                root.freeze_to_disk(dir.path()).unwrap().unwrap();
+            }
+            let mut child = root.make_child();
+            child
+                .set_at_index(AccountIndex(1), accounts[1].clone())
+                .unwrap();
+            let mut grandchild = child.make_child();
+            grandchild
+                .set_at_index(AccountIndex(2), accounts[2].clone())
+                .unwrap();
+            let mut sibling = root.make_child();
+            sibling
+                .set_at_index(AccountIndex(3), accounts[3].clone())
+                .unwrap();
+            // An owned account in the deleted range must remain visible to
+            // its descendants, while other inherited leaves disappear.
+            let mut shadow = root.make_child();
+            let mut held = accounts[12].clone();
+            held.balance = crate::scan_state::currency::Balance::from_u64(123);
+            shadow.set_at_index(AccountIndex(12), held.clone()).unwrap();
+            let mut shadow_child = shadow.make_child();
+            shadow_child
+                .set_at_index(AccountIndex(13), accounts[13].clone())
+                .unwrap();
+            for mask in [
+                &mut root,
+                &mut child,
+                &mut grandchild,
+                &mut sibling,
+                &mut shadow,
+                &mut shadow_child,
+            ] {
+                mask.merkle_root();
+                mask.merkle_path_at_index(AccountIndex(15));
+            }
+
+            let count = if clear { 0 } else { 8 };
+            root.set_all_accounts_rooted_at(Address::root(), &accounts[..count])
+                .unwrap();
+            let mut view = vec![None; 16];
+            for (slot, account) in view.iter_mut().zip(&accounts[..count]) {
+                *slot = Some(account.clone());
+            }
+            assert_rebuilt_subtree_view(&mut root, &view);
+            assert_eq!(
+                mina_p2p_messages::v2::LedgerHash::from_fp(root.merkle_root()).to_string(),
+                if clear {
+                    EMPTY_ROOT
+                } else {
+                    EIGHT_ACCOUNTS_ROOT
+                }
+            );
+            let mut child_view = view.clone();
+            child_view[1] = Some(accounts[1].clone());
+            assert_rebuilt_subtree_view(&mut child, &child_view);
+            child_view[2] = Some(accounts[2].clone());
+            assert_rebuilt_subtree_view(&mut grandchild, &child_view);
+            let mut sibling_view = view.clone();
+            sibling_view[3] = Some(accounts[3].clone());
+            assert_rebuilt_subtree_view(&mut sibling, &sibling_view);
+            view[12] = Some(held);
+            assert_rebuilt_subtree_view(&mut shadow, &view);
+            view[13] = Some(accounts[13].clone());
+            assert_rebuilt_subtree_view(&mut shadow_child, &view);
+        }
+    }
+
+    #[test]
+    fn ocaml_404_subtree_shortening_notifies_cached_mask_chain() {
+        cached_mask_chain_subtree_replacement(false);
+    }
+
+    #[test]
+    fn ocaml_404_subtree_clearing_notifies_cached_mask_chain() {
+        cached_mask_chain_subtree_replacement(true);
+    }
+
     #[test]
     fn empty_unattached_mask_hashes_without_parent() {
         let mut mask = Mask::new_unattached(35);

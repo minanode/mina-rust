@@ -6,14 +6,13 @@ use serde::{de::Visitor, Deserialize, Serialize};
 use serde_bytes;
 
 const MINA_STRING_MAX_LENGTH: usize = 100_000_000;
-const CHUNK_SIZE: usize = 5_000;
 
 pub type ByteString = BoundedByteString<MINA_STRING_MAX_LENGTH>;
 pub type CharString = BoundedCharString<MINA_STRING_MAX_LENGTH>;
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/c0c9d702b8cba34a603a28001c293ca462b1dfec/src/lib/mina_base/zkapp_account.ml#L140>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_base/zkapp_account.ml#L165-L167>
 pub const ZKAPP_URI_MAX_LENGTH: usize = 255;
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/c0c9d702b8cba34a603a28001c293ca462b1dfec/src/lib/mina_base/account.ml#L92>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_base/account.ml#L92-L92>
 pub const TOKEN_SYMBOL_MAX_LENGTH: usize = 6;
 
 pub type ZkAppUri = BoundedCharString<ZKAPP_URI_MAX_LENGTH>;
@@ -294,30 +293,26 @@ impl<const MAX_LENGTH: usize> binprot::BinProtWrite for BoundedCharString<MAX_LE
     }
 }
 
-/// Reads data from the reader `r` in chunks if the length `len` exceeds a predefined chunk size.
+/// Reads an account's token symbol. The wire type is a plain string, but
+/// OCaml's reader refuses one longer than 6 bytes, so a longer symbol is a
+/// decoding error here too.
 ///
-/// This approach avoids preallocating a large buffer upfront, which is crucial for handling
-/// potentially large or untrusted input sizes efficiently and safely.
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_base/account.ml#L82-L121>
+pub fn read_account_token_symbol<R: std::io::Read + ?Sized>(
+    r: &mut R,
+) -> Result<ByteString, binprot::Error> {
+    use binprot::BinProtRead;
+    let symbol = BoundedByteString::<TOKEN_SYMBOL_MAX_LENGTH>::binprot_read(r)?;
+    Ok(ByteString::from(symbol.0))
+}
+
+/// Reads a string of `len` bytes, allocating as the bytes arrive: `len` is
+/// what the sender claims, and the bytes may never come.
 fn maybe_read_in_chunks<R: std::io::Read + ?Sized>(
     len: usize,
     r: &mut R,
 ) -> Result<Vec<u8>, binprot::Error> {
-    if len <= CHUNK_SIZE {
-        let mut buf = vec![0u8; len];
-        r.read_exact(&mut buf)?;
-        Ok(buf)
-    } else {
-        let mut buf = vec![0u8; CHUNK_SIZE];
-        let mut temp_buf = vec![0u8; CHUNK_SIZE];
-        let mut remaining = len;
-        while remaining > 0 {
-            let read_size = std::cmp::min(CHUNK_SIZE, remaining);
-            r.read_exact(&mut temp_buf[..read_size])?;
-            buf.extend_from_slice(&temp_buf[..read_size]);
-            remaining -= read_size;
-        }
-        Ok(buf)
-    }
+    binprot::read_bytes(r, len as u64)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -450,5 +445,29 @@ mod tests {
             assert_eq!(serde_json::to_string(&bs).unwrap(), json);
             assert_eq!(serde_json::from_str::<ByteString>(json).unwrap().0, bytes);
         }
+    }
+
+    /// A long string reads back as written, and a length the bytes don't
+    /// back is an error without allocating for it.
+    #[test]
+    fn long_strings_read_back_and_short_input_is_an_error() {
+        for len in [0, 4_999, 5_000, 5_001, 70_000] {
+            let bytes: Vec<u8> = (0..len).map(|i| i as u8).collect();
+            let mut encoded = Vec::new();
+            ByteString::from(bytes.clone())
+                .binprot_write(&mut encoded)
+                .unwrap();
+            let read = ByteString::binprot_read(&mut &encoded[..]).unwrap();
+            assert_eq!(read.0, bytes, "{len} bytes");
+            if len > 0 {
+                encoded.pop();
+                assert!(ByteString::binprot_read(&mut &encoded[..]).is_err());
+            }
+        }
+        let mut claimed = Vec::new();
+        Nat0(MINA_STRING_MAX_LENGTH as u64)
+            .binprot_write(&mut claimed)
+            .unwrap();
+        assert!(CharString::binprot_read(&mut Cursor::new(&claimed)).is_err());
     }
 }

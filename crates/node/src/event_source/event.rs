@@ -35,6 +35,7 @@ impl Event {
     /// event, for logs.
     pub fn kind(&self) -> &'static str {
         match self {
+            Self::P2p(P2pEvent::WithPermit { .. }) => "P2pWebrtc",
             Self::P2p(P2pEvent::Connection(_)) => "P2pConnection",
             Self::P2p(P2pEvent::Channel(event)) => match event {
                 P2pChannelEvent::Opened(..) => "P2pChannelOpened",
@@ -60,6 +61,7 @@ impl Event {
             Self::Ledger(LedgerEvent::Verification(_)) => "LedgerVerification",
             Self::Ledger(LedgerEvent::Write(_)) => "LedgerWrite",
             Self::Ledger(LedgerEvent::Read(..)) => "LedgerRead",
+            Self::Ledger(LedgerEvent::TransactionPoolAccounts { .. }) => "TransactionPoolAccounts",
             Self::Snark(SnarkEvent::BlockVerify(..)) => "SnarkBlockVerify",
             Self::Snark(SnarkEvent::BlockVerifyMeasured { .. }) => "SnarkBlockVerifyMeasured",
             Self::Snark(SnarkEvent::WorkVerify(..)) => "SnarkWorkVerify",
@@ -84,10 +86,12 @@ impl std::fmt::Display for Event {
                 write!(f, "Rpc, {id}, ")?;
                 match req.as_ref() {
                     RpcRequest::StateGet(filter) => write!(f, "StateGet, {filter:?}"),
+                    RpcRequest::GraphqlStatusGet => write!(f, "GraphqlStatusGet"),
                     RpcRequest::StatusGet => write!(f, "StatusGet"),
                     RpcRequest::MemoryDebugGet => write!(f, "MemoryDebugGet"),
                     RpcRequest::MetricsGet => write!(f, "MetricsGet"),
                     RpcRequest::HeartbeatGet => write!(f, "HeartbeatGet"),
+                    RpcRequest::ReportingSnapshotGet { .. } => write!(f, "ReportingSnapshotGet"),
                     RpcRequest::ActionStatsGet(query) => write!(f, "ActionStatsGet, {query:?}"),
                     RpcRequest::SyncStatsGet(query) => write!(f, "SyncStatsGet, {query:?}"),
                     RpcRequest::VerificationStatsGet(_) => write!(f, "VerificationStatsGet"),
@@ -151,6 +155,13 @@ impl std::fmt::Display for Event {
                     }
                     RpcRequest::LedgerExport(kind) => write!(f, "LedgerExport, {kind}"),
                     RpcRequest::LightBestTip => write!(f, "LightBestTip"),
+                    RpcRequest::BestChainHeadersGet(query) => {
+                        write!(f, "BestChainHeadersGet, {query:?}")
+                    }
+                    RpcRequest::BestChainBlockGet(query) => {
+                        write!(f, "BestChainBlockGet, {query:?}")
+                    }
+                    RpcRequest::SyncProgressGet => write!(f, "SyncProgressGet"),
                     RpcRequest::LightAccount(query) => {
                         write!(f, "LightAccount, {}", query.ledger)
                     }

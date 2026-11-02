@@ -9,7 +9,7 @@ from pathlib import Path
 import time
 
 
-def make_server(port, output, statuses=(200,)):
+def make_server(port, output, statuses=(200,), delays=(0.0,)):
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         attempts = {}
@@ -31,6 +31,7 @@ def make_server(port, output, statuses=(200,)):
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             attempt = Handler.attempts.get(self.path, 0)
             status = statuses[min(attempt, len(statuses) - 1)]
+            delay = delays[min(attempt, len(delays) - 1)]
             Handler.attempts[self.path] = attempt + 1
             record = {
                 "received_at_unix": time.time(),
@@ -39,9 +40,13 @@ def make_server(port, output, statuses=(200,)):
                 "headers": list(self.headers.items()),
                 "body_base64": base64.b64encode(body).decode(),
                 "response_status": status,
+                "response_delay_seconds": delay,
             }
             with Path(output).open("a") as stream:
                 stream.write(json.dumps(record) + "\n")
+            if delay:
+                # Recorded first: a client that gives up still left a record.
+                time.sleep(delay)
             reply = b'{"status":"local fixture receiver"}'
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -60,8 +65,16 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=3592)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--statuses", default="200", help="e.g. 503,503,200")
+    parser.add_argument(
+        "--delays", default="0", help="seconds before each response, e.g. 0,5"
+    )
     args = parser.parse_args()
-    server = make_server(args.port, args.output, tuple(map(int, args.statuses.split(","))))
+    server = make_server(
+        args.port,
+        args.output,
+        tuple(map(int, args.statuses.split(","))),
+        tuple(map(float, args.delays.split(","))),
+    )
     print(f"Recording on http://127.0.0.1:{server.server_port}", flush=True)
     try:
         server.serve_forever()

@@ -13,8 +13,8 @@ start)
 	"$PG_BIN/pg_ctl" -D "$E2E/pgdata" -l "$E2E/postgres.log" \
 		-o "-p $PG_PORT -k $E2E -c listen_addresses=127.0.0.1" start
 	if [[ -n ${fresh:-} ]]; then
-		"$PG_BIN/createdb" -h 127.0.0.1 -p "$PG_PORT" -U archive archive
-		"$PG_BIN/psql" -q -h 127.0.0.1 -p "$PG_PORT" -U archive archive \
+		"$PG_BIN/createdb" -h 127.0.0.1 -p "$PG_PORT" -U archive "$ARCHIVE_DB"
+		"$PG_BIN/psql" -X -v ON_ERROR_STOP=1 -q -h 127.0.0.1 -p "$PG_PORT" -U archive "$ARCHIVE_DB" \
 			-f "$ARCHIVE_PREFIX/etc/mina/archive/create_schema.sql"
 	fi
 	;;

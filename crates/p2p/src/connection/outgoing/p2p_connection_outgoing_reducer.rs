@@ -34,6 +34,14 @@ impl P2pConnectionOutgoingState {
         let (action, meta) = action.split();
         let time = meta.time();
         let p2p_state = state_context.get_substate_mut()?;
+        if let P2pConnectionOutgoingAction::Init { opts, .. }
+        | P2pConnectionOutgoingAction::Reconnect { opts, .. }
+        | P2pConnectionOutgoingAction::Recover { opts } = &action
+        {
+            if !p2p_state.config.allows_dial(opts) {
+                return Ok(());
+            }
+        }
 
         match action {
             P2pConnectionOutgoingAction::Recover { opts } => {

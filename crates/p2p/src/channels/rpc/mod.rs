@@ -1,3 +1,6 @@
+#[cfg(feature = "p2p-libp2p")]
+mod staged_ledger_serve;
+
 mod serving_limits;
 pub use serving_limits::*;
 
@@ -346,32 +349,12 @@ mod libp2p {
                 Some((ResponseHeader { id: id as _ }, v.into()))
             }
             P2pRpcResponse::StagedLedgerAuxAndPendingCoinbasesAtBlock(staged_ledger_info) => {
-                type Method = rpc::GetStagedLedgerAuxAndPendingCoinbasesAtHashV2;
-                type Payload = ResponsePayload<<Method as RpcMethod>::Response>;
-
-                let StagedLedgerAuxAndPendingCoinbases {
-                    scan_state,
-                    staged_ledger_hash,
-                    pending_coinbase,
-                    needed_blocks,
-                } = staged_ledger_info.as_ref().clone();
-
-                let hash = staged_ledger_hash.inner().0.clone();
-
-                let r = RpcResult(Ok(NeedsLength(Some((
-                    scan_state,
-                    hash,
-                    pending_coinbase,
-                    needed_blocks,
-                )))));
-
-                let mut v = vec![];
-                <Payload as BinProtWrite>::binprot_write(&r, &mut v)
+                let bytes = super::staged_ledger_serve::encode(&staged_ledger_info)
                     .inspect_err(|error| {
                         mina_core::log::inner::warn!("RPC response unavailable: {error}")
                     })
                     .ok()?;
-                Some((ResponseHeader { id: id as _ }, v.into()))
+                Some((ResponseHeader { id }, bytes.into()))
             }
             P2pRpcResponse::Block(block) => {
                 type Method = rpc::GetTransitionChainV2;

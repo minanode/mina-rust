@@ -12,12 +12,12 @@ fn linear(zk: bool) {
     h.assert_txs(&cmds[3..]);
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2371-L2388>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2395-L2412>
 #[test]
 fn transactions_are_removed_in_linear_case_user_cmds() {
     linear(false);
 }
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2390-L2394>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2414-L2418>
 #[test]
 fn transactions_are_removed_in_linear_case_zkapps() {
     linear(true);
@@ -51,12 +51,12 @@ fn fork_changes(zk: bool) {
     h.assert_rebroadcastable(&seq);
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2396-L2409>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2420-L2433>
 #[test]
 fn transactions_are_removed_and_added_back_in_fork_changes_user_cmds() {
     fork_changes(false);
 }
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2411-L2416>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2435-L2440>
 #[test]
 fn transactions_are_removed_and_added_back_in_fork_changes_zkapps() {
     fork_changes(true);
@@ -64,8 +64,8 @@ fn transactions_are_removed_and_added_back_in_fork_changes_zkapps() {
 
 /// Backtracking evicts local nonces 2, 1, 0 while higher-fee remote commands
 /// occupy all slots. Once those commands commit, OCaml retries locals 0, 1, 2.
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L630-L633>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L727-L790>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L636-L639>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L733-L796>
 #[test]
 fn locally_evicted_backtrack_retries_follow_ocaml_nonce_order() {
     let mut h = Harness::new();
@@ -103,12 +103,12 @@ fn invalid(zk: bool) {
         .all(|(_, e)| matches!(e, diff::Error::InvalidNonce)));
     h.assert_txs(&cmds[2..]);
 }
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2418-L2430>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2442-L2454>
 #[test]
 fn invalid_transactions_are_not_accepted_user_cmds() {
     invalid(false);
 }
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2432-L2437>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2456-L2461>
 #[test]
 fn invalid_transactions_are_not_accepted_zkapps() {
     invalid(true);
@@ -129,12 +129,12 @@ fn now_invalid(zk: bool) {
     h.assert_txs(&[]);
     h.assert_rebroadcastable(&[]);
 }
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2446-L2467>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2470-L2491>
 #[test]
 fn now_invalid_transactions_removed_on_fork_changes_user_cmds() {
     now_invalid(false);
 }
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2469-L2477>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2493-L2501>
 #[test]
 fn now_invalid_transactions_removed_on_fork_changes_zkapps() {
     now_invalid(true);
@@ -156,18 +156,18 @@ fn expired_not_accepted(zk: bool) {
     assert!(matches!(rejected[1].1, diff::Error::InvalidNonce));
     h.assert_txs(&valid_cmds);
 }
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2479-L2526>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2503-L2539>
 #[test]
 fn expired_transactions_are_not_accepted_user_cmds() {
     expired_not_accepted(false);
 }
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2528-L2532>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2541-L2545>
 #[test]
 fn expired_transactions_are_not_accepted_zkapps() {
     expired_not_accepted(true);
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2534-L2614>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2547-L2623>
 #[test]
 fn expired_transactions_removed_on_best_tip_changes_user_commands() {
     let mut h = Harness::new();
@@ -196,7 +196,7 @@ fn expired_transactions_removed_on_best_tip_changes_user_commands() {
     h.assert_txs(&few[1..]);
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2616-L2664>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2625-L2669>
 #[test]
 fn expired_transactions_removed_on_best_tip_changes_zkapps() {
     let mut h = Harness::new();
@@ -225,7 +225,7 @@ fn expired_transactions_removed_on_best_tip_changes_zkapps() {
     h.assert_txs(&few);
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2666-L2688>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2671-L2693>
 #[test]
 fn now_invalid_transactions_removed_when_frontier_recreated() {
     let mut h = Harness::new();
@@ -254,7 +254,7 @@ fn with_vk(sender: usize, nonce: u32) -> ValidCommandWithHash {
     })
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2690-L2723>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2695-L2728>
 #[test]
 fn vk_refcounts_decremented_when_frontier_recreated() {
     let mut h = Harness::new();
@@ -280,7 +280,7 @@ fn vk_refcounts_decremented_when_frontier_recreated() {
     assert!(h.pool.verification_key_table.vk_to_account_ids.is_empty());
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2725-L2807>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2730-L2812>
 #[test]
 fn transaction_replacement_works() {
     let mut h = Harness::new();
@@ -309,7 +309,7 @@ fn transaction_replacement_works() {
     assert!(matches!(rejected[1].1, diff::Error::InsufficientFunds));
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2809-L2832>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2814-L2837>
 #[test]
 fn drops_queued_transactions_when_committed_one_leaves_insufficient_funds() {
     let mut h = Harness::new();
@@ -327,7 +327,7 @@ fn drops_queued_transactions_when_committed_one_leaves_insufficient_funds() {
     h.assert_rebroadcastable(&cmds[1..2]);
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2834-L2868>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2839-L2873>
 #[test]
 fn max_size_is_maintained() {
     for seed in 0..64 {
@@ -377,18 +377,18 @@ fn rebroadcastable(zk: bool) {
     h.assert_rebroadcastable(&[]);
     h.assert_txs(&cmds);
 }
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2870-L2935>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2875-L2940>
 #[test]
 fn rebroadcastable_transaction_behavior_user_cmds() {
     rebroadcastable(false);
 }
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2937-L2941>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2942-L2946>
 #[test]
 fn rebroadcastable_transaction_behavior_zkapps() {
     rebroadcastable(true);
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L2943-L2962>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2948-L2967>
 #[test]
 fn apply_user_cmds_and_zkapps() {
     let mut h = Harness::new();
@@ -401,7 +401,7 @@ fn apply_user_cmds_and_zkapps() {
     h.assert_txs(&cmds);
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L3027-L3046>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L3032-L3050>
 #[test]
 fn zkapp_same_nonce_replaces_previously_submitted_zkapp() {
     let mut h = Harness::new();
@@ -416,7 +416,7 @@ fn zkapp_same_nonce_replaces_previously_submitted_zkapp() {
     h.assert_txs(&[new]);
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L3048-L3172>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L3052-L3176>
 #[test]
 fn commands_rejected_if_fee_payer_permissions_not_handled() {
     for zk in [false, true] {
@@ -456,7 +456,7 @@ fn commands_rejected_if_fee_payer_permissions_not_handled() {
     }
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L3174-L3207>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L3178-L3211>
 #[test]
 #[ignore = "P6d2 harness gap: needs a proof-authorized zkApp fixture signed for another network id"]
 fn account_update_with_different_network_id_using_proof_is_rejected() {
@@ -487,23 +487,23 @@ fn slot_tx_end(slot: u32, accepted: bool) {
             .all(|(_, e)| matches!(e, diff::Error::AfterSlotTxEnd)));
     }
 }
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L3209-L3221>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L3213-L3225>
 #[test]
 fn transactions_added_before_slot_tx_end_are_accepted() {
     slot_tx_end(9, true);
 }
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L3223-L3232>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L3227-L3236>
 #[test]
 fn transactions_added_at_slot_tx_end_are_rejected() {
     slot_tx_end(10, false);
 }
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L3234-L3249>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L3238-L3253>
 #[test]
 fn transactions_added_after_slot_tx_end_are_rejected() {
     slot_tx_end(11, false);
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L3812-L4008>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L3816-L4012>
 #[test]
 fn handle_transition_frontier_diff_permission_send_tx_updated() {
     for seed in 0..64 {
@@ -559,7 +559,7 @@ fn handle_transition_frontier_diff_permission_send_tx_updated() {
 
 /// Extension of OCaml's rebroadcast and max-size cases: dropped locals must
 /// leave the rebroadcast table, both for replacement and capacity eviction.
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L1422-L1427>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L1428-L1433>
 #[test]
 fn locally_generated_evictions_are_not_rebroadcastable() {
     let mut h = Harness::new();
@@ -576,7 +576,7 @@ fn locally_generated_evictions_are_not_rebroadcastable() {
 }
 
 /// Verify the generated mainnet authorizations independently of pool admission.
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L1982-L2013>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/transaction_pool.ml#L2006-L2037>
 #[test]
 fn generated_commands_have_valid_mainnet_signatures() {
     // NetworkConfig is a process-global OnceCell. Isolate its mainnet setting
@@ -613,4 +613,27 @@ fn generated_commands_have_valid_mainnet_signatures() {
             "{result:?}"
         );
     }
+}
+
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L857-L892>
+#[test]
+fn status_404_pool_minimum_tracks_eviction() {
+    let mut h = Harness::new();
+    h.pool.config.pool_max_size = 2;
+    assert_eq!(h.pool.minimum_fee_per_weight_unit(), None);
+    h.add(
+        &[payment(0, 0, MINA, FEE), payment(1, 0, MINA, 2 * FEE)],
+        false,
+    );
+    assert_eq!(h.pool.size(), 2);
+    assert_eq!(
+        h.pool.minimum_fee_per_weight_unit().as_deref(),
+        Some("2000000000")
+    );
+    h.add(&[payment(2, 0, MINA, 3 * FEE)], false);
+    assert_eq!(h.pool.size(), 2);
+    assert_eq!(
+        h.pool.minimum_fee_per_weight_unit().as_deref(),
+        Some("4000000000")
+    );
 }

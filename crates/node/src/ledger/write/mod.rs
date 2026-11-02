@@ -101,11 +101,11 @@ pub enum LedgerWriteResponse {
     },
     BlockApply {
         block_hash: v2::StateHash,
-        result: Result<BlockApplyResult, String>,
+        result: Result<BlockApplyResult, BlockApplyError>,
     },
     Commit {
         best_tip_hash: v2::StateHash,
-        result: CommitResult,
+        result: Result<CommitResult, String>,
     },
     /// The snapshot was taken and the job handed to the store thread, whose
     /// result comes later as an event.
@@ -113,6 +113,21 @@ pub enum LedgerWriteResponse {
         root: v2::StateHash,
         result: Result<crate::persist::event::PersistSnapshotInfo, String>,
     },
+}
+
+/// A local ledger failure must not blacklist a proof-verified block or its peer.
+#[derive(Serialize, Deserialize, Debug, Clone, thiserror::Error)]
+pub enum BlockApplyError {
+    #[error("{0}")]
+    InvalidBlock(String),
+    #[error("{0}")]
+    LocalState(String),
+}
+
+impl From<String> for BlockApplyError {
+    fn from(error: String) -> Self {
+        Self::InvalidBlock(error)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

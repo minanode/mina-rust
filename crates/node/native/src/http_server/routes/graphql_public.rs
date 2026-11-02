@@ -31,11 +31,9 @@
 //! private-only because their lookup can scan the entire ledger.
 use std::collections::HashMap;
 
-use juniper::{
+use crate::graphql::api::{
     http::{GraphQLBatchRequest, GraphQLRequest},
-    meta::MetaType,
-    parser::parse_document_source,
-    DefaultScalarValue, Definition, InputValue, OperationType, Selection,
+    DefaultScalarValue, Definition, InputValue, MetaType, OperationType, Selection,
 };
 use serde_json::{json, Value};
 
@@ -56,6 +54,12 @@ const OTHER_LIST: u64 = 8;
 
 /// The fields a public request may select, by type. `None`: every field of
 /// the type.
+// OCaml 4.0.4 excludes scanState, bootstrapStatus, transactionPoolStatus and
+// archiveVersionedPrecomputedBlock from schema_limited. Keep all four private:
+// bootstrap includes operator failure details, scanState walks ledger trees,
+// and archive submission mutates an external service. Pool status remains
+// private consistently with that upstream policy.
+// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/mina_graphql.ml#L3350-L3355>
 const ALLOWED: &[(&str, Option<&[&str]>)] = &[
     (
         "Query",
@@ -220,7 +224,7 @@ pub(super) fn check(request: &GraphQLBatchRequest, schema: &Schema) -> Result<()
 fn check_one(request: &GraphQLRequest, schema: &Schema) -> Result<(), Refusal> {
     // The limits ran first, so the document parses; one that doesn't is
     // left to Juniper.
-    let Ok(document) = parse_document_source(&request.query, &schema.schema) else {
+    let Ok(document) = super::graphql_ocaml::parse_archive_document(&request.query, schema) else {
         return Ok(());
     };
     let mut operations = Vec::new();
@@ -314,7 +318,7 @@ impl<'d> Walker<'d> {
         }
         // TypeModifier is not exported by Juniper. Compare modifiers to a
         // constructed NonNull: every other modifier is a list (of any size).
-        let non_null = juniper::Type::<&str>::nullable("").wrap_non_null();
+        let non_null = crate::graphql::api::Type::<&str>::nullable("").wrap_non_null();
         let mut cost = 0u64;
         for selection in selections {
             self.selections += 1;

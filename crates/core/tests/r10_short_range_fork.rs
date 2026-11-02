@@ -80,7 +80,7 @@ fn older_tip_past_the_seed_update_range() {
 
 /// The slot where `is_short_range_fork` and OCaml's `is_short_range` differed.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L2771-L2787>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L2788-L2804>
 #[test]
 fn older_tip_at_the_last_seed_update_slot() {
     // OCaml: not (in_seed_update_range (4759 + 1)) holds, so the next epoch

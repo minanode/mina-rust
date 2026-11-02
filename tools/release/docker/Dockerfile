@@ -7,7 +7,7 @@
 # podman:
 #
 #   docker buildx build --platform linux/amd64,linux/arm64 \
-#     --build-arg VERSION=0.20.0 -f tools/release/docker/Dockerfile dist/
+#     --build-arg VERSION=0.20.1 -f tools/release/docker/Dockerfile dist/
 #
 # Needs BuildKit (Docker 23 or newer) or Buildah 1.33 or newer, for
 # ADD --checksum.

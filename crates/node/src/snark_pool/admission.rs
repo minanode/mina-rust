@@ -48,7 +48,7 @@ pub enum AdmissionError {
     Busy,
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/snark_pool.ml#L370-L424>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/snark_pool.ml#L370-L424>
 pub fn check_prover(
     fee: u64,
     account_creation_fee: u64,
@@ -102,6 +102,10 @@ pub struct AdmissionStats {
     pub busy: u64,
     pub rejected_after_verification: u64,
     pub revalidation_removed: u64,
+    /// Revalidations at a new best tip whose account read failed (busy or no
+    /// ledger): the prover's works were kept, to be checked again.
+    #[serde(default)]
+    pub revalidation_deferred: u64,
     pub stale_account_results: u64,
 }
 

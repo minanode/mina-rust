@@ -621,6 +621,28 @@ fn main() -> anyhow::Result<()> {
             }
             println!("witness_probe {height} {} {bytes} {largest}", seen.len());
         }
+        let statement = result.ledger_proof.as_ref().map(|(proof, _)| {
+            mina_p2p_messages::v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement::from(
+                &proof.statement(),
+            )
+        });
+        let constants = mina_core::consensus::ConsensusConstants::create(
+            constraint_constants,
+            &pred_state.body.constants,
+        );
+        let body_reference =
+            ledger::staged_ledger::validate_block::block_body_hash(&block.staged_ledger_diff)
+                .map_err(|error| anyhow::anyhow!("body reference: {error:?}"))?;
+        mina_node::transition_frontier::protocol_state::check_protocol_state(
+            &constants,
+            &pred_state,
+            &pred_hash,
+            state,
+            &found,
+            &body_reference,
+            statement.as_ref(),
+        )
+        .with_context(|| format!("block {height} {hash}"))?;
         staged_ledger = applying_ledger;
         staged_ledger.commit_and_reparent_to_root();
         // PC3b: the genesis ledger on disk is the root the blocks commit

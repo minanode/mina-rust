@@ -61,10 +61,17 @@ impl P2pPeerState {
                 let Some(peer) = p2p_state.peers.get_mut(&peer_id) else {
                     return Ok(());
                 };
+                let enabled_channels = p2p_state
+                    .config
+                    .enabled_channels
+                    .iter()
+                    .copied()
+                    .filter(|id| !peer.is_libp2p() || id.supported_by_libp2p())
+                    .collect();
                 peer.status = P2pPeerStatus::Ready(Box::new(P2pPeerStatusReady::new(
                     incoming,
                     meta.time(),
-                    &p2p_state.config.enabled_channels,
+                    &enabled_channels,
                 )));
                 let is_libp2p = peer.is_libp2p;
                 if is_libp2p {

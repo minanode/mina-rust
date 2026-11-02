@@ -361,6 +361,7 @@ pub(crate) mod tests {
             status: NodeStatus {
                 chain_id: None,
                 transition_frontier: RpcNodeStatusTransitionFrontier {
+                    ledger_recovery: None,
                     root: None,
                     best_tip: None,
                     sync: RpcNodeStatusTransitionFrontierSync {

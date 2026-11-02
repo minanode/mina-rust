@@ -289,7 +289,6 @@ impl PreparedStatement {
 
         let zero = Fq::zero();
         match hack_feature_flags {
-            OptFlag::Yes => todo!(),
             // TODO: Find out how this padding works, it's probably related to features/lookup
             OptFlag::No => {
                 while fields.len() < npublic_input - 1 {

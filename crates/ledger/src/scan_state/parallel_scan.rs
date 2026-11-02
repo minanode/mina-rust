@@ -1526,6 +1526,18 @@ where
     BaseJob: Debug + Clone + 'static,
     MergeJob: Debug + Clone + 'static,
 {
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/parallel_scan/parallel_scan.ml#L1336-L1344>
+    pub fn tree_metrics(&self) -> Vec<(u64, u64, u64)> {
+        self.trees
+            .iter()
+            .rev()
+            .map(|tree| {
+                let (base, merge) = tree.todo_job_count();
+                (tree.available_space(), base, merge)
+            })
+            .collect()
+    }
+
     fn with_leaner_trees(&self) -> Self {
         use JobStatus::Done;
 
@@ -2702,6 +2714,18 @@ mod tests {
     use rand::Rng;
 
     use super::*;
+
+    #[test]
+    fn status_404_metrics_count_todo_and_keep_oldest_first() {
+        // OCaml Parallel_scan: fill an eight-leaf tree, then a half tree.
+        // No completed work: every occupied leaf is Todo, no merges exist.
+        let mut scan = ParallelScan::<usize, usize>::empty(8, 2);
+        assert_eq!(scan.tree_metrics(), vec![(8, 0, 0)]);
+        scan.update((0..8).collect(), vec![], |_| 0).unwrap();
+        assert_eq!(scan.tree_metrics(), vec![(0, 8, 0), (8, 0, 0)]);
+        scan.update((8..12).collect(), vec![], |_| 0).unwrap();
+        assert_eq!(scan.tree_metrics(), vec![(0, 8, 0), (4, 4, 0)]);
+    }
 
     fn review_snapshot(state: &ParallelScan<i64, i64>) -> String {
         let mut result = format!("{state:?}");

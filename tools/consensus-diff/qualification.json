@@ -1,0 +1,234 @@
+{
+  "date": "2026-10-29",
+  "revision": "fix round 1: early evaluation withdrawn",
+  "base_commit": "3d8ccdc27e5d912bf3b5a1ecbfb34dbfc15b9825",
+  "implementation_commit": "fd2dcd29f785edc7e431e032b996a62c186fd591",
+  "adapter_build_commit": "f2d639ffbf862a459edb4b4acf8df900f7d9f180",
+  "build_note": "Adapter and its compared production sources match adapter_build_commit. The later implementation commit adds legacy-cache invalidation, its restart regression, and strengthens the terminal startup regression.",
+  "ocaml_commit": "73134bfd3a43c3f4d8ee564b3d04a0c6ed2e0b3c",
+  "early_evaluation_enabled": false,
+  "cache_format_version": 2,
+  "full_parity": false,
+  "supported_subset": {
+    "seed": 184562691,
+    "binaries": {
+      "rust": "7afbbd3b4423bcba6d1c21e848875d13ea5055c5b2d2ae8332af70d92387da4f",
+      "ocaml": "6a70a9dacf9e85bf1e8123cabd7be2bf8bf5610c14f1b4c660022651ed9f2502",
+      "ocaml_executable": "6754e332d41fa7f0bad2b64d29ad2894753729e7b8d739d726bcf2114e790e68"
+    },
+    "elapsed_seconds": 23.531059443950653,
+    "worker_exits": {
+      "mainnet": [
+        0,
+        0
+      ],
+      "devnet": [
+        0,
+        0
+      ]
+    },
+    "mismatches": 0,
+    "passed": true,
+    "networks": {
+      "mainnet": {
+        "counts": {
+          "constants": 1,
+          "arithmetic": 1026,
+          "epoch_bounds": 1026,
+          "density": 2000,
+          "selection_hash_ties": 64,
+          "epoch_selection": 50,
+          "epoch_precompute": 25,
+          "epoch_update": 250,
+          "vrf": 512,
+          "delegation": 32,
+          "regressions": 2,
+          "threshold": 53
+        },
+        "constants": {
+          "rust": {
+            "grace_period_end": 2237,
+            "slot_duration_ms": 90000,
+            "slots_per_epoch": 7140,
+            "slots_per_sub_window": 7,
+            "sub_windows_per_window": 11
+          },
+          "ocaml": {
+            "slots_per_epoch": 7140,
+            "slots_per_sub_window": 7,
+            "sub_windows_per_window": 11,
+            "grace_period_end": 2237,
+            "slot_duration_ms": 90000
+          }
+        },
+        "threshold_calibration_queries": 5060
+      },
+      "devnet": {
+        "counts": {
+          "constants": 1,
+          "arithmetic": 1026,
+          "epoch_bounds": 1026,
+          "density": 2000,
+          "selection_hash_ties": 64,
+          "epoch_selection": 50,
+          "epoch_precompute": 25,
+          "epoch_update": 250,
+          "vrf": 512,
+          "delegation": 32,
+          "regressions": 2,
+          "threshold": 53
+        },
+        "constants": {
+          "rust": {
+            "grace_period_end": 2237,
+            "slot_duration_ms": 90000,
+            "slots_per_epoch": 7140,
+            "slots_per_sub_window": 7,
+            "sub_windows_per_window": 11
+          },
+          "ocaml": {
+            "slots_per_epoch": 7140,
+            "slots_per_sub_window": 7,
+            "sub_windows_per_window": 11,
+            "grace_period_end": 2237,
+            "slot_duration_ms": 90000
+          }
+        },
+        "threshold_calibration_queries": 5060
+      }
+    }
+  },
+  "deferred_early_start": {
+    "seed": 184562691,
+    "binaries": {
+      "rust": "7afbbd3b4423bcba6d1c21e848875d13ea5055c5b2d2ae8332af70d92387da4f",
+      "ocaml": "6a70a9dacf9e85bf1e8123cabd7be2bf8bf5610c14f1b4c660022651ed9f2502",
+      "ocaml_executable": "6754e332d41fa7f0bad2b64d29ad2894753729e7b8d739d726bcf2114e790e68"
+    },
+    "elapsed_seconds": 1.8798112778458744,
+    "worker_exits": {
+      "mainnet": [
+        0,
+        0
+      ],
+      "devnet": [
+        0,
+        0
+      ]
+    },
+    "mismatches": 52,
+    "passed": false,
+    "networks": {
+      "mainnet": {
+        "counts": {
+          "constants": 1,
+          "epoch_start_deferred": 26
+        },
+        "constants": {
+          "rust": {
+            "grace_period_end": 2237,
+            "slot_duration_ms": 90000,
+            "slots_per_epoch": 7140,
+            "slots_per_sub_window": 7,
+            "sub_windows_per_window": 11
+          },
+          "ocaml": {
+            "slots_per_epoch": 7140,
+            "slots_per_sub_window": 7,
+            "sub_windows_per_window": 11,
+            "grace_period_end": 2237,
+            "slot_duration_ms": 90000
+          }
+        }
+      },
+      "devnet": {
+        "counts": {
+          "constants": 1,
+          "epoch_start_deferred": 26
+        },
+        "constants": {
+          "rust": {
+            "grace_period_end": 2237,
+            "slot_duration_ms": 90000,
+            "slots_per_epoch": 7140,
+            "slots_per_sub_window": 7,
+            "sub_windows_per_window": 11
+          },
+          "ocaml": {
+            "slots_per_epoch": 7140,
+            "slots_per_sub_window": 7,
+            "sub_windows_per_window": 11,
+            "grace_period_end": 2237,
+            "slot_duration_ms": 90000
+          }
+        }
+      }
+    }
+  },
+  "tests": {
+    "node_producer": {
+      "passed": 72,
+      "failed": 0,
+      "ignored": 0,
+      "elapsed_seconds": 47.07,
+      "log_sha256": "06f4e6baaaaf27b31b1abee8d88708479675b7830cbbeadf466e9afa4da8d3a7"
+    },
+    "producer_service": {
+      "passed": 47,
+      "failed": 0,
+      "ignored": 2,
+      "elapsed_seconds": 15.85,
+      "log_sha256": "2df61a1e4508e8362c695b7678e0e62ce6d2c528829ca0c72b39ee62d23ee896"
+    },
+    "consensus": {
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "elapsed_seconds": 0.0,
+      "log_sha256": "8f6e8d5d8e7d9a895efc369f0d9984f20fe90375d0b2fc36f34b3185fe9785ea"
+    },
+    "vrf": {
+      "passed": 9,
+      "failed": 0,
+      "ignored": 2,
+      "elapsed_seconds": 48.47,
+      "log_sha256": "f46d7a36ffa63682a05488c1b0de8e82eb83baf72d52fc937af432b6bd30e1df"
+    },
+    "payload_mutations": {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "elapsed_seconds": 0.0,
+      "log_sha256": "ffcdfe679b0c71fb9caf56b9006a115cf8c6be6948aa7a7009e9371e90747b29"
+    },
+    "runner_controls": {
+      "passed": 5,
+      "failed": 0,
+      "log_sha256": "daf5975fe0384ef505abcad970cbbaa755f64bc98d9a7edf6c9252236896abfb"
+    }
+  },
+  "source_sha256": {
+    "crates/node/examples/consensus_diff.rs": "8df153fc7bb19eb1ba22d4d64c810d014ba66a5921529bdb9b48e8231c4751be",
+    "crates/core/src/consensus.rs": "ea4570ebc3ecd3b5961425eea39103fce255f636222e22bd5d1bf762f857e9ae",
+    "crates/node/src/block_producer/mod.rs": "c067d3b6d08c6bacd20b3c8f4149015b983538dd3a951824388b80fbc6d36186",
+    "crates/node/src/block_producer/vrf_evaluator/block_producer_vrf_evaluator_state.rs": "4ba5cb0028d5ccf8ac792d9042f32ba2b0fe62ef21fc84f220e1cb7e907f59ab",
+    "crates/node/src/block_producer/vrf_evaluator/block_producer_vrf_evaluator_actions.rs": "7c2efdcc82f2391fb8cda13bd3c891344ea09451441a741f160c557cf3556ed0",
+    "crates/node/src/block_producer/vrf_evaluator/block_producer_vrf_evaluator_reducer.rs": "c11a6c153dc3b64f72f1d389b74ec5b654ed1bf0a3e6c56e00361049785f9660",
+    "tools/consensus-diff/run.py": "ac46e3bf756d9efdf1f70f57749042f6b8f476405b4401eedc7477b8a5b61d65",
+    "tools/consensus-diff/ocaml/hook.ml": "109acd35b365e1dd56991e93f635bda58be78bf9478fbeb9ad761218774a08b2",
+    "crates/node/common/src/service/block_producer/vrf_cache.rs": "8ff654aea6d3bb47991af436c31848bdcf09bd41e986bcb14b6e06671c6a109c",
+    "tools/consensus-diff/regressions.json": "3faf7efb90415299a6bcdfb9a08ac9f2b9ec4da94ec447d64593dde9ae2eccf1"
+  },
+  "evidence_sha256": {
+    "subset/report.json": "960e95338155657283d9f8a442ce5eff6c73d351abe9ac6b89fcd1096505ea56",
+    "subset/mainnet.jsonl": "c24ab0bcec5b6e353867b5604920de6bc6e2390b7ec3f333dac3258d2c8a7c5e",
+    "subset/devnet.jsonl": "c24ab0bcec5b6e353867b5604920de6bc6e2390b7ec3f333dac3258d2c8a7c5e",
+    "deferred/report.json": "e29d5cd0fef2b52ae5ba73f695e3f83dfeb6390e2fc1a989ed75a7b69288ea98",
+    "deferred/divergences.json": "b538e89f03196bef1f1df7c9d6b4a7ef81356ec6dc0f03e5ef31aec219281f2d",
+    "before-tests.log": "07f11ebd306c4f12467be97cd970560a2e19283ed743f10bc1fbf576593bf3f1",
+    "producer-service-tests.log": "c694f57818b2fbdf14a34f6ebaab8fcbf2fdd0629fc1c5bf817fd44444afba09",
+    "cache-oracle.json": "4222b429b639aebbf6a62a0f94ee50a0f8b0c367168f841b9ec7f6d7d9a302a2"
+  },
+  "supported_comparisons": 10082,
+  "deferred_comparisons": 54
+}

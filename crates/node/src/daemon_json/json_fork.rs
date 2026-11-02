@@ -250,7 +250,7 @@ mod tests {
             hash: hash.clone(),
             migrated_hash: hash.clone(),
             num_accounts: 17,
-            accounts_json: SAMPLE.to_owned(),
+            accounts_json: SAMPLE.as_bytes().to_vec(),
         };
         RpcHardForkExport {
             inputs: crate::rpc::HardForkInputs {
@@ -283,16 +283,16 @@ mod tests {
         }
     }
 
-    fn fork_config(export: &RpcHardForkExport) -> String {
+    fn fork_config(export: &RpcHardForkExport) -> Vec<u8> {
         let [p0, p1, p2, p3] = fork_config_parts(export);
         [
-            p0.as_str(),
+            p0.as_bytes(),
             &export.ledger.accounts_json,
-            &p1,
+            p1.as_bytes(),
             &export.staking.accounts_json,
-            &p2,
+            p2.as_bytes(),
             &export.next.accounts_json,
-            &p3,
+            p3.as_bytes(),
         ]
         .concat()
     }
@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn fork_config_has_ocamls_layout() {
         let export = export();
-        let text = fork_config(&export);
+        let text = String::from_utf8(fork_config(&export)).unwrap();
         let prefix = format!(
             "{{\"genesis\":{{\"genesis_state_timestamp\":\"2026-08-19T18:00:00.000000Z\"}},\
              \"proof\":{{\"fork\":{{\"state_hash\":\"{FORK_STATE_HASH}\",\
@@ -348,7 +348,7 @@ mod tests {
     fn fork_config_loads_as_daemon_json() {
         let export = export();
         let config: crate::daemon_json::DaemonJson =
-            serde_json::from_str(&fork_config(&export)).unwrap();
+            crate::daemon_json::from_ocaml_json_slice(&fork_config(&export)).unwrap();
         let ledger = config.ledger.unwrap();
         assert_eq!(ledger.add_genesis_winner, Some(false));
         assert_eq!(ledger.accounts_with_genesis_winner().len(), 17);
@@ -368,6 +368,32 @@ mod tests {
         let epochs = config.epoch_data.unwrap();
         assert_eq!(epochs.staking.hash.as_deref(), Some(SAMPLE_HASH));
         assert_eq!(epochs.next.unwrap().accounts.unwrap().len(), 17);
+    }
+
+    /// A fork config whose ledgers hold token symbols and zkApp URIs that are
+    /// not UTF-8 loads with the root OCaml computes for those accounts.
+    #[test]
+    fn fork_config_keeps_non_utf8_bytes() {
+        let sample = include_bytes!("testdata/ocaml-ledger-export-non-utf8.json");
+        let mut export = export();
+        for ledger in [&mut export.ledger, &mut export.staking, &mut export.next] {
+            ledger.accounts_json = sample.to_vec();
+        }
+        let config: crate::daemon_json::DaemonJson =
+            crate::daemon_json::from_ocaml_json_slice(&fork_config(&export)).unwrap();
+        let epochs = config.epoch_data.unwrap();
+        for accounts in [
+            config.ledger.unwrap().accounts,
+            epochs.staking.accounts,
+            epochs.next.unwrap().accounts,
+        ] {
+            assert_eq!(
+                crate::daemon_json::ledger_hash_of_accounts(&accounts.unwrap())
+                    .unwrap()
+                    .to_string(),
+                super::super::json_export::OCAML_NON_UTF8_SAMPLE_HASH
+            );
+        }
     }
 
     /// `daemon.json` has exactly the fields of OCaml's

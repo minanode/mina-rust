@@ -1,9 +1,9 @@
 # ui
 
-The minanode.org website, the node dashboard, and the two packages they share:
-the design system and a client for the node's API. An npm workspace on Node
-24.11 (`.nvmrc`), kept apart from the Angular `frontend/` and the Docusaurus
-`website/`.
+The minanode.org website, the node dashboard, the web node page, and the two
+packages they share: the design system and a client for the node's API. An npm
+workspace on Node 24.11 (`.nvmrc`), kept apart from the Angular `frontend/` and
+the Docusaurus `website/`.
 
 ```
 ui/
@@ -14,6 +14,8 @@ ui/
   minanode-site/   minanode.org: Next.js 16, static export to out/
   dashboard/       the node dashboard: Vite + React SPA, built to dist/, which
                    `mina node` embeds and serves at `/`
+  minaweb/         the web node page: Vite + React SPA that runs the node's
+                   WASM in the browser, for minaweb.org
 ```
 
 The two packages ship TypeScript source and know nothing about each other. The
@@ -37,6 +39,8 @@ Run from `ui/`:
 | `npm run check:claims`    | Built pages against `minanode-site/CLAIMS.md` (build first) |
 | `npm run dev:dashboard`   | Dashboard dev server on port 4282, forwarding to a node     |
 | `npm run build:dashboard` | Dashboard build to `dashboard/dist/` (`make dashboard`)     |
+| `npm run dev:minaweb`     | Web node page dev server on 4284 (`MINAWEB_ASSETS`)         |
+| `npm run build:minaweb`   | Web node page build to `minaweb/dist/` (needs a WASM)       |
 | `npm test`                | Unit tests (Vitest), every workspace that has them          |
 
 `out/` is plain files with no server, and nothing on the pages loads from
@@ -171,6 +175,57 @@ loads scripts from a CDN), a status page with the node's raw `/status` or
 redacted bug report, prepared on a click through `POST /report`, to copy,
 download or open as a pre-filled GitHub issue (the overview also says when the
 node crashed lately, from `POST /report/crash`).
+
+## Web node page
+
+`minaweb/` is the page for minaweb.org: a Mina node that runs in the browser
+tab. It downloads the node's WASM, checks its SHA-256 against the one compiled
+into the page, starts it, and follows it to Synced. The boot screen shows six
+steps: check the browser, download, start, connect to a peer, sync the ledgers,
+sync the blocks. A failure names its cause: a page that isn't cross-origin
+isolated (not HTTPS or localhost, or served without the COOP and COEP headers),
+a browser without WebAssembly threads, a missing file, a WASM that fails its
+integrity check, no peer reachable.
+
+Once the node runs, the pages read it through `@minanode/node-client`'s web node
+transport (`createWebNodeTransport`), which answers the HTTP API's routes from
+the WASM's `RpcSender`. So the hooks and parsers are the dashboard's, and so is
+the Peers page, which the app imports from `minanode-dashboard`. Its own pages
+are the overview (sync, best tip, peers, memory, block checks) and blocks (the
+blocks the node received, with the checks it ran on each).
+
+On devnet, and only there, it also has a key and two roles
+(`minaweb/src/roles`):
+
+- **Your key**: a key made in the browser (the WASM's CSPRNG), or imported
+  behind a warning that the same key controls the same mainnet account. It stays
+  in the tab's memory. It is stored only encrypted with the visitor's passphrase
+  (PBKDF2-SHA-256, AES-256-GCM): in localStorage if they ask, and in
+  sessionStorage for the block producer's restart.
+- **Send**: a payment signed in the WASM and submitted to the node's pool,
+  followed until a block includes it.
+- **SNARK worker** and **block producer**: each shows what it costs the device
+  before Start. A node runs one role, fixed when it starts (`run`'s arguments),
+  so starting, stopping or switching one starts the node again: the page reloads
+  and its store brings the chain back. Running, they show the dashboard's worker
+  and producer views. The producer screen reads the key's stake in both epoch
+  ledgers and says when stake delegated today counts.
+
+Every role keeps the privacy defaults: no peer discovery, the build's seed
+relays only.
+
+It is its own app, not a second entry of the dashboard: it owns the node's
+lifecycle (one node per tab, started once per page load; only a role change
+reloads the page) and is served by a static host with COOP and COEP, while the
+dashboard is embedded in `mina node` with a strict Content-Security-Policy and
+the node's routes.
+
+The web node it starts is compiled in from `MINAWEB_*` variables, listed in
+`minaweb/src/boot/build-config.ts`. `tools/regression/webnode/build.sh` sets
+them and assembles the page with the WASM, the circuit caches, the genesis and
+the seed list. For development, point `MINAWEB_ASSETS` at the `browser`
+directory of such a build: `npm run dev:minaweb` then serves its WASM and takes
+the rest from its `build-info.json`. The dev server sends the isolation headers.
 
 ## Facts rule
 

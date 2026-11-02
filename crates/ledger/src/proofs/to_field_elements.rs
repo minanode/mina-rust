@@ -1049,7 +1049,6 @@ impl ToFieldElements<Fp> for PerProofWitness {
                     .map_or(Fp::zero(), two_u64_to_field::<Fp, _>)
                     .to_field_elements(fields);
             }
-            OptFlag::Yes => unimplemented!(), // Is that used ?
             OptFlag::No => {}
         }
 
@@ -1092,7 +1091,6 @@ impl ToFieldElements<Fp> for PerProofWitness {
         public_input.to_field_elements(fields);
         match hack_feature_flags {
             OptFlag::Maybe => maybe_evals_to_field_elements(evals, fields),
-            OptFlag::Yes => unimplemented!(), // Is that used ?
             OptFlag::No => evals.to_field_elements(fields),
         }
         ft_eval1.to_field_elements(fields);

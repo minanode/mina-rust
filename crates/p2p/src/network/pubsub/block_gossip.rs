@@ -58,7 +58,7 @@ struct BlockGossip {
 /// Slots are since the hard fork, NOT `global_slot_since_genesis`; the runtime
 /// genesis timestamp is the hard-fork origin. Checked arithmetic fails closed.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L2748-L2769>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L2765-L2786>
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/epoch.ml#L10-L75>
 fn slot_window(genesis_ms: u64, slot: u32, delta: u32, duration_ms: u64) -> Option<(u64, u64)> {
     if duration_ms == 0 {

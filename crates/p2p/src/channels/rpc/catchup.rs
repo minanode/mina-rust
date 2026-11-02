@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 pub const MAX_CATCHUP_CHAIN_LENGTH: usize = 20;
 
 /// OCaml sync ledger uses `query_peer'` with up to 100 parallel queries.
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_networking/mina_networking.ml#L441-L453>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_networking/mina_networking.ml#L454-L467>
 pub const MAX_CATCHUP_RPC_REQUESTS: usize = 100;
 
 #[derive(BinProtWrite, BinProtRead, Serialize, Deserialize, Debug, PartialEq, Clone)]

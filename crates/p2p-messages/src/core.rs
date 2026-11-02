@@ -23,14 +23,57 @@ impl Info {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("error parsing info sexp: {0:?}")]
-pub struct InfoFromSexpError(rsexp::Error);
+pub enum InfoFromSexpError {
+    #[error("error parsing info sexp: {0:?}")]
+    Parse(rsexp::Error),
+    #[error("info sexp nests deeper than {MAX_SEXP_DEPTH} lists")]
+    TooDeep,
+}
+
+/// The deepest list nesting an error sexp may have. OCaml's errors nest a
+/// few levels; a deeper one is invalid input, refused before parsing.
+pub const MAX_SEXP_DEPTH: usize = 256;
+
+/// Whether `bytes` nest lists at most [`MAX_SEXP_DEPTH`] deep. Parentheses in
+/// quoted strings don't count; any in a comment do, which can only refuse.
+fn sexp_depth_within_limit(bytes: &[u8]) -> bool {
+    let (mut depth, mut quoted, mut escaped) = (0usize, false, false);
+    for &byte in bytes {
+        if quoted {
+            match byte {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => quoted = false,
+                _ => {}
+            }
+        } else {
+            match byte {
+                b'"' => quoted = true,
+                b'(' => {
+                    depth += 1;
+                    if depth > MAX_SEXP_DEPTH {
+                        return false;
+                    }
+                }
+                b')' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    true
+}
+
+fn parse_sexp(bytes: &[u8]) -> Result<rsexp::Sexp, InfoFromSexpError> {
+    if !sexp_depth_within_limit(bytes) {
+        return Err(InfoFromSexpError::TooDeep);
+    }
+    rsexp::from_slice(bytes).map_err(InfoFromSexpError::Parse)
+}
 
 impl binprot::BinProtRead for Info {
     fn binprot_read<R: std::io::Read + ?Sized>(r: &mut R) -> Result<Self, binprot::Error> {
         let sexp = ByteString::binprot_read(r)?;
-        let parsed = rsexp::from_slice(&sexp)
-            .map_err(|e| binprot::Error::CustomError(Box::new(InfoFromSexpError(e))))?;
+        let parsed = parse_sexp(&sexp).map_err(|e| binprot::Error::CustomError(Box::new(e)))?;
         Ok(Info(parsed))
     }
 }
@@ -55,7 +98,7 @@ impl TryFrom<SexpString> for Info {
     type Error = InfoFromSexpError;
 
     fn try_from(value: SexpString) -> Result<Self, Self::Error> {
-        let parsed = rsexp::from_slice(&value.0).map_err(InfoFromSexpError)?;
+        let parsed = parse_sexp(value.0.as_ref())?;
         Ok(Info(parsed))
     }
 }
@@ -97,7 +140,7 @@ impl binprot::BinProtWrite for InetAddrV1 {
 mod test {
     use binprot::{BinProtRead, BinProtWrite};
 
-    use super::Info;
+    use super::{ByteString, Info, InfoFromSexpError, MAX_SEXP_DEPTH};
 
     fn info_to_bytes(info: &Info) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -124,5 +167,34 @@ mod test {
         let bytes = info_to_bytes(&info);
         assert_eq!(&bytes, b"\x0b\"atom atom\"");
         assert_eq!(info, bytes_to_info(&bytes));
+    }
+
+    fn read_info(sexp: &[u8]) -> Result<Info, binprot::Error> {
+        let mut bytes = Vec::new();
+        ByteString::from(sexp).binprot_write(&mut bytes).unwrap();
+        Info::binprot_read(&mut &bytes[..])
+    }
+
+    /// An error as OCaml sends it decodes; one nested deeper than
+    /// `MAX_SEXP_DEPTH` is refused before parsing, at any depth.
+    #[test]
+    fn a_sexp_nested_past_the_limit_is_refused() {
+        let error = br#"((("Ledger not found" (hash jxEbxv9Ww1y1J8wqPqFsBi2mtzX8bxk5aBqmHfwUu6pDYN7m3Yf))))"#;
+        assert!(read_info(error).is_ok());
+
+        let nested = |depth: usize| [vec![b'('; depth], b"x".to_vec(), vec![b')'; depth]].concat();
+        assert!(read_info(&nested(MAX_SEXP_DEPTH)).is_ok());
+        for depth in [MAX_SEXP_DEPTH + 1, 1_000_000] {
+            let err = read_info(&nested(depth)).unwrap_err();
+            assert!(
+                matches!(&err, binprot::Error::CustomError(e)
+                    if matches!(e.downcast_ref(), Some(InfoFromSexpError::TooDeep))),
+                "{depth}: {err:?}"
+            );
+        }
+
+        // Parentheses in a quoted string are not lists.
+        let quoted = [b"(\"".to_vec(), vec![b'('; 1000], b"\")".to_vec()].concat();
+        assert!(read_info(&quoted).is_ok());
     }
 }

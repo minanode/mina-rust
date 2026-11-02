@@ -22,7 +22,12 @@ pub const LOCAL_BLOCK_CHECK_RETRIES: u8 = 3;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TransitionFrontierState {
+    #[serde(default)]
+    pub bootstrap: crate::bootstrap_status::BootstrapStatus,
     pub config: TransitionFrontierConfig,
+    /// Last local ledger fault, retained after recovery for operator diagnosis.
+    #[serde(default)]
+    pub ledger_recovery: Option<LedgerRecovery>,
     /// Genesis block generation/proving state
     pub genesis: TransitionFrontierGenesisState,
     /// Current best known chain, from root of the transition frontier to best tip
@@ -57,6 +62,16 @@ pub struct TransitionFrontierState {
     pub genesis_ledgers: GenesisLedgersState,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct LedgerRecovery {
+    pub block_hash: StateHash,
+    pub error: String,
+    pub attempts: u32,
+    pub time: redux::Timestamp,
+    pub recovered_at: Option<redux::Timestamp>,
+}
+
 /// The genesis ledgers of a node that took its genesis from the genesis
 /// cache (I5d2, `TransitionFrontierConfig::genesis_ledgers_deferred`).
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -84,6 +99,8 @@ impl TransitionFrontierState {
         Self {
             persist: TransitionFrontierPersistState::new(&config.persist),
             config,
+            ledger_recovery: None,
+            bootstrap: Default::default(),
             genesis: TransitionFrontierGenesisState::Idle,
             candidates: TransitionFrontierCandidatesState::new(),
             best_chain: Vec::with_capacity(290),
@@ -97,6 +114,33 @@ impl TransitionFrontierState {
             archive_enabled,
             genesis_ledgers,
         }
+    }
+
+    pub fn ledger_recovery_pending(&self) -> bool {
+        self.ledger_recovery
+            .as_ref()
+            .is_some_and(|r| r.recovered_at.is_none())
+    }
+
+    /// Bound repeated failures; CheckTimeouts retries candidate selection.
+    pub fn ledger_recovery_ready(&self, now: redux::Timestamp) -> bool {
+        self.ledger_recovery.as_ref().is_none_or(|r| {
+            r.recovered_at.is_some()
+                || now
+                    .checked_sub(r.time)
+                    .is_some_and(|elapsed| elapsed >= std::time::Duration::from_secs(30))
+        })
+    }
+
+    /// Startup failures are terminal on native and web hosts alike.
+    pub fn startup_error(&self) -> Option<&str> {
+        if let TransitionFrontierGenesisState::LedgerLoadError { error, .. } = &self.genesis {
+            return Some(error);
+        }
+        if let GenesisLedgersState::Error { error } = &self.genesis_ledgers {
+            return Some(error);
+        }
+        None
     }
 
     pub fn best_tip(&self) -> Option<&ArcBlockWithHash> {
@@ -237,7 +281,7 @@ impl TransitionFrontierState {
     ///
     /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_lib/mina_lib.ml#L392-L395>
     pub fn is_bootstrapping(&self, now: redux::Timestamp) -> bool {
-        if !self.genesis_ledgers_ready() {
+        if self.ledger_recovery_pending() || !self.genesis_ledgers_ready() {
             return true;
         }
         let best_tip = self.best_tip().map(|tip| {

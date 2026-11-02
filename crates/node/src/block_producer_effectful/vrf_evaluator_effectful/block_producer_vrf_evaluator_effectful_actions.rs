@@ -16,6 +16,7 @@ pub enum BlockProducerVrfEvaluatorEffectfulAction {
     /// wins (the key's delegated stake and the staking ledger's total).
     InitializeStats {
         epoch: u32,
+        /// First slot to evaluate within this epoch, inclusive.
         initial_slot: u32,
         delegated_stake: u64,
         total_currency: u64,

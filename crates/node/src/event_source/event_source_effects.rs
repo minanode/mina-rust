@@ -100,6 +100,14 @@ pub fn event_source_effects<S: Service>(store: &mut Store<S>, action: EventSourc
         // "Translate" event into the corresponding action and dispatch it.
         EventSourceAction::NewEvent { event } => match event {
             Event::P2p(e) => match e {
+                P2pEvent::WithPermit {
+                    event,
+                    permit: _permit,
+                } => {
+                    store.dispatch(EventSourceAction::NewEvent {
+                        event: Event::P2p(*event),
+                    });
+                }
                 #[cfg(not(feature = "p2p-libp2p"))]
                 P2pEvent::MioEvent(_) => {}
                 #[cfg(feature = "p2p-libp2p")]
@@ -247,9 +255,10 @@ pub fn event_source_effects<S: Service>(store: &mut Store<S>, action: EventSourc
                 P2pEvent::Channel(e) => match e {
                     P2pChannelEvent::Opened(peer_id, chan_id, res) => match res {
                         Err(err) => {
-                            // A peer without one of our channels, routine (O1).
-                            mina_core::log::debug!(meta.time(); kind = "P2pChannelEvent::Opened", peer_id = peer_id.to_string(), error = err);
-                            // TODO(binier): dispatch error action.
+                            store.dispatch(P2pDisconnectionAction::Init {
+                                peer_id,
+                                reason: P2pDisconnectionReason::P2pChannelOpenFailed(chan_id, err),
+                            });
                         }
                         Ok(_) => match chan_id {
                             ChannelId::SignalingDiscovery => {
@@ -314,6 +323,14 @@ pub fn event_source_effects<S: Service>(store: &mut Store<S>, action: EventSourc
                 }
                 LedgerEvent::Read(id, response) => {
                     store.dispatch(LedgerReadAction::Success { id, response });
+                }
+                LedgerEvent::TransactionPoolAccounts { id, result } => {
+                    crate::transaction_pool::report_account_read_error(store.state(), id, &result);
+                    store.dispatch(crate::TransactionPoolAction::AccountsFetched {
+                        pending_id: id,
+                        accounts: result
+                            .map_err(|err| format!("failed to fetch accounts: {err:?}")),
+                    });
                 }
             },
             Event::Snark(event) => match event {
@@ -392,6 +409,10 @@ pub fn event_source_effects<S: Service>(store: &mut Store<S>, action: EventSourc
                 RpcRequest::StateGet(filter) => {
                     store.dispatch(RpcAction::GlobalStateGet { rpc_id, filter });
                 }
+                RpcRequest::GraphqlStatusGet => {
+                    let response = crate::rpc::RpcGraphqlStatusResponse::from_state(store.state());
+                    let _ = store.service.respond_graphql_status_get(rpc_id, response);
+                }
                 RpcRequest::StatusGet => {
                     store.dispatch(RpcAction::StatusGet { rpc_id });
                 }
@@ -403,6 +424,14 @@ pub fn event_source_effects<S: Service>(store: &mut Store<S>, action: EventSourc
                 }
                 RpcRequest::HeartbeatGet => {
                     store.dispatch(RpcAction::HeartbeatGet { rpc_id });
+                }
+                RpcRequest::ReportingSnapshotGet {
+                    produced_block_watch,
+                } => {
+                    store.dispatch(RpcAction::ReportingSnapshotGet {
+                        rpc_id,
+                        produced_block_watch,
+                    });
                 }
                 RpcRequest::ActionStatsGet(query) => {
                     store.dispatch(RpcAction::ActionStatsGet { rpc_id, query });
@@ -540,6 +569,15 @@ pub fn event_source_effects<S: Service>(store: &mut Store<S>, action: EventSourc
                 RpcRequest::LightBestTip => {
                     store.dispatch(RpcAction::LightBestTipGet { rpc_id });
                 }
+                RpcRequest::BestChainHeadersGet(query) => {
+                    store.dispatch(RpcAction::BestChainHeadersGet { rpc_id, query });
+                }
+                RpcRequest::BestChainBlockGet(query) => {
+                    store.dispatch(RpcAction::BestChainBlockGet { rpc_id, query });
+                }
+                RpcRequest::SyncProgressGet => {
+                    store.dispatch(RpcAction::SyncProgressGet { rpc_id });
+                }
                 RpcRequest::LightAccount(query) => {
                     store.dispatch(RpcAction::LightAccountInit { rpc_id, query });
                 }
@@ -597,6 +635,7 @@ pub fn event_source_effects<S: Service>(store: &mut Store<S>, action: EventSourc
                             BlockProducerVrfEvaluatorAction::ProcessSlotEvaluationSuccess {
                                 vrf_output: vrf_output_with_hash.evaluation_result,
                                 staking_ledger_hash: vrf_output_with_hash.staking_ledger_hash,
+                                generation: vrf_output_with_hash.generation,
                             },
                         );
                     }
@@ -607,7 +646,9 @@ pub fn event_source_effects<S: Service>(store: &mut Store<S>, action: EventSourc
                 }
             },
             Event::GenesisLoad(res) => match res {
-                Err(err) => todo!("error while trying to load genesis config/ledger. - {err}"),
+                Err(error) => {
+                    store.dispatch(TransitionFrontierGenesisAction::LedgerLoadError { error });
+                }
                 Ok(data) => {
                     store.dispatch(TransitionFrontierGenesisAction::LedgerLoadSuccess {
                         data: Box::new(data),

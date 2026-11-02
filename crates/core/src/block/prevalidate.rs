@@ -131,7 +131,7 @@ pub fn validate_constants(
 /// `delta = 0`, as on mainnet and devnet, the list is empty and `init` is the
 /// parent's hash.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/8250f62a9bb6450f6c9fdc9a3af72da62c2f5e39/src/lib/mina_block/validation.ml#L378-L389>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_block/validation.ml#L378-L389>
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/8250f62a9bb6450f6c9fdc9a3af72da62c2f5e39/src/lib/transition_chain_verifier/transition_chain_verifier.ml#L5-L18>
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/8250f62a9bb6450f6c9fdc9a3af72da62c2f5e39/src/lib/merkle_list_verifier/merkle_list_verifier.ml#L36-L50>
 pub fn validate_delta_block_chain(header: &BlockHeader) -> Result<(), BlockPrevalidationError> {
@@ -193,7 +193,7 @@ pub fn validate_stop_slots_diff(
 }
 
 /// Empty means no second pre-diff, work, commands, coinbase or statuses.
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/staged_ledger_diff/diff.ml#L512-L524>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/staged_ledger_diff/diff.ml#L512-L523>
 pub fn staged_ledger_diff_is_empty(
     diff: &mina_p2p_messages::v2::StagedLedgerDiffDiffDiffStableV2,
 ) -> bool {

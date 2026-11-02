@@ -11,6 +11,9 @@ P2P private keys, operator keys and process environments are not fixtures.
 
 ## Inventory
 
+- `full-proof/`: **real 4.0.3 devnet proofs**, exact request bytes, selection
+  evidence and offline-verifier results. See its README for coverage and checks.
+
 - `fixtures/mainnet/`: real uptime request/signature and full version-2 status.
 - `fixtures/devnet/`: real uptime request/signature in the testnet domain and
   the default simplified status (seven fields, no version).
@@ -92,7 +95,18 @@ python3 tools/uptime-fixtures/receiver.py \
 ```
 
 It binds only `127.0.0.1`, records any POST path and returns the specified
-status sequence independently per path, repeating the last status. It supports
-Content-Length and chunked input, records exact body bytes, and never forwards
-or registers anything. Stop this foreground process with Ctrl-C. It deliberately
-does not validate signatures, registration, block proofs or service eligibility.
+status sequence independently per path, repeating the last status. `--delays`
+gives the seconds to wait before each response in the same way (for client
+timeouts and interruption; R43e.2); the record is written first. `--port 0`
+picks a free port and prints it. It supports Content-Length and chunked input,
+records exact body bytes, and never forwards or registers anything. Stop this
+foreground process with Ctrl-C. It deliberately does not validate signatures,
+registration, block proofs or service eligibility.
+
+## 4.0.4 source audit
+
+The uptime payload, service and worker sources are byte-identical to 4.0.3. The
+prover harness wording stays as on main; all captured requests, proofs and
+manifests keep their original 4.0.3 provenance. The delegation verifier's output
+and submission handling changed; OCAML-404-TOOL-QUALIFICATION tracks
+qualification with the replay lane's rebuilt tools.

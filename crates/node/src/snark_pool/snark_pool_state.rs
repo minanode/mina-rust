@@ -44,6 +44,10 @@ pub struct SnarkPoolState {
     /// by OCaml's prover rule: warned once per key and fee (RC7-FIXES).
     #[serde(default)]
     pub(super) own_fee_refused: Option<(crate::account::AccountPublicKey, u64)>,
+    /// The best tip at which a revalidation's account read last failed:
+    /// warned once per tip (SNARK-POOL-OWN-WORK).
+    #[serde(default)]
+    pub(super) revalidation_deferred_tip: Option<v2::StateHash>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -103,6 +107,7 @@ impl SnarkPoolState {
             last_check_timeouts: Timestamp::ZERO,
             worker_paused_for_block: false,
             own_fee_refused: None,
+            revalidation_deferred_tip: None,
         }
     }
 
@@ -132,6 +137,11 @@ impl SnarkPoolState {
             fee = crate::external_snark_worker::format_mina(fee));
         self.own_fee_refused = Some(key);
         true
+    }
+
+    /// The block whose staged ledger's work pairs the pool holds as jobs.
+    pub fn jobs_tip(&self) -> Option<&v2::StateHash> {
+        self.jobs_tip.as_ref()
     }
 
     pub fn work_is_referenced(&self, work: &Snark, tip: &v2::StateHash) -> bool {
@@ -210,6 +220,65 @@ impl SnarkPoolState {
         self.pool.update(id, |job| {
             job.snark = None;
         });
+    }
+
+    /// One stored work for each prover, to revalidate the stored works at a
+    /// new best tip with one account read per prover, as OCaml looks each
+    /// prover up once (SNARK-POOL-OWN-WORK).
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/snark_pool.ml#L167-L198>
+    pub(super) fn works_by_prover(&self) -> Vec<SnarkWork> {
+        let mut provers = std::collections::BTreeMap::new();
+        for snark in self.jobs_iter().filter_map(|job| job.snark.as_ref()) {
+            provers
+                .entry(crate::account::AccountPublicKey::from(
+                    snark.work.snarker.clone(),
+                ))
+                .or_insert_with(|| snark.clone());
+        }
+        provers.into_values().collect()
+    }
+
+    /// [`Self::works_by_prover`] for the provers with no account checked at
+    /// the jobs tip: their revalidation could not read the account, so their
+    /// works are kept but not used until it can (SNARK-POOL-OWN-WORK).
+    pub(super) fn unchecked_works_by_prover(&self) -> Vec<SnarkWork> {
+        let Some(tip) = self.jobs_tip.as_ref() else {
+            return Vec::new();
+        };
+        let mut works = self.works_by_prover();
+        works.retain(|snark| {
+            self.prover_accounts
+                .get(&snark.work.snarker.clone().into())
+                .is_none_or(|(checked_tip, _)| checked_tip != tip)
+        });
+        works
+    }
+
+    /// The stored works of `prover` that the prover rule ([`check_prover`])
+    /// refuses for `account`, with why. At a new best tip OCaml drops those
+    /// its fee rule refuses; this also drops those whose account can't
+    /// receive, as admission refuses them.
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/snark_pool.ml#L184-L198>
+    ///
+    /// [`check_prover`]: super::check_prover
+    pub(super) fn refused_works_of(
+        &self,
+        prover: &v2::NonZeroCurvePoint,
+        account: super::ProverAccount,
+    ) -> Vec<(SnarkJobId, super::AdmissionError)> {
+        let account_creation_fee =
+            mina_core::constants::constraint_constants().account_creation_fee;
+        self.jobs_iter()
+            .filter_map(|job| {
+                let work = &job.snark.as_ref()?.work;
+                if &work.snarker != prover {
+                    return None;
+                }
+                super::check_prover(work.fee.0.as_u64(), account_creation_fee, account)
+                    .err()
+                    .map(|error| (job.id.clone(), error))
+            })
+            .collect()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -629,7 +698,7 @@ impl JobState {
 }
 
 /// Derive the requested statement, including the merge of both child statements.
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L725-L732>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L726-L733>
 pub(super) fn job_statement(
     job: &OneOrTwo<AvailableJobMessage>,
 ) -> Option<v2::TransactionSnarkWorkStatementStableV2> {

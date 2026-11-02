@@ -187,7 +187,11 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsStreamingRpcAction {
                                 ..
                             },
                         ..
-                    } => rpc_id == id && response.kind() == request.kind(),
+                    } => {
+                        rpc_id == id
+                            && response.kind() == request.kind()
+                            && response.is_within_bounds()
+                    }
                     _ => false,
                 }),
             P2pChannelsStreamingRpcAction::ResponseReceived {

@@ -74,3 +74,40 @@ pub fn generate_block_proof(params: block::BlockParams) -> anyhow::Result<wrap::
     block::generate_block_proof(params, &mut w)
 }
 pub use zkapp::generate_zkapp_proof;
+
+/// The panic boundary of one proving job: runs `prove`, and turns a panic in
+/// it into `Err` with the panic's message, logged as "prover recovered after
+/// panic", so that a failed proof costs one job and its thread goes on to the
+/// next. The SNARK worker, the uptime prover and the native block prover put
+/// each job in one. A panic that held its thread's prover SRS lock poisoned
+/// it: the thread's next proof makes it again ([`crate::verifier::get_srs_mut`]).
+///
+/// A web node's prover cannot unwind (`panic_abort`): a panic there stops its
+/// whole instance, which the bridge replaces with a new one.
+pub fn catch_prover_panic<T>(prover: &str, prove: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(prove)).map_err(|payload| {
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+        PROVER_PANICS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        mina_core::warn!(
+            mina_core::log::system_time();
+            kind = "ProverRecoveredAfterPanic",
+            summary = format!("prover recovered after panic: the {prover} job failed"),
+            prover = prover.to_owned(),
+            error = message.clone(),
+            panics = prover_panics(),
+        );
+        message
+    })
+}
+
+static PROVER_PANICS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many proving jobs [`catch_prover_panic`] turned from a panic into an
+/// error, in this process.
+pub fn prover_panics() -> u64 {
+    PROVER_PANICS.load(std::sync::atomic::Ordering::Relaxed)
+}

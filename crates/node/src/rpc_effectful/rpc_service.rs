@@ -9,7 +9,7 @@ use crate::{
         RpcLedgerSlimAccountsResponse, RpcLedgerStatusGetResponse, RpcLightAccountResponse,
         RpcLightBestTipResponse, RpcMessageProgressResponse, RpcP2pConnectionOutgoingResponse,
         RpcPeersGetResponse, RpcPooledUserCommandsResponse, RpcPooledZkappCommandsResponse,
-        RpcReadinessCheckResponse, RpcScanStateSummaryGetResponse,
+        RpcReadinessCheckResponse, RpcReportingSnapshotGetResponse, RpcScanStateSummaryGetResponse,
         RpcSnarkPoolCompletedJobsResponse, RpcSnarkPoolGetResponse, RpcSnarkPoolJobGetResponse,
         RpcSnarkPoolPendingJobsGetResponse, RpcSnarkerConfigGetResponse,
         RpcSnarkerJobCommitResponse, RpcSnarkerJobSpecResponse, RpcSnarkerWorkersResponse,
@@ -48,6 +48,13 @@ macro_rules! from_error {
 from_error!(serde_json::Error);
 
 pub trait RpcService {
+    fn respond_graphql_status_get(
+        &mut self,
+        _rpc_id: RpcId,
+        _response: crate::rpc::RpcGraphqlStatusResponse,
+    ) -> Result<(), RespondError> {
+        Err(RespondError::RespondingFailed)
+    }
     fn respond_snark_work_coverage_get(
         &mut self,
         rpc_id: RpcId,
@@ -86,6 +93,11 @@ pub trait RpcService {
         &mut self,
         rpc_id: RpcId,
         response: RpcHeartbeatGetResponse,
+    ) -> Result<(), RespondError>;
+    fn respond_reporting_snapshot_get(
+        &mut self,
+        rpc_id: RpcId,
+        response: RpcReportingSnapshotGetResponse,
     ) -> Result<(), RespondError>;
     fn respond_action_stats_get(
         &mut self,
@@ -312,5 +324,20 @@ pub trait RpcService {
         &mut self,
         rpc_id: RpcId,
         response: RpcLightAccountResponse,
+    ) -> Result<(), RespondError>;
+    fn respond_best_chain_headers(
+        &mut self,
+        rpc_id: RpcId,
+        response: crate::rpc::RpcBestChainHeadersGetResponse,
+    ) -> Result<(), RespondError>;
+    fn respond_best_chain_block(
+        &mut self,
+        rpc_id: RpcId,
+        response: crate::rpc::RpcBestChainBlockGetResponse,
+    ) -> Result<(), RespondError>;
+    fn respond_sync_progress(
+        &mut self,
+        rpc_id: RpcId,
+        response: crate::rpc::RpcSyncProgressGetResponse,
     ) -> Result<(), RespondError>;
 }

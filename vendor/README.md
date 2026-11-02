@@ -35,3 +35,24 @@ and `cargo fmt`, clippy, taplo, prettier and the whitespace checks skip
   which uses the crate's own lock file and dev-dependencies.
 - Used by the `p2p-webrtc-rustrtc` backend of `crates/p2p`
   (`src/service_impl/webrtc/webrtc_rustrtc.rs`).
+
+- Raw DTLS ingress, decrypted application records, and SCTP output share the
+  bounded `transports::packet_queue` implementation on native and embedded
+  targets. Admission checks item, byte and process budgets without waiting for
+  the consumer. Local overflow fails the owning DTLS association; aggregate
+  pressure instead sheds the association with the largest combined occupancy
+  across its three queues. It reclaims the victim's buffers before admitting a
+  small newcomer and publishes failure outside the pool lock. Metrics count
+  aggregate sheds separately from local admission failures. Payload copies
+  prevent small `Bytes` slices from retaining unaccounted backing allocations.
+  DTLS now returns this bounded receiver to SCTP; affected test fixtures use the
+  same API. SCTP drains at most 64 packets before checking cancellation. The
+  peer monitor treats transport-loop completion as terminal even if the
+  aggregate-shedding callback has not published DTLS failure yet, preserving
+  existing Closed/Failed states. Limits are 4,096 items and 8 MiB per queue,
+  65,535 bytes per packet, 24 MiB per association, and 64 MiB across queues.
+  Ten-browser bootstrap measurements peaked at 217 items and 203,216 bytes per
+  queue (339,488 bytes aggregate), leaving over 18 times the observed packet
+  burst and 41 times the per-queue byte burst. Accounting includes copied
+  payloads plus a 64-byte allowance per item; it does not bound total process
+  RSS.

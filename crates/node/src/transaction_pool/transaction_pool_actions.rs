@@ -55,9 +55,11 @@ pub enum TransactionPoolAction {
     },
     BestTipChanged {
         best_tip_hash: v2::LedgerHash,
+        diff: Option<BestTipDiff>,
     },
     BestTipChangedWithAccounts {
         accounts: BTreeMap<AccountId, Account>,
+        pending_id: PendingId,
     },
     ApplyVerifiedDiff {
         best_tip_hash: v2::LedgerHash,
@@ -68,14 +70,12 @@ pub enum TransactionPoolAction {
         accounts: BTreeMap<AccountId, Account>,
         pending_id: PendingId,
     },
-    ApplyTransitionFrontierDiff {
-        best_tip_hash: v2::LedgerHash,
-        diff: BestTipDiff,
-    },
-    ApplyTransitionFrontierDiffWithAccounts {
-        accounts: BTreeMap<AccountId, Account>,
+    /// The ledger response only supplies data; ordered application is separate.
+    AccountsFetched {
         pending_id: PendingId,
+        accounts: Result<BTreeMap<AccountId, Account>, String>,
     },
+    ProcessAccountReads,
     /// Rebroadcast locally generated pool items every 10 minutes. Do so for 50
     /// minutes - at most 5 rebroadcasts - before giving up.
     Rebroadcast {
@@ -156,6 +156,17 @@ pub enum TransactionPoolEffectfulAction {
         on_result: TransactionPoolEffectfulActionCallback,
         pending_id: Option<PendingId>,
         from_source: TransactionPoolMessageSource,
+        generation: u64,
+        pinned: bool,
+    },
+    /// Preserve the immutable reconciliation snapshot even if this read must
+    /// wait for the in-flight limit and the frontier prunes the ledger meanwhile.
+    PinLedger {
+        pending_id: PendingId,
+        ledger_hash: v2::LedgerHash,
+    },
+    CancelReads {
+        generation: u64,
     },
 }
 

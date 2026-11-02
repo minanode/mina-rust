@@ -6,7 +6,7 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 archive=$(realpath "$1")
 name=$(basename "$archive")
 [[ $name == mina-*-linux-*.tar.gz ]] || { echo 'unexpected archive name' >&2; exit 2; }
-run="$repo/.work/D6/smoke-${name%.tar.gz}-$(date -u +%Y%m%dT%H%M%SZ)"
+run=${SMOKE_OUTPUT_DIR:-"$repo/.work/D6/smoke-${name%.tar.gz}-$(date -u +%Y%m%dT%H%M%SZ)"}
 mkdir -p "$run/unpacked" "$run/home" "$run/tmp" "$run/node"
 tar -xzf "$archive" -C "$run/unpacked" --no-same-owner
 binary="$run/unpacked/mina"
@@ -22,7 +22,16 @@ elf = open(sys.argv[2]).read()
 archive = sys.argv[3]
 readme = open(sys.argv[4]).read()
 assert archive == f"mina-{meta['version']}-{meta['target']}.tar.gz"
-assert 'devnet only' in readme
+for scope in ('experimental beta', 'mainnet node and',
+              'SNARK worker with embedded Mesa circuits',
+              'Mainnet public work sales and purchases have not been qualified',
+              'Mainnet block production is not supported',
+              'service accepted two',
+              'mainnet signed-command reports from an earlier build',
+              'service acceptance, zkApp acceptance and delegation credit remain unqualified'):
+    assert scope in readme, scope
+assert f"Mina Rust {meta['version']} ({meta['target']})" in readme
+assert meta['dirty_checkout'] is False
 actual = re.findall(r'GLIBC_(\d+\.\d+)', elf)[-1]
 expected = {
     'linux-x86_64': ('Advanced Micro Devices X86-64', '/lib64/ld-linux-x86-64.so.2'),
@@ -38,7 +47,7 @@ case "$name:$(uname -m)" in
   *linux-x86_64.tar.gz:x86_64|*linux-arm64.tar.gz:aarch64) ;;
   *) echo "cross-architecture ELF check complete; runtime needs matching Linux host"; exit 0 ;;
 esac
-export HOME="$run/home" TMPDIR="$run/tmp"
+export TMPDIR="$run/tmp"
 "$binary" --version | tee "$run/version.log"
 python3 - "$run/version.log" "$run/unpacked/build-info.json" <<'PY'
 import json, sys
@@ -47,9 +56,26 @@ expected = f"mina {meta['version']} (WebRTC: {meta['webrtc_backend']})"
 assert open(sys.argv[1]).read().strip() == expected, expected
 PY
 "$binary" build-info | tee "$run/build-info.log"
+python3 - "$run/build-info.log" "$run/unpacked/build-info.json" <<'PYINFO'
+import json, re, sys
+meta = json.load(open(sys.argv[2]))
+info = dict(re.findall(r'^([^:\n]+):\s*(.*)$', open(sys.argv[1]).read(), re.M))
+assert info['Version'] == meta['version'], info
+assert info['Commit SHA'] == meta['commit'], info
+assert info['WebRTC'] == meta['webrtc_backend'], info
+PYINFO
 cd "$repo"
 tools/regression/check-build-env.sh "$binary" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["commit"])' "$run/unpacked/build-info.json")" | tee "$run/commit.log"
-for port in 3705 8875; do
+# Runtime metadata checks are safe on hosts already running a node. This mode
+# deliberately does not qualify bootstrap or sync.
+if [[ ${SMOKE_NO_NODE:-0} == 1 ]]; then
+  "$binary" node --help >"$run/node-help.log"
+  echo 'archive metadata and CLI smoke passed; node startup and sync skipped'
+  exit 0
+fi
+http_port=${SMOKE_HTTP_PORT:-4400}
+libp2p_port=${SMOKE_LIBP2P_PORT:-9520}
+for port in "$http_port" "$libp2p_port"; do
   if ss -ltn "( sport = :$port )" | tail -n +2 | grep -q .; then
     echo "port $port already in use" >&2
     exit 2
@@ -62,8 +88,8 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
-"$binary" --network devnet node -d "$run/node" -p 3705 \
-  --libp2p-port 8875 \
+"$binary" node --network devnet --work-dir "$run/node" --port "$http_port" \
+  --libp2p-port "$libp2p_port" \
   --disable-filesystem-logging >"$run/node.log" 2>&1 &
 pid=$!
 deadline=$((SECONDS + 600))
@@ -72,7 +98,7 @@ while (( SECONDS < deadline )); do
     echo "node exited before sync; see $run/node.log" >&2
     exit 1
   fi
-  if curl -fsS --max-time 3 http://127.0.0.1:3705/status >"$run/status.json" 2>/dev/null; then
+  if curl -fsS --max-time 3 "http://127.0.0.1:$http_port/status" >"$run/status.json" 2>/dev/null; then
     if python3 - "$run/status.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))

@@ -1245,7 +1245,7 @@ impl<F: FieldWitness> std::fmt::Debug for InnerCurve<F> {
 
 impl crate::ToInputs for InnerCurve<Fp> {
     fn to_inputs(&self, inputs: &mut ::poseidon::hash::Inputs) {
-        let GroupAffine::<Fp> { x, y, .. } = self.to_affine();
+        let (x, y) = self.wire_coordinates();
         inputs.append_field(x);
         inputs.append_field(y);
     }
@@ -1254,6 +1254,22 @@ impl crate::ToInputs for InnerCurve<Fp> {
 impl<F: FieldWitness> From<(F, F)> for InnerCurve<F> {
     fn from((x, y): (F, F)) -> Self {
         Self::of_affine(make_group(x, y))
+    }
+}
+
+impl<F: FieldWitness> InnerCurve<F> {
+    /// A point from untrusted coordinates. As with `From<(F, F)>`, (0, 0)
+    /// is the point at infinity; a point off the curve is an error.
+    pub fn try_from_coordinates(x: F, y: F) -> Result<Self, InvalidBigInt> {
+        if x == F::ZERO && y == F::ZERO {
+            return Ok(Self::of_affine(GroupAffine::<F>::zero()));
+        }
+        let point = GroupAffine::<F>::new_unchecked(x, y);
+        if point.is_on_curve() && point.is_in_correct_subgroup_assuming_on_curve() {
+            Ok(Self::of_affine(point))
+        } else {
+            Err(InvalidBigInt)
+        }
     }
 }
 
@@ -1291,6 +1307,23 @@ impl<F: FieldWitness> InnerCurve<F> {
         // <https://github.com/MinaProtocol/mina/blob/3e58e92ea9aeddb41ad3b6e494279891c5f9aa09/src/lib/crypto/kimchi_backend/common/curve.ml#L180>
         assert!(!affine.infinity);
         affine
+    }
+
+    /// The coordinates as the wire carries them: (0, 0) for the point at
+    /// infinity, the pair a verification key from the wire holds it as.
+    /// OCaml keeps a verification key's points as these pairs, hashes and
+    /// encodes them as they are, and never makes them points; so do hashing
+    /// and encoding here. Circuits use [`Self::to_affine`].
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles_base/side_loaded_verification_key.ml#L183-L200>
+    pub fn wire_coordinates(&self) -> (F, F) {
+        let affine: F::Affine = self.inner.into_affine();
+        let affine: GroupAffine<F> = affine.into();
+        if affine.infinity {
+            (F::ZERO, F::ZERO)
+        } else {
+            (affine.x, affine.y)
+        }
     }
 
     pub fn of_affine(affine: GroupAffine<F>) -> Self {
@@ -3942,7 +3975,10 @@ pub fn make_prover_index<C: ProofConstants, F: FieldWitness>(
     // TODO: `proof-systems` needs to change how the SRS is used
     let srs: poly_commitment::ipa::SRS<F::OtherCurve> = {
         let srs = get_srs_mut::<F>();
-        let srs = srs.lock().unwrap().clone();
+        let srs = srs
+            .lock()
+            .expect("get_srs_mut returns an SRS no panic has poisoned")
+            .clone();
         srs.get_lagrange_basis(cs.domain.d1);
         srs
     };
@@ -5685,6 +5721,258 @@ pub(crate) mod mesa_tests {
             &statement_of(&payment).target,
             &base_job.source
         ));
+    }
+
+    /// Merges of OCaml's statements that don't link up are rejected, as
+    /// OCaml's `Statement.merge` rejects them: in the wrong order, with a
+    /// first or second pass ledger that doesn't continue, or with pending
+    /// coinbase stacks or local states that don't connect.
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_state/snarked_ledger_state.ml#L495-L640>
+    #[test]
+    fn mesa_merges_that_do_not_link_are_rejected() {
+        for bytes in [MERGE_OF_BASES, MERGE_OF_MERGES, DEVNET_MERGE_OF_BASES] {
+            let (merged, [left, right]) = merge_fixture(bytes);
+            let (left, right) = (statement_of(&left), statement_of(&right));
+            assert_eq!(left.merge(&right).unwrap(), merged);
+            assert!(right.merge(&left).is_err(), "swapped");
+
+            let other = Fp::from(0x5eedu64);
+            let mut broken = left.clone();
+            broken.target.first_pass_ledger = other;
+            assert!(broken.merge(&right).is_err(), "first pass ledger");
+            let mut broken = right.clone();
+            broken.source.first_pass_ledger = other;
+            assert!(left.merge(&broken).is_err(), "first pass ledger");
+            let mut broken = right.clone();
+            broken.source.second_pass_ledger = other;
+            assert!(left.merge(&broken).is_err(), "second pass ledger");
+            let mut broken = left.clone();
+            broken.target.second_pass_ledger = other;
+            assert!(broken.merge(&right).is_err(), "second pass ledger");
+
+            // A stack with other coinbases.
+            let mut broken = right.clone();
+            broken.source.pending_coinbase_stack.data =
+                crate::scan_state::pending_coinbase::CoinbaseStack(other);
+            assert!(left.merge(&broken).is_err(), "pending coinbase");
+
+            let mut broken = right.clone();
+            broken.source.local_state.success = !broken.source.local_state.success;
+            assert!(left.merge(&broken).is_err(), "local state");
+        }
+    }
+
+    use crate::{
+        scan_state::scan_state::{
+            transaction_snark::{Registers, Statement, TransactionWithWitness},
+            ScanState, StatementCheck,
+        },
+        verifier::Verifier,
+    };
+    use mina_core::constants::constraint_constants;
+
+    /// The protocol state of a Mesa mainnet block, for a scan state's
+    /// `get_state`: base jobs of payments and coinbases don't read it.
+    fn protocol_state() -> v2::MinaStateProtocolStateValueStableV2 {
+        use mina_p2p_messages::{rpc::GetBestTipV2Response, rpc_kernel::ResponsePayload};
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../p2p-messages/tests/files/mesa/get_best_tip_v3.bin"
+        );
+        let bytes = std::fs::read(path).unwrap();
+        let payload =
+            ResponsePayload::<GetBestTipV2Response>::binprot_read(&mut &bytes[..]).unwrap();
+        payload
+            .0
+            .unwrap()
+            .0
+            .unwrap()
+            .data
+            .header
+            .protocol_state
+            .clone()
+    }
+
+    /// A base job fixture as a scan state holds it. The fixture has no state
+    /// hash, which only the target pending coinbase stack depends on.
+    fn scan_state_job(bytes: &[u8]) -> TransactionWithWitness {
+        let (statement, witness) = fixture(bytes);
+        TransactionWithWitness {
+            transaction_with_status: crate::scan_state::transaction_logic::WithStatus {
+                data: (&witness.transaction).try_into().unwrap(),
+                status: (&witness.status).into(),
+            },
+            statement: (&statement).try_into().unwrap(),
+            state_hash: (Fp::from(0u64), Fp::from(0u64)),
+            init_stack: (&witness.init_stack).try_into().unwrap(),
+            first_pass_ledger_witness: (&witness.first_pass_ledger).try_into().unwrap(),
+            second_pass_ledger_witness: (&witness.second_pass_ledger).try_into().unwrap(),
+            block_global_slot: (&witness.block_global_slot).into(),
+            hash_cache: Default::default(),
+        }
+    }
+
+    fn scan_state_of(jobs: Vec<TransactionWithWitness>) -> ScanState {
+        let mut scan_state = ScanState::empty(constraint_constants());
+        scan_state
+            .scan_state
+            .update(jobs.into_iter().map(Arc::new).collect(), vec![], |_| 0)
+            .unwrap();
+        scan_state
+    }
+
+    type CheckState = fn(Fp) -> v2::MinaStateProtocolStateValueStableV2;
+
+    /// A base job is checked by applying its transaction to its witnesses:
+    /// a statement the transaction doesn't make is rejected, as OCaml's
+    /// `create_expected_statement` rejects it. The ledger hashes the scan
+    /// state computes are OCaml's.
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L317-L400>
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L563-L577>
+    #[test]
+    fn mesa_base_statements_without_their_step_are_rejected() {
+        let state = protocol_state();
+        let check = |job: TransactionWithWitness| {
+            let state = state.clone();
+            scan_state_of(vec![job]).scan_statement(
+                constraint_constants(),
+                StatementCheck::Full(move |_: Fp| state.clone()),
+                &Verifier,
+            )
+        };
+        for bytes in [PAYMENT, COINBASE, FEE_TRANSFER, FAILED_PAYMENT] {
+            let ocaml = scan_state_job(bytes);
+            // The stack the statement ends with depends on the state body
+            // hash, which the fixture doesn't have: take the stack for the
+            // job's state hash. The ledgers and amounts are OCaml's.
+            let mut job = ocaml;
+            job.statement.target.pending_coinbase_stack = job
+                .init_stack
+                .push_state(job.state_hash.1, job.block_global_slot);
+            if let crate::scan_state::transaction_logic::Transaction::Coinbase(coinbase) =
+                &job.transaction_with_status.data
+            {
+                job.statement.target.pending_coinbase_stack = job
+                    .statement
+                    .target
+                    .pending_coinbase_stack
+                    .push_coinbase(coinbase.clone());
+            }
+            let honest = job.clone();
+            assert_eq!(check(honest.clone()).unwrap(), honest.statement, "honest");
+
+            // Ends with no step taken.
+            let mut broken = honest.clone();
+            broken.statement.target.first_pass_ledger = broken.statement.source.first_pass_ledger;
+            broken.statement.target.second_pass_ledger = broken.statement.source.second_pass_ledger;
+            assert!(check(broken).is_err(), "no step");
+            // Ends somewhere else.
+            let mut broken = honest.clone();
+            broken.statement.target.first_pass_ledger = Fp::from(0x5eedu64);
+            assert!(check(broken).is_err(), "other target");
+            // Starts somewhere else.
+            let mut broken = honest.clone();
+            broken.statement.source.second_pass_ledger = Fp::from(0x5eedu64);
+            assert!(check(broken).is_err(), "other source");
+            // Another supply increase.
+            let mut broken = honest.clone();
+            broken.statement.supply_increase =
+                Signed::<Amount>::of_unsigned(Amount::from_u64(123_456_789));
+            assert!(check(broken).is_err(), "supply increase");
+        }
+    }
+
+    /// A scan state job whose witness is a sparse ledger of a shape OCaml
+    /// never builds fails to convert, with an error.
+    #[test]
+    fn mesa_a_job_with_a_malformed_witness_is_an_error() {
+        use v2::{
+            MinaBaseSparseLedgerBaseStableV2Tree as Tree,
+            TransactionSnarkScanStateTransactionWithWitnessStableV2 as WireJob,
+        };
+        let honest = WireJob::from(&scan_state_job(PAYMENT));
+        assert!(TransactionWithWitness::try_from(&honest).is_ok());
+
+        let hash = || Box::new(Tree::Hash(Fp::from(7u64).into()));
+        // Nodes 41 deep, past the 35 levels of the ledger and the 40 bits
+        // of an address.
+        let too_deep = (0..41).fold(hash(), |below, _| {
+            Box::new(Tree::Node(Fp::from(9u64).into(), below, hash()))
+        });
+        let mut malformed = Vec::new();
+        let mut job = honest.clone();
+        job.first_pass_ledger_witness.tree = *too_deep;
+        malformed.push(job);
+        // An account at the root of a 35-level ledger.
+        let mut job = honest.clone();
+        let leaf = |tree: &Tree| -> Option<Tree> {
+            fn find(tree: &Tree) -> Option<&Tree> {
+                match tree {
+                    Tree::Account(_) => Some(tree),
+                    Tree::Hash(_) => None,
+                    Tree::Node(_, left, right) => find(left).or_else(|| find(right)),
+                }
+            }
+            find(tree).cloned()
+        };
+        job.second_pass_ledger_witness.tree = leaf(&job.second_pass_ledger_witness.tree).unwrap();
+        malformed.push(job);
+        // A depth no address holds.
+        let mut job = honest.clone();
+        job.first_pass_ledger_witness.depth = 64u64.into();
+        malformed.push(job);
+
+        for job in malformed {
+            assert!(TransactionWithWitness::try_from(&job).is_err());
+        }
+    }
+
+    /// The scan state's statement must connect with the last proof, end at
+    /// the ledgers the staged ledger has, and carry no fee excess; an empty
+    /// scan state is valid when the last proof ends there.
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L638-L717>
+    #[test]
+    fn mesa_scan_state_invariants_are_ocamls() {
+        let check =
+            |scan_state: &ScanState, last: Option<Statement<()>>, registers_end: &Registers| {
+                scan_state.check_invariants(
+                    constraint_constants(),
+                    StatementCheck::<CheckState>::Partial,
+                    &Verifier,
+                    "test",
+                    last,
+                    registers_end.clone(),
+                )
+            };
+
+        // A coinbase alone has no fee excess.
+        let coinbase = scan_state_job(COINBASE);
+        let statement = coinbase.statement.clone();
+        let scan_state = scan_state_of(vec![coinbase]);
+        assert!(check(&scan_state, None, &statement.target).is_ok());
+        let mut other = statement.target.clone();
+        other.first_pass_ledger = Fp::from(0x5eedu64);
+        assert!(check(&scan_state, None, &other).is_err(), "first pass end");
+        let mut other = statement.target.clone();
+        other.second_pass_ledger = Fp::from(0x5eedu64);
+        assert!(check(&scan_state, None, &other).is_err(), "second pass end");
+        let mut other = statement.target.clone();
+        other.local_state.success = !other.local_state.success;
+        assert!(check(&scan_state, None, &other).is_err(), "local state end");
+        // A last proof the scan state doesn't continue.
+        let (_, [left, _]) = merge_fixture(DEVNET_MERGE_OF_BASES);
+        assert!(check(&scan_state, Some(statement_of(&left)), &statement.target).is_err());
+
+        // A payment alone leaves its fee as excess.
+        let payment = scan_state_job(PAYMENT);
+        let target = payment.statement.target.clone();
+        assert!(check(&scan_state_of(vec![payment]), None, &target).is_err());
+
+        // Empty: valid, or the last proof must end at the staged ledger.
+        let empty = ScanState::empty(constraint_constants());
+        assert!(check(&empty, None, &statement.target).is_ok());
+        assert!(check(&empty, Some(statement.clone()), &statement.target).is_ok());
+        assert!(check(&empty, Some(statement.clone()), &other).is_err());
     }
 
     /// Generates the step witness and checks every gate and copy constraint

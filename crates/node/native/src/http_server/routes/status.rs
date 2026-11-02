@@ -5,6 +5,8 @@
 //! - `GET /healthz` - Liveness: the node answers, whatever its peers and sync
 //! - `GET /readyz` - Readiness: recently synced, with a ready peer
 //! - `POST /make_heartbeat` - Trigger a heartbeat
+//! - `GET /reporting/status` - The opt-in uptime, node status and node error
+//!   reporters' last attempts and outcomes
 
 use axum::{extract::State, Json};
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -27,6 +29,7 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(healthz))
         .routes(routes!(readyz))
         .routes(routes!(make_heartbeat))
+        .routes(routes!(reporting_status))
 }
 
 /// Public status has its own handler and response type; never expose StatusGet.
@@ -230,6 +233,22 @@ async fn readyz(State(state): State<AppState>) -> AppResult<()> {
 )]
 async fn make_heartbeat(State(state): State<AppState>) -> AppResult<Json<RpcHeartbeatGetResponse>> {
     jsonify_rpc!(state, RpcRequest::HeartbeatGet)
+}
+
+/// The opt-in reporters (`--uptime-url`, `--node-status-url`,
+/// `--node-error-url`): for each one running, its target without
+/// credentials, report kind, counts, last attempt, success, HTTP status or
+/// error, and what the last report described. `null` for one not running.
+#[utoipa::path(
+    get,
+    path = "/reporting/status",
+    tag = "status",
+    responses(
+        (status = 200, description = "Reporter status", body = crate::reporting::visibility::ReportingStatus)
+    )
+)]
+async fn reporting_status() -> Json<crate::reporting::visibility::ReportingStatus> {
+    Json(crate::reporting::visibility::snapshot())
 }
 
 // The private StatusGet computes peer/pool/resource diagnostics. Coalesce refreshes

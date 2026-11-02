@@ -102,6 +102,7 @@ browser) names=(browser) wanted=browser ;;
 build) names=(build-1 build-2 build-3) wanted="a build slot" ;;
 *) die "unknown lock '$1'; see --help" ;;
 esac
+kind=$1
 shift
 log=
 while [[ $# -gt 0 ]]; do
@@ -129,6 +130,27 @@ else
 	[[ -z $wait || $wait =~ ^[0-9]+$ ]] || die "LOCK_WAIT=$wait is not a number of seconds"
 	dir=$(lock_dir)
 	mkdir -p "$dir"
+    # Descriptor ownership alone is not a scheduling permit: siblings inherit
+    # the same open file description. Each level opens its own gate, so only
+    # one sibling's subtree can use the slot at a time. Keep ancestor gate
+    # descriptors open across exec, including when entering deeper levels.
+    if [[ $kind == build && ${MINA_BUILD_LOCK_FILE:-} == "$dir"/build-[123].lock &&
+          ${MINA_BUILD_LOCK_DEPTH:-} =~ ^[0-9]+$ &&
+          /proc/self/fd/9 -ef ${MINA_BUILD_LOCK_FILE:-} ]] && flock -n 9; then
+        depth=$((MINA_BUILD_LOCK_DEPTH + 1))
+        exec {gate}>>"${MINA_BUILD_LOCK_FILE}.depth-${depth}"
+        start=$SECONDS
+        until flock -n "$gate"; do
+            if [[ -n $wait ]] && ((SECONDS - start >= wait)); then
+                echo "lock.sh: gave up waiting for nested build level $depth" >&2
+                exit 75
+            fi
+            sleep "${LOCK_POLL:-15}"
+        done
+        export MINA_BUILD_LOCK_DEPTH=$depth
+        if [[ -n $log ]]; then exec >"$log" 2>&1; fi
+        exec "$@"
+    fi
 	start=$SECONDS shown=
 	until take "${names[@]}"; do
 		now=$(for name in "${names[@]}"; do echo "  $name: $(holder "$name")"; done)
@@ -145,6 +167,10 @@ else
 	# Truncating the file keeps the lock, which is on the open file.
 	what="$*"
 	printf 'pid %s since %s in %s: %s\n' "$$" "$(date -u +%FT%TZ)" "$PWD" "${what:0:300}" >"$dir/$taken.lock"
+    if [[ $kind == build ]]; then
+        export MINA_BUILD_LOCK_FILE="$dir/$taken.lock"
+        export MINA_BUILD_LOCK_DEPTH=0
+    fi
 	echo "lock.sh: took $taken, $dir/$taken.lock, for pid $$" >&2
 fi
 if [[ -n $log ]]; then

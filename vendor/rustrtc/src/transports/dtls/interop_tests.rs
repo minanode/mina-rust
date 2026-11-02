@@ -283,7 +283,7 @@ async fn test_interop_rustrtc_client_openssl_server() -> Result<()> {
 /// wire→IceConn pump. Returns (transport, appdata_rx, server_addr).
 async fn spawn_rustrtc_dtls_server() -> Result<(
     Arc<DtlsTransport>,
-    tokio::sync::mpsc::UnboundedReceiver<Bytes>,
+    packet_queue::Receiver,
     std::net::SocketAddr,
 )> {
     let server_socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await?);

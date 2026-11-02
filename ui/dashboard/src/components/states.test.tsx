@@ -2,6 +2,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 
+import { NodeError } from "@minanode/node-client";
 import type { Polled } from "@minanode/node-client/react";
 
 import { Loaded } from "./states";
@@ -35,4 +36,18 @@ test("before the first answer, a placeholder", () => {
   show(polled({}));
   expect(screen.queryByText("Answered: none")).toBeNull();
   expect(screen.getByRole("status").textContent).toBe("Loading the thing…");
+});
+
+test("a failure is marked, so the browser checks can tell it from data", () => {
+  show(
+    polled({
+      loading: false,
+      error: new NodeError("offline", "The node didn't answer."),
+    }),
+  );
+  expect(
+    document
+      .querySelector("[data-request-failed]")
+      ?.getAttribute("data-request-failed"),
+  ).toBe("offline");
 });

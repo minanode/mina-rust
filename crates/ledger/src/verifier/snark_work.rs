@@ -115,7 +115,7 @@ mod tests {
     use mina_p2p_messages::{
         bigint::BigInt,
         binprot::BinProtRead,
-        v2::{CurrencyFeeStableV1, TransactionSnarkWorkTStableV2},
+        v2::{CurrencyFeeStableV1, TransactionSnarkProofStableV2, TransactionSnarkWorkTStableV2},
     };
     use mina_signer::CompressedPubKey;
     use once_cell::sync::Lazy;
@@ -493,5 +493,151 @@ mod tests {
             result,
             Err("Transaction_snark.verify: Mismatched sok_message".to_string())
         );
+    }
+
+    /// Every fixture's first ledger proof, with its statement.
+    fn statements_and_proofs() -> Vec<(Statement<SokDigest>, TransactionSnarkProofStableV2)> {
+        works()
+            .iter_mut()
+            .map(|work| {
+                let proof = first_proof(work);
+                let statement = Statement::try_from(&proof.0.statement).unwrap();
+                (statement, (*proof.0.proof.get().unwrap()).clone())
+            })
+            .collect()
+    }
+
+    fn verifies(statement: &Statement<SokDigest>, proof: &TransactionSnarkProofStableV2) -> bool {
+        verify_transaction([(statement, proof)], &INDEX, &get_srs::<Fp>())
+    }
+
+    /// A complete proof whose challenge polynomial commitment is (0, 0), the
+    /// point at infinity, fails verification as invalid input, without a
+    /// panic.
+    #[test]
+    fn a_commitment_at_infinity_fails_without_a_panic() {
+        let zero = (BigInt::zero(), BigInt::zero());
+        let contained = crate::proofs::verification::CONTAINED_PANICS.with(|n| n.get());
+        for (statement, proof) in statements_and_proofs() {
+            assert!(verifies(&statement, &proof));
+            let mut wrap = proof.clone();
+            wrap.0
+                .statement
+                .proof_state
+                .messages_for_next_wrap_proof
+                .challenge_polynomial_commitment = zero.clone();
+            assert!(!verifies(&statement, &wrap));
+            for i in 0..proof
+                .statement
+                .messages_for_next_step_proof
+                .challenge_polynomial_commitments
+                .len()
+            {
+                let mut step = proof.clone();
+                *step
+                    .0
+                    .statement
+                    .messages_for_next_step_proof
+                    .challenge_polynomial_commitments
+                    .iter_mut()
+                    .nth(i)
+                    .unwrap() = zero.clone();
+                assert!(!verifies(&statement, &step), "step commitment {i}");
+            }
+        }
+        assert_eq!(
+            crate::proofs::verification::CONTAINED_PANICS.with(|n| n.get()),
+            contained,
+            "rejected as invalid input, not by containing a panic"
+        );
+    }
+
+    /// Overwrite the proof body, its Bin_prot bytes, with zeros (a whole
+    /// point is 64 bytes) or 0xff at offsets across it. Every variant that
+    /// still decodes to a different proof fails verification, and none
+    /// panics, not even inside the containment. `FIXFORWARD_FUZZ_STRIDE=1`
+    /// tries every offset.
+    #[test]
+    fn overwritten_proof_bodies_fail_without_a_panic() {
+        use mina_p2p_messages::binprot::BinProtWrite;
+        let stride = std::env::var("FIXFORWARD_FUZZ_STRIDE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(61usize);
+        let contained = crate::proofs::verification::CONTAINED_PANICS.with(|n| n.get());
+        let (statement, proof) = statements_and_proofs().swap_remove(0);
+        let mut original = Vec::new();
+        proof.binprot_write(&mut original).unwrap();
+        let (mut decoded, mut verified) = (0, 0);
+        for at in (0..original.len()).step_by(stride) {
+            for patch in [&[0u8; 64][..], &[0xff][..]] {
+                let mut bytes = original.clone();
+                let end = (at + patch.len()).min(bytes.len());
+                bytes[at..end].copy_from_slice(&patch[..end - at]);
+                let Ok(changed) = TransactionSnarkProofStableV2::binprot_read(&mut &bytes[..])
+                else {
+                    continue;
+                };
+                if changed == proof {
+                    continue;
+                }
+                decoded += 1;
+                if verifies(&statement, &changed) {
+                    verified += 1;
+                    eprintln!("offset {at}: a changed proof verified");
+                }
+            }
+        }
+        eprintln!("{decoded} changed proofs decoded and were verified");
+        assert!(decoded > 0);
+        assert_eq!(verified, 0);
+        assert_eq!(
+            crate::proofs::verification::CONTAINED_PANICS.with(|n| n.get()),
+            contained
+        );
+    }
+
+    /// The staged ledger verify path rejects a proof with a commitment at
+    /// infinity as invalid, without a panic.
+    #[test]
+    fn staged_ledger_verify_rejects_a_commitment_at_infinity() {
+        // The index this path uses: the network's transaction key.
+        crate::proofs::verifiers::TransactionVerifier::make();
+        let contained = crate::proofs::verification::CONTAINED_PANICS.with(|n| n.get());
+        let mut work = fixture(FIXTURES[0]);
+        let fee = Fee::from(&work.fee);
+        let prover: CompressedPubKey = (&work.prover).try_into().unwrap();
+        let ledger_proof = first_proof(&mut work);
+        let mut proof = (*ledger_proof.0.proof.get().unwrap()).clone();
+        proof
+            .0
+            .statement
+            .proof_state
+            .messages_for_next_wrap_proof
+            .challenge_polynomial_commitment = (BigInt::zero(), BigInt::zero());
+        ledger_proof.0.proof = proof.into();
+        let proof = LedgerProof::try_from(&*ledger_proof).unwrap();
+        let result = super::super::verify(vec![(proof, SokMessage::create(fee, prover))]);
+        assert_eq!(
+            result,
+            Err("Transaction_snark.verify: verification failed".to_string())
+        );
+        assert_eq!(
+            crate::proofs::verification::CONTAINED_PANICS.with(|n| n.get()),
+            contained
+        );
+    }
+
+    /// The backstop: a verification that panics fails instead.
+    #[test]
+    fn a_panicking_verification_fails() {
+        assert!(!crate::proofs::verification::verified_or_false(
+            "test",
+            || { panic!("a malformed proof") }
+        ));
+        assert!(crate::proofs::verification::verified_or_false(
+            "test",
+            || true
+        ));
     }
 }

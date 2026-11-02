@@ -70,7 +70,7 @@ pub(super) fn encode_message(message: &GossipNetMessageV2) -> std::io::Result<Ve
 
 /// The original advertised statement is forwarded with gossip, so it must
 /// agree with the proofs as well as the pool's requested statement.
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/snark_pool.ml#L354-L369>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/snark_pool.ml#L354-L369>
 fn checked_snark_gossip(
     advertised: &mina_p2p_messages::v2::TransactionSnarkWorkStatementStableV2,
     snark: &mina_core::snark::Snark,

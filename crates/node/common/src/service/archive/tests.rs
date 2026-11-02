@@ -26,6 +26,101 @@ const HEADER_MSG: [u8; 7] = [2, 253, 82, 80, 67, 0, 1];
 const OK_MSG: [u8; 5] = [2, 1, 0, 1, 0];
 const HEARTBEAT_MSG: [u8; 1] = [0];
 
+/// Real-archive persistence probe, driven by tools/regression/archive/check.py.
+/// The input is a captured Mesa ArchiveRpc payload. Optional byte substitutions
+/// are synthetic account snapshots, not consensus-valid blocks. The driver
+/// uses a private database and checks committed SQL rows after the RPC ack.
+#[test]
+#[ignore = "requires a private OCaml 4.0.4 archive; run archive/check.py"]
+fn ocaml_404_archive_bytes() {
+    use mina_p2p_messages::v2::{ArchiveRpc, ArchiveTransitionFrontierDiff};
+    let raw = std::fs::read(std::env::var("ARCHIVE_404_PAYLOAD").unwrap()).unwrap();
+    let mut reader = raw.as_slice();
+    let mut rpc = ArchiveRpc::binprot_read(&mut reader).unwrap();
+    assert!(reader.is_empty());
+    assert_eq!(super::rpc::encode_payload(&rpc).unwrap(), raw);
+    let ArchiveRpc::SendDiff(ArchiveTransitionFrontierDiff::BreadcrumbAdded {
+        block,
+        accounts_accessed,
+        ..
+    }) = &mut rpc
+    else {
+        panic!("expected a breadcrumb");
+    };
+    assert!(!accounts_accessed.is_empty());
+    if let Ok(case) = std::env::var("ARCHIVE_404_BYTES") {
+        let bytes: &[u8] = match case.as_str() {
+            "ff" => &[0xff],
+            "00" => &[0],
+            "610062" => b"a\0b",
+            "5c78" => b"\\x",
+            "c3a9" => "é".as_bytes(),
+            _ => panic!("unknown byte fixture"),
+        };
+        let mut account = ledger::Account::empty();
+        account.zkapp = Some(Box::default());
+        let template: mina_p2p_messages::v2::MinaBaseAccountBinableArgStableV2 = (&account).into();
+        for (_, account) in accounts_accessed.iter_mut() {
+            account.token_symbol = bytes.into();
+            let zkapp = account
+                .zkapp
+                .get_or_insert_with(|| template.zkapp.clone().unwrap());
+            zkapp.zkapp_uri = bytes.into();
+        }
+    }
+    let height = block
+        .0
+        .header
+        .protocol_state
+        .body
+        .consensus_state
+        .blockchain_length
+        .as_u32();
+    let state_hash = block.1 .1.to_string();
+    let parent = block
+        .0
+        .header
+        .protocol_state
+        .previous_state_hash
+        .to_string();
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let accounts: Vec<_> = accounts_accessed
+        .iter()
+        .map(|(index, a)| {
+            serde_json::json!({
+                "index": index.as_u64(),
+                "symbol": hex(a.token_symbol.as_ref()),
+                "uri": a.zkapp.as_ref().map(|z| hex(z.zkapp_uri.as_ref())),
+            })
+        })
+        .collect();
+    std::fs::write(
+        std::env::var("ARCHIVE_404_EXPECTED").unwrap(),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "height": height, "state_hash": state_hash, "parent_hash": parent,
+            "accounts": accounts,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let payload = super::rpc::encode_payload(&rpc).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let addr = std::env::var("ARCHIVE_404_ADDRESS")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let (outbox, handle) = start(&dir, addr);
+    outbox
+        .append(BlockRef { height, state_hash }, &parent, &payload)
+        .unwrap();
+    let delivered = outbox.wait_empty(Duration::from_secs(60));
+    outbox.stop();
+    handle.join().unwrap();
+    assert!(delivered, "{:?}", outbox.status());
+    assert_eq!(outbox.status().outbox.retained_entries, 1);
+    assert_eq!(outbox.status().outbox.gaps_total, 0);
+}
+
 fn frame(msg: &[u8]) -> Vec<u8> {
     let mut v = (msg.len() as u64).to_le_bytes().to_vec();
     v.extend_from_slice(msg);

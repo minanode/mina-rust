@@ -1,7 +1,9 @@
-use crate::input_limits::{self as limits, bounded};
+use crate::{
+    graphql::api::{graphql_value, FieldError, GraphQLEnum, ID},
+    input_limits::{self as limits, bounded},
+};
 use account::{create_account_loader, AccountLoader, GraphQLAccount};
 use block::{GraphQLBlock, GraphQLSnarkJob, GraphQLUserCommands};
-use juniper::{graphql_value, FieldError, GraphQLEnum, ID};
 use ledger::{Account, AccountId};
 use mina_core::{
     block::AppliedBlock, consensus::ConsensusConstants, constants::constraint_constants,
@@ -34,6 +36,27 @@ use tokio::sync::OnceCell;
 use transaction::GraphQLTransactionStatus;
 use zkapp::GraphQLZkapp;
 
+/// Juniper types with this server's scalar representation as their default.
+pub mod api {
+    pub use juniper::*;
+    pub type DefaultScalarValue = super::scalars::MinaScalarValue;
+    pub type MetaType<S = DefaultScalarValue> = juniper::meta::MetaType<S>;
+    pub type FieldError<S = DefaultScalarValue> = juniper::FieldError<S>;
+    pub type FieldResult<T, S = DefaultScalarValue> = juniper::FieldResult<T, S>;
+    pub type Value<S = DefaultScalarValue> = juniper::Value<S>;
+    pub type InputValue<S = DefaultScalarValue> = juniper::InputValue<S>;
+    pub type Selection<'a, S = DefaultScalarValue> = juniper::Selection<'a, S>;
+    pub type Operation<'a, S = DefaultScalarValue> = juniper::Operation<'a, S>;
+    pub type Variables<S = DefaultScalarValue> = juniper::Variables<S>;
+    pub type RootNode<Q, M, Sub, S = DefaultScalarValue> = juniper::RootNode<Q, M, Sub, S>;
+    pub mod http {
+        pub use juniper::http::*;
+        pub type GraphQLRequest<S = super::DefaultScalarValue> = juniper::http::GraphQLRequest<S>;
+        pub type GraphQLBatchRequest<S = super::DefaultScalarValue> =
+            juniper::http::GraphQLBatchRequest<S>;
+    }
+}
+
 pub mod account;
 pub mod block;
 pub mod constants;
@@ -41,6 +64,7 @@ pub mod membership;
 pub(crate) mod ocaml_errors;
 pub mod scalars;
 pub mod snark;
+pub mod status;
 pub mod transaction;
 pub mod user_command;
 pub mod verification;
@@ -130,11 +154,12 @@ pub struct Context {
     light_path_loader: membership::LightPathLoader,
     // Caches
     statemachine_status_cache: OnceCell<Option<RpcNodeStatus>>,
+    graphql_status_cache: OnceCell<Option<mina_node::rpc::RpcGraphqlStatusResponse>>,
     best_tip_cache: OnceCell<Option<AppliedBlock>>,
     ledger_status_cache: OnceCell<Option<LedgerStatus>>,
 }
 
-impl juniper::Context for Context {}
+impl crate::graphql::api::Context for Context {}
 
 impl Context {
     pub fn new(rpc_sender: RpcSender) -> Self {
@@ -143,6 +168,7 @@ impl Context {
             tx_submission: false,
             public_graphql: false,
             statemachine_status_cache: OnceCell::new(),
+            graphql_status_cache: OnceCell::new(),
             best_tip_cache: OnceCell::new(),
             ledger_status_cache: OnceCell::new(),
             account_loader: create_account_loader(rpc_sender.clone()),
@@ -163,7 +189,7 @@ impl Context {
     }
 
     /// An error for a submission when submission is off on this node.
-    fn ensure_tx_submission(&self) -> juniper::FieldResult<()> {
+    fn ensure_tx_submission(&self) -> crate::graphql::api::FieldResult<()> {
         if self.tx_submission {
             Ok(())
         } else {
@@ -172,6 +198,18 @@ impl Context {
                 graphql_value!(null),
             ))
         }
+    }
+
+    async fn graphql_status(&self) -> Result<mina_node::rpc::RpcGraphqlStatusResponse, FieldError> {
+        self.graphql_status_cache
+            .get_or_init(|| async {
+                self.rpc_sender
+                    .oneshot_request(RpcRequest::GraphqlStatusGet)
+                    .await
+            })
+            .await
+            .clone()
+            .ok_or_else(|| FieldError::new("State machine empty response", graphql_value!(null)))
     }
 
     pub(crate) async fn get_or_fetch_status(&self) -> RpcStatusGetResponse {
@@ -230,6 +268,7 @@ impl Context {
 }
 
 #[derive(Clone, Copy, Debug, GraphQLEnum)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[allow(clippy::upper_case_acronyms)]
 pub(crate) enum SyncStatus {
     CONNECTING,
@@ -273,21 +312,77 @@ pub struct Query;
 /// ## Network Information
 /// - `network_id` - Get the chain-agnostic network identifier
 /// - `version` - Get the node version (git commit hash)
-#[juniper::graphql_object(context = Context)]
+#[crate::graphql::api::graphql_object(scalar = crate::graphql::scalars::MinaScalarValue, context = Context)]
 impl Query {
-    /// Retrieve account information for a given public key
-    ///
-    /// # Arguments
-    /// - `public_key`: Base58-encoded public key
-    /// - `token`: Optional token ID (defaults to MINA token if not provided)
-    ///
-    /// # Returns
-    /// Account information including balance, nonce, delegate, and other fields
-    ///
-    /// Like OCaml, this is null when the account does not exist, and the
-    /// token defaults to MINA. It looks the one account up by its id.
-    ///
-    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L1940-L1960>
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/mina_graphql.ml#L2175-L2185>
+    #[graphql(
+        description = "Occupancy of this daemon's transaction pool, and the fee a new command must beat once the pool is full. Cheap enough to poll before each submission, as a back-pressure signal"
+    )]
+    async fn transaction_pool_status(
+        context: &Context,
+    ) -> Result<status::TransactionPoolStatus, FieldError> {
+        let s = context.graphql_status().await?;
+        Ok(status::TransactionPoolStatus {
+            size: status::int(s.pool_size as u64),
+            max_size: status::int(s.pool_max_size as u64),
+            minimum_fee_per_weight_unit: s.pool_min_fee,
+        })
+    }
+
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/mina_graphql.ml#L2204-L2212>
+    #[graphql(
+        description = "What the node is doing to reach the network's chain: its step of initialisation or bootstrap, and its ledger syncs"
+    )]
+    async fn bootstrap_status(context: &Context) -> Result<status::BootstrapStatus, FieldError> {
+        let s = context.graphql_status().await?;
+        Ok(s.bootstrap.into())
+    }
+
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/mina_graphql.ml#L2729-L2763>
+    #[graphql(
+        description = "Free space and outstanding snark work in each tree of the scan state as of the given block, or of the best tip if no block is given. Returns an error if the block is not in the transition frontier or if the system is bootstrapping."
+    )]
+    async fn scan_state(
+        context: &Context,
+        #[graphql(description = "The state hash of the desired block")] state_hash: Option<String>,
+    ) -> Result<status::ScanState, FieldError> {
+        let hash = if let Some(s) = state_hash {
+            let s = bounded(&s, limits::STATE_HASH)?;
+            if let Some(error) = ocaml_errors::base58_check_error(
+                s,
+                mina_p2p_messages::b58version::STATE_HASH,
+                "State hash",
+            ) {
+                return Err(FieldError::new(error, graphql_value!(null)));
+            }
+            Some(s.parse::<mina_p2p_messages::v2::StateHash>()?)
+        } else {
+            None
+        };
+        let response = context
+            .rpc_sender
+            .oneshot_request::<mina_node::rpc::RpcScanStateSummaryGetResponse>(
+                RpcRequest::ScanStateSummaryGet(
+                    mina_node::rpc::RpcScanStateSummaryGetQuery::Graphql(hash),
+                ),
+            )
+            .await
+            .ok_or_else(|| FieldError::new("State machine empty response", graphql_value!(null)))?
+            .map_err(|e| FieldError::new(e, graphql_value!(null)))?;
+        Ok(status::ScanState {
+            state_hash: status::StateHash(response.block.hash.to_string()),
+            trees: response
+                .trees
+                .into_iter()
+                .map(|(space, base, merge)| status::ScanStateTree {
+                    available_space: status::int(space),
+                    base_jobs_todo: status::int(base),
+                    merge_jobs_todo: status::int(merge),
+                })
+                .collect(),
+        })
+    }
+
     /// Bounded receipts produced by this process; no archive or peer claims.
     async fn verification(
         context: &Context,
@@ -314,15 +409,28 @@ impl Query {
     async fn verification_receipts(
         state_hashes: Vec<String>,
         context: &Context,
-    ) -> juniper::FieldResult<Vec<verification::PublicVerificationReceipt>> {
+    ) -> crate::graphql::api::FieldResult<Vec<verification::PublicVerificationReceipt>> {
         verification::public_receipts(context, state_hashes).await
     }
 
+    /// Retrieve account information for a given public key
+    ///
+    /// # Arguments
+    /// - `public_key`: Base58-encoded public key
+    /// - `token`: Optional token ID (defaults to MINA token if not provided)
+    ///
+    /// # Returns
+    /// Account information including balance, nonce, delegate, and other fields
+    ///
+    /// Like OCaml, this is null when the account does not exist, and the
+    /// token defaults to MINA. It looks the one account up by its id.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/73134bfd3a43c3f4d8ee564b3d04a0c6ed2e0b3c/src/lib/graphql/mina_graphql/mina_graphql.ml#L1940-L1960>
     async fn account(
         public_key: PublicKeyScalar,
         token: Option<TokenIdScalar>,
         context: &Context,
-    ) -> juniper::FieldResult<Option<account::GraphQLAccount>> {
+    ) -> crate::graphql::api::FieldResult<Option<account::GraphQLAccount>> {
         let public_key = public_key_argument(&public_key, "account")?;
         let token_id = match token {
             None => TokenIdKeyHash::default(),
@@ -355,7 +463,7 @@ impl Query {
         account_infos: Vec<membership::AccountInput>,
         state_hash: String,
         context: &Context,
-    ) -> juniper::FieldResult<Vec<membership::GraphQLEncodedAccount>> {
+    ) -> crate::graphql::api::FieldResult<Vec<membership::GraphQLEncodedAccount>> {
         membership::encoded_snarked_ledger_account_membership(context, account_infos, state_hash)
             .await
     }
@@ -366,7 +474,7 @@ impl Query {
     async fn accounts(
         public_key: PublicKeyScalar,
         context: &Context,
-    ) -> juniper::FieldResult<Vec<account::GraphQLAccount>> {
+    ) -> crate::graphql::api::FieldResult<Vec<account::GraphQLAccount>> {
         let public_key = public_key_argument(&public_key, "accounts")?;
         let accounts: Vec<Account> = context
             .rpc_sender
@@ -391,7 +499,7 @@ impl Query {
     async fn token_owner(
         token_id: TokenIdScalar,
         context: &Context,
-    ) -> juniper::FieldResult<Option<account::GraphQLAccount>> {
+    ) -> crate::graphql::api::FieldResult<Option<account::GraphQLAccount>> {
         let token_id = token_id_argument(&token_id, "tokenId", "tokenOwner")?;
         if token_id == TokenIdKeyHash::default() {
             return Ok(None);
@@ -417,7 +525,7 @@ impl Query {
     /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L1917-L1922>
     async fn tracked_accounts(
         _context: &Context,
-    ) -> juniper::FieldResult<Vec<account::GraphQLAccount>> {
+    ) -> crate::graphql::api::FieldResult<Vec<account::GraphQLAccount>> {
         Ok(vec![])
     }
 
@@ -425,7 +533,7 @@ impl Query {
     ///
     /// # Returns
     /// One of: CONNECTING, LISTENING, OFFLINE, BOOTSTRAP, SYNCED, CATCHUP
-    async fn sync_status(context: &Context) -> juniper::FieldResult<SyncStatus> {
+    async fn sync_status(context: &Context) -> crate::graphql::api::FieldResult<SyncStatus> {
         fetch_sync_status(context).await
     }
 
@@ -445,7 +553,7 @@ impl Query {
     async fn best_chain(
         max_length: Option<i32>,
         context: &Context,
-    ) -> juniper::FieldResult<Vec<GraphQLBlock>> {
+    ) -> crate::graphql::api::FieldResult<Vec<GraphQLBlock>> {
         let max_length = max_length.map_or(u32::MAX, |n| n.max(0) as u32);
         let best_chain: Vec<AppliedBlock> = context
             .rpc_sender
@@ -465,7 +573,7 @@ impl Query {
     /// Daemon status with chain ID, configuration, and other metadata
     async fn daemon_status(
         _context: &Context,
-    ) -> juniper::FieldResult<constants::GraphQLDaemonStatus> {
+    ) -> crate::graphql::api::FieldResult<constants::GraphQLDaemonStatus> {
         Ok(constants::GraphQLDaemonStatus)
     }
 
@@ -475,7 +583,7 @@ impl Query {
     /// Genesis constants including protocol parameters and constraints
     async fn genesis_constants(
         context: &Context,
-    ) -> juniper::FieldResult<constants::GraphQLGenesisConstants> {
+    ) -> crate::graphql::api::FieldResult<constants::GraphQLGenesisConstants> {
         let consensus_constants: ConsensusConstants = context
             .rpc_sender
             .oneshot_request(RpcRequest::ConsensusConstantsGet)
@@ -508,7 +616,7 @@ impl Query {
         payment: Option<ID>,
         zkapp_transaction: Option<ID>,
         context: &Context,
-    ) -> juniper::FieldResult<GraphQLTransactionStatus> {
+    ) -> crate::graphql::api::FieldResult<GraphQLTransactionStatus> {
         fn decode<T>(
             id: &str,
             max_len: usize,
@@ -574,7 +682,7 @@ impl Query {
         height: Option<i32>,
         state_hash: Option<String>,
         context: &Context,
-    ) -> juniper::FieldResult<GraphQLBlock> {
+    ) -> crate::graphql::api::FieldResult<GraphQLBlock> {
         let query = match (height, state_hash) {
             (Some(height), None) => GetBlockQuery::Height(height as u32),
             (None, Some(state_hash)) => {
@@ -634,7 +742,7 @@ impl Query {
         hashes: Option<Vec<String>>,
         ids: Option<Vec<ID>>,
         context: &Context,
-    ) -> juniper::FieldResult<Vec<GraphQLUserCommands>> {
+    ) -> crate::graphql::api::FieldResult<Vec<GraphQLUserCommands>> {
         let query = parse_pooled_commands_query(
             public_key
                 .map(|key| public_key_argument(&key, "pooledUserCommands"))
@@ -670,7 +778,7 @@ impl Query {
         hashes: Option<Vec<String>>,
         ids: Option<Vec<ID>>,
         context: &Context,
-    ) -> juniper::FieldResult<Vec<GraphQLZkapp>> {
+    ) -> crate::graphql::api::FieldResult<Vec<GraphQLZkapp>> {
         let query = parse_pooled_commands_query(
             public_key
                 .map(|key| public_key_argument(&key, "pooledZkappCommands"))
@@ -701,7 +809,7 @@ impl Query {
     /// the genesis block is not in the frontier (a hard fork genesis).
     ///
     /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L984-L1001>
-    async fn genesis_block(context: &Context) -> juniper::FieldResult<GraphQLBlock> {
+    async fn genesis_block(context: &Context) -> crate::graphql::api::FieldResult<GraphQLBlock> {
         let block = context
             .rpc_sender
             .oneshot_request::<RpcGenesisBlockResponse>(RpcRequest::GenesisBlockGet)
@@ -726,7 +834,9 @@ impl Query {
     ///
     /// # Returns
     /// List of completed SNARK jobs with proofs and fees
-    async fn snark_pool(context: &Context) -> juniper::FieldResult<Vec<GraphQLSnarkJob>> {
+    async fn snark_pool(
+        context: &Context,
+    ) -> crate::graphql::api::FieldResult<Vec<GraphQLSnarkJob>> {
         let jobs: RpcSnarkPoolCompletedJobsResponse = context
             .rpc_sender
             .oneshot_request(RpcRequest::SnarkPoolCompletedJobsGet)
@@ -742,7 +852,7 @@ impl Query {
     /// List of pending SNARK work items with job specifications
     async fn pending_snark_work(
         context: &Context,
-    ) -> juniper::FieldResult<Vec<GraphQLPendingSnarkWork>> {
+    ) -> crate::graphql::api::FieldResult<Vec<GraphQLPendingSnarkWork>> {
         let jobs: RpcSnarkPoolPendingJobsGetResponse = context
             .rpc_sender
             .oneshot_request(RpcRequest::SnarkPoolPendingJobsGet)
@@ -760,7 +870,7 @@ impl Query {
     /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L2337-L2344>
     async fn get_peers(
         context: &Context,
-    ) -> juniper::FieldResult<Vec<constants::GraphQLRpcPeerInfo>> {
+    ) -> crate::graphql::api::FieldResult<Vec<constants::GraphQLRpcPeerInfo>> {
         constants::fetch_connected_peers(context).await
     }
 
@@ -768,7 +878,7 @@ impl Query {
     /// by this node's state machine yet, so the list is empty.
     ///
     /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L2328-L2335>
-    async fn initial_peers(_context: &Context) -> juniper::FieldResult<Vec<String>> {
+    async fn initial_peers(_context: &Context) -> crate::graphql::api::FieldResult<Vec<String>> {
         Ok(vec![])
     }
 
@@ -777,7 +887,7 @@ impl Query {
     /// # Returns
     /// Network identifier in the format "mina:<network_name>"
     #[graphql(name = "networkID")]
-    async fn network_id(_context: &Context) -> juniper::FieldResult<String> {
+    async fn network_id(_context: &Context) -> crate::graphql::api::FieldResult<String> {
         let res = format!("mina:{}", NetworkConfig::global().name);
         Ok(res)
     }
@@ -786,7 +896,7 @@ impl Query {
     ///
     /// # Returns
     /// Git commit hash of the current node build
-    async fn version(_context: &Context) -> juniper::FieldResult<String> {
+    async fn version(_context: &Context) -> crate::graphql::api::FieldResult<String> {
         let res = BuildEnv::get().git.commit_hash;
         Ok(res)
     }
@@ -798,7 +908,7 @@ impl Query {
     async fn current_snark_worker(
         &self,
         context: &Context,
-    ) -> juniper::FieldResult<Option<GraphQLSnarkWorker>> {
+    ) -> crate::graphql::api::FieldResult<Option<GraphQLSnarkWorker>> {
         let config: Option<RpcSnarkerConfig> = context
             .rpc_sender
             .oneshot_request(RpcRequest::SnarkerConfig)
@@ -827,7 +937,9 @@ impl Query {
 /// The sync status the `syncStatus` query and `daemonStatus` report: the
 /// phase `/status` and `/readyz` go by (F-dash3), `CONNECTING` and
 /// `LISTENING` until the node has heard a best tip from a peer, as OCaml's.
-pub(crate) async fn fetch_sync_status(context: &Context) -> juniper::FieldResult<SyncStatus> {
+pub(crate) async fn fetch_sync_status(
+    context: &Context,
+) -> crate::graphql::api::FieldResult<SyncStatus> {
     let snapshot: RpcMetricsGetResponse = context
         .rpc_sender
         .oneshot_request(RpcRequest::MetricsGet)
@@ -849,7 +961,7 @@ fn sync_status(phase: &str) -> SyncStatus {
 async fn inject_tx<R>(
     cmd: MinaBaseUserCommandStableV2,
     context: &Context,
-) -> juniper::FieldResult<R>
+) -> crate::graphql::api::FieldResult<R>
 where
     R: TryFrom<MinaBaseUserCommandStableV2>,
 {
@@ -880,7 +992,7 @@ where
 
             Err(FieldError::new(
                 "Transaction rejected",
-                graphql_value!(juniper::Value::List(error_list)),
+                graphql_value!(crate::graphql::api::Value::List(error_list)),
             ))
         }
         RpcTransactionInjectResponse::Failure(failure) => {
@@ -891,7 +1003,7 @@ where
 
             Err(FieldError::new(
                 "Transaction failed",
-                graphql_value!(juniper::Value::List(error_list)),
+                graphql_value!(crate::graphql::api::Value::List(error_list)),
             ))
         }
     }
@@ -908,8 +1020,25 @@ pub struct Mutation;
 /// - `send_zkapp` - Submit a zkApp transaction to the network
 /// - `send_payment` - Send a payment transaction
 /// - `send_delegation` - Send a delegation transaction
-#[juniper::graphql_object(context = Context)]
+#[crate::graphql::api::graphql_object(scalar = crate::graphql::scalars::MinaScalarValue, context = Context)]
 impl Mutation {
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/mina_graphql.ml#L980-L1012>
+    #[graphql(
+        description = "Send a precomputed block of any version the archive reads to the archive, which reads it by the rules of its own version. The block is forwarded as given."
+    )]
+    fn archive_versioned_precomputed_block(
+        #[graphql(description = "Block encoded in precomputed block format, with its version")]
+        block: status::VersionedPrecomputedBlock,
+    ) -> Result<status::Applied, FieldError> {
+        // Rust's archive writer exports applied blocks. It has no configured
+        // versioned-precomputed archive RPC client to forward arbitrary JSON.
+        let _ = block;
+        Err(FieldError::new(
+            "Could not find an archive process to connect to",
+            graphql_value!(null),
+        ))
+    }
+
     /// Submit a zkApp transaction to the network
     ///
     /// # Arguments
@@ -920,7 +1049,7 @@ impl Mutation {
     async fn send_zkapp(
         input: zkapp::SendZkappInput,
         context: &Context,
-    ) -> juniper::FieldResult<zkapp::GraphQLSendZkappResponse> {
+    ) -> crate::graphql::api::FieldResult<zkapp::GraphQLSendZkappResponse> {
         context.ensure_tx_submission()?;
         inject_tx(input.try_into()?, context).await
     }
@@ -937,7 +1066,7 @@ impl Mutation {
         input: user_command::InputGraphQLPayment,
         signature: Option<user_command::UserCommandSignature>,
         context: &Context,
-    ) -> juniper::FieldResult<user_command::GraphQLSendPaymentResponse> {
+    ) -> crate::graphql::api::FieldResult<user_command::GraphQLSendPaymentResponse> {
         context.ensure_tx_submission()?;
         let signature = signature.ok_or_else(|| field_error(NO_UNLOCKED_KEY))?;
         let (common, body) = input.parse().map_err(field_error)?;
@@ -966,7 +1095,7 @@ impl Mutation {
         input: user_command::InputGraphQLDelegation,
         signature: Option<user_command::UserCommandSignature>,
         context: &Context,
-    ) -> juniper::FieldResult<user_command::GraphQLSendDelegationResponse> {
+    ) -> crate::graphql::api::FieldResult<user_command::GraphQLSendDelegationResponse> {
         context.ensure_tx_submission()?;
         let signature = signature.ok_or_else(|| field_error(NO_UNLOCKED_KEY))?;
         let (common, body) = input.parse().map_err(field_error)?;
@@ -978,7 +1107,7 @@ impl Mutation {
 /// OCaml's answer to an unsigned send for a key it doesn't hold; this node
 /// holds no keys.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L500-L505>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/mina_graphql.ml#L500-L505>
 const NO_UNLOCKED_KEY: &str = "Couldn't find an unlocked key for specified `sender`. Did you \
      unlock the account you're making a transaction from?";
 
@@ -998,7 +1127,7 @@ async fn signed_command_to_send(
     common: user_command::SignedCommandInput,
     body: ledger::scan_state::transaction_logic::signed_command::Body,
     signature: user_command::UserCommandSignature,
-) -> juniper::FieldResult<MinaBaseUserCommandStableV2> {
+) -> crate::graphql::api::FieldResult<MinaBaseUserCommandStableV2> {
     use ledger::scan_state::currency::Nonce;
 
     let signature: mina_signer::Signature = signature.try_into()?;
@@ -1088,7 +1217,7 @@ async fn warn_if_below_account_creation_fee(
 /// A `publicKey` argument, refused as OCaml's `PublicKey` scalar refuses
 /// one that does not decode.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L2479-L2494>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L2781-L2796>
 fn public_key_argument(
     public_key: &PublicKeyScalar,
     field_name: &str,
@@ -1107,7 +1236,7 @@ fn public_key_argument(
 /// A `TokenId` argument, refused as OCaml's `TokenId` scalar refuses one
 /// that does not decode.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L2505-L2520>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L2807-L2822>
 fn token_id_argument(
     token: &TokenIdScalar,
     arg_name: &str,

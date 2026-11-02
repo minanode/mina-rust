@@ -34,6 +34,18 @@ pub struct ScanStateBase {
     pub delay: UInt64,
 }
 
+impl ScanStateBase {
+    /// Whether `trees` is at most the number of trees a scan state can have
+    /// with this network's constants: OCaml's `max_trees`.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/parallel_scan/parallel_scan.ml#L1053-L1054>
+    pub fn trees_within_bound(&self) -> bool {
+        let constants = mina_core::constants::constraint_constants();
+        let max_trees = (constants.transaction_capacity_log_2 + 1) * (constants.work_delay + 1) + 1;
+        u64::from(self.trees.as_u32()) <= max_trees
+    }
+}
+
 /// Scan state previous incomplete zkapp updates.
 pub type PreviousIncompleteZkappUpdates = (
     List<v2::TransactionSnarkScanStateTransactionWithWitnessStableV2>,

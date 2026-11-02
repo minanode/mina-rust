@@ -34,16 +34,17 @@ test("the docs links point at pages and sections of minanode.org's Docs", () => 
 });
 
 test("the docs site is minanode.org's own address", () => {
+  // The site's metadataBase is its origin, minanode.org unless a preview
+  // build sets another.
   const layout = readFileSync(new URL("app/layout.tsx", site), "utf8");
-  const base = /metadataBase: new URL\("([^"]+)"\)/.exec(layout)?.[1];
+  expect(layout).toMatch(/metadataBase: new URL\(siteOrigin\)/);
+  const origin = readFileSync(new URL("lib/origin.ts", site), "utf8");
+  const base = /\?\?\s*"([^"]+)"/.exec(origin)?.[1];
   expect(base?.replace(/\/$/, "")).toBe(DOCS_SITE);
 });
 
 test("the curl command sends the query as JSON", () => {
-  const command = curlCommand(
-    "http://192.0.2.44:3700/graphql",
-    EXAMPLE_QUERY,
-  );
+  const command = curlCommand("http://192.0.2.44:3700/graphql", EXAMPLE_QUERY);
   expect(command.split("\n")[0]).toBe(
     "curl -s http://192.0.2.44:3700/graphql \\",
   );

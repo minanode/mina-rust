@@ -182,7 +182,7 @@ fn describe(job: &TransactionWithWitness) -> String {
 /// and its transaction witness with the protocol state body of the job's state
 /// hash, here the parent of the block that added it.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L1333-L1362>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L1334-L1363>
 fn transition_spec(
     job: &TransactionWithWitness,
     protocol_state_body: &v2::MinaStateProtocolStateBodyValueStableV2,

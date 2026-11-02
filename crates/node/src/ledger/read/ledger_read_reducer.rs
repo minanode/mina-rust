@@ -57,8 +57,17 @@ impl LedgerReadState {
                 state.add_response(*id, meta.time(), response.clone());
 
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
+                // Table completion can immediately restart evaluation with a
+                // new seed/stake but the same ledger and producer. Release the
+                // completed read first so that restart can request it again.
+                let delegator_table = matches!(response, LedgerReadResponse::DelegatorTable(_));
+                if delegator_table {
+                    dispatcher.push(LedgerReadAction::Prune { id: *id });
+                }
                 Self::propagate_read_response(dispatcher, state, *id, response.clone());
-                dispatcher.push(LedgerReadAction::Prune { id: *id });
+                if !delegator_table {
+                    dispatcher.push(LedgerReadAction::Prune { id: *id });
+                }
             }
             LedgerReadAction::Prune { id } => {
                 state.remove(*id);
@@ -99,28 +108,20 @@ impl LedgerReadState {
                 if !expected.is_some_and(|(expected_hash, producer)| {
                     ledger_hash == expected_hash && pub_key == producer
                 }) {
-                    bug_condition!("delegator table unexpected");
+                    // An interrupt or ledger recovery may replace the request
+                    // while its service response is in flight. Only the table
+                    // for the currently requested ledger and key can be used.
+                    mina_core::log::debug!(state.time();
+                        message = "Ignoring obsolete VRF delegator table response");
                     return;
                 }
-                match table {
-                    None => {
-                        // TODO(tizoc): Revise this, may be better to dispatch a different action here
-                        // and avoid running the VRF evaluator altogether when we know that the
-                        // table is empty.
-                        dispatcher.push(
-                            BlockProducerVrfEvaluatorAction::FinalizeDelegatorTableConstruction {
-                                delegator_table: Default::default(),
-                            },
-                        );
-                    }
-                    Some(table) => {
-                        dispatcher.push(
-                            BlockProducerVrfEvaluatorAction::FinalizeDelegatorTableConstruction {
-                                delegator_table: table.into(),
-                            },
-                        );
-                    }
-                }
+                // `None`: no complete ledger with this hash. The evaluator
+                // waits for it instead of evaluating an empty table.
+                dispatcher.push(
+                    BlockProducerVrfEvaluatorAction::FinalizeDelegatorTableConstruction {
+                        delegator_table: table.map(Into::into),
+                    },
+                );
             }
             (_, LedgerReadResponse::DelegatorTable(..)) => unreachable!(),
             (req, LedgerReadResponse::GetNumAccounts(resp)) => {
@@ -199,13 +200,30 @@ impl LedgerReadState {
                 }
             }
             (
-                LedgerReadRequest::ScanStateSummary(ledger_hash),
-                LedgerReadResponse::ScanStateSummary(scan_state),
+                read @ (LedgerReadRequest::ScanStateSummary(ledger_hash)
+                | LedgerReadRequest::ScanStateMetrics(ledger_hash)),
+                response @ (LedgerReadResponse::ScanStateSummary(_)
+                | LedgerReadResponse::ScanStateMetrics(_)),
             ) => {
+                let scan_state = match response {
+                    LedgerReadResponse::ScanStateSummary(scan_state) => scan_state,
+                    LedgerReadResponse::ScanStateMetrics(trees) => {
+                        trees.map(|trees| crate::rpc::RpcScanStateSummaryData {
+                            jobs: Vec::new(),
+                            trees,
+                        })
+                    }
+                    _ => unreachable!(),
+                };
+                // Answer only the queries that asked for this read: GraphQL
+                // gets the counters, the other queries the detailed jobs.
+                let metrics_only = matches!(read, LedgerReadRequest::ScanStateMetrics(_));
                 for rpc_id in state
                     .rpc
                     .scan_state_summary_rpc_ids()
-                    .filter(|(_, hash, _)| *hash == ledger_hash)
+                    .filter(|(_, query, hash, _)| {
+                        *hash == ledger_hash && query.is_metrics_only() == metrics_only
+                    })
                     .map(|(id, ..)| id)
                     .collect::<Vec<_>>()
                 {
@@ -215,7 +233,8 @@ impl LedgerReadState {
                     });
                 }
             }
-            (_, LedgerReadResponse::ScanStateSummary(..)) => unreachable!(),
+            (_, LedgerReadResponse::ScanStateSummary(..))
+            | (_, LedgerReadResponse::ScanStateMetrics(..)) => unreachable!(),
             (_req, LedgerReadResponse::GetAccounts(..)) => todo!(),
             (_, LedgerReadResponse::AccountsForRpc(rpc_id, accounts, account_query)) => {
                 dispatcher.push(RpcAction::LedgerAccountsGetSuccess {
@@ -621,6 +640,7 @@ mod tests {
                 timeouts: Default::default(),
                 limits: Default::default(),
                 peer_discovery: false,
+                seed_only: false,
                 meshsub: Default::default(),
                 catchup_rpc: Default::default(),
             },
@@ -630,6 +650,7 @@ mod tests {
             archive: None,
             block_producer: None,
             global: crate::config::GlobalConfig {
+                snark_work_fee: None,
                 build: Box::new(crate::config::BuildEnv::get()),
                 snarker: None,
                 consensus_constants: constants.clone(),

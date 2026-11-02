@@ -292,6 +292,8 @@ impl Default for Permissions<AuthRequired> {
 }
 
 impl Permissions<AuthRequired> {
+    /// Keep the default account hash stable across transaction-version bumps.
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_base/permissions.ml#L576-L599>
     pub fn user_default() -> Self {
         use AuthRequired::*;
         Self {
@@ -302,7 +304,9 @@ impl Permissions<AuthRequired> {
             set_permissions: Signature,
             set_verification_key: SetVerificationKey {
                 auth: Signature,
-                txn_version: TXN_VERSION_CURRENT,
+                // Signature authorization does not consult this version. It
+                // remains part of the account hash, so OCaml fixes it at four.
+                txn_version: TxnVersion::from_u32(4),
             },
             set_zkapp_uri: Signature,
             edit_action_state: Signature,
@@ -1276,7 +1280,7 @@ pub struct PermsConst {
 /// - Flexible permission policies for different operations
 /// - Zero-knowledge application state and verification
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/fc6be4c58091c761f827c858229c2edf9519e941/src/lib/mina_base/account.ml#L201-L224>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_base/account.ml#L201-L224>
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "v2::MinaBaseAccountBinableArgStableV2")]
 #[serde(try_from = "v2::MinaBaseAccountBinableArgStableV2")]
@@ -1856,6 +1860,30 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
     use super::*;
+
+    /// Captured with the compiled 4.0.4 oracle's `account_defaults` operation.
+    /// The version is deliberately independent of TXN_VERSION_CURRENT.
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_base/permissions.ml#L576-L599>
+    #[test]
+    fn test_ocaml_404_empty_account_permissions() {
+        let expected_version = TxnVersion::from_u32(4);
+        let defaults = Permissions::user_default();
+        assert_eq!(defaults.set_verification_key.auth, AuthRequired::Signature);
+        assert_eq!(defaults.set_verification_key.txn_version, expected_version);
+        let empty = Account::empty();
+        assert_eq!(empty.permissions, defaults);
+        assert_eq!(
+            empty.hash(),
+            Fp::from_str(
+                "28328037583256331742860088544984623105766605252477591487013162091232255973154"
+            )
+            .unwrap()
+        );
+        // A future transaction-version bump must not silently rehash empties.
+        let mut bumped = empty;
+        bumped.permissions.set_verification_key.txn_version = TxnVersion::from_u32(5);
+        assert_ne!(bumped.hash(), Account::empty().hash());
+    }
 
     #[test]
     fn test_size_account() {

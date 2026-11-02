@@ -116,8 +116,10 @@ impl BinProtRead for TransactionSnarkScanStateStableV2ScanStateTreesA {
         loop {
             match _Tree::binprot_read(r)? {
                 _Tree::Leaf => {
-                    let len = 1 << depth;
-                    let mut data = Vec::with_capacity(len);
+                    // A tree of `depth` levels has 2^depth leaves; allocate
+                    // as they are read, not for all of them up front.
+                    let len: u64 = 1 << depth;
+                    let mut data = binprot::preallocated(len);
                     for _ in 0..len {
                         data.push(TransactionSnarkScanStateStableV2TreesABase::binprot_read(
                             r,
@@ -142,8 +144,8 @@ impl BinProtRead for TransactionSnarkScanStateStableV2ScanStateTreesA {
                                 .into(),
                         ));
                     }
-                    let len = 1 << depth;
-                    let mut value = Vec::with_capacity(len);
+                    let len: u64 = 1 << depth;
+                    let mut value = binprot::preallocated(len);
                     for _ in 0..len {
                         value.push(TransactionSnarkScanStateStableV2TreesAMerge::binprot_read(
                             r,
@@ -756,6 +758,29 @@ pub type NonZeroCurvePoint = Base58CheckOfBinProt<
     { crate::b58version::NON_ZERO_CURVE_POINT_COMPRESSED },
 >;
 
+#[derive(Debug, thiserror::Error)]
+#[error("public key does not decompress to a point on the curve")]
+pub struct PublicKeyNotOnCurve;
+
+/// Reads a public key that OCaml keeps decompressed, as a signed command's
+/// signer: OCaml's reader decompresses it, so an `x` with no point on the
+/// curve is a decoding error, not a key that fails later.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/non_zero_curve_point/non_zero_curve_point.ml#L140-L182>
+pub fn read_decompressible_point<R: std::io::Read + ?Sized>(
+    r: &mut R,
+) -> Result<NonZeroCurvePoint, binprot::Error> {
+    let point = NonZeroCurvePoint::binprot_read(r)?;
+    let x: mina_curves::pasta::Fp = point
+        .x
+        .to_field()
+        .map_err(|e| binprot::Error::CustomError(Box::new(e)))?;
+    match mina_signer::CurvePoint::get_point_from_x_unchecked(x, point.is_odd) {
+        Some(_) => Ok(point),
+        None => Err(binprot::Error::CustomError(Box::new(PublicKeyNotOnCurve))),
+    }
+}
+
 #[cfg(feature = "openapi")]
 const _: () = {
     impl utoipa::PartialSchema for NonZeroCurvePoint {
@@ -1156,6 +1181,30 @@ impl MinaBaseVerificationKeyWireStableV1 {
     }
 }
 
+/// Decode a versioned transaction id, including its complete binprot payload.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/codable/codable.ml#L129-L145>
+fn command_from_base64<T: BinProtRead>(encoded: &str) -> Result<T, conv::Error> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let bytes = STANDARD.decode(encoded)?;
+    let Some((&2, mut payload)) = bytes.split_first() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "expected transaction version 2",
+        )
+        .into());
+    };
+    let command = T::binprot_read(&mut payload)?;
+    if !payload.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "trailing transaction data",
+        )
+        .into());
+    }
+    Ok(command)
+}
+
 // TODO(adonagy): macro?
 impl MinaBaseSignedCommandStableV2 {
     pub fn to_base64(&self) -> Result<String, conv::Error> {
@@ -1171,12 +1220,7 @@ impl MinaBaseSignedCommandStableV2 {
     }
 
     pub fn from_base64(base64_data: &str) -> Result<Self, conv::Error> {
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
-        let decoded_data = STANDARD.decode(&base64_data)?;
-        let res = MinaBaseSignedCommandStableV2::binprot_read(
-            &mut decoded_data.get(1..).unwrap_or_default(),
-        )?;
-        Ok(res)
+        command_from_base64(base64_data)
     }
 }
 
@@ -1199,12 +1243,7 @@ impl MinaBaseZkappCommandTStableV1WireStableV1 {
     }
 
     pub fn from_base64(base64_data: &str) -> Result<Self, conv::Error> {
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
-        let decoded_data = STANDARD.decode(&base64_data)?;
-        let res = MinaBaseZkappCommandTStableV1WireStableV1::binprot_read(
-            &mut decoded_data.get(1..).unwrap_or_default(),
-        )?;
-        Ok(res)
+        command_from_base64(base64_data)
     }
 }
 
@@ -1966,8 +2005,9 @@ impl BinProtRead for UnsignedExtendedUInt64Int64ForVersionTagsStableV1 {
 }
 
 /// OCaml `Int64`: Pickles' 64-bit limbs take every value.
+/// `Hex64.T` includes `Int64`; `Hex64.Stable.V1` aliases `T.t` (lines 51-61).
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/pickles/limb_vector/constant.ml#L60>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/limb_vector/constant.ml#L12-L31>
 impl BinProtRead for LimbVectorConstantHex64StableV1 {
     fn binprot_read<R: std::io::Read + ?Sized>(r: &mut R) -> Result<Self, binprot::Error>
     where

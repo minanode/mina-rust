@@ -32,6 +32,9 @@ use super::{
     TransitionFrontierSyncLedgerPending, TransitionFrontierSyncState,
 };
 
+#[path = "bootstrap_status_tests.rs"]
+mod bootstrap_status_tests;
+
 #[path = "fresh_sync_tests.rs"]
 mod fresh_sync_tests;
 
@@ -198,6 +201,7 @@ fn sync_test_node(best_chain: Vec<AppliedBlock>) -> crate::State {
             timeouts: Default::default(),
             limits: Default::default(),
             peer_discovery: false,
+            seed_only: false,
             meshsub: Default::default(),
             catchup_rpc: Default::default(),
         },
@@ -205,6 +209,7 @@ fn sync_test_node(best_chain: Vec<AppliedBlock>) -> crate::State {
         archive: None,
         block_producer: None,
         global: crate::config::GlobalConfig {
+            snark_work_fee: None,
             build: Box::new(crate::BuildEnv::get()),
             snarker: None,
             consensus_constants: constants.clone(),
@@ -1622,6 +1627,146 @@ fn ledger_accounts_the_service_cannot_set_are_rejected() {
         .attempts
         .get(&sender)
         .is_none_or(|attempt| !attempt.is_success()));
+}
+
+/// The hash is authenticated before clearing an empty range. No network
+/// query may be emitted for its children (OCaml rejects empty contents).
+#[test]
+fn ocaml_404_empty_subtrees_are_cleared_without_network_queries() {
+    use super::ledger::{
+        snarked::{
+            TransitionFrontierSyncLedgerSnarkedAction as A,
+            TransitionFrontierSyncLedgerSnarkedService,
+        },
+        SyncLedgerTargetKind,
+    };
+    use crate::{
+        ledger::{ledger_empty_hash_at_depth, LedgerAddress},
+        p2p::PeerId,
+    };
+    use std::cell::RefCell;
+    struct Service {
+        now: redux::Instant,
+        clears: RefCell<Vec<LedgerAddress>>,
+    }
+    impl redux::Service for Service {}
+    impl redux::TimeService for Service {
+        fn monotonic_time(&mut self) -> redux::Instant {
+            self.now
+        }
+    }
+    impl TransitionFrontierSyncLedgerSnarkedService for Service {
+        fn contains_snarked_ledger(&self, _: &LedgerHash) -> bool {
+            false
+        }
+        fn copy_snarked_ledger_contents_for_sync(
+            &self,
+            _: Vec<LedgerHash>,
+            _: LedgerHash,
+            _: bool,
+        ) -> Result<bool, String> {
+            unreachable!()
+        }
+        fn compute_snarked_ledger_hashes(&self, _: &LedgerHash) -> Result<(), String> {
+            Ok(())
+        }
+        fn child_hashes_get(
+            &self,
+            _: LedgerHash,
+            _: &LedgerAddress,
+            _: usize,
+        ) -> Result<Vec<LedgerHash>, String> {
+            // Both ranges in the losing fork differ from the empty target.
+            Ok(vec![ledger_hash(42), ledger_hash(43)])
+        }
+        fn accounts_set(
+            &self,
+            _: LedgerHash,
+            address: &LedgerAddress,
+            expected: &LedgerHash,
+            accounts: Vec<mina_p2p_messages::v2::MinaBaseAccountBinableArgStableV2>,
+        ) -> Result<LedgerHash, String> {
+            assert!(accounts.is_empty());
+            assert_eq!(expected, &ledger_empty_hash_at_depth(address.length()));
+            self.clears.borrow_mut().push(address.clone());
+            Ok(expected.clone())
+        }
+    }
+    let address = LedgerAddress::first(25);
+    let sender = PeerId::from_bytes([71; 32]);
+    let root = block(&template_block(), 100, None, 7);
+    let mut state = pending_address_sync_state(
+        SyncLedgerTargetKind::Root,
+        &root,
+        &address,
+        sender,
+        PeerId::from_bytes([72; 32]),
+    );
+    let TransitionFrontierSyncLedgerSnarkedState::MerkleTreeSyncPending {
+        pending_addresses, ..
+    } = state
+        .transition_frontier
+        .sync
+        .ledger_mut()
+        .unwrap()
+        .snarked_mut()
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    // OCaml ledger hash of an empty depth-10 tree, independent of Rust.
+    pending_addresses.get_mut(&address).unwrap().expected_hash =
+        "jxvN5DVDHPQow7qV8qMYu5JViwcLwYaM885xoov9DdSeC6oGMfc"
+            .parse()
+            .unwrap();
+    let mut store = redux::Store::new(
+        crate::reducer,
+        |_, _| {},
+        Service {
+            now: redux::Instant::now(),
+            clears: RefCell::new(vec![]),
+        },
+        redux::SystemTime::UNIX_EPOCH,
+        state.clone(),
+    );
+    // First a bad hash: no ledger mutation and the address remains retryable.
+    A::ChildHashesReceived {
+        address: address.clone(),
+        hashes: vec![ledger_hash(0), ledger_hash(0)],
+        sender,
+    }
+    .effects(&redux::ActionMeta::zero_custom(Timestamp::ZERO), &mut store);
+    assert!(store.service.clears.borrow().is_empty());
+
+    // Inject a verified response with the same pending request.
+    let mut store = redux::Store::new(
+        crate::reducer,
+        |_, _| {},
+        Service {
+            now: redux::Instant::now(),
+            clears: RefCell::new(vec![]),
+        },
+        redux::SystemTime::UNIX_EPOCH,
+        state,
+    );
+    A::ChildHashesReceived {
+        address: address.clone(),
+        hashes: vec![ledger_empty_hash_at_depth(26); 2],
+        sender,
+    }
+    .effects(&redux::ActionMeta::zero_custom(Timestamp::ZERO), &mut store);
+    assert_eq!(
+        *store.service.clears.borrow(),
+        vec![address.child_left(), address.child_right()]
+    );
+    assert!(store
+        .state()
+        .transition_frontier
+        .sync
+        .ledger()
+        .unwrap()
+        .is_snarked_ledger_synced());
+    // Finishing with no pending addresses proves neither child was queued.
 }
 
 /// A received RPC is not a completed address until its Merkle proof passes.

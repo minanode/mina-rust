@@ -21,8 +21,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{rpc::TRANSACTION_INJECT_BOOTSTRAPPING, BlockProducerAction, RpcAction};
 
 use super::{
-    PendingId, TransactionPoolAction, TransactionPoolActionWithMetaRef,
+    AccountReadState, PendingId, PoolWork, TransactionPoolAction, TransactionPoolActionWithMetaRef,
     TransactionPoolEffectfulAction, TransactionPoolState, TransactionState,
+    ACCOUNT_READ_RETRY_DELAY, MAX_ACCOUNT_READS,
 };
 
 impl TransactionPoolState {
@@ -85,7 +86,7 @@ impl TransactionPoolState {
                 commands,
                 from_source,
             } => {
-                let commands = match commands
+                let decoded = match commands
                     .iter()
                     .map(TransactionWithHash::body)
                     .map(UserCommand::try_from)
@@ -104,10 +105,6 @@ impl TransactionPoolState {
                     }
                 };
 
-                let account_ids = commands
-                    .iter()
-                    .flat_map(UserCommand::accounts_referenced)
-                    .collect::<BTreeSet<_>>();
                 let Some(best_tip_hash) = substate.best_tip_hash.clone() else {
                     answer_refusal(
                         state.into_dispatcher(),
@@ -116,30 +113,27 @@ impl TransactionPoolState {
                     );
                     return;
                 };
-                let pending_id = substate.make_action_pending(action);
-
-                let dispatcher = state.into_dispatcher();
-                dispatcher.push(TransactionPoolEffectfulAction::FetchAccounts {
-                    account_ids,
-                    ledger_hash: best_tip_hash.clone(),
-                    on_result: callback!(fetch_to_verify((accounts: Result<BTreeMap<AccountId, Account>, String>, id: Option<PendingId>, from_source: TransactionPoolMessageSource)) -> crate::Action {
-                        match (accounts, id) {
-                            (Ok(accounts), Some(pending_id)) => TransactionPoolAction::StartVerifyWithAccounts { accounts, pending_id, from_source },
-                            (Err(error), pending_id) => TransactionPoolAction::FetchAccountsFailed { pending_id, from_source, error },
-                            (Ok(_), None) => TransactionPoolAction::FetchAccountsFailed { pending_id: None, from_source, error: "no pending action".to_owned() },
-                        }
-                    }),
-                    pending_id: Some(pending_id),
-                    from_source: *from_source,
-                });
+                substate.enqueue(
+                    PoolWork::Verify {
+                        account_ids: decoded
+                            .iter()
+                            .flat_map(UserCommand::accounts_referenced)
+                            .collect(),
+                        commands: commands.clone(),
+                        from_source: *from_source,
+                    },
+                    best_tip_hash,
+                );
+                state
+                    .into_dispatcher()
+                    .push(TransactionPoolAction::ProcessAccountReads);
             }
             TransactionPoolAction::StartVerifyWithAccounts {
                 accounts,
                 pending_id,
                 from_source,
             } => {
-                let Some(TransactionPoolAction::StartVerify { commands, .. }) =
-                    substate.pending_actions.remove(pending_id)
+                let Some(PoolWork::Verify { commands, .. }) = substate.take_work(*pending_id)
                 else {
                     bug_condition!("StartVerifyWithAccounts: no pending StartVerify");
                     answer_refusal(
@@ -150,7 +144,6 @@ impl TransactionPoolState {
                     return;
                 };
 
-                // TODO: Convert those commands only once
                 let commands = match commands
                     .iter()
                     .map(TransactionWithHash::body)
@@ -260,33 +253,98 @@ impl TransactionPoolState {
             }
             TransactionPoolAction::FetchAccountsFailed {
                 pending_id,
-                from_source,
+                from_source: _,
                 error,
             } => {
-                if let Some(pending_id) = pending_id {
-                    substate.pending_actions.remove(pending_id);
-                }
-                answer_refusal(state.into_dispatcher(), from_source, vec![error.clone()]);
-            }
-            TransactionPoolAction::BestTipChanged { best_tip_hash } => {
-                let account_ids = substate.pool.get_accounts_to_revalidate_on_new_best_tip();
-                substate.best_tip_hash = Some(best_tip_hash.clone());
-
-                let dispatcher = state.into_dispatcher();
-                dispatcher.push(TransactionPoolEffectfulAction::FetchAccounts {
-                    account_ids,
-                    ledger_hash: best_tip_hash.clone(),
-                    on_result: callback!(fetch_for_best_tip((accounts: Result<BTreeMap<AccountId, Account>, String>, id: Option<PendingId>, from_source: TransactionPoolMessageSource)) -> crate::Action {
-                        match accounts {
-                            Ok(accounts) => TransactionPoolAction::BestTipChangedWithAccounts { accounts },
-                            Err(error) => TransactionPoolAction::FetchAccountsFailed { pending_id: id, from_source, error },
-                        }
-                    }),
-                    pending_id: None,
-                    from_source: TransactionPoolMessageSource::None,
+                let Some(id) = pending_id else { return };
+                // A frontier delta is not a rejected submission: losing it loses
+                // backtracked commands and local rebroadcast bookkeeping forever.
+                // A pure revalidation may be superseded by a newer snapshot, but
+                // a delta must remain ordered until its read succeeds.
+                let superseded = substate.account_read_order.get(1).is_some_and(|id| {
+                    substate
+                        .pending_actions
+                        .get(id)
+                        .is_some_and(|r| r.work.is_reconcile())
                 });
+                if let Some(read) = substate.pending_actions.get_mut(id) {
+                    if read.work.is_reconcile()
+                        && matches!(read.state, AccountReadState::Applying)
+                        && !(superseded && matches!(read.work, PoolWork::Reconcile { diff: None }))
+                    {
+                        read.state = AccountReadState::Retry {
+                            retry_at: meta.time() + ACCOUNT_READ_RETRY_DELAY,
+                        };
+                        return;
+                    }
+                }
+                let Some(work) = substate.take_work(*id) else {
+                    return;
+                };
+                answer_refusal(state.into_dispatcher(), &work.source(), vec![error.clone()]);
             }
-            TransactionPoolAction::BestTipChangedWithAccounts { accounts } => {
+            TransactionPoolAction::BestTipChanged {
+                best_tip_hash,
+                diff,
+            } => {
+                substate.best_tip_hash = Some(best_tip_hash.clone());
+                substate.account_read_generation = substate.account_read_generation.wrapping_add(1);
+                let generation = substate.account_read_generation;
+                // A failed bootstrap snapshot has no delta to preserve. Let the
+                // new tip revalidate it instead of retrying a pruned old ledger.
+                if let Some(&id) = substate.account_read_order.front() {
+                    if substate.pending_actions.get(&id).is_some_and(|read| {
+                        matches!(read.work, PoolWork::Reconcile { diff: None })
+                            && matches!(read.state, AccountReadState::Retry { .. })
+                    }) {
+                        substate.account_read_order.pop_front();
+                        substate.pending_actions.remove(&id);
+                    }
+                }
+                // Retry transaction reads at the new tip, in their original order.
+                // Keep every reconciliation barrier: dropping a frontier delta
+                // loses backtracked commands and local rebroadcast bookkeeping.
+                let mut retry = Vec::new();
+                substate.account_read_order.retain(|id| {
+                    if substate
+                        .pending_actions
+                        .get(id)
+                        .is_some_and(|r| r.work.is_reconcile())
+                    {
+                        true
+                    } else {
+                        if let Some(read) = substate.pending_actions.remove(id) {
+                            substate.account_reads_ready.remove(id);
+                            retry.push(read.work);
+                        }
+                        false
+                    }
+                });
+                let pending_id = substate.enqueue(
+                    PoolWork::Reconcile { diff: diff.clone() },
+                    best_tip_hash.clone(),
+                );
+                for work in retry {
+                    substate.enqueue(work, best_tip_hash.clone());
+                }
+                let dispatcher = state.into_dispatcher();
+                dispatcher.push(TransactionPoolEffectfulAction::CancelReads { generation });
+                dispatcher.push(TransactionPoolEffectfulAction::PinLedger {
+                    pending_id,
+                    ledger_hash: best_tip_hash.clone(),
+                });
+                dispatcher.push(TransactionPoolAction::ProcessAccountReads);
+            }
+            TransactionPoolAction::BestTipChangedWithAccounts {
+                accounts,
+                pending_id,
+            } => {
+                let Some(PoolWork::Reconcile { diff }) = substate.take_work(*pending_id) else {
+                    return;
+                };
+                // OCaml updates the ledger and revalidates synchronously. Keep
+                // reconciliation atomic relative to applying subsequent diffs.
+                // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L874-L935>
                 match substate
                     .pool
                     .on_new_best_tip(global_slot_from_genesis, accounts)
@@ -298,42 +356,58 @@ impl TransactionPoolState {
                         }
                     }
                 }
+                if let Some(diff) = diff {
+                    let (account_ids, uncommitted) =
+                        substate.pool.get_accounts_to_handle_transition_diff(&diff);
+                    let collect = |ids: &BTreeSet<AccountId>| {
+                        ids.iter()
+                            .filter_map(|id| accounts.get(id).cloned().map(|a| (id.clone(), a)))
+                            .collect::<BTreeMap<_, _>>()
+                    };
+                    if let Err(e) = substate.pool.handle_transition_frontier_diff(
+                        global_slot_from_genesis,
+                        global_slot,
+                        &diff,
+                        &account_ids,
+                        &collect(&account_ids),
+                        &collect(&uncommitted),
+                    ) {
+                        bug_condition!(
+                            "transaction pool::handle_transition_frontier_diff failed: {:?}",
+                            e
+                        );
+                    }
+                }
             }
             TransactionPoolAction::ApplyVerifiedDiff {
-                best_tip_hash,
+                best_tip_hash: _,
                 diff,
                 from_source,
             } => {
-                let account_ids = substate.pool.get_accounts_to_apply_diff(diff);
-                let pending_id = substate.make_action_pending(action);
-
-                let dispatcher = state.into_dispatcher();
-                dispatcher.push(TransactionPoolEffectfulAction::FetchAccounts {
-                    account_ids,
-                    ledger_hash: best_tip_hash.clone(),
-                    on_result: callback!(fetch_for_apply((accounts: Result<BTreeMap<AccountId, Account>, String>, id: Option<PendingId>, from_source: TransactionPoolMessageSource)) -> crate::Action {
-                        match (accounts, id) {
-                            (Ok(accounts), Some(pending_id)) => TransactionPoolAction::ApplyVerifiedDiffWithAccounts {
-                                accounts,
-                                pending_id,
-                            },
-                            (Err(error), pending_id) => TransactionPoolAction::FetchAccountsFailed { pending_id, from_source, error },
-                            (Ok(_), None) => TransactionPoolAction::FetchAccountsFailed { pending_id: None, from_source, error: "no pending action".to_owned() },
-                        }
-                    }),
-                    pending_id: Some(pending_id),
-                    from_source: *from_source,
-                });
+                let Some(best_tip_hash) = substate.best_tip_hash.clone() else {
+                    answer_refusal(
+                        state.into_dispatcher(),
+                        from_source,
+                        vec![TRANSACTION_INJECT_BOOTSTRAPPING.to_owned()],
+                    );
+                    return;
+                };
+                substate.enqueue(
+                    PoolWork::Apply {
+                        diff: diff.clone(),
+                        from_source: *from_source,
+                    },
+                    best_tip_hash,
+                );
+                state
+                    .into_dispatcher()
+                    .push(TransactionPoolAction::ProcessAccountReads);
             }
             TransactionPoolAction::ApplyVerifiedDiffWithAccounts {
                 accounts,
                 pending_id,
             } => {
-                let Some(TransactionPoolAction::ApplyVerifiedDiff {
-                    best_tip_hash: _,
-                    diff,
-                    from_source,
-                }) = substate.pending_actions.remove(pending_id)
+                let Some(PoolWork::Apply { diff, from_source }) = substate.take_work(*pending_id)
                 else {
                     bug_condition!("ApplyVerifiedDiffWithAccounts: no pending ApplyVerifiedDiff");
                     return;
@@ -449,82 +523,129 @@ impl TransactionPoolState {
                     });
                 }
             }
-            TransactionPoolAction::ApplyTransitionFrontierDiff {
-                best_tip_hash,
-                diff,
+            TransactionPoolAction::AccountsFetched {
+                pending_id,
+                accounts,
             } => {
-                if substate.best_tip_hash.as_ref() != Some(best_tip_hash) {
-                    bug_condition!(
-                        "ApplyTransitionFrontierDiff for {best_tip_hash}, but the pool's best tip is {:?}",
-                        substate.best_tip_hash
-                    );
+                if !substate.account_reads_in_flight.remove(pending_id) {
                     return;
                 }
-
-                let (account_ids, uncommitted) =
-                    substate.pool.get_accounts_to_handle_transition_diff(diff);
-                let pending_id = substate.make_action_pending(action);
-
-                let dispatcher = state.into_dispatcher();
-                dispatcher.push(TransactionPoolEffectfulAction::FetchAccounts {
-                    account_ids: account_ids.union(&uncommitted).cloned().collect(),
-                    ledger_hash: best_tip_hash.clone(),
-                    on_result: callback!(fetch_for_diff((accounts: Result<BTreeMap<AccountId, Account>, String>, id: Option<PendingId>, from_source: TransactionPoolMessageSource)) -> crate::Action {
-                        match (accounts, id) {
-                            (Ok(accounts), Some(pending_id)) => TransactionPoolAction::ApplyTransitionFrontierDiffWithAccounts {
-                                accounts,
-                                pending_id,
-                            },
-                            (Err(error), pending_id) => TransactionPoolAction::FetchAccountsFailed { pending_id, from_source, error },
-                            (Ok(_), None) => TransactionPoolAction::FetchAccountsFailed { pending_id: None, from_source, error: "no pending action".to_owned() },
-                        }
-                    }),
-                    pending_id: Some(pending_id),
-                    from_source: TransactionPoolMessageSource::None,
-                });
+                if let Some(read) = substate.pending_actions.get_mut(pending_id) {
+                    if matches!(read.state, AccountReadState::Pending) {
+                        read.state = AccountReadState::Ready(accounts.clone());
+                        substate.account_reads_ready.insert(*pending_id);
+                    }
+                }
+                // A cancelled response still returns its physical in-flight slot.
+                state
+                    .into_dispatcher()
+                    .push(TransactionPoolAction::ProcessAccountReads);
             }
-            TransactionPoolAction::ApplyTransitionFrontierDiffWithAccounts {
-                accounts,
-                pending_id,
-            } => {
-                let Some(TransactionPoolAction::ApplyTransitionFrontierDiff {
-                    best_tip_hash: _,
-                    diff,
-                }) = substate.pending_actions.remove(pending_id)
-                else {
-                    bug_condition!(
-                        "ApplyTransitionFrontierDiffWithAccounts: no pending ApplyTransitionFrontierDiff"
-                    );
+            TransactionPoolAction::ProcessAccountReads => {
+                if substate.account_read_retry_due(meta.time()) {
+                    let (pending_id, ledger_hash) = substate.retry_account_read();
+                    let dispatcher = state.into_dispatcher();
+                    dispatcher.push(TransactionPoolEffectfulAction::PinLedger {
+                        pending_id,
+                        ledger_hash,
+                    });
+                    dispatcher.push(TransactionPoolAction::ProcessAccountReads);
                     return;
-                };
-
-                let collect = |set: &BTreeSet<AccountId>| {
-                    set.iter()
-                        .filter_map(|id| {
-                            let account = accounts.get(id).cloned()?;
-                            Some((id.clone(), account))
-                        })
-                        .collect::<BTreeMap<_, _>>()
-                };
-
-                let (account_ids, uncommitted) =
-                    substate.pool.get_accounts_to_handle_transition_diff(&diff);
-
-                let in_cmds = collect(&account_ids);
-                let uncommitted = collect(&uncommitted);
-
-                if let Err(e) = substate.pool.handle_transition_frontier_diff(
-                    global_slot_from_genesis,
-                    global_slot,
-                    &diff,
-                    &account_ids,
-                    &in_cmds,
-                    &uncommitted,
-                ) {
-                    bug_condition!(
-                        "transaction pool::handle_transition_frontier_diff failed: {:?}",
-                        e
-                    );
+                }
+                if let Some(&pending_id) = substate.account_read_order.front() {
+                    let read = substate.pending_actions.get_mut(&pending_id).unwrap();
+                    if matches!(read.state, AccountReadState::Ready(_)) {
+                        let AccountReadState::Ready(result) =
+                            std::mem::replace(&mut read.state, AccountReadState::Applying)
+                        else {
+                            unreachable!()
+                        };
+                        substate.account_reads_ready.remove(&pending_id);
+                        let from_source = read.work.source();
+                        let completion = match (result, &read.work) {
+                            (Err(error), _) => TransactionPoolAction::FetchAccountsFailed {
+                                pending_id: Some(pending_id),
+                                from_source,
+                                error,
+                            },
+                            (Ok(accounts), PoolWork::Verify { .. }) => {
+                                TransactionPoolAction::StartVerifyWithAccounts {
+                                    accounts,
+                                    pending_id,
+                                    from_source,
+                                }
+                            }
+                            (Ok(accounts), PoolWork::Apply { .. }) => {
+                                TransactionPoolAction::ApplyVerifiedDiffWithAccounts {
+                                    accounts,
+                                    pending_id,
+                                }
+                            }
+                            (Ok(accounts), PoolWork::Reconcile { .. }) => {
+                                TransactionPoolAction::BestTipChangedWithAccounts {
+                                    accounts,
+                                    pending_id,
+                                }
+                            }
+                        };
+                        let dispatcher = state.into_dispatcher();
+                        dispatcher.push(completion);
+                        dispatcher.push(TransactionPoolAction::ProcessAccountReads);
+                        return;
+                    }
+                }
+                let mut requests = Vec::new();
+                // Speculate only across ordinary reads. Reconciliation computes
+                // its account set from the pool after all earlier mutations.
+                let mut slots = substate.account_read_slots();
+                for (index, &pending_id) in substate.account_read_order.iter().enumerate() {
+                    if slots >= MAX_ACCOUNT_READS {
+                        break;
+                    }
+                    let read = substate.pending_actions.get_mut(&pending_id).unwrap();
+                    if read.work.is_reconcile() && index != 0 {
+                        break;
+                    }
+                    if matches!(read.state, AccountReadState::Queued) {
+                        let account_ids = match &read.work {
+                            PoolWork::Verify { account_ids, .. } => account_ids.clone(),
+                            PoolWork::Apply { diff, .. } => {
+                                substate.pool.get_accounts_to_apply_diff(diff)
+                            }
+                            PoolWork::Reconcile { diff } => {
+                                let mut ids =
+                                    substate.pool.get_accounts_to_revalidate_on_new_best_tip();
+                                if let Some(diff) = diff {
+                                    let (in_cmds, uncommitted) =
+                                        substate.pool.get_accounts_to_handle_transition_diff(diff);
+                                    ids.extend(in_cmds);
+                                    ids.extend(uncommitted);
+                                }
+                                ids
+                            }
+                        };
+                        read.state = AccountReadState::Pending;
+                        substate.account_reads_in_flight.insert(pending_id);
+                        slots += 1;
+                        requests.push(TransactionPoolEffectfulAction::FetchAccounts {
+                            account_ids, ledger_hash: read.ledger_hash.clone(),
+                            pending_id: Some(pending_id), from_source: read.work.source(),
+                            generation: substate.account_read_generation, pinned: read.work.is_reconcile(),
+                            on_result: callback!(transaction_pool_accounts_fetched((accounts: Result<BTreeMap<AccountId, Account>, String>, id: Option<PendingId>, from_source: TransactionPoolMessageSource)) -> crate::Action {
+                                match id {
+                                    Some(pending_id) => TransactionPoolAction::AccountsFetched { pending_id, accounts },
+                                    None => TransactionPoolAction::FetchAccountsFailed { pending_id: None, from_source, error: "missing account read id".to_owned() },
+                                }
+                            }),
+                        });
+                    }
+                    if read.work.is_reconcile() {
+                        break;
+                    }
+                }
+                let dispatcher = state.into_dispatcher();
+                for request in requests {
+                    dispatcher.push(request);
                 }
             }
             TransactionPoolAction::Rebroadcast {

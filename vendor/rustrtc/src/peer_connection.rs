@@ -5076,9 +5076,61 @@ async fn monitor_ice_and_dtls(
         let Some(inner) = inner_weak.upgrade() else {
             return false;
         };
+        // SCTP's runner can finish in the same poll as raw-dispatch failure.
+        // Check the terminal DTLS snapshot even when the completed loop wins
+        // the select, so the owner is always told to close this connection.
+        let state = dtls_rx.borrow().clone();
+        if state == dtls::DtlsState::Closed || state == dtls::DtlsState::Failed {
+            debug!("DTLS closed/failed, disconnecting PC");
+            let reason = if state == dtls::DtlsState::Failed {
+                DisconnectReason::DtlsFailed
+            } else {
+                DisconnectReason::DtlsClosed
+            };
+            let _ = inner.disconnect_reason.send_if_modified(|cur| {
+                if cur.is_none() {
+                    *cur = Some(reason);
+                    true
+                } else {
+                    false
+                }
+            });
+            let _ = inner.peer_state.send_if_modified(|state| {
+                if matches!(*state, PeerConnectionState::Closed | PeerConnectionState::Failed) {
+                    return false;
+                }
+                *state = PeerConnectionState::Disconnected;
+                true
+            });
+            let _ = ice_connection_state_tx.send_if_modified(|state| {
+                if matches!(*state, IceConnectionState::Closed | IceConnectionState::Failed) {
+                    return false;
+                }
+                *state = IceConnectionState::Disconnected;
+                true
+            });
+            return false;
+        }
         match __which {
             crate::platform::select::Which4::A(_) => {
                 propagate_sctp_close_reason(&inner);
+                // Aggregate shedding closes queues before its deferred DTLS
+                // callback. Loop completion is itself terminal, even if the
+                // DTLS watch has not published failure yet.
+                let _ = inner.peer_state.send_if_modified(|state| {
+                    if matches!(*state, PeerConnectionState::Closed | PeerConnectionState::Failed) {
+                        return false;
+                    }
+                    *state = PeerConnectionState::Disconnected;
+                    true
+                });
+                let _ = ice_connection_state_tx.send_if_modified(|state| {
+                    if matches!(*state, IceConnectionState::Closed | IceConnectionState::Failed) {
+                        return false;
+                    }
+                    *state = IceConnectionState::Disconnected;
+                    true
+                });
                 break;
             }
             crate::platform::select::Which4::B(res) => {
@@ -5122,28 +5174,7 @@ async fn monitor_ice_and_dtls(
                 }
             }
             crate::platform::select::Which4::C(res) => {
-                if res.is_ok() {
-                    let state = dtls_rx.borrow().clone();
-                    if state == dtls::DtlsState::Closed || state == dtls::DtlsState::Failed {
-                        debug!("DTLS closed/failed, disconnecting PC");
-                        let reason = if state == dtls::DtlsState::Failed {
-                            DisconnectReason::DtlsFailed
-                        } else {
-                            DisconnectReason::DtlsClosed
-                        };
-                        let _ = inner.disconnect_reason.send_if_modified(|cur| {
-                            if cur.is_none() {
-                                *cur = Some(reason);
-                                true
-                            } else {
-                                false
-                            }
-                        });
-                        let _ = inner.peer_state.send(PeerConnectionState::Disconnected);
-                        let _ = ice_connection_state_tx.send(IceConnectionState::Disconnected);
-                        return false;
-                    }
-                } else {
+                if res.is_err() {
                     break;
                 }
             }
@@ -9095,6 +9126,173 @@ mod tests {
                 *pc.inner.disconnect_reason.borrow(),
                 Some(DisconnectReason::DtlsClosed),
             );
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn terminal_dtls_wins_over_completed_transport_loop() {
+            for terminal in [dtls::DtlsState::Failed, dtls::DtlsState::Closed] {
+                for prior in [
+                    PeerConnectionState::Connected,
+                    PeerConnectionState::Closed,
+                    PeerConnectionState::Failed,
+                ] {
+                    started!(pc, ice_tx, ice_rx, dtls_tx, dtls_rx);
+                    let (prior_ice, transport_ice) = match prior {
+                        PeerConnectionState::Closed => {
+                            (IceConnectionState::Closed, IceTransportState::Closed)
+                        }
+                        PeerConnectionState::Failed => {
+                            (IceConnectionState::Failed, IceTransportState::Failed)
+                        }
+                        _ => (IceConnectionState::Connected, IceTransportState::Connected),
+                    };
+                    let _ = pc.inner.peer_state.send(prior);
+                    let _ = pc.inner.ice_connection_state.send(prior_ice);
+                    let _ = ice_tx.send(transport_ice);
+                    let _ = dtls_tx.send(terminal.clone());
+                    // All arms are ready; loop completion is polled first.
+                    let result = monitor_ice_and_dtls(
+                        Arc::downgrade(&pc.inner),
+                        &pc.inner.ice_connection_state,
+                        &mut ice_rx,
+                        dtls_rx,
+                        Box::pin(core::future::ready(())),
+                    )
+                    .await;
+                    assert!(!result);
+                    let connected = prior == PeerConnectionState::Connected;
+                    assert_eq!(
+                        *pc.inner.peer_state.borrow(),
+                        if connected {
+                            PeerConnectionState::Disconnected
+                        } else {
+                            prior
+                        }
+                    );
+                    assert_eq!(
+                        *pc.inner.ice_connection_state.borrow(),
+                        if connected {
+                            IceConnectionState::Disconnected
+                        } else {
+                            prior_ice
+                        }
+                    );
+                    let expected = if terminal == dtls::DtlsState::Failed {
+                        DisconnectReason::DtlsFailed
+                    } else {
+                        DisconnectReason::DtlsClosed
+                    };
+                    assert_eq!(*pc.inner.disconnect_reason.borrow(), Some(expected));
+                }
+            }
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn completed_shed_queue_precedes_deferred_dtls_failure() {
+            use crate::transports::packet_queue::{self, Association, Kind};
+            const CHILD: &str = "RUSTRTC_SHED_MONITOR_TEST";
+            if std::env::var_os(CHILD).is_none() {
+                let name = alloc::format!(
+                    "{}::completed_shed_queue_precedes_deferred_dtls_failure",
+                    module_path!().split_once("::").unwrap().1
+                );
+                assert!(
+                    std::process::Command::new(std::env::current_exe().unwrap())
+                        .args(["--exact", &name])
+                        .env(CHILD, "1")
+                        .status()
+                        .unwrap()
+                        .success()
+                );
+                return;
+            }
+            fn fill(tx: &packet_queue::Sender, mut charge: usize) {
+                while charge > 0 {
+                    let item = charge.min(packet_queue::MAX_PACKET + 64);
+                    assert!(item >= 64);
+                    tx.send(bytes::Bytes::from(vec![0; item - 64])).unwrap();
+                    charge -= item;
+                }
+            }
+            for prior in [
+                PeerConnectionState::Connected,
+                PeerConnectionState::Closed,
+                PeerConnectionState::Failed,
+            ] {
+                started!(pc, ice_tx, ice_rx, dtls_tx, dtls_rx);
+                let prior_ice = match prior {
+                    PeerConnectionState::Closed => IceConnectionState::Closed,
+                    PeerConnectionState::Failed => IceConnectionState::Failed,
+                    _ => IceConnectionState::Connected,
+                };
+                let _ = pc.inner.peer_state.send(prior);
+                let _ = pc.inner.ice_connection_state.send(prior_ice);
+                let owner = Association::new();
+                let (victim_tx, mut victim_rx) = owner.channel(Kind::DtlsWire);
+                fill(&victim_tx, packet_queue::MAX_BYTES);
+                let mut others = Vec::new();
+                while packet_queue::metrics().bytes < packet_queue::GLOBAL_BYTES {
+                    let (tx, rx) = packet_queue::channel(Kind::DtlsWire);
+                    fill(
+                        &tx,
+                        (packet_queue::GLOBAL_BYTES - packet_queue::metrics().bytes).min(6 * 1024 * 1024),
+                    );
+                    others.push((tx, rx));
+                }
+                let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+                let (release_tx, release_rx) = std::sync::mpsc::channel();
+                let release_rx = std::sync::Mutex::new(release_rx);
+                let failure_tx = dtls_tx.clone();
+                owner.on_shed(Arc::new(move || {
+                    entered_tx.send(()).unwrap();
+                    release_rx
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap();
+                    let _ = failure_tx.send(dtls::DtlsState::Failed);
+                }));
+                let (light_tx, light_rx) = packet_queue::channel(Kind::DtlsWire);
+                let admission = std::thread::spawn(move || light_tx.send(bytes::Bytes::new()));
+                entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert!(matches!(*dtls_tx.borrow(), dtls::DtlsState::Handshaking));
+                // The real pool has closed the victim's queue; publication of
+                // DTLS Failed is held behind the callback barrier above.
+                let result = monitor_ice_and_dtls(
+                    Arc::downgrade(&pc.inner),
+                    &pc.inner.ice_connection_state,
+                    &mut ice_rx,
+                    dtls_rx,
+                    Box::pin(async move {
+                        assert!(victim_rx.recv().await.is_none());
+                    }),
+                )
+                .await;
+                let peer_state = *pc.inner.peer_state.borrow();
+                let ice_state = *pc.inner.ice_connection_state.borrow();
+                release_tx.send(()).unwrap();
+                admission.join().unwrap().unwrap();
+                assert!(!result);
+                let connected = prior == PeerConnectionState::Connected;
+                assert_eq!(
+                    peer_state,
+                    if connected {
+                        PeerConnectionState::Disconnected
+                    } else {
+                        prior
+                    }
+                );
+                assert_eq!(
+                    ice_state,
+                    if connected {
+                        IceConnectionState::Disconnected
+                    } else {
+                        prior_ice
+                    }
+                );
+                drop((victim_tx, others, light_rx, owner, pc, ice_tx));
+                assert_eq!(packet_queue::metrics().bytes, 0);
+            }
         }
 
         /// ICE Failed is a hard failure: the monitor returns true so the outer
@@ -15967,3 +16165,7 @@ mod remote_channel_tests {
         b.close();
     }
 }
+
+#[cfg(all(test, feature = "std"))]
+#[path = "raw_packet_soak.rs"]
+mod raw_packet_soak;

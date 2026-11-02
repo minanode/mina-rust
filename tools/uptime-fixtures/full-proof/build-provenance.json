@@ -1,0 +1,113 @@
+{
+  "source_commit": "73134bfd3a43c3f4d8ee564b3d04a0c6ed2e0b3c",
+  "ocaml": "4.14.2",
+  "opam": "2.3.0",
+  "opam_export_sha256": "8a9eac506d90857a293c45b355f53d791c63f6558a7d4162591fb2f6b44d474a",
+  "opam_repositories": {
+    "default": "08d8c16c16dc6b23a5278b06dff0ac6c7a217356",
+    "o1-labs": "dd90c5c72b7b7caeca3db3224b2503924deea08a"
+  },
+  "dune_profile": "dev",
+  "protocol_or_verifier_source_changes": false,
+  "build_isolation_patch": "Empty [workspace] table appended to src/lib/crypto/kimchi_bindings/stubs/Cargo.toml to avoid enclosing Rust workspace",
+  "verifier_sha256": "405d9137901a3bd883676e15f2161396fe2dd04160b8771d61dfafaf8f208232",
+  "daemon_package_source": "https://stable.apt.packages.minaprotocol.com/dists/noble/stable/binary-amd64/Packages",
+  "go_capnp_std": "github.com/capnproto/go-capnproto2 v3.0.0-alpha.5; schemas extracted from official Go module proxy ZIP; GO_CAPNP_STD points to std directory",
+  "packages": [
+    {
+      "filename": "capnproto_1.0.1-4_amd64.deb",
+      "sha256": "5c2750e83cb5c27d51b6162e2c08824933bda56021f4f0958f674faa531b3c3a"
+    },
+    {
+      "filename": "libbz2-dev_1.0.8-5.1ubuntu0.1_amd64.deb",
+      "sha256": "f055bb5cb47117020a76dc40fcdb8164f4fa529df2b7f485faacc0b0f5083614"
+    },
+    {
+      "filename": "libcapnp-1.0.1_1.0.1-4_amd64.deb",
+      "sha256": "dfd47855f76809ef18f9e4a3ab65a40f526ec60756751b0516c10cf61ef61540"
+    },
+    {
+      "filename": "libcapnp-dev_1.0.1-4_amd64.deb",
+      "sha256": "198adb6b9ad8204a8f762efe6d1f54fb718c38805bf6cc6db18fe6ac20addb02"
+    },
+    {
+      "filename": "libffi-dev_3.4.6-1build1_amd64.deb",
+      "sha256": "7009959b8a3b77206325026917fb45150ac81bf6139468abc0841d5a29c8619d"
+    },
+    {
+      "filename": "libgflags-dev_2.2.2-2build1_amd64.deb",
+      "sha256": "16ece17c341cd1558544e342e00ec868e98d9936c1f7280403d6ec784b4c5131"
+    },
+    {
+      "filename": "libgflags2.2_2.2.2-2build1_amd64.deb",
+      "sha256": "93acc6837f4759de9f93b20224f94c438f4f1fcd2b710312236378adb023634e"
+    },
+    {
+      "filename": "libgmp-dev_2%3a6.3.0+dfsg-2ubuntu6.1_amd64.deb",
+      "sha256": "a9847b5ecfff791a46cb198f29a06d9d23a20afdfdd434812f2b44ccfb61d46a"
+    },
+    {
+      "filename": "libgmp10_2%3a6.3.0+dfsg-2ubuntu6.1_amd64.deb",
+      "sha256": "285f8a505dfa8e1b33f357a9d8d3477ad35bf18c0b34771a6df4c25923f3ae0d"
+    },
+    {
+      "filename": "libgmpxx4ldbl_2%3a6.3.0+dfsg-2ubuntu6.1_amd64.deb",
+      "sha256": "6f59344240b6dc139ed23ef236b8aa146e5d25e23aa90e79f814e2e4cc4b5752"
+    },
+    {
+      "filename": "libjemalloc-dev_5.3.0-2build1_amd64.deb",
+      "sha256": "d77f1d71719c9f4607b8a7ff59bcb6c5cc9abec686ba11dff607879e8b6b56d4"
+    },
+    {
+      "filename": "libjemalloc2_5.3.0-2build1_amd64.deb",
+      "sha256": "0cccf7701765b5a633b964ed551c2bd1c074cad17daea8fa20a4e9cad0adb5a8"
+    },
+    {
+      "filename": "liblmdb-dev_0.9.31-1build1_amd64.deb",
+      "sha256": "45cd71781ca29dba5a3c56d109d3804566ea7ad136f2545a0b34844b8379e3b5"
+    },
+    {
+      "filename": "liblmdb0_0.9.31-1build1_amd64.deb",
+      "sha256": "3439a5b9fd358df1619f7dca2d611195f22a7d7d83a3a968428ac1440f713b4e"
+    },
+    {
+      "filename": "libpq-dev_16.15-0ubuntu0.24.04.1_amd64.deb",
+      "sha256": "ecb81056c9fa11dff469c4767a0b1315abde91baf2eadfddd2c3c2bb03ed6ab2"
+    },
+    {
+      "filename": "libpq5_16.15-0ubuntu0.24.04.1_amd64.deb",
+      "sha256": "3f96dd36bcd7841172c1ead4965da20a193bb9ccf9a93a3f5a3ac7f56369dbb1"
+    },
+    {
+      "filename": "libproc2-dev_2%3a4.0.4-4ubuntu3.3_amd64.deb",
+      "sha256": "3000710a6233d8a60273b0935a12cf31d586839fad05db645e88a48a05ae801c"
+    },
+    {
+      "filename": "libsodium-dev_1.0.18-1ubuntu0.24.04.1_amd64.deb",
+      "sha256": "bd3e8cd6ab8cf731d8a8a15333831b9081a94ebefe22236fc8713975fe7a6d3a"
+    },
+    {
+      "filename": "libsodium23_1.0.18-1ubuntu0.24.04.1_amd64.deb",
+      "sha256": "74d6f8fbd65f7f71b6f4f4223bef5fb57c1c14cd4e9ce788ead2b88e8c3ee236"
+    },
+    {
+      "filename": "m4_1.4.19-4build1_amd64.deb",
+      "sha256": "30ea715845a1863abd55d11e47ab91513130bf347852d4cdeae69e9d98fa795c"
+    },
+    {
+      "filename": "mina-devnet-config_4.0.3-73134bf_all.deb",
+      "sha256": "fbf34a38067c238778079ffee2ead9f047f933848a111abf5caef92458e3b6ed"
+    },
+    {
+      "filename": "mina-generic_4.0.3-73134bf_amd64.deb",
+      "sha256": "3b695ae46c1cee548917828c2690a1aa27d38d131a36c4afab97f309d502a41c"
+    },
+    {
+      "filename": "rsync_3.2.7-1ubuntu1.5_amd64.deb",
+      "sha256": "8f952895697d19a6f1caa71f17c7d4e8c1f1fb485eb824ffe3e4c77dd587b338"
+    }
+  ],
+  "opam_binary_sha256": "324e78e3f33efeba279aacf9f9610cfec7b2df7d7e0e1640f75f09de85f96cc9",
+  "go_module_zip_sha256": "c0046f096f3be90a2b4f56f0d613f44e2d6521b5bb1e0390bb4ec06d63ca1d61",
+  "native_dependency_setup": "dpkg-deb -x into private prefix; PATH, CPATH (including postgresql), LIBRARY_PATH, LD_LIBRARY_PATH and PKG_CONFIG_PATH point there; relocate prefix in pkg-config files; OPAMDEPEXTS=false; opam import --assume-depexts; private TMPDIR; jobs=8"
+}

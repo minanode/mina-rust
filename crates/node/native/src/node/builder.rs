@@ -94,6 +94,8 @@ pub struct NodeBuilder {
     worker_setting_warning: Option<String>,
     /// The block production history the last run kept (F-producer).
     block_production: Option<mina_node::stats::block_producer::BlockProductionHistory>,
+    /// Opt-in uptime, node status and node error reporters (R43e.2).
+    reporting: crate::reporting::ReportingConfig,
 }
 
 impl NodeBuilder {
@@ -121,8 +123,9 @@ impl NodeBuilder {
                 identity_pub_key: P2pSecretKey::deterministic(0).public_key(),
                 initial_peers: Vec::new(),
                 external_addrs: Vec::new(),
-                enabled_channels: ChannelId::iter_all().collect(),
+                enabled_channels: ChannelId::without_signaling().collect(),
                 peer_discovery: true,
+                seed_only: false,
                 meshsub: P2pMeshsubConfig {
                     initial_time: Duration::ZERO,
                     ..Default::default()
@@ -152,6 +155,7 @@ impl NodeBuilder {
             included_work: None,
             worker_setting_warning: None,
             block_production: None,
+            reporting: Default::default(),
         }
     }
 
@@ -208,6 +212,14 @@ impl NodeBuilder {
     /// Set up node as a seed node.
     pub fn p2p_seed_node(&mut self) -> &mut Self {
         self.p2p_is_seed = true;
+        self
+    }
+
+    /// Opt in to relaying signaling between peers (including browser visitors).
+    pub fn p2p_signaling_relay(&mut self) -> &mut Self {
+        self.p2p
+            .enabled_channels
+            .extend([ChannelId::SignalingDiscovery, ChannelId::SignalingExchange]);
         self
     }
 
@@ -536,6 +548,13 @@ impl NodeBuilder {
         self
     }
 
+    /// Starts the configured reporters with the node; each runs only with
+    /// its URL.
+    pub fn reporting(&mut self, config: crate::reporting::ReportingConfig) -> &mut Self {
+        self.reporting = config;
+        self
+    }
+
     pub fn build(mut self) -> anyhow::Result<Node> {
         self.genesis_config.initialize_runtime()?;
         if let Some(daemon) = self.genesis_config.runtime_config()?.daemon {
@@ -583,6 +602,11 @@ impl NodeBuilder {
         // build config
         let node_config = mina_node::Config {
             global: GlobalConfig {
+                snark_work_fee: self
+                    .reporting
+                    .uptime
+                    .as_ref()
+                    .map(|config| config.snark_work_fee.clone()),
                 build: mina_node::BuildEnv::get().into(),
                 snarker: self.snarker.map(|setting| {
                     let mut config =
@@ -621,6 +645,17 @@ impl NodeBuilder {
                 slot_tx_end: self.daemon_conf.slot_tx_end(),
             },
         };
+
+        crate::reporting::start(
+            self.service.rpc_sender(),
+            std::mem::take(&mut self.reporting),
+            crate::reporting::ReportingContext::new(
+                consensus_consts.slot_duration_ms,
+                crate::reporting::uptime::profile_network_id(),
+                mina_node::BuildEnv::get().git.commit_hash,
+            ),
+        )
+        .context("starting the reporters")?;
 
         // build service
         let mut service = self.service;

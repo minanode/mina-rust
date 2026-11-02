@@ -20,7 +20,13 @@ use ledger::{
 use mina_core::{channels::mpsc, thread};
 use mina_p2p_messages::v2::{self, LedgerHash, MinaBaseAccountBinableArgStableV2};
 use mina_signer::CompressedPubKey;
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 
 /// The type enumerating different requests that can be made to the
 /// service. Each specific constructor has a specific response
@@ -33,6 +39,22 @@ use std::collections::BTreeMap;
     reason = "This is storing large messages, but size difference is only 2x between largest and second-largest variants"
 )]
 pub(super) enum LedgerRequest {
+    #[cfg(test)]
+    TestDelay(std::time::Duration),
+    #[cfg(test)]
+    TestPanic,
+    TransactionPoolPin {
+        id: u32,
+        ledger_hash: LedgerHash,
+    },
+    TransactionPoolAccounts {
+        id: u32,
+        ledger_hash: LedgerHash,
+        account_ids: Vec<AccountId>,
+        pinned: bool,
+        generation: u64,
+        current_generation: Arc<AtomicU64>,
+    },
     MemoryDebug,
     Write(LedgerWriteRequest),
     Read(LedgerReadId, LedgerReadRequest),
@@ -101,6 +123,7 @@ pub(super) enum LedgerRequest {
 
 #[derive(Debug)]
 pub enum LedgerResponse {
+    TransactionPoolAccounts(u32, Result<BTreeMap<AccountId, Account>, String>),
     MemoryDebug(serde_json::Value),
     Write(LedgerWriteResponse),
     Read(LedgerReadId, LedgerReadResponse),
@@ -137,8 +160,47 @@ impl LedgerRequest {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn write_for_tests(
+        ctx: &mut LedgerCtx,
+        request: LedgerWriteRequest,
+    ) -> LedgerWriteResponse {
+        let (sender, _receiver) = mpsc::tracked_unbounded_channel();
+        match Self::Write(request).handle(ctx, &LedgerCaller(sender)) {
+            LedgerResponse::Write(response) => response,
+            _ => unreachable!(),
+        }
+    }
+
     fn handle(self, ledger_ctx: &mut LedgerCtx, caller: &LedgerCaller) -> LedgerResponse {
         match self {
+            #[cfg(test)]
+            Self::TestDelay(delay) => {
+                std::thread::sleep(delay);
+                LedgerResponse::Success
+            }
+            #[cfg(test)]
+            Self::TestPanic => panic!("injected ledger worker failure"),
+            Self::TransactionPoolPin { id, ledger_hash } => {
+                ledger_ctx.pin_transaction_pool_ledger(id, &ledger_hash);
+                LedgerResponse::Success
+            }
+            Self::TransactionPoolAccounts {
+                id,
+                ledger_hash,
+                account_ids,
+                pinned,
+                generation,
+                current_generation,
+            } => {
+                let result = if !pinned && generation != current_generation.load(Ordering::Acquire)
+                {
+                    Err("transaction account read cancelled".to_owned())
+                } else {
+                    ledger_ctx.transaction_pool_accounts(id, &ledger_hash, account_ids, pinned)
+                };
+                LedgerResponse::TransactionPoolAccounts(id, result)
+            }
             Self::MemoryDebug => LedgerResponse::MemoryDebug(ledger_ctx.memory_debug()),
             Self::Write(request) => LedgerResponse::Write(match request {
                 LedgerWriteRequest::StagedLedgerReconstruct {
@@ -203,6 +265,9 @@ impl LedgerRequest {
                     };
                     let result =
                         ledger_ctx.block_apply_with(block, pred_block, skip_verification, restored);
+                    if matches!(&result, Err(super::write::BlockApplyError::LocalState(_))) {
+                        ledger_ctx.invalidate_for_resync();
+                    }
                     LedgerWriteResponse::BlockApply { block_hash, result }
                 }
                 LedgerWriteRequest::Commit {
@@ -222,6 +287,9 @@ impl LedgerRequest {
                         &new_root,
                         &new_best_tip,
                     );
+                    if result.is_err() {
+                        ledger_ctx.invalidate_for_resync();
+                    }
                     LedgerWriteResponse::Commit {
                         best_tip_hash,
                         result,
@@ -278,6 +346,11 @@ impl LedgerRequest {
                     LedgerReadRequest::ScanStateSummary(ledger_hash) => {
                         let res = ledger_ctx.scan_state_summary(&ledger_hash);
                         LedgerReadResponse::ScanStateSummary(res)
+                    }
+                    LedgerReadRequest::ScanStateMetrics(ledger_hash) => {
+                        LedgerReadResponse::ScanStateMetrics(
+                            ledger_ctx.scan_state_metrics(&ledger_hash),
+                        )
                     }
                     LedgerReadRequest::GetAccounts(ledger_hash, account_ids, rpc_id) => {
                         let res = ledger_ctx.get_accounts(ledger_hash, account_ids);
@@ -445,6 +518,7 @@ struct LedgerRequestWithChan {
 pub struct LedgerManager {
     caller: LedgerCaller,
     join_handle: thread::JoinHandle<LedgerCtx>,
+    account_read_generation: Arc<AtomicU64>,
 }
 
 #[derive(Clone)]
@@ -475,10 +549,25 @@ impl LedgerManager {
         let ledger_caller = caller.clone();
 
         let ledger_manager_loop = move || {
+            // Async callers have no blocking receiver to detect a dropped
+            // reply. Preserve the existing fatal worker-loss policy immediately.
+            struct WorkerGuard;
+            impl Drop for WorkerGuard {
+                fn drop(&mut self) {
+                    if std::thread::panicking() {
+                        ledger_worker_stopped("worker unwound");
+                    }
+                }
+            }
+            let _guard = WorkerGuard;
             while let Some(msg) = receiver.blocking_recv() {
                 let LedgerRequestWithChan { request, responder } = msg.0;
                 let response = request.handle(&mut ledger_ctx, &ledger_caller);
                 match (response, responder) {
+                    (LedgerResponse::TransactionPoolAccounts(id, result), _) => {
+                        ledger_ctx
+                            .send_event(super::LedgerEvent::TransactionPoolAccounts { id, result });
+                    }
                     (LedgerResponse::Write(resp), None) => {
                         ledger_ctx.send_write_response(resp);
                     }
@@ -508,11 +597,48 @@ impl LedgerManager {
         LedgerManager {
             caller,
             join_handle,
+            account_read_generation: Default::default(),
         }
     }
 
     pub fn pending_calls(&self) -> usize {
         self.caller.0.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn delay_for_tests(&self, delay: std::time::Duration) {
+        self.call(LedgerRequest::TestDelay(delay));
+    }
+
+    /// Cancel queued transaction reads without queuing behind ledger work.
+    /// Reconciliation snapshots have their own ordered lifetime and are exempt.
+    pub fn cancel_transaction_pool_reads(&self, generation: u64) {
+        self.account_read_generation
+            .store(generation, Ordering::Release);
+    }
+
+    pub fn pin_transaction_pool_ledger(&self, id: u32, ledger_hash: LedgerHash) {
+        self.call(LedgerRequest::TransactionPoolPin { id, ledger_hash });
+    }
+
+    /// Enqueue only: completion is delivered through the node's event channel.
+    /// The pool owns admission, ordering, cancellation and the in-flight bound.
+    pub fn transaction_pool_accounts(
+        &self,
+        id: u32,
+        ledger_hash: LedgerHash,
+        account_ids: Vec<AccountId>,
+        generation: u64,
+        pinned: bool,
+    ) {
+        self.call(LedgerRequest::TransactionPoolAccounts {
+            id,
+            ledger_hash,
+            account_ids,
+            pinned,
+            generation,
+            current_generation: self.account_read_generation.clone(),
+        });
     }
 
     pub(super) fn call(&self, request: LedgerRequest) {
@@ -835,6 +961,37 @@ mod tests {
     }
 
     #[test]
+    fn account_queries_with_an_out_of_field_public_key_answer_nothing() {
+        use ledger::BaseLedger;
+        use mina_core::requests::RpcId;
+        use mina_p2p_messages::{bigint::BigInt, v2::NonZeroCurvePointUncompressedStableV1};
+        let mut ctx = LedgerCtx::default();
+        let mut mask = Mask::new_unattached(super::super::LEDGER_DEPTH);
+        let hash: LedgerHash = mask.merkle_root().into();
+        ctx.insert_genesis_ledger(mask);
+        let mut x = [0xff; 32];
+        x[31] = 0x7f;
+        let key = AccountPublicKey::from(mina_p2p_messages::v2::NonZeroCurvePoint::from(
+            NonZeroCurvePointUncompressedStableV1 {
+                x: BigInt::from_bytes(x),
+                is_odd: false,
+            },
+        ));
+        for query in [
+            AccountQuery::SinglePublicKey(key.clone()),
+            AccountQuery::PubKeyWithTokenId(key, Default::default()),
+        ] {
+            let response = LedgerRequest::read_for_tests(
+                &mut ctx,
+                LedgerReadRequest::AccountsForRpc(RpcId::new_unchecked(0, 0), hash.clone(), query),
+            );
+            assert!(
+                matches!(response, LedgerReadResponse::AccountsForRpc(_, accounts, _) if accounts.is_empty())
+            );
+        }
+    }
+
+    #[test]
     fn dead_ledger_worker_exits() {
         const MODE: &str = "MINA_I36_DEAD_LEDGER_TEST";
         if let Ok(mode) = std::env::var(MODE) {
@@ -860,6 +1017,7 @@ mod tests {
                     let manager = LedgerManager {
                         caller,
                         join_handle: thread::spawn(LedgerCtx::default),
+                        account_read_generation: Default::default(),
                     };
                     let _ = manager.get_accounts(&LedgerHash::zero(), vec![]);
                 }
@@ -927,3 +1085,7 @@ mod sync_query_tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "transaction_pool_accounts_tests.rs"]
+mod transaction_pool_accounts_tests;

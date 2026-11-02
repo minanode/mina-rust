@@ -46,6 +46,10 @@ pub fn new_hook(info: &PanicHookInfo<'_>) {
         );
     }
 
+    // With `--node-error-url`, the first panic is reported before the process
+    // goes on (R43e.2). Bounded: it waits at most ten seconds.
+    mina_node_native::reporting::report_panic(msg, &location.to_string(), name);
+
     if name != "main" {
         let Ok(mut previous) = PREVIOUS_PANICS.lock() else {
             return;

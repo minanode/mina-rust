@@ -634,7 +634,7 @@ impl diff::Diff {
         PreDiffError,
     >
     where
-        F: Fn(Vec<WithStatus<UserCommand>>) -> Result<Vec<valid::UserCommand>, VerifierError>,
+        F: Fn(Vec<WithStatus<UserCommand>>) -> Result<Vec<valid::UserCommand>, PreDiffError>,
     {
         let diff = self.validate_commands(check)?;
 

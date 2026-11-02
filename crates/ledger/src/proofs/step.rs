@@ -71,9 +71,18 @@ impl InductiveRule<'_, 0> {
     }
 }
 
+/// Whether a circuit's proofs use a feature: OCaml's `Opt.Flag.t` without
+/// `Yes`, which no circuit Mina verifies has. A compiled circuit's feature is
+/// `Yes` only if every rule of it uses the feature, and no rule of the
+/// transaction or blockchain snark uses any (`Features.none_bool`, as the
+/// base rule's here); a side-loaded zkApp proof may use any (`Maybe` for
+/// each).
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/compile.ml#L428-L455>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transaction_snark/transaction_snark.ml#L3189>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transaction_snark/transaction_snark.ml#L614-L634>
 #[derive(Clone, Copy, Debug)]
 pub enum OptFlag {
-    Yes,
     No,
     Maybe,
 }
@@ -280,10 +289,10 @@ impl TryFrom<&v2::PicklesProofProofsVerified2ReprStableV2StatementProofState>
                 .each_ref()
                 .map(|v| v.as_u64()),
             messages_for_next_wrap_proof: MessagesForNextWrapProof {
-                challenge_polynomial_commitment: InnerCurve::from((
+                challenge_polynomial_commitment: InnerCurve::try_from_coordinates(
                     c0.to_field::<Fq>()?,
                     c1.to_field()?,
-                )),
+                )?,
                 old_bulletproof_challenges: old_bulletproof_challenges
                     .iter()
                     .map(|old_bulletproof_challenge| {
@@ -341,11 +350,15 @@ pub mod step_verifier {
         sponge.absorb2(&[*x, *y], w);
     }
 
+    /// The domain the scalar environment reads: OCaml's `plonk_domain` has
+    /// no `log2_size` either, and the compiled step domains (a
+    /// `PseudoDomain`, one of several sizes) have none to give.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/plonk_checks/plonk_checks.ml#L12-L15>
     pub trait PlonkDomain<F: FieldWitness> {
         fn vanishing_polynomial(&self, x: F, w: &mut Witness<F>) -> F;
         fn generator(&self) -> F;
         fn shifts(&self) -> &[F; PERMUTS];
-        fn log2_size(&self) -> u64;
     }
 
     impl<F: FieldWitness> PlonkDomain<F> for PseudoDomain<F> {
@@ -357,9 +370,6 @@ pub mod step_verifier {
         }
         fn shifts(&self) -> &[F; PERMUTS] {
             &self.shifts
-        }
-        fn log2_size(&self) -> u64 {
-            todo!()
         }
     }
 
@@ -373,16 +383,12 @@ pub mod step_verifier {
         fn shifts(&self) -> &[F; PERMUTS] {
             &self.shifts
         }
-        fn log2_size(&self) -> u64 {
-            self.log2_size
-        }
     }
 
     struct SideloadedDomain<F: FieldWitness> {
         generator: F,
         shifts: Box<[F; PERMUTS]>,
         vanishing_polynomial: Box<dyn Fn(F, &mut Witness<F>) -> F>,
-        log2_size: u64,
     }
 
     fn domain_for_compiled(
@@ -428,6 +434,12 @@ pub mod step_verifier {
         domain.group_gen
     }
 
+    /// The domain of a side-loaded (zkApp) proof's step circuit, from its
+    /// `domain_log2`, which may be anything up to `max_domains.h`'s, 16,
+    /// inclusive: the one-hot vector and the generators it selects from both
+    /// have `max + 1` entries.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/step_verifier.ml#L719-L742>
     fn side_loaded_domain(log2_size: u64, w: &mut Witness<Fp>) -> SideloadedDomain<Fp> {
         let log2_size_field = Fp::from(log2_size);
 
@@ -448,10 +460,14 @@ pub mod step_verifier {
             let max_n = max;
             let mask = ones_vector(log2_size_field, max_n, w);
 
+            // `Vector.init (S max_n) ~f:Fn.id`: 0 to `max_n` inclusive. With
+            // one fewer, a proof from a circuit with the largest domain, 2^16
+            // rows, selected no generator: 0, which `make_scalars_env_checked`
+            // inverts.
             let s_max_n = max_n + 1;
             let log2_sizes = (
                 one_hot_vector::of_index(log2_size_field, s_max_n, w),
-                (0..max_n).collect::<Vec<_>>(),
+                (0..s_max_n).collect::<Vec<_>>(),
             );
             let shifts = pseudo::shifts(&log2_sizes, tick_shifts);
             let generator = pseudo::generator(&log2_sizes, domain_generator);
@@ -461,7 +477,6 @@ pub mod step_verifier {
                 generator,
                 shifts,
                 vanishing_polynomial,
-                log2_size,
             }
         };
 
@@ -660,7 +675,6 @@ pub mod step_verifier {
                     // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/pickles/composition_types/composition_types.ml#L125-L132>
                     Some(scalar(&lookup.unwrap_or([0, 0]), w))
                 }
-                OptFlag::Yes => todo!(),
             };
             let zeta = scalar(zeta, w);
             let alpha = scalar(alpha, w);
@@ -1278,7 +1292,10 @@ pub mod step_verifier {
                         } else if c.is_one() {
                             Some(lagrange(i, srs, w))
                         } else {
-                            todo!()
+                            // The only constant inputs are the zero padding of
+                            // `to_public_input_cvar`. OCaml scales the Lagrange
+                            // commitment by any other constant.
+                            unreachable!("a constant public input other than 0 or 1")
                         }),
                         Field(x) => Right((i, (x, 255))),
                         PackedBits(x, n) => Right((i, (x, n))),
@@ -1358,7 +1375,8 @@ pub mod step_verifier {
                     } else if c.is_one() {
                         Some(g)
                     } else {
-                        todo!()
+                        // As in `public_input_commitment_dynamic`.
+                        unreachable!("a constant public input other than 0 or 1")
                     }),
                     Field(x) => Right((Field(*x), g)),
                     PackedBits(x, n) => Right((PackedBits(*x, *n), g)),
@@ -1799,7 +1817,6 @@ pub mod step_verifier {
             let npublic_input = match hack_feature_flags {
                 OptFlag::No => 39,
                 OptFlag::Maybe => 40,
-                OptFlag::Yes => todo!(),
             };
             statement.to_public_input_cvar(hack_feature_flags, npublic_input)?
         };
@@ -1856,6 +1873,45 @@ pub mod step_verifier {
         }
 
         Ok(bulletproof_success)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use ark_ff::Field;
+
+        use super::*;
+
+        /// A side-loaded proof's circuit may have any domain up to
+        /// `max_domains.h`, 2^16 rows, inclusive. The step circuit's domain
+        /// for it has a primitive 2^k-th root of unity as its generator, the
+        /// one OCaml's `domain_generator` returns, and x^(2^k) - 1 as its
+        /// vanishing polynomial. For 2^16 the generator was 0, and proving a
+        /// public devnet zkApp job (shape SPSS) whose proof is from such a
+        /// circuit panicked inverting it in `make_scalars_env_checked`.
+        #[test]
+        fn side_loaded_domain_of_every_size() {
+            let max = Domains::max().h.log2_size();
+            assert_eq!(max, 16);
+            let x = Fp::from(5u64);
+            for log2_size in 0..=max {
+                let mut w = Witness::<Fp>::empty();
+                let domain = side_loaded_domain(log2_size, &mut w);
+                let generator = domain.generator();
+                let expected = Radix2EvaluationDomain::<Fp>::new(1 << log2_size)
+                    .unwrap()
+                    .group_gen;
+                assert_eq!(generator, expected, "2^{log2_size}");
+                assert_eq!(generator.pow([1u64 << log2_size]), Fp::one());
+                if log2_size > 0 {
+                    assert_ne!(generator.pow([1u64 << (log2_size - 1)]), Fp::one());
+                }
+                assert_eq!(
+                    domain.vanishing_polynomial(x, &mut w),
+                    x.pow([1u64 << log2_size]) - Fp::one(),
+                    "2^{log2_size}"
+                );
+            }
+        }
     }
 }
 
@@ -2188,6 +2244,45 @@ struct ExpandProofParams<'a> {
     zk_rows: u64,
 }
 
+/// The two shapes of a previous proof that OCaml's verifier checks before
+/// anything else, so that every proof a job or block carries has them: a
+/// step domain of at most 2^16 rows and one chunk per evaluation. The step
+/// circuit's types hold no other proof (the evaluations' `Typ` has
+/// `num_chunks` entries, one for every circuit Mina verifies), so OCaml's
+/// prover fails on one. Ours returns this error, instead of panicking on a
+/// domain the field has no root of unity for, or in the in-circuit
+/// `actual_evaluation` (which takes exactly one chunk).
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/verify.ml#L71-L114>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/per_proof_witness.ml#L153-L155>
+fn check_previous_proof_shape(
+    t: &v2::PicklesProofProofsVerified2ReprStableV2,
+) -> anyhow::Result<()> {
+    let domain_log2 = t
+        .statement
+        .proof_state
+        .deferred_values
+        .branch_data
+        .domain_log2
+        .as_u8();
+    anyhow::ensure!(
+        domain_log2 as usize <= BACKEND_TICK_ROUNDS_N,
+        "previous proof: step domain 2^{domain_log2} is larger than 2^{BACKEND_TICK_ROUNDS_N}"
+    );
+    let evals: AllEvals<Fp> = (&t.prev_evals).try_into()?;
+    let one_chunk = std::cell::Cell::new(true);
+    evals.evals.evals.map_ref(&|e: &PointEvaluations<Vec<Fp>>| {
+        if e.zeta.len() != 1 || e.zeta_omega.len() != 1 {
+            one_chunk.set(false);
+        }
+    });
+    anyhow::ensure!(
+        one_chunk.get(),
+        "previous proof: an evaluation is not exactly one chunk"
+    );
+    Ok(())
+}
+
 fn expand_proof(params: ExpandProofParams) -> anyhow::Result<ExpandedProof> {
     let ExpandProofParams {
         dlog_vk,
@@ -2202,6 +2297,8 @@ fn expand_proof(params: ExpandProofParams) -> anyhow::Result<ExpandedProof> {
     } = params;
 
     use super::public_input::scalar_challenge::ScalarChallenge;
+
+    check_previous_proof_shape(t)?;
 
     let plonk0: PlonkMinimal<Fp> = (&t.statement.proof_state.deferred_values.plonk).try_into()?;
 
@@ -2881,7 +2978,11 @@ pub fn step<C: ProofConstants, const N_PREVIOUS: usize>(
         .unwrap();
 
     let srs = get_srs_mut::<Fq>();
-    let mut srs = srs.lock().unwrap();
+    let mut srs = srs
+        .lock()
+        .expect("get_srs_mut returns an SRS no panic has poisoned");
+    #[cfg(any(test, feature = "test-hooks"))]
+    crate::verifier::test_hooks::srs_locked();
 
     let bulletproof_challenges = prevs
         .iter()
@@ -3037,4 +3138,52 @@ pub fn step<C: ProofConstants, const N_PREVIOUS: usize>(
         prev_evals,
         proof_with_public: proof,
     })
+}
+
+#[cfg(test)]
+mod previous_proof_shape_tests {
+    use mina_p2p_messages::binprot::BinProtRead;
+
+    use super::*;
+
+    /// The parent proof of the devnet offline block 545436: a blockchain
+    /// proof, with a step domain of 2^16 and one chunk per evaluation, as
+    /// every proof the verifiers accept has.
+    fn parent_proof() -> v2::PicklesProofProofsVerified2ReprStableV2 {
+        let input = v2::ProverExtendBlockchainInputStableV2::binprot_read(
+            &mut &include_bytes!("data/mesa_devnet_offline_chain_545436_input.bin")[..],
+        )
+        .unwrap();
+        (*input.chain.proof).clone().0
+    }
+
+    /// A previous proof with a step domain over 2^16 or an evaluation of
+    /// other than one chunk is refused with an error, not a panic, and a real
+    /// one passes.
+    #[test]
+    fn previous_proof_shape_is_checked() {
+        let proof = parent_proof();
+        check_previous_proof_shape(&proof).unwrap();
+
+        for domain_log2 in [17, 200] {
+            let mut larger = proof.clone();
+            let branch_data = &mut larger.statement.proof_state.deferred_values.branch_data;
+            branch_data.domain_log2.0 .0 = domain_log2;
+            let error = check_previous_proof_shape(&larger).unwrap_err();
+            assert!(
+                error.to_string().contains(&format!("2^{domain_log2}")),
+                "{error}"
+            );
+        }
+
+        let mut two_chunks = proof.clone();
+        let zeta = two_chunks.prev_evals.evals.evals.w.0[0].0.inner_mut();
+        zeta.push(zeta[0].clone());
+        let error = check_previous_proof_shape(&two_chunks).unwrap_err();
+        assert!(error.to_string().contains("one chunk"), "{error}");
+
+        let mut no_chunk = proof;
+        no_chunk.prev_evals.evals.evals.z.1.inner_mut().clear();
+        check_previous_proof_shape(&no_chunk).unwrap_err();
+    }
 }

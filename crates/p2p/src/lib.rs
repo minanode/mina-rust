@@ -81,6 +81,9 @@ pub use multiaddr;
 ))]
 pub mod fuzzer;
 
+#[cfg(all(test, not(target_arch = "wasm32"), feature = "p2p-libp2p"))]
+mod peer_input_fuzz_tests;
+
 use redux::{AnyAction, EnablingCondition, SubStore};
 
 pub trait P2pStore<GlobalState>: SubStore<GlobalState, P2pState, SubAction = P2pAction> {}

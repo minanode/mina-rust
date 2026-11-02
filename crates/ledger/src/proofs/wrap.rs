@@ -1039,6 +1039,9 @@ pub mod pseudo {
         (which, log2s): &(Vec<Boolean>, Vec<u64>),
         domain_generator: impl Fn(u64) -> Fp,
     ) -> Fp {
+        // OCaml's vectors have the same length by type; `mask` would drop
+        // the domains past the shorter one, and select no generator.
+        assert_eq!(which.len(), log2s.len());
         let xs = log2s
             .iter()
             .map(|d| domain_generator(*d))
@@ -1046,6 +1049,14 @@ pub mod pseudo {
         mask(which, &xs)
     }
 
+    /// The domains' shared shifts. Both panics depend only on the domains a
+    /// circuit is compiled with, never on a proof: the compiled step domains
+    /// and the side-loaded sizes 2^0 to 2^16 all have kimchi's same shifts.
+    /// OCaml selects differing shifts in the circuit only if
+    /// `disabled_not_the_same` is false, and it is constant true there, so
+    /// Rust has no such branch.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/pseudo/pseudo.ml#L62-L90>
     pub fn shifts(
         (_which, log2s): &(Vec<Boolean>, Vec<u64>),
         shifts: impl Fn(u64) -> Box<[Fp; PERMUTS]>,
@@ -1056,15 +1067,29 @@ pub mod pseudo {
             panic!("Pseudo.Domain.shifts: no domains were given");
         };
 
-        let all_the_same = other_shiftss.iter().all(|o| o == shifts);
-        let disabled_not_the_same = true;
-
-        if all_the_same {
+        if other_shiftss.iter().all(|o| o == shifts) {
             shifts.clone()
-        } else if disabled_not_the_same {
-            panic!("Pseudo.Domain.shifts: found variable shifts")
         } else {
-            unimplemented!() // Is this branch ever taken ?
+            panic!("Pseudo.Domain.shifts: found variable shifts")
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use kimchi::circuits::polynomials::permutation::Shifts;
+
+        use super::*;
+
+        /// `shifts` panics on no domain size a step circuit uses: kimchi
+        /// gives every step domain, 2^0 to 2^16 rows, the same shifts.
+        #[test]
+        fn step_domains_share_their_shifts() {
+            let of = |log2: u64| {
+                let domain = Radix2EvaluationDomain::<Fp>::new(1 << log2).unwrap();
+                Box::new(*Shifts::new(&domain).shifts())
+            };
+            let log2s = (0..=16).collect::<Vec<u64>>();
+            assert_eq!(shifts(&(vec![], log2s), of), of(16));
         }
     }
 }
@@ -1588,13 +1613,18 @@ pub mod wrap_verifier {
         lo
     }
 
+    /// One chunk: OCaml folds more in, but every evaluation this gets has
+    /// exactly one. A wrap proof's own evaluations have one by their type,
+    /// and `check_previous_proof_shape` refuses a previous proof with any
+    /// other number before its evaluations get here, as OCaml's verifier and
+    /// prover do.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/step_verifier.ml#L752-L758>
     pub fn actual_evaluation<F: FieldWitness>(e: &[F], _pt_to_n: F) -> F {
-        let (last, rest) = e.split_last().expect("empty list");
-
-        rest.iter().rev().fold(*last, |_acc, _y| {
-            // TODO: So far only 1 item
-            todo!()
-        })
+        match e {
+            [e] => *e,
+            _ => unreachable!("actual_evaluation: {} chunks, not one", e.len()),
+        }
     }
 
     pub(super) struct FinalizeOtherProofParams<'a> {
@@ -1670,7 +1700,8 @@ pub mod wrap_verifier {
                         sponge.absorb(zeta, w);
                         sponge.absorb(zeta_omega, w);
                     }
-                    Opt::Maybe(_b, _pt) => todo!(),
+                    // `OptFlag::No` gives only `Opt::Some` and `Opt::No`.
+                    Opt::Maybe(_, _) => unreachable!("an optional evaluation of a wrap proof"),
                 }
             }
         };
@@ -2023,7 +2054,8 @@ pub mod wrap_verifier {
             pub fn add(&self, q: GroupAffine<F>, w: &mut Witness<F>) -> CircuitVar<GroupAffine<F>> {
                 match self {
                     Point::Finite(p) => CircuitVar::Var(w.add_fast(*p.value(), q)),
-                    Point::MaybeFinite(_, _) => todo!(),
+                    // The wrap verifier's commitments are all finite.
+                    Point::MaybeFinite(_, _) => unreachable!("a maybe-finite wrap commitment"),
                 }
             }
 
@@ -2338,7 +2370,8 @@ pub mod wrap_verifier {
                         } else if c.is_one() {
                             Some(lagrange(domain, &mut srs, i))
                         } else {
-                            todo!()
+                            // `pack_statement` makes every input a variable.
+                            unreachable!("a constant public input other than 0 or 1")
                         }),
                         Packed::Field(x) => Right((i, x)),
                         _ => unreachable!(),

@@ -73,7 +73,7 @@ pub fn complete_height_tree_with_empties(
 /// `Int.ceil_log2 num_accounts`, so 0 for a single account, whose subtree is
 /// its leaf. It sizes both the `Num_accounts` answer and its check.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/syncable_ledger/syncable_ledger.ml#L281-L292>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/syncable_ledger/syncable_ledger.ml#L311-L322>
 pub fn tree_height_for_num_accounts(num_accounts: u64) -> usize {
     // A peer's answer can claim any count; above 2^63 the height is 64.
     num_accounts

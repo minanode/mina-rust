@@ -43,9 +43,9 @@ use crate::{Limit, P2pLimits, P2pTimeouts, PeerId};
 /// Only libp2p peers are kept here; WebRTC peers keep the plain timeouts.
 ///
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/8250f62a9bb6450f6c9fdc9a3af72da62c2f5e39/src/app/libp2p_helper/src/libp2p_helper/app.go#L51-L54>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/8250f62a9bb6450f6c9fdc9a3af72da62c2f5e39/src/lib/gossip_net/libp2p.ml#L258>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/gossip_net/libp2p.ml#L260-L260>
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/8250f62a9bb6450f6c9fdc9a3af72da62c2f5e39/src/app/libp2p_helper/src/libp2p_helper/config_msg.go#L145-L171>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/8250f62a9bb6450f6c9fdc9a3af72da62c2f5e39/src/lib/gossip_net/libp2p.ml#L263-L274>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/gossip_net/libp2p.ml#L265-L276>
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct P2pDialBackoff {
     by_peer: BTreeMap<PeerId, P2pDialBackoffEntry>,

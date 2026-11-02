@@ -216,7 +216,8 @@ pub fn is_error(event: &ClusterEvent) -> bool {
         RustNodeEvent::ListenerError { .. } => true,
         RustNodeEvent::PeerConnectionError { .. } => true,
         RustNodeEvent::PeerDisconnected { .. } => true,
-        RustNodeEvent::P2p { event } => match event {
+        RustNodeEvent::P2p { event } => match event.unwrapped() {
+            P2pEvent::WithPermit { .. } => false,
             P2pEvent::Connection(_event) => false, // TODO
             P2pEvent::Channel(_event) => false,    // TODO
             P2pEvent::MioEvent(event) => matches!(
@@ -241,7 +242,8 @@ pub fn allow_disconnections(event: &ClusterEvent) -> bool {
         RustNodeEvent::ListenerError { .. } => true,
         RustNodeEvent::PeerConnectionError { .. } => false,
         RustNodeEvent::PeerDisconnected { .. } => true,
-        RustNodeEvent::P2p { event } => match event {
+        RustNodeEvent::P2p { event } => match event.unwrapped() {
+            P2pEvent::WithPermit { .. } => false,
             P2pEvent::Connection(_event) => false, // TODO
             P2pEvent::Channel(_event) => false,    // TODO
             P2pEvent::MioEvent(event) => matches!(

@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use juniper::{http::GraphQLRequest, EmptySubscription, RootNode};
+use crate::graphql::api::{http::GraphQLRequest, EmptySubscription, RootNode};
 use ledger::{
     scan_state::{
         currency::{Amount, Balance, Fee, Nonce},
@@ -149,7 +149,7 @@ async fn execute_with_submission(
         "variables": variables,
     }))
     .unwrap();
-    let schema = Schema::new(Query, Mutation, EmptySubscription::new());
+    let schema = Schema::new_with_scalar_value(Query, Mutation, EmptySubscription::new());
     let context = Context::new(node.clone().spawn()).with_tx_submission(enabled);
     let response = request.execute(&schema, &context).await;
     serde_json::to_value(&response).unwrap()
@@ -916,8 +916,8 @@ async fn delegation_payload_has_ocaml_fields_and_partial_receiver() {
 }
 
 /// OCaml Account.Nonce.to_int retains all 32 unsigned bits; it does not cast
-/// the high bit into a sign bit. JSON numbers above i32 use Juniper's Float
-/// representation, which is exact for every UInt32.
+/// the high bit into a sign bit. Wide values retain native integer JSON
+/// spelling through the same schema used by the HTTP endpoint.
 #[tokio::test]
 async fn command_nonce_above_i32_does_not_wrap_negative() {
     for nonce in [i32::MAX as u32, 2_147_483_648, u32::MAX - 1] {
@@ -933,8 +933,8 @@ async fn command_nonce_above_i32_does_not_wrap_negative() {
         .await;
         assert_eq!(errors(&response), Vec::<String>::new(), "{response}");
         assert_eq!(
-            response["data"]["sendPayment"]["payment"]["nonce"].as_f64(),
-            Some(f64::from(nonce))
+            response["data"]["sendPayment"]["payment"]["nonce"].as_u64(),
+            Some(u64::from(nonce))
         );
         assert_eq!(injected_nonces(&node), vec![nonce]);
     }

@@ -10,8 +10,8 @@ use crate::{
 
 use super::{
     BlockProducerVrfEvaluatorAction, BlockProducerVrfEvaluatorActionWithMetaRef,
-    BlockProducerVrfEvaluatorState, BlockProducerVrfEvaluatorStatus, PendingEvaluation,
-    SlotPositionInEpoch, VrfWonSlotWithHash,
+    BlockProducerVrfEvaluatorState, BlockProducerVrfEvaluatorStatus, EpochFingerprint,
+    PendingEvaluation, SlotPositionInEpoch, VrfWonSlotWithHash,
 };
 
 impl BlockProducerVrfEvaluatorState {
@@ -38,8 +38,16 @@ impl BlockProducerVrfEvaluatorState {
             }
             BlockProducerVrfEvaluatorAction::ProcessSlotEvaluationSuccess {
                 vrf_output,
-                staking_ledger_hash,
+                staking_ledger_hash: _,
+                generation: _,
             } => {
+                // The enabling condition matched the response to the pending
+                // evaluation's generation, slot and ledger. Its win is bound
+                // to the epoch data it was evaluated with.
+                let Some(epoch_data) = state.current_evaluation().map(|p| p.fingerprint()) else {
+                    bug_condition!("ProcessSlotEvaluationSuccess without a pending evaluation");
+                    return;
+                };
                 let mut newly_won = false;
                 let global_slot_evaluated = match &vrf_output {
                     mina_vrf::VrfEvaluationOutput::SlotWon(won_slot_data) => {
@@ -47,10 +55,7 @@ impl BlockProducerVrfEvaluatorState {
                             .won_slots
                             .insert(
                                 won_slot_data.global_slot,
-                                VrfWonSlotWithHash::new(
-                                    won_slot_data.clone(),
-                                    staking_ledger_hash.clone(),
-                                ),
+                                VrfWonSlotWithHash::new(won_slot_data.clone(), epoch_data),
                             )
                             .is_none()
                         {
@@ -111,7 +116,9 @@ impl BlockProducerVrfEvaluatorState {
                     .and_then(|s| s.get_epoch_bound_from_check())
                 {
                     match epoch_bound {
-                        SlotPositionInEpoch::Beginning | SlotPositionInEpoch::Within => {
+                        SlotPositionInEpoch::Beginning | SlotPositionInEpoch::Within
+                            if latest_evaluated_global_slot < u32::MAX =>
+                        {
                             dispatcher.push(
                                 BlockProducerVrfEvaluatorAction::ContinueEpochEvaluation {
                                     latest_evaluated_global_slot,
@@ -119,7 +126,9 @@ impl BlockProducerVrfEvaluatorState {
                                 },
                             );
                         }
-                        SlotPositionInEpoch::End => {
+                        _ => {
+                            // The protocol has no successor to its maximum
+                            // slot, even when that slot is inside an epoch.
                             dispatcher.push(
                                 BlockProducerVrfEvaluatorAction::FinishEpochEvaluation {
                                     latest_evaluated_global_slot,
@@ -195,16 +204,23 @@ impl BlockProducerVrfEvaluatorState {
                 next_epoch_first_slot,
             } => {
                 let best_tip_epoch = *best_tip_epoch;
+                let current =
+                    EpochFingerprint::new(best_tip_epoch, &(**staking_epoch_data).clone().into());
+                let next = best_tip_epoch
+                    .checked_add(1)
+                    .map(|epoch| EpochFingerprint::new(epoch, &(**next_epoch_data).clone().into()));
 
+                state.set_checked_clock_epoch(*current_epoch);
                 state.status = BlockProducerVrfEvaluatorStatus::ReadinessCheck {
                     time: meta.time(),
                     current_epoch: *current_epoch,
-                    is_next_epoch_seed_finalized: *is_next_epoch_seed_finalized,
+                    // No next epoch can be evaluated after the terminal protocol epoch.
+                    is_next_epoch_seed_finalized: *is_next_epoch_seed_finalized
+                        && next_epoch_first_slot.is_some(),
                     best_tip_epoch,
                     root_block_epoch: *root_block_epoch,
-                    is_current_epoch_evaluated: state.is_epoch_evaluated(best_tip_epoch),
-                    is_next_epoch_evaluated: state
-                        .is_epoch_evaluated(best_tip_epoch.checked_add(1).expect("overflow")),
+                    is_current_epoch_evaluated: state.is_evaluated(&current),
+                    is_next_epoch_evaluated: next.is_some_and(|next| state.is_evaluated(&next)),
                     last_evaluated_epoch: state.last_evaluated_epoch(),
                     staking_epoch_data: staking_epoch_data.clone(),
                     next_epoch_data: next_epoch_data.clone(),
@@ -217,6 +233,7 @@ impl BlockProducerVrfEvaluatorState {
 
                 if let Some((vrf_evaluator_state, config)) = vrf_evaluator_state {
                     if let Some(epoch_data) = vrf_evaluator_state.epoch_context().get_epoch_data() {
+                        // Current or Next: the tip's epoch or the one after.
                         dispatcher.push(
                             BlockProducerVrfEvaluatorAction::InitializeEpochEvaluation {
                                 staking_epoch_data: epoch_data,
@@ -244,12 +261,23 @@ impl BlockProducerVrfEvaluatorState {
                 staking_epoch_data,
                 producer,
             } => {
+                let epoch = match state.epoch_context() {
+                    super::EpochContext::Next(_) => best_tip_epoch.checked_add(1),
+                    _ => Some(*best_tip_epoch),
+                };
+                let Some(epoch) = epoch else {
+                    bug_condition!("InitializeEpochEvaluation past the terminal epoch");
+                    return;
+                };
+                let target = EpochFingerprint::new(epoch, staking_epoch_data);
+                state.select_target(target);
                 state.status = BlockProducerVrfEvaluatorStatus::ReadyToEvaluate {
                     time: meta.time(),
                     best_tip_epoch: *best_tip_epoch,
-                    is_current_epoch_evaluated: state.is_epoch_evaluated(*best_tip_epoch),
-                    is_next_epoch_evaluated: state
-                        .is_epoch_evaluated(best_tip_epoch.checked_add(1).expect("overflow")),
+                    is_current_epoch_evaluated: state.completed_epoch(*best_tip_epoch).is_some(),
+                    is_next_epoch_evaluated: best_tip_epoch
+                        .checked_add(1)
+                        .is_some_and(|next| state.completed_epoch(next).is_some()),
                     best_tip_slot: *best_tip_slot,
                     best_tip_global_slot: *best_tip_global_slot,
                     next_epoch_first_slot: *next_epoch_first_slot,
@@ -316,11 +344,30 @@ impl BlockProducerVrfEvaluatorState {
                     return;
                 };
 
-                mina_core::log::warn!(
-                    meta.time();
-                    kind = "BlockProducerVrfEvaluatorAction::FinalizeDelegatorTableConstruction",
-                    message = "Empty delegator table, account may not exist yet in the staking ledger"
-                );
+                // No ledger with the selected hash: never evaluate it as a
+                // ledger without our stake. Ask again on a later best tip, or
+                // after a while.
+                let Some(delegator_table) = delegator_table else {
+                    mina_core::log::warn!(
+                        meta.time();
+                        kind = "BlockProducerVrfEvaluatorAction::FinalizeDelegatorTableConstruction",
+                        message = "Staking ledger not available; waiting for it before evaluating",
+                        ledger = staking_epoch_data.ledger.to_string(),
+                    );
+                    state.set_ledger_unavailable(meta.time());
+                    state.status = BlockProducerVrfEvaluatorStatus::EpochEvaluationInterrupted {
+                        time: meta.time(),
+                        reason: super::InterruptReason::StakingLedgerUnavailable,
+                    };
+                    return;
+                };
+                if delegator_table.is_empty() {
+                    mina_core::log::warn!(
+                        meta.time();
+                        kind = "BlockProducerVrfEvaluatorAction::FinalizeDelegatorTableConstruction",
+                        message = "Empty delegator table, account may not exist yet in the staking ledger"
+                    );
+                }
 
                 let mut staking_epoch_data = staking_epoch_data.clone();
                 staking_epoch_data.delegator_table = delegator_table.clone();
@@ -387,6 +434,7 @@ impl BlockProducerVrfEvaluatorState {
                     epoch_number,
                     epoch_data: staking_epoch_data.clone(),
                     latest_evaluated_slot: latest_evaluated_global_slot,
+                    generation: state.generation(),
                 });
                 state.status = BlockProducerVrfEvaluatorStatus::EpochEvaluationPending {
                     time: meta.time(),
@@ -428,12 +476,17 @@ impl BlockProducerVrfEvaluatorState {
                 epoch_number,
                 latest_evaluated_global_slot: _,
             } => {
-                state.unset_pending_evaluation();
+                let completed = state.current_evaluation().map(|p| p.fingerprint());
+                state.clear_target();
                 state.status = BlockProducerVrfEvaluatorStatus::EpochEvaluationSuccess {
                     time: meta.time(),
                     epoch_number: *epoch_number,
                 };
-                state.set_last_evaluated_epoch(*epoch_number);
+                if let Some(completed) = completed {
+                    state.mark_epoch_evaluated(completed);
+                } else {
+                    bug_condition!("FinishEpochEvaluation without a pending evaluation");
+                }
             }
             BlockProducerVrfEvaluatorAction::WaitForNextEvaluation => {
                 state.status =
@@ -441,26 +494,79 @@ impl BlockProducerVrfEvaluatorState {
             }
             BlockProducerVrfEvaluatorAction::SelectInitialSlot {
                 best_tip_epoch,
-                current_global_slot,
-                current_slot,
-                next_epoch_first_slot,
-                best_tip_slot: current_best_tip_slot,
-                best_tip_global_slot: current_best_tip_global_slot,
                 staking_epoch_data,
+                ..
             } => {
-                let (epoch_number, initial_global_slot, initial_slot) = match state.epoch_context()
-                {
-                    super::EpochContext::Current(_) => {
-                        (*best_tip_epoch, *current_global_slot, *current_slot)
+                let epoch_number = match state.epoch_context() {
+                    super::EpochContext::Current(_) => *best_tip_epoch,
+                    super::EpochContext::Next(_) => {
+                        best_tip_epoch.checked_add(1).expect("overflow")
                     }
-                    super::EpochContext::Next(_) => (
-                        best_tip_epoch.checked_add(1).expect("overflow"),
-                        next_epoch_first_slot.checked_sub(1).expect("underflow"),
-                        0,
-                    ),
-                    super::EpochContext::Waiting => todo!(),
+                    super::EpochContext::Waiting => {
+                        // Setup can only follow a Current/Next readiness check.
+                        bug_condition!(
+                            "SelectInitialSlot requires a Current or Next epoch context"
+                        );
+                        return;
+                    }
                 };
-                state.status = BlockProducerVrfEvaluatorStatus::InitialSlotSelection {
+                let mut state_context: Substate<crate::State> =
+                    Substate::from_compatible_substate(state_context);
+                let Ok(state) = state_context.get_substate_mut() else {
+                    return;
+                };
+                let best_tip = state.transition_frontier.best_tip().cloned();
+                let current_global_slot = state.cur_global_slot_at(meta.time());
+                // The table may have been requested before a sleep or catch-up.
+                // Bind its seed, ledger and stake to the epoch of the slot we
+                // will actually evaluate, using the latest tip and clock.
+                // OCaml: <https://github.com/MinaProtocol/mina/blob/73134bfd3a43c3f4d8ee564b3d04a0c6ed2e0b3c/src/lib/consensus/proof_of_stake.ml#L2902-L2950>
+                // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/vrf_evaluator/vrf_evaluator.ml#L393-L424>
+                let selected = EpochFingerprint::new(epoch_number, staking_epoch_data);
+                let valid = state
+                    .block_producer
+                    .vrf_evaluator()
+                    .is_some_and(|e| e.target() == Some(&selected))
+                    && best_tip
+                        .as_ref()
+                        .zip(current_global_slot)
+                        .is_some_and(|(tip, slot)| {
+                            let slots_per_epoch = tip.constants().slots_per_epoch.as_u32();
+                            slot / slots_per_epoch <= epoch_number
+                                && EpochFingerprint::select(tip.consensus_state(), epoch_number)
+                                    == Some(selected)
+                        });
+                if !valid {
+                    let dispatcher = state_context.into_dispatcher();
+                    dispatcher.push(BlockProducerVrfEvaluatorAction::InterruptEpochEvaluation {
+                        reason: super::InterruptReason::EpochDataStale,
+                    });
+                    if let Some(best_tip) = best_tip {
+                        // Reuse readiness/recovery: wait if the tip still lags,
+                        // otherwise request the correct epoch's table now.
+                        dispatcher.push(BlockProducerAction::BestTipUpdate { best_tip });
+                    }
+                    return;
+                }
+                let best_tip = best_tip.expect("validated best tip");
+                let slots_per_epoch = best_tip.constants().slots_per_epoch.as_u32();
+                // Include a current-slot win, and retain a precomputed next
+                // epoch when it becomes current. Slot zero is genesis. The
+                // evaluator cursor is the slot BEFORE the first request.
+                // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/block_producer/block_producer.ml#L1133-L1209>
+                let first_slot = current_global_slot
+                    .expect("validated clock")
+                    .max(epoch_number.checked_mul(slots_per_epoch).expect("overflow"))
+                    .max(1);
+                let initial_global_slot = first_slot - 1;
+                let Some(evaluator) = state
+                    .block_producer
+                    .as_mut()
+                    .map(|bp| &mut bp.vrf_evaluator)
+                else {
+                    return;
+                };
+                evaluator.status = BlockProducerVrfEvaluatorStatus::InitialSlotSelection {
                     time: meta.time(),
                     epoch_number,
                     initial_slot: initial_global_slot,
@@ -476,33 +582,29 @@ impl BlockProducerVrfEvaluatorState {
                 let delegators =
                     u32::try_from(staking_epoch_data.delegator_table.len()).unwrap_or(u32::MAX);
 
-                let (dispatcher, state) = state_context.into_dispatcher_and_state();
+                let dispatcher = state_context.into_dispatcher();
                 dispatcher.push(BlockProducerVrfEvaluatorEffectfulAction::InitializeStats {
                     epoch: epoch_number,
-                    initial_slot,
+                    initial_slot: first_slot % slots_per_epoch,
                     delegated_stake,
                     total_currency,
                     delegators,
                 });
-                if let Some(initial_slot) = state
-                    .block_producer
-                    .vrf_evaluator()
-                    .and_then(|v| v.initial_slot())
-                {
-                    dispatcher.push(BlockProducerVrfEvaluatorAction::BeginEpochEvaluation {
-                        best_tip_epoch: *best_tip_epoch,
-                        best_tip_global_slot: *current_best_tip_global_slot,
-                        best_tip_slot: *current_best_tip_slot,
-                        evaluation_epoch: epoch_number,
-                        staking_epoch_data: staking_epoch_data.clone(),
-                        latest_evaluated_global_slot: initial_slot,
-                    });
-                }
+                dispatcher.push(BlockProducerVrfEvaluatorAction::BeginEpochEvaluation {
+                    best_tip_epoch: to_epoch_and_slot(best_tip.curr_global_slot_since_hard_fork())
+                        .0,
+                    best_tip_global_slot: best_tip.global_slot(),
+                    best_tip_slot: best_tip.global_slot() % slots_per_epoch,
+                    evaluation_epoch: epoch_number,
+                    staking_epoch_data: staking_epoch_data.clone(),
+                    latest_evaluated_global_slot: initial_global_slot,
+                });
             }
             BlockProducerVrfEvaluatorAction::CleanupOldSlots { best_tip_epoch } => {
                 state.cleanup_old_won_slots(best_tip_epoch);
             }
             BlockProducerVrfEvaluatorAction::InterruptEpochEvaluation { reason } => {
+                state.clear_target();
                 state.status = BlockProducerVrfEvaluatorStatus::EpochEvaluationInterrupted {
                     time: meta.time(),
                     reason: reason.clone(),

@@ -10,7 +10,7 @@ use crate::{
     block_producer_effectful::StagedLedgerDiffCreateOutput,
     ledger::{
         ledger_manager::{LedgerManager, LedgerRequest},
-        write::{BlockApplyResult, BlockApplyResultArchive},
+        write::{BlockApplyError, BlockApplyResult, BlockApplyResultArchive},
     },
     p2p::channels::rpc::StagedLedgerAuxAndPendingCoinbases,
     rpc::{
@@ -144,8 +144,8 @@ fn error_to_string(e: InvalidBigInt) -> String {
 }
 
 /// The producer and coverage rehearsal must use the same full-statement lookup.
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/snark_pool.ml#L277-L277>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/staged_ledger/staged_ledger.ml#L691-L705>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/snark_pool.ml#L277-L277>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/staged_ledger/staged_ledger.ml#L691-L705>
 pub(crate) fn completed_work_for_statement(
     completed_snarks: &BTreeMap<SnarkJobId, Snark>,
     statement: &ledger::scan_state::scan_state::transaction_snark::work::Statement,
@@ -247,6 +247,12 @@ impl StagedLedgersStorage {
 
 #[derive(Default)]
 pub struct LedgerCtx {
+    /// Immutable best-tip views, retained only until their ordered pool read.
+    transaction_pool_ledgers: BTreeMap<u32, Option<TransactionPoolLedgerPin>>,
+    /// Bases recognized while staged compaction was deferred. They may leave
+    /// `snarked_ledgers` before the resumed fold, but must still stop that fold
+    /// so its staged mask can be rebased rather than committed into an orphan.
+    transaction_pool_deferred_bases: BTreeSet<String>,
     snarked_ledgers: BTreeMap<LedgerHash, Mask>,
     /// Additional snarked ledgers specified at startup (loaded from disk)
     additional_snarked_ledgers: BTreeMap<LedgerHash, Mask>,
@@ -286,6 +292,13 @@ struct HistoricalRoot {
     ledger_hash: MinaBaseStagedLedgerHashStableV1,
 }
 
+struct TransactionPoolLedgerPin {
+    mask: Mask,
+    /// A Mask clone shares mutable ancestors. Keep them out of snarked
+    /// compaction until the read consumes this pin, just as persistence does.
+    keep: Vec<LedgerHash>,
+}
+
 #[derive(Default)]
 struct LedgerSyncState {
     snarked_ledgers: BTreeMap<LedgerHash, Mask>,
@@ -293,6 +306,20 @@ struct LedgerSyncState {
 }
 
 impl LedgerCtx {
+    /// Drop queryable state before notifying the state machine. Checkpoint pins
+    /// remain private to their existing writer and cannot seed a new sync.
+    pub(super) fn invalidate_for_resync(&mut self) {
+        self.sync = LedgerSyncState::default();
+        self.staged_ledgers = StagedLedgersStorage::default();
+        self.snarked_ledgers.clear();
+        self.additional_snarked_ledgers.clear();
+        self.root_history.clear();
+        self.root_history_protocol_states.clear();
+        self.token_owners = None;
+        self.epoch_delegatees = Default::default();
+        self.delegate_index.clear();
+    }
+
     pub(super) fn memory_debug(&self) -> serde_json::Value {
         // Attribute shared chunks to the frontier first, then charge history
         // only for additional retained allocations. The sum is the live union.
@@ -309,6 +336,7 @@ impl LedgerCtx {
             .map(|root| root.scan_state.scan_state.tree_heap_bytes(&mut seen))
             .sum::<usize>();
         serde_json::json!({
+            "transaction_pool_ledger_pins": self.transaction_pool_ledgers.len(),
             "snarked_ledgers": self.snarked_ledgers.len(),
             "additional_snarked_ledgers": self.additional_snarked_ledgers.len(),
             "staged_ledgers": self.staged_ledgers.staged_ledgers.len(),
@@ -746,6 +774,57 @@ impl LedgerCtx {
         self.send_event(LedgerEvent::Read(id, resp))
     }
 
+    pub(super) fn pin_transaction_pool_ledger(&mut self, id: u32, hash: &LedgerHash) {
+        let pin = self.mask(hash).map(|(mask, _)| {
+            let mut keep = vec![hash.clone()];
+            let mut ancestor = mask.get_parent();
+            while let Some(mut parent) = ancestor {
+                keep.push(merkle_root(&mut parent));
+                ancestor = parent.get_parent();
+            }
+            TransactionPoolLedgerPin { mask, keep }
+        });
+        self.transaction_pool_ledgers.insert(id, pin);
+    }
+
+    fn transaction_pool_keep_pinned(&self, keep: &mut LedgersToKeep) {
+        for pin in self.transaction_pool_ledgers.values().flatten() {
+            for hash in &pin.keep {
+                keep.add_snarked(hash.clone());
+            }
+        }
+    }
+
+    pub(super) fn transaction_pool_accounts(
+        &mut self,
+        id: u32,
+        hash: &LedgerHash,
+        ids: Vec<AccountId>,
+        pinned: bool,
+    ) -> Result<BTreeMap<AccountId, Account>, String> {
+        let mask = if pinned {
+            self.transaction_pool_ledgers
+                .remove(&id)
+                .flatten()
+                .map(|pin| pin.mask)
+        } else {
+            self.mask(hash).map(|(mask, _)| mask)
+        }
+        .ok_or_else(|| "Ledger unavailable".to_owned())?;
+        // Missing accounts are omitted, exactly as in the synchronous lookup.
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L254-L273>
+        let addrs = mask
+            .location_of_account_batch(&ids)
+            .into_iter()
+            .filter_map(|(_, addr)| addr)
+            .collect::<Vec<_>>();
+        Ok(mask
+            .get_batch(&addrs)
+            .into_iter()
+            .filter_map(|(_, account)| account.map(|a| (a.id(), *a)))
+            .collect())
+    }
+
     pub fn insert_genesis_ledger(&mut self, mut mask: Mask) {
         let merkle_root_hash = merkle_root(&mut mask);
         let staged_ledger =
@@ -1154,8 +1233,7 @@ impl LedgerCtx {
                 ledger_hash,
                 best_tip: request.best_tip.clone(),
                 num_accounts: accounts.len() as u64,
-                accounts_json: String::from_utf8(json)
-                    .map_err(|e| format!("accounts are not UTF-8: {e}"))?,
+                accounts_json: json,
             })
         });
         // The rebuilt masks were only for this export.
@@ -1250,8 +1328,7 @@ impl LedgerCtx {
                 hash,
                 migrated_hash: LedgerHash::from_fp(migrated),
                 num_accounts: accounts.len() as u64,
-                accounts_json: String::from_utf8(json)
-                    .map_err(|e| format!("accounts are not UTF-8: {e}"))?,
+                accounts_json: json,
             })
         });
         if let Some(first) = temporary {
@@ -1325,13 +1402,20 @@ impl LedgerCtx {
     /// each delegating account's index, key and balance. The delegating
     /// accounts are recorded for `lastEpochDelegators` on the way, so that
     /// GraphQL needs no scan of its own.
+    ///
+    /// `None` unless a complete ledger with exactly this hash is available:
+    /// a ledger still being synced may lack delegators, and its table would
+    /// turn their wins into losses.
     pub fn producer_delegator_table(
         &mut self,
         ledger_hash: &LedgerHash,
         producer: &AccountPublicKey,
     ) -> Option<DelegatorTable> {
         let producer = CompressedPubKey::try_from(producer.clone()).ok()?;
-        let (mask, _) = self.mask(ledger_hash)?;
+        let mut mask = self.complete_mask(ledger_hash)?;
+        if &LedgerHash::from_fp(mask.merkle_root()) != ledger_hash {
+            return None;
+        }
         let delegating = self.delegating_accounts(ledger_hash, &mask, &producer, |account| {
             staking_delegate(account) == Some(&producer)
         });
@@ -1423,23 +1507,57 @@ impl LedgerCtx {
         let height = LEDGER_DEPTH
             .checked_sub(parent.length())
             .ok_or("Address deeper than the ledger")?;
-        let mut accounts: Vec<Box<Account>> = accounts
+        let capacity = 1u64 << height;
+        // OCaml rejects excess contents; truncation can turn a malformed
+        // answer into an apparently valid one.
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/syncable_ledger/syncable_ledger.ml#L649-L669>
+        if accounts.len() as u64 > capacity {
+            return Err("Too many accounts for subtree".into());
+        }
+        let accounts: Vec<Box<Account>> = accounts
             .into_iter()
             .map(|account| Ok(Box::new((&account).try_into()?)))
             .collect::<Result<Vec<_>, InvalidBigInt>>()
             .map_err(error_to_string)?;
-        // Only as many as the subtree has leaves are set.
-        if let Some(leaves) = 1usize.checked_shl(height as u32) {
-            accounts.truncate(leaves);
-        }
-
         // Hashing the accounts is most of the work of syncing a ledger, about
         // 1 ms each in the browser, so hash them in parallel and seed the
         // leaf hashes, leaving only the inner nodes to hash here.
         let hashes: Vec<_> = accounts.par_iter().map(|account| account.hash()).collect();
-        let answer_hash = LedgerHash::from_fp(subtree_hash(hashes.clone(), height));
+        let answer_hash = if hashes.is_empty() {
+            // Clearing large empty ranges must not rehash every empty level.
+            super::ledger_empty_hash_at_depth(parent.length())
+        } else {
+            LedgerHash::from_fp(subtree_hash(hashes.clone(), height))
+        };
         if &answer_hash != expected_hash {
             return Ok(answer_hash);
+        }
+        // Masks cannot hide a removed parent account, and removing through
+        // one would mutate the source ledger. Keep the normal delta-sync
+        // fast path; materialize only when a verified answer displaces an
+        // identifier or clears occupied leaves in a reused ledger.
+        if mask.get_parent().is_some() {
+            let first = parent
+                .iter_children(LEDGER_DEPTH)
+                .next()
+                .ok_or("Invalid subtree")?
+                .to_index()
+                .0;
+            let end = (first + capacity).min(mask.num_accounts() as u64);
+            let destructive = (first..end).any(|index| {
+                mask.get_at_index(ledger::AccountIndex(index))
+                    .is_some_and(|old| {
+                        accounts
+                            .get((index - first) as usize)
+                            .is_none_or(|new| new.id() != old.id())
+                    })
+            });
+            if destructive {
+                mask = mask.copy_independent();
+                self.sync
+                    .snarked_ledgers
+                    .insert(snarked_ledger_hash, mask.clone());
+            }
         }
         mask.set_all_accounts_rooted_at(parent.clone(), &accounts)
             .map_err(|_| "Failed when setting accounts".to_owned())?;
@@ -1490,19 +1608,20 @@ impl LedgerCtx {
         skip_verification: Option<SkipVerification>,
     ) -> Result<BlockApplyResult, String> {
         self.block_apply_with(block, pred_block, skip_verification, false)
+            .map_err(|error| error.to_string())
     }
 
-    /// As [`Self::block_apply`]. With `restored` (a block a frontier store
-    /// restore replays, I5d1), a staged ledger hash mismatch is an error
-    /// rather than a panic: the node then drops the store and bootstraps
-    /// (R20 D5), where a peer's block that mismatches stops the node.
+    /// Apply on a child ledger; publish it only after its hash matches.
+    /// OCaml rejects the breadcrumb on a hash mismatch. We conservatively
+    /// treat this as a local fault and rebootstrap without punishing peers.
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transition_frontier/frontier_base/breadcrumb.ml#L135-L179>
     pub fn block_apply_with(
         &mut self,
         block: ArcBlockWithHash,
         pred_block: AppliedBlock,
         skip_verification: Option<SkipVerification>,
-        restored: bool,
-    ) -> Result<BlockApplyResult, String> {
+        _restored: bool,
+    ) -> Result<BlockApplyResult, BlockApplyError> {
         // Catch-up blocks bypass gossip prevalidation. Enforce the same stop
         // policy before applying any ledger changes, even with proof checks off.
         mina_core::block::prevalidate::validate_stop_slots(
@@ -1557,7 +1676,7 @@ impl LedgerCtx {
             .map_err(error_to_string)?;
 
         let prev_protocol_state: ledger::proofs::block::ProtocolState =
-            prev_protocol_state.try_into()?;
+            prev_protocol_state.try_into().map_err(error_to_string)?;
 
         let result = staged_ledger
             .apply(
@@ -1576,33 +1695,39 @@ impl LedgerCtx {
         let just_emitted_a_proof = result.ledger_proof.is_some();
         let ledger_hashes = MinaBaseStagedLedgerHashStableV1::from(&result.hash_after_applying);
 
-        // TODO(binier): return error if not matching.
-        let expected_ledger_hashes = block.staged_ledger_hashes();
-        if &ledger_hashes != expected_ledger_hashes {
-            let staged_ledger = self
-                .staged_ledger_mut(pred_block.staged_ledger_hashes())
-                .unwrap(); // We already know the ledger exists, see the same call a few lines above
-
-            match dump_application_to_file(staged_ledger, block.clone(), pred_block) {
-                Ok(filename) => mina_core::info!(
-                    mina_core::log::system_time();
-                    kind = "LedgerService::dump - Failed application",
-                    summary = format!("StagedLedger and block saved to: {filename:?}")
-                ),
-                Err(e) => mina_core::error!(
-                    mina_core::log::system_time();
-                    kind = "LedgerService::dump - Failed application",
-                    summary = format!("Failed to save block application to file: {e:?}")
-                ),
-            }
-
-            if restored {
-                return Err(format!(
-                    "staged ledger hash mismatch replaying a restored block. found: {ledger_hashes:?}, expected: {expected_ledger_hashes:?}"
-                ));
-            }
-            panic!("staged ledger hash mismatch. found: {ledger_hashes:#?}, expected: {expected_ledger_hashes:#?}");
+        if &ledger_hashes != block.staged_ledger_hashes() {
+            return Err(BlockApplyError::LocalState(format!(
+                "block {} staged ledger hash mismatch: computed {ledger_hashes:?}, expected {:?}",
+                block.hash(),
+                block.staged_ledger_hashes()
+            )));
         }
+
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_block/validation.ml#L646-L675>
+        // Validate before publishing the child ledger, including catch-up with
+        // proof verification skipped. The body reference was checked above.
+        let statement = result.ledger_proof.as_ref().map(|(proof, _)| {
+            v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement::from(&proof.statement())
+        });
+        let constants = mina_core::consensus::ConsensusConstants::create(
+            constraint_constants(),
+            &pred_block.header().protocol_state.body.constants,
+        );
+        crate::transition_frontier::protocol_state::check_protocol_state(
+            &constants,
+            &pred_block.header().protocol_state,
+            pred_block.hash(),
+            &block.header().protocol_state,
+            &ledger_hashes,
+            &block
+                .header()
+                .protocol_state
+                .body
+                .blockchain_state
+                .body_reference,
+            statement.as_ref(),
+        )
+        .map_err(|error| BlockApplyError::InvalidBlock(error.to_string()))?;
 
         let archive_data = if self.archive_mode {
             BlockApplyResultArchive::new(&block, &staged_ledger, &result.accounts_created)
@@ -1683,7 +1808,7 @@ impl LedgerCtx {
         needed_protocol_states: BTreeMap<StateHash, MinaStateProtocolStateValueStableV2>,
         new_root: &ArcBlockWithHash,
         new_best_tip: &ArcBlockWithHash,
-    ) -> CommitResult {
+    ) -> Result<CommitResult, String> {
         mina_core::debug!(mina_core::log::system_time();
             kind = "LedgerService::commit",
             summary = format!("commit {}, {}", new_best_tip.height(), new_best_tip.hash()),
@@ -1699,14 +1824,14 @@ impl LedgerCtx {
             &root_snarked_ledger_updates,
             &needed_protocol_states,
             new_root.snarked_ledger_hash(),
-        )
-        .unwrap();
+        )?;
 
         self.retain_root_history(&root_history, &needed_protocol_states);
 
         // Ledgers the frontier store is writing whole stay as they are, with
         // their ancestors, until it is done (R20 D3).
         self.persist_keep_pinned(&mut ledgers_to_keep);
+        self.transaction_pool_keep_pinned(&mut ledgers_to_keep);
         self.drop_snarked_ledgers(&ledgers_to_keep);
         self.epoch_delegatees.commit(new_root, new_best_tip);
         self.snarked_ledgers.extend(
@@ -1740,12 +1865,16 @@ impl LedgerCtx {
         ] {
             if let Some((mut mask, is_synced)) = self.mask(ledger_hash) {
                 if !is_synced {
-                    panic!("ledger mask expected to be synced: {ledger_hash}");
+                    return Err(format!("ledger mask expected to be synced: {ledger_hash}"));
                 }
                 let calculated = merkle_root(&mut mask);
-                assert_eq!(ledger_hash, &calculated, "ledger mask hash mismatch");
+                if ledger_hash != &calculated {
+                    return Err(format!(
+                        "ledger mask hash mismatch: expected {ledger_hash}, computed {calculated}"
+                    ));
+                }
             } else {
-                panic!("ledger mask is missing: {ledger_hash}");
+                return Err(format!("ledger mask is missing: {ledger_hash}"));
             }
         }
 
@@ -1755,13 +1884,10 @@ impl LedgerCtx {
         self.freeze_root_snarked_ledger(new_root);
         kill_point("commit-frozen");
 
-        // TODO(tizoc): should this fail silently?
-        if !self.commit_root_staged_ledger(
+        self.commit_root_staged_ledger(
             new_root.staged_ledger_hashes(),
             new_root.snarked_ledger_hash(),
-        ) {
-            return Default::default();
-        }
+        )?;
 
         let needed_protocol_states = self
             .staged_ledger_mut(new_root.staged_ledger_hashes())
@@ -1788,11 +1914,11 @@ impl LedgerCtx {
         // self.check_alive_masks();
         kill_point("commit-end");
 
-        CommitResult {
+        Ok(CommitResult {
             alive_masks: ::ledger::mask::alive_len(),
             available_jobs,
             needed_protocol_states,
-        }
+        })
     }
 
     /// Makes the new root's staged ledger mask the root staged ledger's, as
@@ -1802,8 +1928,8 @@ impl LedgerCtx {
     /// chain stops at the first mask whose parent is a snarked ledger, where
     /// the root staged ledger's mask hangs since it is rebuilt as a mask
     /// (R38), or at a database of its own, as the genesis staged ledger's copy
-    /// is: the staged changes never go into a snarked ledger. False if the new
-    /// root's staged ledger is missing.
+    /// is: the staged changes never go into a snarked ledger. Missing ledgers
+    /// and failed rebases are errors; the caller must resynchronize.
     ///
     /// The root staged ledger's mask is then kept over the root snarked
     /// ledger `root_snarked` itself ([`Self::rebase_root_staged_ledger`]).
@@ -1823,35 +1949,39 @@ impl LedgerCtx {
         &mut self,
         new_root: &MinaBaseStagedLedgerHashStableV1,
         root_snarked: &LedgerHash,
-    ) -> bool {
-        let snarked_ledgers = self
+    ) -> Result<(), String> {
+        let mut snarked_ledgers = self
             .snarked_ledgers
             .values()
             .map(|mask| mask.get_uuid())
             .collect::<BTreeSet<_>>();
         let Some(new_root_ledger) = self.staged_ledgers.get_mut(new_root) else {
-            return false;
+            return Err(format!("root staged ledger is missing: {new_root:?}"));
         };
+        // Moving the root folds and detaches staged masks in place, including
+        // handles retained by a delayed pool read. Defer only this reclamation;
+        // the new root remains queryable through its existing parent chain.
+        // The next commit after the pins drain performs the normal fold/rebase.
+        if self.transaction_pool_ledgers.values().any(Option::is_some) {
+            self.transaction_pool_deferred_bases.extend(snarked_ledgers);
+            return Ok(());
+        }
+        snarked_ledgers.extend(self.transaction_pool_deferred_bases.iter().cloned());
         new_root_ledger
             .commit_and_reparent_to_base(|parent| snarked_ledgers.contains(&parent.get_uuid()));
         let staged = new_root_ledger.ledger();
         let Some(onto) = self.snarked_ledgers.get(root_snarked) else {
-            bug_condition!(
-                "commit_root_staged_ledger: the root snarked ledger {root_snarked} is not held"
-            );
-            return true;
+            return Err(format!("root snarked ledger is missing: {root_snarked}"));
         };
         match staged.get_parent() {
             Some(parent) if parent.get_uuid() == onto.get_uuid() => {}
-            Some(parent) => self.rebase_root_staged_ledger(&staged, &parent, onto, root_snarked),
+            Some(parent) => self.rebase_root_staged_ledger(&staged, &parent, onto, root_snarked)?,
             // A database of its own: the genesis staged ledger's copy, in
             // memory. One on disk is a dropped snarked ledger the staged
             // mask was committed into, which the rebase above prevents.
             None => {
                 if staged.disk_state().is_some() {
-                    bug_condition!(
-                        "the root staged ledger is a database on disk: a dropped snarked ledger"
-                    );
+                    return Err("root staged ledger is an orphan database on disk".into());
                 }
             }
         }
@@ -1872,7 +2002,8 @@ impl LedgerCtx {
                 .staged_accounts_referenced();
             staged.reclaim_unreferenced_accounts(&pending);
         }
-        true
+        self.transaction_pool_deferred_bases.clear();
+        Ok(())
     }
 
     /// Moves the root staged ledger's mask `staged` from `from`, a snarked
@@ -1906,7 +2037,7 @@ impl LedgerCtx {
         from: &Mask,
         onto: &Mask,
         onto_hash: &LedgerHash,
-    ) {
+    ) -> Result<(), String> {
         let started = redux::Instant::now();
         let own = staged
             .own_account_indexes()
@@ -1919,17 +2050,15 @@ impl LedgerCtx {
                 .map(|(index, _)| index)
                 .collect::<Vec<_>>(),
             Ok(None) => {
-                bug_condition!(
+                return Err(format!(
                     "the root snarked ledger {onto_hash} differs from the ledger the root staged ledger hangs from in more than the {} accounts the staged ledger owns; left where it is",
                     own.len()
-                );
-                return;
+                ));
             }
             Err(error) => {
-                bug_condition!(
+                return Err(format!(
                     "the root snarked ledger {onto_hash} can't be compared with the ledger the root staged ledger hangs from: {error}; left where it is"
-                );
-                return;
+                ));
             }
         };
         let not_own = differing
@@ -1937,14 +2066,12 @@ impl LedgerCtx {
             .filter(|index| !own.contains(index))
             .count();
         if not_own > 0 {
-            bug_condition!(
+            return Err(format!(
                 "the root snarked ledger {onto_hash} differs from the ledger the root staged ledger hangs from in {not_own} accounts the staged ledger doesn't own; left where it is"
-            );
-            return;
+            ));
         }
         if !staged.move_onto_parent(onto) {
-            bug_condition!("the root staged ledger isn't an attached mask; left where it is");
-            return;
+            return Err("root staged ledger is not an attached mask".into());
         }
         mina_core::info!(
             mina_core::log::system_time();
@@ -1954,6 +2081,7 @@ impl LedgerCtx {
             differing_accounts = differing.len(),
             ms = started.elapsed().as_secs_f64() * 1000.0,
         );
+        Ok(())
     }
 
     /// A commit's first step: the snarked ledgers not kept are dropped.
@@ -2347,14 +2475,13 @@ impl LedgerCtx {
         let protocol_state_view =
             protocol_state_view(&pred_block.header().protocol_state).map_err(error_to_string)?;
 
-        // TODO(binier): include `invalid_txns` in output.
         // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/block_producer/block_producer.ml#L177-L237>
         let transactions_allowed = stop_slot_policy(
             mina_core::constants::stop_slots(),
             global_slot_since_genesis.as_u32(),
             pred_block.global_slot_diff(),
         )?;
-        let (pre_diff, _invalid_txns) = if !transactions_allowed {
+        let (pre_diff, invalid_txns) = if !transactions_allowed {
             (
                 ledger::staged_ledger::diff::with_valid_signatures_and_proofs::Diff::empty(),
                 Vec::new(),
@@ -2374,6 +2501,8 @@ impl LedgerCtx {
                 )
                 .map_err(|err| format!("{err:?}"))?
         };
+        // OCaml reports these to the node error service, if configured.
+        crate::node_error_events::transaction_inclusion_failures(&invalid_txns);
 
         // TODO(binier): maybe here, check if block reward is above threshold.
         // <https://github.com/minaprotocol/mina/blob/b3d418a8c0ae4370738886c2b26f0ec7bdb49303/src/lib/block_producer/block_producer.ml#L222>
@@ -2646,17 +2775,33 @@ impl LedgerCtx {
         report
     }
 
+    /// Free space and Todo jobs per tree, oldest first, as GraphQL
+    /// `scanState` reports them. Unlike `scan_state_summary` it builds,
+    /// converts and hashes no job, so it is cheap on a full scan state.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/mina_graphql.ml#L2729-L2763>
+    pub fn scan_state_metrics(
+        &self,
+        staged_ledger_hash: &MinaBaseStagedLedgerHashStableV1,
+    ) -> Result<Vec<(u64, u64, u64)>, String> {
+        self.staged_ledgers
+            .get(staged_ledger_hash)
+            .map(|ledger| ledger.scan_state().tree_metrics())
+            .ok_or_else(|| "Scan state ledger unavailable".to_owned())
+    }
+
     pub fn scan_state_summary(
         &self,
         staged_ledger_hash: &MinaBaseStagedLedgerHashStableV1,
-    ) -> Result<Vec<Vec<RpcScanStateSummaryScanStateJob>>, String> {
+    ) -> Result<crate::rpc::RpcScanStateSummaryData, String> {
         use ledger::scan_state::scan_state::JobValue;
 
         let ledger = self.staged_ledgers.get(staged_ledger_hash);
         let Some(ledger) = ledger else {
-            return Ok(Vec::new());
+            return Err("Scan state ledger unavailable".to_owned());
         };
-        ledger
+        let trees = ledger.scan_state().tree_metrics();
+        let jobs = ledger
             .scan_state()
             .view()
             .map(|jobs| {
@@ -2747,7 +2892,8 @@ impl LedgerCtx {
                 }
                 Ok(res)
             })
-            .collect()
+            .collect::<Result<_, String>>()?;
+        Ok(crate::rpc::RpcScanStateSummaryData { jobs, trees })
     }
 }
 
@@ -2804,6 +2950,17 @@ fn staged_ledger_reconstruct(
             .iter()
             .map(|state| Ok((state.try_hash()?.to_field()?, state.clone())))
             .collect::<Result<BTreeMap<Fp, _>, _>>()?;
+        // Checked with the parts too; an error here if they ever come
+        // another way.
+        if let Some(missing) = parts
+            .scan_state
+            .required_state_hashes()
+            .into_iter()
+            .find(|hash| !states.contains_key(hash))
+        {
+            let error = format!("protocol state {missing} is missing from the parts");
+            return Ok((staged_ledger_hash, Err(error)));
+        }
 
         // Converted when the parts were checked: a shallow copy, the jobs
         // shared (R38).
@@ -2944,57 +3101,6 @@ fn dump_reconstruct_to_file(
 /// So we can easily reproduce the application both in Rust and OCaml, to compare them.
 /// - <https://github.com/o1-labs/mina-rust/blob/8e68037aafddd43842a54c8439baeafee4c6e1eb/ledger/src/staged_ledger/staged_ledger.rs#L5959>
 /// - TODO: Find OCaml link, I remember having the same test in OCaml but I can't find where
-fn dump_application_to_file(
-    staged_ledger: &StagedLedger,
-    block: ArcBlockWithHash,
-    pred_block: AppliedBlock,
-) -> std::io::Result<String> {
-    use mina_p2p_messages::binprot::{
-        self,
-        macros::{BinProtRead, BinProtWrite},
-    };
-
-    #[derive(BinProtRead, BinProtWrite)]
-    struct ApplyContext {
-        accounts: Vec<v2::MinaBaseAccountBinableArgStableV2>,
-        scan_state: v2::TransactionSnarkScanStateStableV2,
-        pending_coinbase: v2::MinaBasePendingCoinbaseStableV2,
-        pred_block: v2::MinaBlockBlockStableV2,
-        blocks: Vec<v2::MinaBlockBlockStableV2>,
-    }
-
-    let cs = &block.block.header.protocol_state.body.consensus_state;
-    let block_height = cs.blockchain_length.as_u32();
-
-    let apply_context = ApplyContext {
-        accounts: staged_ledger
-            .ledger()
-            .to_list()
-            .iter()
-            .map(v2::MinaBaseAccountBinableArgStableV2::from)
-            .collect::<Vec<_>>(),
-        scan_state: staged_ledger.scan_state().into(),
-        pending_coinbase: staged_ledger.pending_coinbase_collection().into(),
-        pred_block: (**pred_block.block()).clone(),
-        blocks: vec![(*block.block).clone()],
-    };
-
-    let debug_dir = mina_core::get_debug_dir();
-    let filename = debug_dir
-        .join(format!("failed_application_ctx_{}.binprot", block_height))
-        .to_string_lossy()
-        .to_string();
-    std::fs::create_dir_all(&debug_dir)?;
-
-    let mut file = std::fs::File::create(&filename)?;
-
-    use mina_p2p_messages::binprot::BinProtWrite;
-    apply_context.binprot_write(&mut file)?;
-    file.sync_all()?;
-
-    Ok(filename)
-}
-
 /// Whether a block produced at this slot may include transactions, or an
 /// error if no block may be produced. With no stop slots configured, the slot
 /// offset is never computed, so that path behaves as it did before stop slots.
@@ -3015,27 +3121,19 @@ fn stop_slot_policy(
     Ok(stops.transactions_allowed(slot_since_hard_fork))
 }
 
-/// `Account.Hardfork.empty` of OCaml 4.0.2: the empty account, with the
-/// anticipated next release's default permissions, whose verification key
-/// permission carries the next transaction version.
+/// `Account.Hardfork.empty` of OCaml 4.0.4 copies the stable empty account.
+/// The next fork keeps transaction version 4; incrementing it changes every
+/// partially filled ledger's exported root.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/account.ml#L1124-L1142>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/permissions.ml#L679-L698>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_base/account.ml#L1131-L1158>
 pub fn migrated_empty_account() -> Account {
-    let mut account = Account::empty();
-    let mut permissions = ledger::Permissions::user_default();
-    permissions.set_verification_key.txn_version =
-        ledger::scan_state::currency::TxnVersion::from_u32(
-            ledger::TXN_VERSION_CURRENT.as_u32().saturating_add(1),
-        );
-    account.permissions = permissions;
-    account
+    Account::empty()
 }
 
 /// The root of a Merkle tree of `depth` whose leaves 0, 1, ... hash to
 /// `leaves` and whose other leaves hash to `empty_leaf`.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_ledger/ledger.ml#L96-L110>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_ledger/ledger.ml#L96-L110>
 pub fn merkle_root_of_leaves(leaves: &[Fp], depth: usize, empty_leaf: Fp) -> Fp {
     use ledger::TreeVersion;
     let mut empty = empty_leaf;
@@ -3062,7 +3160,7 @@ fn root_detach_threshold(num_accounts: usize) -> usize {
     (num_accounts / 64).max(1024)
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L46-L62>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L46-L62>
 fn staking_delegate(account: &ledger::Account) -> Option<&CompressedPubKey> {
     if account.token_id.is_default() {
         account.delegate.as_ref()
@@ -3080,6 +3178,540 @@ mod tests {
     use crate::ledger::hash_node_at_depth;
 
     use super::*;
+
+    /// A staged ledger whose scan state holds `blocks` of this many base
+    /// jobs each, every one the public mainnet payment witness.
+    fn staged_ledger_with_base_jobs(blocks: &[usize]) -> StagedLedger {
+        use ledger::scan_state::{
+            pending_coinbase::PendingCoinbase,
+            scan_state::{transaction_snark::TransactionWithWitness, ScanState},
+            transaction_logic::WithStatus,
+        };
+        use mina_p2p_messages::{binprot::BinProtRead, v2};
+
+        let _ = mina_core::NetworkConfig::init("mainnet");
+        let constants = constraint_constants();
+        let (statement, witness) = <(
+            v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement,
+            v2::TransactionWitnessStableV2,
+        )>::binprot_read(
+            &mut &include_bytes!(
+                "../../../ledger/src/proofs/data/mesa_mainnet_payment_base_job.bin"
+            )[..],
+        )
+        .unwrap();
+        let job = Arc::new(TransactionWithWitness {
+            transaction_with_status: WithStatus {
+                data: (&witness.transaction).try_into().unwrap(),
+                status: (&witness.status).into(),
+            },
+            statement: (&statement).try_into().unwrap(),
+            state_hash: (Fp::from(0u64), Fp::from(0u64)),
+            init_stack: (&witness.init_stack).try_into().unwrap(),
+            first_pass_ledger_witness: (&witness.first_pass_ledger).try_into().unwrap(),
+            second_pass_ledger_witness: (&witness.second_pass_ledger).try_into().unwrap(),
+            block_global_slot: (&witness.block_global_slot).into(),
+            hash_cache: Default::default(),
+        });
+        let mut scan = ScanState::empty(constants);
+        for &jobs in blocks {
+            scan.scan_state
+                .update(vec![job.clone(); jobs], vec![], |_| 0)
+                .unwrap();
+        }
+        StagedLedger::from_persisted_unchecked(
+            constants,
+            scan,
+            Mask::create(LEDGER_DEPTH),
+            PendingCoinbase::create(constants.pending_coinbase_depth),
+        )
+    }
+
+    /// GraphQL `scanState` reads the counters without building a job. The
+    /// expected values are OCaml Parallel_scan.metrics with no completed
+    /// work: a filled 128-leaf tree has no free space and 128 Todo base
+    /// jobs, the next tree holds this block's 64, oldest first. Merges are
+    /// Todo only once both children are done, so none here.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/parallel_scan/parallel_scan.ml#L1336-L1344>
+    #[test]
+    fn scan_state_metrics_pin_ocaml_counters_without_jobs() {
+        assert_eq!(1 << constraint_constants().transaction_capacity_log_2, 128);
+        let mut ctx = LedgerCtx::default();
+        let mut staged = staged_ledger_with_base_jobs(&[128, 64]);
+        let hash: MinaBaseStagedLedgerHashStableV1 = (&staged.hash()).into();
+        ctx.staged_ledger_reconstruct_result_store(staged);
+
+        let expected = vec![(0, 128, 0), (64, 64, 0)];
+        assert_eq!(ctx.scan_state_metrics(&hash).unwrap(), expected);
+        // The detailed summary reports the same counters with its jobs.
+        let summary = ctx.scan_state_summary(&hash).unwrap();
+        assert_eq!(summary.trees, expected);
+        assert_eq!(summary.jobs.iter().map(Vec::len).sum::<usize>(), 255 + 255);
+
+        let missing = MinaBaseStagedLedgerHashStableV1::zero(
+            LedgerHash::zero(),
+            empty_pending_coinbase_hash(),
+        );
+        assert_eq!(
+            ctx.scan_state_metrics(&missing),
+            Err("Scan state ledger unavailable".to_owned())
+        );
+    }
+
+    /// Only GraphQL `scanState` takes the metrics-only read; the HTTP scan
+    /// state routes keep the detailed one.
+    #[test]
+    fn graphql_scan_state_query_reads_only_metrics() {
+        use crate::{ledger::read::LedgerReadRequest, rpc::RpcScanStateSummaryGetQuery as Query};
+        use mina_p2p_messages::v2;
+        let hash = MinaBaseStagedLedgerHashStableV1::zero(
+            LedgerHash::zero(),
+            empty_pending_coinbase_hash(),
+        );
+        for query in [
+            Query::Graphql(None),
+            Query::Graphql(Some(v2::StateHash::zero())),
+        ] {
+            assert!(query.is_metrics_only());
+            assert_eq!(
+                query.ledger_read(hash.clone()),
+                LedgerReadRequest::ScanStateMetrics(hash.clone())
+            );
+        }
+        for query in [
+            Query::ForBestTip,
+            Query::ForBlockWithHash(v2::StateHash::zero()),
+            Query::ForBlockWithHeight(1),
+        ] {
+            assert!(!query.is_metrics_only());
+            assert_eq!(
+                query.ledger_read(hash.clone()),
+                LedgerReadRequest::ScanStateSummary(hash.clone())
+            );
+        }
+    }
+
+    /// Oracle: tools/ocaml-test-vectors/ledger_roots.py, merkle-path-8 and
+    /// empty, OCaml's depth-10 and depth-35 ledger hashes. These account
+    /// hashes and Merkle domains are unchanged in 4.0.4.
+    #[test]
+    fn ocaml_404_sync_replaces_reused_subtrees_without_changing_the_source() {
+        let expected: LedgerHash = "jxJtZKqJDXhLHgZk9aK4rqAJvvW5sKkymuZF6CwH5TNY4GZCCih"
+            .parse()
+            .unwrap();
+        let root: LedgerHash = "jwpjaD1uVj5Z7JxX2dbPPMuvZuipXb5nb3SNv9MaD5jcgah69F7"
+            .parse()
+            .unwrap();
+        let empty: LedgerHash = "jxvN5DVDHPQow7qV8qMYu5JViwcLwYaM885xoov9DdSeC6oGMfc"
+            .parse()
+            .unwrap();
+        let parent = LedgerAddress::first(LEDGER_DEPTH - 10);
+        let accounts: Vec<Account> = (0..16u64)
+            .map(|i| {
+                let mut a = Account::empty();
+                a.token_id = TokenId::from(i);
+                a
+            })
+            .collect();
+        for disk in [false, true] {
+            for attached in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let mut source = Mask::create(LEDGER_DEPTH);
+                for a in &accounts {
+                    source.get_or_create_account(a.id(), a.clone()).unwrap();
+                }
+                let mut outside = Account::empty();
+                outside.token_id = TokenId::from(100);
+                source
+                    .set_at_index(AccountIndex(1024), Box::new(outside.clone()))
+                    .unwrap();
+                if disk {
+                    source.freeze_to_disk(dir.path()).unwrap().unwrap();
+                }
+                let source_root = source.merkle_root();
+                let mut ctx = LedgerCtx::default();
+                ctx.sync.snarked_ledgers.insert(
+                    root.clone(),
+                    if attached {
+                        source.make_child()
+                    } else {
+                        source.copy_independent()
+                    },
+                );
+
+                // A bad answer must not modify the reused contents or indexes.
+                assert_ne!(
+                    ctx.accounts_set(
+                        root.clone(),
+                        &parent,
+                        &expected,
+                        accounts.iter().map(Into::into).collect()
+                    )
+                    .unwrap(),
+                    expected
+                );
+                let mut unchanged = ctx.pending_sync_snarked_ledger_mask(&root).unwrap();
+                assert_eq!(unchanged.merkle_root(), source_root);
+                assert_eq!(
+                    unchanged.index_of_account(accounts[15].id()),
+                    Some(AccountIndex(15))
+                );
+
+                // A valid shorter response evicts the old tail, including IDs.
+                assert_eq!(
+                    ctx.accounts_set(
+                        root.clone(),
+                        &parent,
+                        &expected,
+                        accounts[..8].iter().map(Into::into).collect()
+                    )
+                    .unwrap(),
+                    expected
+                );
+                let mut working = ctx.pending_sync_snarked_ledger_mask(&root).unwrap();
+                assert!(working.index_of_account(accounts[15].id()).is_none());
+                assert!(working.get_at_index(AccountIndex(15)).is_none());
+                assert_eq!(
+                    working.get_at_index(AccountIndex(1024)).as_deref(),
+                    Some(&outside)
+                );
+
+                // Clear a disjoint empty subtree, including a gap before it.
+                assert_eq!(
+                    ctx.accounts_set(root.clone(), &parent.next().unwrap(), &empty, vec![])
+                        .unwrap(),
+                    empty
+                );
+                working = ctx.pending_sync_snarked_ledger_mask(&root).unwrap();
+                assert_eq!(LedgerHash::from_fp(working.merkle_root()), root);
+                assert_eq!(working.num_accounts(), 8);
+                assert_eq!(working.last_filled().unwrap().to_index(), AccountIndex(7));
+                assert!(working.index_of_account(outside.id()).is_none());
+                for (i, a) in accounts[..8].iter().enumerate() {
+                    assert_eq!(
+                        working.index_of_account(a.id()),
+                        Some(AccountIndex(i as u64))
+                    );
+                    assert_eq!(
+                        working.get_at_index(AccountIndex(i as u64)).as_deref(),
+                        Some(a)
+                    );
+                }
+                assert_eq!(source.merkle_root(), source_root);
+                assert_eq!(
+                    source.get_at_index(AccountIndex(1024)).as_deref(),
+                    Some(&outside)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ocaml_404_sync_rejects_excess_contents_before_writing() {
+        // OCaml's empty depth-10 root. Truncating these 1025 empty accounts
+        // to 1024 would hash correctly and incorrectly accept the response.
+        let empty: LedgerHash = "jxvN5DVDHPQow7qV8qMYu5JViwcLwYaM885xoov9DdSeC6oGMfc"
+            .parse()
+            .unwrap();
+        let root: LedgerHash = "jwkaDMeSMeL94hwJg6EYtSRD6gxB1BHpXnGKnZ1VW6jthKzgcef"
+            .parse()
+            .unwrap();
+        let mut ctx = LedgerCtx::default();
+        ctx.sync
+            .snarked_ledgers
+            .insert(root.clone(), Mask::create(LEDGER_DEPTH));
+        assert!(ctx
+            .accounts_set(
+                root.clone(),
+                &LedgerAddress::first(LEDGER_DEPTH - 10),
+                &empty,
+                vec![(&Account::empty()).into(); 1025]
+            )
+            .is_err());
+        let mut mask = ctx.pending_sync_snarked_ledger_mask(&root).unwrap();
+        assert_eq!(mask.num_accounts(), 0);
+        assert_eq!(LedgerHash::from_fp(mask.merkle_root()), root);
+    }
+
+    #[test]
+    fn ocaml_404_sync_reindexes_displaced_and_stale_copies() {
+        let expected: LedgerHash = "jxJtZKqJDXhLHgZk9aK4rqAJvvW5sKkymuZF6CwH5TNY4GZCCih"
+            .parse()
+            .unwrap();
+        let root: LedgerHash = "jwpjaD1uVj5Z7JxX2dbPPMuvZuipXb5nb3SNv9MaD5jcgah69F7"
+            .parse()
+            .unwrap();
+        let accounts: Vec<Account> = (0..8u64)
+            .map(|i| {
+                let mut a = Account::empty();
+                a.token_id = TokenId::from(i);
+                a
+            })
+            .collect();
+        for stale_copy in [false, true] {
+            let mut source = Mask::create(LEDGER_DEPTH);
+            for a in accounts.iter().rev() {
+                source.get_or_create_account(a.id(), a.clone()).unwrap();
+            }
+            // The same identifier may still occupy an old slot after another
+            // response moved it. Removing that stale occupant must not remove
+            // the account currently indexed at its new slot.
+            if stale_copy {
+                source
+                    .set_at_index(AccountIndex(16), Box::new(accounts[0].clone()))
+                    .unwrap();
+            }
+            let mut ctx = LedgerCtx::default();
+            ctx.sync
+                .snarked_ledgers
+                .insert(root.clone(), source.make_child());
+            assert_eq!(
+                ctx.accounts_set(
+                    root.clone(),
+                    &LedgerAddress::first(LEDGER_DEPTH - 10),
+                    &expected,
+                    accounts.iter().map(Into::into).collect()
+                )
+                .unwrap(),
+                expected
+            );
+            let mut mask = ctx.pending_sync_snarked_ledger_mask(&root).unwrap();
+            assert_eq!(LedgerHash::from_fp(mask.merkle_root()), root);
+            assert_eq!(mask.num_accounts(), 8);
+            for (i, a) in accounts.iter().enumerate() {
+                assert_eq!(mask.index_of_account(a.id()), Some(AccountIndex(i as u64)));
+            }
+            assert!(mask.get_at_index(AccountIndex(16)).is_none());
+        }
+    }
+
+    #[test]
+    fn ledger_mismatch_discards_state_before_reporting_and_can_rebootstrap() {
+        use ledger::staged_ledger::diff::with_valid_signatures_and_proofs::Diff as EmptyDiff;
+        let mut ctx = LedgerCtx::default();
+        let mut parent = crate::persist::test_fixtures::mainnet_blocks().remove(0);
+        let mut staged =
+            StagedLedger::create_exn(constraint_constants().clone(), Mask::create(LEDGER_DEPTH))
+                .unwrap();
+        let parent_hashes = MinaBaseStagedLedgerHashStableV1::from(&staged.hash());
+        let mut parent_block = (*parent.block).clone();
+        parent_block
+            .header
+            .protocol_state
+            .body
+            .blockchain_state
+            .staged_ledger_hash = parent_hashes.clone();
+        parent = ArcBlockWithHash::try_new(Arc::new(parent_block)).unwrap();
+        ctx.staged_ledgers.insert(Arc::new(parent_hashes), staged);
+        // The expected hash comes from an OCaml mainnet header. Inject an
+        // empty diff into its body, so applying it cannot produce that hash.
+        let mut bad = (*crate::persist::test_fixtures::mainnet_blocks()
+            .remove(0)
+            .block)
+            .clone();
+        bad.body.staged_ledger_diff = (&EmptyDiff::empty()).into();
+        bad.header
+            .protocol_state
+            .body
+            .blockchain_state
+            .body_reference = block_body_hash(&bad.body.staged_ledger_diff).unwrap();
+        let block = ArcBlockWithHash::try_new(Arc::new(bad)).unwrap();
+        let response = LedgerRequest::write_for_tests(
+            &mut ctx,
+            LedgerWriteRequest::BlockApply {
+                block: block.clone(),
+                pred_block: AppliedBlock {
+                    block: parent,
+                    just_emitted_a_proof: false,
+                },
+                skip_verification: true,
+                restored: false,
+            },
+        );
+        let LedgerWriteResponse::BlockApply {
+            result: Err(BlockApplyError::LocalState(error)),
+            ..
+        } = response
+        else {
+            panic!("expected local mismatch, got {response:?}");
+        };
+        assert!(error.contains(&block.hash().to_string()));
+        assert!(error.contains("computed") && error.contains("expected"));
+        assert!(ctx
+            .staged_ledger_mut(block.staged_ledger_hashes())
+            .is_none());
+        assert!(ctx.staged_ledgers.staged_ledgers.is_empty());
+        assert!(ctx.sync.staged_ledgers.staged_ledgers.is_empty());
+        assert!(ctx.snarked_ledgers.is_empty());
+        // Recovery asks for a fresh ledger; no invalidated mask can be reused.
+        assert!(ctx
+            .copy_snarked_ledger_contents_for_sync(&[], block.snarked_ledger_hash().clone(), false)
+            .unwrap());
+        assert_eq!(ctx.sync.snarked_ledgers.len(), 1);
+    }
+
+    #[test]
+    fn incorrect_protocol_state_keeps_parent_and_allows_the_next_block() {
+        use crate::transition_frontier::protocol_state::{
+            next_protocol_state, ProtocolStateInputs,
+        };
+        use ledger::staged_ledger::diff::with_valid_signatures_and_proofs::Diff as EmptyDiff;
+        let mut ctx = LedgerCtx::default();
+        let mut template = (*crate::persist::test_fixtures::mainnet_blocks()
+            .remove(0)
+            .block)
+            .clone();
+        let mut staged =
+            StagedLedger::create_exn(constraint_constants().clone(), Mask::create(LEDGER_DEPTH))
+                .unwrap();
+        let parent_hashes = MinaBaseStagedLedgerHashStableV1::from(&staged.hash());
+        template
+            .header
+            .protocol_state
+            .body
+            .blockchain_state
+            .staged_ledger_hash = parent_hashes.clone();
+        let parent = ArcBlockWithHash::try_new(Arc::new(template.clone())).unwrap();
+        let ps = &parent.header().protocol_state;
+        let cs = &ps.body.consensus_state;
+        template.body.staged_ledger_diff = (&EmptyDiff::empty()).into();
+        let body = block_body_hash(&template.body.staged_ledger_diff).unwrap();
+        let slot = cs.curr_global_slot_since_hard_fork.slot_number.as_u32() + 1;
+        let global_slot = cs.global_slot_since_genesis.as_u32() + 1;
+        let mut child = staged.clone();
+        let protocol: ledger::proofs::block::ProtocolState = ps.try_into().unwrap();
+        let applied = child
+            .apply(
+                Some(SkipVerification::All),
+                constraint_constants(),
+                Slot::from_u32(global_slot),
+                (&template.body.staged_ledger_diff).try_into().unwrap(),
+                (),
+                &Verifier,
+                &protocol_state_view(ps).unwrap(),
+                protocol.hashes(),
+                (&cs.coinbase_receiver).try_into().unwrap(),
+                cs.supercharge_coinbase,
+            )
+            .unwrap();
+        let child_hashes = MinaBaseStagedLedgerHashStableV1::from(&applied.hash_after_applying);
+        assert!(applied.ledger_proof.is_none());
+        let constants = mina_core::consensus::ConsensusConstants::create(
+            constraint_constants(),
+            &ps.body.constants,
+        );
+        // A producer-built empty transition exercises the shared builder and
+        // application boundary. Captured-state tests supply the state oracle.
+        template.header.protocol_state = next_protocol_state(
+            &constants,
+            ps,
+            parent.hash(),
+            ProtocolStateInputs {
+                slot: v2::MinaNumbersGlobalSlotSinceHardForkMStableV1::SinceHardFork(slot.into()),
+                vrf_hash: Fp::from(0),
+                last_vrf_output: cs.last_vrf_output.clone(),
+                block_stake_winner: cs.block_stake_winner.clone(),
+                block_creator: cs.block_creator.clone(),
+                coinbase_receiver: cs.coinbase_receiver.clone(),
+                supercharge_coinbase: cs.supercharge_coinbase,
+                timestamp: ps.body.blockchain_state.timestamp,
+            },
+            &child_hashes,
+            &body,
+            None,
+        )
+        .unwrap();
+        let valid = ArcBlockWithHash::try_new(Arc::new(template.clone())).unwrap();
+        template
+            .header
+            .protocol_state
+            .body
+            .blockchain_state
+            .genesis_ledger_hash = LedgerHash::zero();
+        let invalid = ArcBlockWithHash::try_new(Arc::new(template)).unwrap();
+        ctx.staged_ledgers
+            .insert(Arc::new(parent_hashes.clone()), staged);
+        let pred = AppliedBlock {
+            block: parent,
+            just_emitted_a_proof: false,
+        };
+        let response = LedgerRequest::write_for_tests(
+            &mut ctx,
+            LedgerWriteRequest::BlockApply {
+                block: invalid,
+                pred_block: pred.clone(),
+                skip_verification: true,
+                restored: false,
+            },
+        );
+        let LedgerWriteResponse::BlockApply {
+            result: Err(BlockApplyError::InvalidBlock(error)),
+            ..
+        } = response
+        else {
+            panic!("expected invalid block, got {response:?}");
+        };
+        assert!(error.starts_with("Incorrect_protocol_state:"));
+        assert!(
+            ctx.sync.staged_ledgers.staged_ledgers.is_empty(),
+            "rejected child must not be published"
+        );
+        assert!(
+            ctx.staged_ledger_mut(&parent_hashes).is_some(),
+            "parent must remain usable"
+        );
+        let response = LedgerRequest::write_for_tests(
+            &mut ctx,
+            LedgerWriteRequest::BlockApply {
+                block: valid,
+                pred_block: pred,
+                skip_verification: true,
+                restored: false,
+            },
+        );
+        assert!(
+            matches!(
+                response,
+                LedgerWriteResponse::BlockApply { result: Ok(_), .. }
+            ),
+            "{response:?}"
+        );
+        assert_eq!(ctx.sync.staged_ledgers.staged_ledgers.len(), 1);
+    }
+
+    #[test]
+    fn root_commit_failure_is_an_error_and_invalidates_queryable_state() {
+        let mut ctx = LedgerCtx::default();
+        let block = crate::persist::test_fixtures::mainnet_blocks().remove(0);
+        assert!(ctx
+            .commit_root_staged_ledger(block.staged_ledger_hashes(), block.snarked_ledger_hash())
+            .unwrap_err()
+            .contains("missing"));
+        let mut ledger = Mask::create(LEDGER_DEPTH);
+        let hash = merkle_root(&mut ledger);
+        ctx.snarked_ledgers.insert(hash, ledger);
+        let applied = AppliedBlock {
+            block,
+            just_emitted_a_proof: false,
+        };
+        let response = LedgerRequest::write_for_tests(
+            &mut ctx,
+            LedgerWriteRequest::Commit {
+                root_history: Default::default(),
+                ledgers_to_keep: Default::default(),
+                root_snarked_ledger_updates: Default::default(),
+                needed_protocol_states: Default::default(),
+                new_root: applied.clone(),
+                new_best_tip: applied,
+            },
+        );
+        assert!(matches!(
+            response,
+            LedgerWriteResponse::Commit { result: Err(_), .. }
+        ));
+        assert!(ctx.snarked_ledgers.is_empty());
+    }
 
     /// OCaml 4.0.2 masking_merkle_tree.ml:536-542 registers the derived
     /// token for EVERY account on insertion, even with no token holders.
@@ -3647,7 +4279,9 @@ mod tests {
         ctx.drop_snarked_ledgers(&keep);
         ctx.staged_ledgers.retain(|hash| keep.contains(hash));
         ctx.compact_snarked_ledgers(&keep);
-        assert!(ctx.commit_root_staged_ledger(&new_root_staged, &new_snarked_hash));
+        assert!(ctx
+            .commit_root_staged_ledger(&new_root_staged, &new_snarked_hash)
+            .is_ok());
 
         let mut root_snarked = ctx.snarked_ledgers[&new_snarked_hash].clone();
         assert_eq!(root_snarked.get_uuid(), snarked.get_uuid());
@@ -5219,7 +5853,7 @@ mod tests {
             ctx.compact_snarked_ledgers(&keep);
             ctx.freeze_snarked_ledgers(epoch.iter().filter(|hash| **hash != new).collect());
             ctx.freeze_root_snarked_ledger_hash(&new);
-            assert!(ctx.commit_root_staged_ledger(&new_staged, &new));
+            assert!(ctx.commit_root_staged_ledger(&new_staged, &new).is_ok());
             (new, new_staged)
         }
         /// The root staged ledger's mask: whether its parent is the root
@@ -5481,7 +6115,9 @@ mod tests {
             ctx.snarked_ledgers.insert(snarked_hash.clone(), snarked);
             ctx.freeze_root_snarked_ledger_hash(&snarked_hash);
             assert_eq!(ctx.snarked_ledgers[&snarked_hash].is_root(), on_disk);
-            assert!(ctx.commit_root_staged_ledger(&staged_hash, &snarked_hash));
+            assert!(ctx
+                .commit_root_staged_ledger(&staged_hash, &snarked_hash)
+                .is_ok());
             assert_eq!(
                 staged.get_parent().unwrap().get_uuid(),
                 ctx.snarked_ledgers[&snarked_hash].get_uuid(),
@@ -5506,7 +6142,9 @@ mod tests {
             ctx.drop_snarked_ledgers(&keep);
             ctx.compact_snarked_ledgers(&keep);
             ctx.freeze_root_snarked_ledger_hash(&next_hash);
-            assert!(ctx.commit_root_staged_ledger(&staged_hash, &next_hash));
+            assert!(ctx
+                .commit_root_staged_ledger(&staged_hash, &next_hash)
+                .is_ok());
             for (name, mask, twin) in [
                 ("staged", &staged, &expected),
                 ("child", &child, &child_expected),
@@ -6095,7 +6733,13 @@ mod tests {
     /// sample. Under `Account.Hardfork.empty` it differs, because the ledger
     /// is not full.
     #[test]
-    fn leaf_roots_match_ocamls_ledger_hash() {
+    fn leaf_roots_match_ocaml_4_0_4_ledger_hash() {
+        // Official 4.0.4 `mina ledger hash` output, including the empty tree.
+        // Account.Hardfork.empty is identical to stable empty at this pin.
+        let oracle: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../tests/files/fork-export/ocaml-4.0.4.json"
+        ))
+        .unwrap();
         let sample = include_str!("../daemon_json/testdata/ocaml-ledger-export-sample.json");
         let accounts: Vec<crate::daemon_json::Account> = serde_json::from_str(sample).unwrap();
         let leaves: Vec<Fp> = accounts
@@ -6105,11 +6749,20 @@ mod tests {
         let stable = merkle_root_of_leaves(&leaves, LEDGER_DEPTH, Account::empty().hash());
         assert_eq!(
             LedgerHash::from_fp(stable).to_string(),
-            "jwUATMQxpP7A3xwoW7uEwS3M83zGi3prDUPSqEMpqUzvssSMaW3"
+            oracle["sample_root"].as_str().unwrap()
         );
         let migrated =
             merkle_root_of_leaves(&leaves, LEDGER_DEPTH, migrated_empty_account().hash());
-        assert_ne!(stable, migrated);
+        assert_eq!(stable, migrated);
+        assert_eq!(
+            LedgerHash::from_fp(merkle_root_of_leaves(
+                &[],
+                LEDGER_DEPTH,
+                migrated_empty_account().hash()
+            ))
+            .to_string(),
+            oracle["empty_ledger_root"].as_str().unwrap()
+        );
         // An empty tree is the empty subtree at the root.
         assert_eq!(
             merkle_root_of_leaves(&[], LEDGER_DEPTH, Account::empty().hash()),
@@ -6118,10 +6771,10 @@ mod tests {
     }
 
     #[test]
-    fn migrated_empty_account_is_ocamls() {
+    fn migrated_empty_account_is_ocaml_4_0_4() {
         let account = migrated_empty_account();
         let permissions = &account.permissions;
-        assert_eq!(permissions.set_verification_key.txn_version.as_u32(), 5);
+        assert_eq!(permissions.set_verification_key.txn_version.as_u32(), 4);
         assert_eq!(
             permissions.set_verification_key.auth,
             ledger::AuthRequired::Signature
@@ -6129,10 +6782,9 @@ mod tests {
         assert_eq!(permissions.receive, ledger::AuthRequired::None);
         assert_eq!(permissions.access, ledger::AuthRequired::None);
         assert_eq!(permissions.send, ledger::AuthRequired::Signature);
-        // Only the permissions differ from the stable empty account.
-        let mut stable = Account::empty();
-        stable.permissions = account.permissions.clone();
-        assert_eq!(stable.hash(), account.hash());
+        // 4.0.4 copies every field, including permissions, from stable empty.
+        assert_eq!(Account::empty(), account);
+        assert_eq!(Account::empty().hash(), account.hash());
     }
 
     mod light {
@@ -6460,3 +7112,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "transaction_pool_pinning_tests.rs"]
+mod transaction_pool_pinning_tests;

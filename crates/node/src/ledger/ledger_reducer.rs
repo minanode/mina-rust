@@ -13,7 +13,10 @@ impl LedgerState {
         match action {
             LedgerAction::Write(action) => {
                 if let LedgerWriteAction::Success {
-                    response: LedgerWriteResponse::Commit { result, .. },
+                    response:
+                        LedgerWriteResponse::Commit {
+                            result: Ok(result), ..
+                        },
                 } = action
                 {
                     if let Ok(state) = state_context.get_substate_mut() {

@@ -19,6 +19,8 @@ pub enum P2pDisconnectionReason {
     FreeUpSpace,
     #[error("message is unexpected for channel {0}")]
     P2pChannelMsgUnexpected(ChannelId),
+    #[error("failed to open channel {0}: {1}")]
+    P2pChannelOpenFailed(ChannelId, String),
     #[error("failed to send message to channel: {0}")]
     P2pChannelSendFailed(String),
     #[error("failed to receive message from channel: {0}")]

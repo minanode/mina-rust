@@ -46,6 +46,12 @@ pub enum ChannelId {
 }
 
 impl ChannelId {
+    /// Data channels for direct peers, without peer-to-peer signaling relay.
+    pub fn without_signaling() -> impl Iterator<Item = Self> {
+        Self::iter_all()
+            .filter(|id| !matches!(id, Self::SignalingDiscovery | Self::SignalingExchange))
+    }
+
     #[inline(always)]
     pub fn to_u8(self) -> u8 {
         self as u8
@@ -211,6 +217,10 @@ impl crate::P2pState {
         // Dispatches can be done without a loop, but inside we do
         // exhaustive matching so that we don't miss any channels.
         for id in self.config.enabled_channels.iter().copied() {
+            if self.peers.get(&peer_id).is_some_and(|p| p.is_libp2p()) && !id.supported_by_libp2p()
+            {
+                continue;
+            }
             match id {
                 ChannelId::SignalingDiscovery => {
                     dispatcher.push(

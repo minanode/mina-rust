@@ -162,7 +162,29 @@ impl TransitionFrontierState {
                     state.root_history.advance(&state.best_chain, &root.block);
                 }
                 state.best_chain = new_chain;
+                if let Some(recovery) = state.ledger_recovery.as_mut() {
+                    recovery.recovered_at.get_or_insert(meta.time());
+                }
                 state.sync = TransitionFrontierSyncState::Synced { time: meta.time() };
+            }
+            TransitionFrontierAction::LedgerRecovery { block_hash, error } => {
+                let attempts = state
+                    .ledger_recovery
+                    .as_ref()
+                    .map_or(1, |r| r.attempts.saturating_add(1));
+                state.ledger_recovery = Some(super::LedgerRecovery {
+                    block_hash: block_hash.clone(),
+                    error: error.clone(),
+                    attempts,
+                    time: meta.time(),
+                    recovered_at: None,
+                });
+                state.best_chain.clear();
+                state.root_history = Default::default();
+                state.needed_protocol_states.clear();
+                state.sync = TransitionFrontierSyncState::Idle;
+                let dispatcher = state_context.into_dispatcher();
+                dispatcher.push(crate::BlockProducerAction::LedgerRecoveryAbort);
             }
             TransitionFrontierAction::SyncFailed { error, .. } => {
                 match error {

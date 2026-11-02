@@ -24,6 +24,7 @@ export const SYNCED_MAX_BEHIND_PEERS = 10;
 export const K = 290;
 
 export interface SyncInput {
+  ledgerRecoveryError?: string | null;
   /** The phase /status reports, or null when the node has never answered. */
   phase: string | null;
   bestTipHeight: number | null;
@@ -110,6 +111,17 @@ export function syncView(input: SyncInput, now: number): SyncView {
       tone: "error",
       headline: "The node isn't answering",
       detail: `Its last answer came ${formatAge(sampleAgeMs)} ago, at ${tip}. The figures below are from then.`,
+    };
+  }
+
+  if (input.ledgerRecoveryError) {
+    return {
+      ...base,
+      key: "Bootstrap",
+      label: "Recovering ledger",
+      tone: "error",
+      headline: "Resynchronizing after a local ledger failure",
+      detail: input.ledgerRecoveryError,
     };
   }
 

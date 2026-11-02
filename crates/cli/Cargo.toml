@@ -56,6 +56,8 @@ openssl = { version = "0.10", features = ["vendored"] }
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 
 [dev-dependencies]
+base64 = { workspace = true }
+bs58 = { workspace = true }
 mina-node-common = { workspace = true }
 mina-node-report = { workspace = true, features = ["test-support"] }
 

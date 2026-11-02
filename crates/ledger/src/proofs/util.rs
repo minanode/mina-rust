@@ -5,7 +5,7 @@ use super::{
     witness::Witness,
 };
 use crate::proofs::field::{field, Boolean, FieldWitness};
-use ark_ff::{BigInteger256, Field};
+use ark_ff::{BigInteger256, Field, PrimeField};
 use kimchi::proof::{PointEvaluations, ProofEvaluations};
 use mina_p2p_messages::{
     bigint::{BigInt, InvalidBigInt},
@@ -24,10 +24,14 @@ pub fn extract_polynomial_commitment<
     curves
         .into_iter()
         .map(|curve| {
-            Ok(InnerCurve::from((
-                curve.0.to_field::<F>()?,
-                curve.1.to_field()?,
-            )))
+            let (x, y) = (curve.0.to_field::<F>()?, curve.1.to_field()?);
+            // (0, 0) encodes the point at infinity, which OCaml's verifier
+            // rejects: a malformed commitment is invalid input.
+            // OCaml: <https://github.com/MinaProtocol/mina/blob/3e58e92ea9aeddb41ad3b6e494279891c5f9aa09/src/lib/crypto/kimchi_backend/common/curve.ml#L180>
+            if x == F::ZERO && y == F::ZERO {
+                return Err(InvalidBigInt);
+            }
+            InnerCurve::try_from_coordinates(x, y)
         })
         .collect()
 }
@@ -57,13 +61,16 @@ pub fn extract_bulletproof<
 
 pub fn four_u64_to_field<F, E>(v: &[u64; 4]) -> Result<F, InvalidBigInt>
 where
-    F: Field + TryFrom<BigInteger256, Error = E>,
+    F: PrimeField + TryFrom<BigInteger256, Error = E>,
 {
-    let mut bigint: [u64; 4] = [0; 4];
-    bigint[..4].copy_from_slice(v);
-
-    let bigint = BigInteger256::new(bigint);
-    F::try_from(bigint).map_err(|_| InvalidBigInt)
+    // A value outside the field is invalid input: check the range first.
+    // The limbs are little-endian, so compare from the most significant one.
+    let modulus = F::MODULUS;
+    let modulus: &[u64] = modulus.as_ref();
+    if modulus.len() != v.len() || v.iter().rev().cmp(modulus.iter().rev()).is_ge() {
+        return Err(InvalidBigInt);
+    }
+    F::try_from(BigInteger256::new(*v)).map_err(|_| InvalidBigInt)
 }
 
 pub fn two_u64_to_field<F, E>(v: &[u64; 2]) -> F
@@ -503,4 +510,47 @@ pub fn field_of_bits<F: FieldWitness, const N: usize>(bs: &[bool; N]) -> F {
             acc
         }
     })
+}
+
+#[cfg(test)]
+mod untrusted_input_tests {
+    use super::*;
+    use mina_curves::pasta::{Fp, Fq};
+
+    /// A digest below the modulus converts as `From` does; the modulus and
+    /// above are an error.
+    #[test]
+    fn four_u64_to_field_rejects_values_outside_the_field() {
+        let modulus: [u64; 4] = Fp::MODULUS.0;
+        let mut below = modulus;
+        below[0] -= 1;
+        let value: Fp = four_u64_to_field(&below).unwrap();
+        assert_eq!(value, Fp::from(BigInteger256::new(below)));
+        assert_eq!(value, -Fp::from(1u64));
+        let mut above = modulus;
+        above[3] += 1;
+        for bad in [modulus, above, [u64::MAX; 4]] {
+            assert!(four_u64_to_field::<Fp, _>(&bad).is_err());
+        }
+        let seven: Fq = four_u64_to_field(&[7, 0, 0, 0]).unwrap();
+        assert_eq!(seven, Fq::from(7u64));
+    }
+
+    /// A point on the curve, and (0, 0) for infinity, convert as `From`
+    /// does; a point off the curve is an error.
+    #[test]
+    fn try_from_coordinates_rejects_points_off_the_curve() {
+        let generator = InnerCurve::<Fp>::one().to_affine();
+        let point = InnerCurve::try_from_coordinates(generator.x, generator.y).unwrap();
+        assert_eq!(point, InnerCurve::from((generator.x, generator.y)));
+        let infinity = InnerCurve::<Fp>::try_from_coordinates(Fp::from(0u64), Fp::from(0u64));
+        assert_eq!(
+            infinity.unwrap(),
+            InnerCurve::from((Fp::from(0u64), Fp::from(0u64)))
+        );
+        assert!(
+            InnerCurve::try_from_coordinates(generator.x, generator.y + Fp::from(1u64)).is_err()
+        );
+        assert!(InnerCurve::<Fq>::try_from_coordinates(Fq::from(1u64), Fq::from(1u64)).is_err());
+    }
 }

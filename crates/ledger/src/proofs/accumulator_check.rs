@@ -57,7 +57,7 @@ pub fn accumulator_check(
     let acc_check = urs_utils::batch_dlog_accumulator_check(urs, &comms, &bulletproof_challenges);
 
     if !acc_check {
-        println!("accumulator_check failed");
+        mina_core::debug!(message = "accumulator_check failed");
     }
 
     Ok(acc_check)

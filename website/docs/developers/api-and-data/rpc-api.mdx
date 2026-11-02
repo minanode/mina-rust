@@ -193,6 +193,19 @@ For the complete response structure, see
 [`BuildEnv`](https://o1-labs.github.io/mina-rust/api-docs/node/config/struct.BuildEnv.html)
 in the Rust API documentation.
 
+#### `GET /reporting/status`
+
+What the opt-in uptime, node status and node error reporters (`--uptime-url`,
+`--node-status-url`, `--node-error-url`) did: for each one running, its target
+without credentials, report kind, counts of reports, attempts, retries,
+deliveries, refusals, drops, interruptions and skips, the last attempt and
+success, the last HTTP status or error, and the chain and block the last report
+described. A reporter that isn't running is `null`. Answered by the HTTP server
+itself, without the node's state machine, and not served with
+`--public-graphql`. See
+[Uptime, node status and node error reporting](../../node-runners/uptime-reporting.md)
+for an example.
+
 ### Peers
 
 #### `GET /state/peers`

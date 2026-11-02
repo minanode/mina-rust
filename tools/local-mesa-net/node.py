@@ -24,15 +24,29 @@ def main():
                         help="native Rust relay for a browser producer; no producer key")
     parser.add_argument("--rust-slot", type=int, default=26)
     parser.add_argument("--ocaml-slot", type=int, default=27)
+    parser.add_argument("--rust-http-port", type=int)
+    parser.add_argument("--rust-libp2p-port", type=int)
+    parser.add_argument("--ocaml-http-port", type=int)
+    parser.add_argument("--ocaml-libp2p-port", type=int)
+    parser.add_argument("--ocaml", type=Path,
+                        help="reference daemon wrapper (defaults to scripts/ocaml-mina)")
     parser.add_argument("--ocaml-snark-worker", action="store_true")
     # P5.2: OCaml produces, Rust only sells SNARK work, for the fee key of
     # keys/<name>.pub at a fee in MINA.
     parser.add_argument("--ocaml-producer", action="store_true")
+    parser.add_argument("--ocaml-producer-key", choices=("producer", "small"), default="producer")
+    parser.add_argument("--rust-producer-with-worker", action="store_true",
+                        help="also produce with the private producer key while selling work")
+    parser.add_argument("--rust-snarker-block-first-lead", type=int,
+                        help="private worker pause before a won slot, in seconds")
+    parser.add_argument("--rust-snarker-strategy", choices=("rand", "seq"))
     parser.add_argument("--rust-snark-worker-fee", help="MINA; Rust runs as a SNARK worker")
     parser.add_argument("--snark-worker-key", default="small")
     args = parser.parse_args()
     assert not args.relay_only or args.role == "rust"
     assert not (args.relay_only and args.rust_snark_worker_fee)
+    assert not args.rust_producer_with_worker or args.rust_snark_worker_fee
+    assert args.rust_snarker_block_first_lead is None or 0 <= args.rust_snarker_block_first_lead <= 4200
     if not args.private_isolated_allocation:
         os.fstat(9)  # lock.sh passes its held flock on descriptor 9.
     os.umask(0o077)
@@ -62,6 +76,13 @@ def main():
     assert config["proof"]["level"] == "full"
     rust_http, rust_p2p = 3400 + 10 * args.rust_slot, 8600 + 10 * args.rust_slot
     ocaml_http, ocaml_p2p = 3400 + 10 * args.ocaml_slot, 8600 + 10 * args.ocaml_slot
+    rust_http = args.rust_http_port if args.rust_http_port is not None else rust_http
+    rust_p2p = args.rust_libp2p_port if args.rust_libp2p_port is not None else rust_p2p
+    ocaml_http = args.ocaml_http_port if args.ocaml_http_port is not None else ocaml_http
+    ocaml_p2p = args.ocaml_libp2p_port if args.ocaml_libp2p_port is not None else ocaml_p2p
+    all_ports = (rust_http, rust_p2p, ocaml_http, ocaml_p2p, ocaml_p2p + 1)
+    assert all(1 <= p <= 65535 for p in all_ports), "invalid port"
+    assert len(set(all_ports)) == len(all_ports), "ports must be distinct"
     ports = (rust_http, rust_p2p) if args.role == "rust" else (ocaml_http, ocaml_p2p, ocaml_p2p + 1)
     for port in ports:
         with socket.socket() as sock:
@@ -100,14 +121,18 @@ def main():
         if args.rust_snark_worker_fee:
             worker = (work / "keys" / f"{args.snark_worker_key}.pub").read_text().strip()
             command.extend(("--run-snarker", worker, "--snarker-fee", args.rust_snark_worker_fee))
-        elif not args.relay_only:
+        if args.rust_producer_with_worker or (not args.rust_snark_worker_fee and not args.relay_only):
             command.extend(("--producer-key", str(work / "keys/producer")))
+        if args.rust_snarker_block_first_lead is not None:
+            command.extend(("--snarker-block-first-lead", str(args.rust_snarker_block_first_lead)))
+        if args.rust_snarker_strategy:
+            command.extend(("--snarker-strategy", args.rust_snarker_strategy))
         env["MINA_ARCHIVE_LOCAL_STORAGE_PATH"] = str(work / "blocks")
     else:
         # Equivalent to scripts/ocaml-isolated-daemon.sh. Rust's outbound socket
         # uses 127.0.0.1 even when it advertises 127.0.0.46, so OCaml must trust
         # that source IP. The unique chain-ID PSK excludes other local networks.
-        command = [str(root / "scripts/ocaml-mina"), "daemon",
+        command = [str(args.ocaml.resolve() if args.ocaml else root / "scripts/ocaml-mina"), "daemon",
                    "--config-directory", str(work / "ocaml-netns"),
                    "--config-file", str(work / "daemon.json"),
                    "--genesis-ledger-dir", str(work / "genesis"),
@@ -124,7 +149,7 @@ def main():
                         "--snark-worker-fee", "0.01", "--snark-worker-parallelism", "2",
                         "--work-selection", "seq"]
         if args.ocaml_producer:
-            command.extend(("--block-producer-key", str(work / "keys/producer")))
+            command.extend(("--block-producer-key", str(work / "keys" / args.ocaml_producer_key)))
     (work / f"{args.role}.pid").write_text(str(os.getpid()) + "\n")
     os.execvpe(command[0], command, env)
 

@@ -7,6 +7,10 @@ use super::{
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum LedgerEvent {
+    TransactionPoolAccounts {
+        id: u32,
+        result: Result<std::collections::BTreeMap<ledger::AccountId, ledger::Account>, String>,
+    },
     Verification(crate::verification::VerificationUpdate),
     Write(LedgerWriteResponse),
     Read(LedgerReadId, LedgerReadResponse),
@@ -17,6 +21,9 @@ impl std::fmt::Display for LedgerEvent {
         write!(f, "Ledger, ")?;
 
         match self {
+            Self::TransactionPoolAccounts { id, result } => {
+                write!(f, "TransactionPoolAccounts, {id}, {}", res_kind_str(result))
+            }
             Self::Verification(_) => write!(f, "Verification"),
             Self::Write(resp) => {
                 write!(f, "Write, {:?}", resp.kind())?;

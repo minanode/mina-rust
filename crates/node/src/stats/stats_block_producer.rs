@@ -686,6 +686,7 @@ mod tests {
             vrf_output: Box::new(mina_vrf::genesis_vrf(v2::EpochSeed::zero()).unwrap()),
             value_with_threshold: None,
             staking_ledger_hash: v2::LedgerHash::zero(),
+            epoch_data: None,
         }
     }
 

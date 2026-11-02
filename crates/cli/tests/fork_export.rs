@@ -12,6 +12,26 @@ use serde_json::Value;
 const MANIFEST: &str = include_str!("../../../tests/files/fork-export/fork/rust/manifest.json");
 const CONFIG: &str = include_str!("../../../tests/files/fork-export/fork/rust/fork_config.json");
 
+// The captured 4.0.2 manifest remains a historical fixture. OCaml 4.0.4
+// Account.Hardfork.empty copies Account.empty; migration preserves these roots.
+// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_base/account.ml#L1131-L1158>
+fn manifest_4_0_4() -> Value {
+    let mut manifest: Value = serde_json::from_str(MANIFEST).unwrap();
+    manifest["daemon_migrated"] = manifest["daemon"].clone();
+    for name in ["ledger", "staking", "next"] {
+        let oracle: Value = serde_json::from_str(include_str!(
+            "../../../tests/files/fork-export/ocaml-4.0.4.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            manifest["ledgers"][name]["hash"],
+            oracle["fork_roots"][name]
+        );
+        manifest["ledgers"][name]["migrated_hash"] = oracle["fork_roots"][name].clone();
+    }
+    manifest
+}
+
 fn export(manifest: Value, args: &[&str]) -> (std::process::Output, tempfile::TempDir) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -110,7 +130,7 @@ fn export(manifest: Value, args: &[&str]) -> (std::process::Output, tempfile::Te
 
 #[test]
 fn failed_verification_never_publishes_or_activates() {
-    let mut manifest: Value = serde_json::from_str(MANIFEST).unwrap();
+    let mut manifest = manifest_4_0_4();
     manifest["ledgers"]["ledger"]["hash"] = manifest["ledgers"]["staking"]["hash"].clone();
     let (output, temp) = export(manifest, &["--verify"]);
     assert_eq!(output.status.code(), Some(4), "{output:?}");
@@ -125,7 +145,7 @@ fn failed_verification_never_publishes_or_activates() {
 
 #[test]
 fn verified_export_publishes_complete_package() {
-    let (output, temp) = export(serde_json::from_str(MANIFEST).unwrap(), &["--verify"]);
+    let (output, temp) = export(manifest_4_0_4(), &["--verify"]);
     assert!(output.status.success(), "{output:?}");
     for file in [
         "fork_config.json",
@@ -139,6 +159,13 @@ fn verified_export_publishes_complete_package() {
 }
 
 #[test]
+fn legacy_4_0_2_migrated_roots_fail_4_0_4_verification() {
+    let (output, temp) = export(serde_json::from_str(MANIFEST).unwrap(), &["--verify"]);
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    assert!(!temp.path().join("fork").exists());
+}
+
+#[test]
 fn every_selector_requires_stop_or_explicit_override() {
     for selector in [
         vec![],
@@ -148,7 +175,7 @@ fn every_selector_requires_stop_or_explicit_override() {
             "3NLvdGJk7DjwHeMW9Hhmv2AMrRnaou5NXfU2KMfBF3MXx6TEQEui",
         ],
     ] {
-        let mut manifest: Value = serde_json::from_str(MANIFEST).unwrap();
+        let mut manifest = manifest_4_0_4();
         manifest["inputs"]["stop_reached"] = false.into();
         let (output, temp) = export(manifest.clone(), &selector);
         assert_eq!(output.status.code(), Some(3), "{selector:?}: {output:?}");

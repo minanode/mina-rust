@@ -1308,7 +1308,7 @@ impl StagedLedger {
         verifier: &Verifier,
         cs: Vec<WithStatus<UserCommand>>,
         skip_verification: Option<SkipVerification>,
-    ) -> Result<Vec<valid::UserCommand>, VerifierError> {
+    ) -> Result<Vec<valid::UserCommand>, PreDiffError> {
         use scan_state::transaction_logic::zkapp_command::from_applied_sequence::{
             self, FromAppliedSequence,
         };
@@ -1317,17 +1317,22 @@ impl StagedLedger {
             .into_iter()
             .map(MaybeWithStatus::from)
             .collect::<Vec<_>>();
+        // A command whose verification keys can't be found or don't match is
+        // an error of the diff, `Pre_diff (Unexpected _)` in OCaml.
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/staged_ledger/check_commands.ml#L36-L48>
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/staged_ledger/pre_diff_info.ml#L506-L513>
         let cs = UserCommand::to_all_verifiable::<FromAppliedSequence, _>(cs, |account_ids| {
             let cache = UserCommand::load_vks_from_ledger(account_ids, &ledger);
             from_applied_sequence::Cache::new(cache)
         })
-        .unwrap(); // TODO: No unwrap
+        .map_err(PreDiffError::Unexpected)?;
         let cs = cs.into_iter().map(WithStatus::from).collect::<Vec<_>>();
 
         verifier
             .verify_commands(cs, skip_verification)
             .into_iter()
-            .collect()
+            .collect::<Result<_, VerifierError>>()
+            .map_err(PreDiffError::from)
     }
 
     pub fn apply(
@@ -6889,5 +6894,56 @@ mod tests {
             dump("rust", &ours_wire);
             dump("ocaml", &theirs_wire);
         }
+    }
+
+    /// A zkApp command in a block whose verification key can't be found is
+    /// an error of the diff, as in OCaml.
+    #[test]
+    fn check_commands_refuses_a_missing_verification_key() {
+        use mina_p2p_messages::{
+            rpc::GetTransitionChainV2,
+            rpc_kernel::{PayloadBinprotReader, RpcMethod},
+        };
+
+        use crate::{
+            scan_state::transaction_logic::{TransactionStatus, UserCommand, WithStatus},
+            staged_ledger::pre_diff_info::PreDiffError,
+        };
+
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../p2p-messages/tests/files/mesa/get_transition_chain_v2_563900_zkapp.bin"
+        );
+        let bytes = std::fs::read(path).unwrap();
+        let blocks: <GetTransitionChainV2 as RpcMethod>::Response =
+            GetTransitionChainV2::response_payload(&mut &bytes[..]).unwrap();
+        let mut command = blocks
+            .unwrap()
+            .into_iter()
+            .flat_map(|block| block.body.staged_ledger_diff.diff.0.commands.clone())
+            .find_map(|command| match command.data {
+                v2::MinaBaseUserCommandStableV2::ZkappCommand(command) => Some(command),
+                _ => None,
+            })
+            .expect("a zkApp command");
+        let update = &mut command.account_updates.iter_mut().next().unwrap().elt;
+        update.account_update.body.authorization_kind =
+            v2::MinaBaseAccountUpdateAuthorizationKindStableV1::Proof(Fp::from(1u64).into());
+        let command =
+            UserCommand::try_from(&v2::MinaBaseUserCommandStableV2::ZkappCommand(command)).unwrap();
+
+        let result = StagedLedger::check_commands(
+            Mask::create(35),
+            &Verifier,
+            vec![WithStatus {
+                data: command,
+                status: TransactionStatus::Applied,
+            }],
+            None,
+        );
+        assert!(
+            matches!(result, Err(PreDiffError::Unexpected(_))),
+            "{result:?}"
+        );
     }
 }

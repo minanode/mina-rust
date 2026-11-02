@@ -1,0 +1,228 @@
+{
+  "date": "2026-10-30",
+  "task": "BP-MN-3A",
+  "ocaml_commit": "c9e2eac5344da621828c1e96c074b8bdce665b51",
+  "rust_build_commit": "5e4619a4a30e35ce7ff1b8fdabe271ee1c3cd73d",
+  "rust_trace_build_commit": "5e4619a4a30e35ce7ff1b8fdabe271ee1c3cd73d",
+  "early_evaluation_enabled": true,
+  "full_parity_claim": "agreement on this corpus and these traces only",
+  "seed": 184562691,
+  "binaries": {
+    "rust": "dd6e7129b0ba20b0797172d2f28edfcf70a4e941086958a3194b532a1ca4a9bd",
+    "ocaml": "6a70a9dacf9e85bf1e8123cabd7be2bf8bf5610c14f1b4c660022651ed9f2502",
+    "rust_trace": "757ad07c53bbab7ec9f8f11809e80eeb069187a970ef09ba43dd7aed00cd9382",
+    "ocaml_executable": "99a8c958987af01108fd8d7355a8c8f889c0e1d516e59f44a1976187c4c53bf5"
+  },
+  "full_run_passed": true,
+  "mismatches": 0,
+  "compared_cases": 22524,
+  "compared_cases_excluding_traces": 22400,
+  "formerly_deferred_cases_agreeing": 52,
+  "trace_steps": 124,
+  "elapsed_seconds": 91.4,
+  "worker_exits": {
+    "mainnet": [
+      0,
+      0,
+      0
+    ],
+    "devnet": [
+      0,
+      0,
+      0
+    ]
+  },
+  "networks": {
+    "mainnet": {
+      "counts": {
+        "constants": 1,
+        "arithmetic": 1026,
+        "epoch_bounds": 1026,
+        "density": 2000,
+        "selection_generated": 6000,
+        "selection_hash_ties": 64,
+        "epoch_selection": 50,
+        "epoch_start_deferred": 26,
+        "epoch_precompute": 25,
+        "epoch_update": 250,
+        "vrf": 512,
+        "delegation": 32,
+        "regressions": 2,
+        "threshold": 53,
+        "selection_recorded": 128,
+        "selection_recorded_forks": 6,
+        "epoch_traces": 62
+      },
+      "compared": 11263,
+      "threshold_calibration_queries": 5060
+    },
+    "devnet": {
+      "counts": {
+        "constants": 1,
+        "arithmetic": 1026,
+        "epoch_bounds": 1026,
+        "density": 2000,
+        "selection_generated": 6000,
+        "selection_hash_ties": 64,
+        "epoch_selection": 50,
+        "epoch_start_deferred": 26,
+        "epoch_precompute": 25,
+        "epoch_update": 250,
+        "vrf": 512,
+        "delegation": 32,
+        "regressions": 2,
+        "threshold": 53,
+        "selection_recorded": 128,
+        "selection_recorded_forks": 4,
+        "epoch_traces": 62
+      },
+      "compared": 11261,
+      "threshold_calibration_queries": 5060
+    }
+  },
+  "trace_mutation_controls": {
+    "empty-table": {
+      "runner_passed": false,
+      "differences": 16,
+      "detected_in": [
+        "epoch_traces delayed-ledger",
+        "epoch_traces unavailable-then-restart"
+      ]
+    },
+    "no-stale-interrupt": {
+      "runner_passed": false,
+      "differences": 18,
+      "detected_in": [
+        "epoch_traces boundary-reorg",
+        "epoch_traces seed-lock-reorg",
+        "epoch_traces seed-lock-reorg-precomputed"
+      ]
+    },
+    "no-early": {
+      "runner_passed": false,
+      "differences": 136,
+      "detected_in": [
+        "epoch_start_deferred",
+        "epoch_traces boundary-reorg",
+        "epoch_traces cold-start-1",
+        "epoch_traces cold-start-4759",
+        "epoch_traces cold-start-4760",
+        "epoch_traces cold-start-7139",
+        "epoch_traces cold-start-7141",
+        "epoch_traces completed-changed",
+        "epoch_traces delayed-ledger",
+        "epoch_traces restart-persisted",
+        "epoch_traces seed-lock-reorg",
+        "epoch_traces unavailable-then-restart"
+      ]
+    },
+    "keep-stale-wins": {
+      "runner_passed": false,
+      "differences": 10,
+      "detected_in": [
+        "epoch_traces boundary-reorg",
+        "epoch_traces completed-changed",
+        "epoch_traces seed-lock-reorg"
+      ]
+    }
+  },
+  "unit_mutation_controls": {
+    "no-early": {
+      "passed": 71,
+      "failed": 10,
+      "failing": [
+        "a_completed_epoch_is_evaluated_again_with_changed_inputs",
+        "a_win_is_produced_only_on_a_parent_selecting_its_epoch_data",
+        "an_evaluation_the_clock_has_passed_is_replaced",
+        "an_unavailable_ledger_is_never_evaluated_as_an_empty_table",
+        "changed_next_seed_ledger_or_stake_restarts_an_early_evaluation",
+        "cold_start_after_an_epoch_boundary_evaluates_the_new_epoch_at_once",
+        "crossing_the_epoch_boundary_without_a_block_evaluates_the_new_epoch",
+        "late_current_table_restarts_after_epoch_catchup",
+        "a_completed_epoch_with_other_data_is_evaluated_again",
+        "clock_ahead_of_the_tip_selects_next_epoch_data_or_waits"
+      ]
+    },
+    "no-stale-interrupt": {
+      "passed": 78,
+      "failed": 3,
+      "failing": [
+        "a_win_is_produced_only_on_a_parent_selecting_its_epoch_data",
+        "changed_next_seed_ledger_or_stake_restarts_an_early_evaluation",
+        "seed_ledger_and_stake_are_revalidated_even_within_the_same_epoch"
+      ]
+    },
+    "keep-stale-wins": {
+      "passed": 80,
+      "failed": 1,
+      "failing": [
+        "a_completed_epoch_is_evaluated_again_with_changed_inputs"
+      ]
+    },
+    "empty-table": {
+      "passed": 80,
+      "failed": 1,
+      "failing": [
+        "an_unavailable_ledger_is_never_evaluated_as_an_empty_table"
+      ]
+    },
+    "no-parent-check": {
+      "passed": 80,
+      "failed": 1,
+      "failing": [
+        "a_win_is_produced_only_on_a_parent_selecting_its_epoch_data"
+      ]
+    },
+    "no-generation": {
+      "passed": 80,
+      "failed": 1,
+      "failing": [
+        "changed_next_seed_ledger_or_stake_restarts_an_early_evaluation"
+      ]
+    }
+  },
+  "evidence_sha256": {
+    "full-diff/report.json": "139e8977bcfc06d3052f2359881f016e5705bfc7c2be69310555668df9e833d2",
+    "full-diff/mainnet.jsonl": "978285f6e34bc5b28ee2327b10924493963576e06e3d6f54fc1b3063906c147d",
+    "full-diff/devnet.jsonl": "715c78ba1c2653d6adb54dd0307170f829fffbd977ce43a233b144a7224aa1f5",
+    "full-diff/divergences.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+  },
+  "source_sha256": {
+    "crates/node/examples/consensus_diff.rs": "a919c8941355b409166807cf07d95c381497d77276315c18a1f7f80cf5ebb9d0",
+    "crates/node/common/examples/producer_trace.rs": "d7c1444f424f4598270cbd7c653f3bfe9c8944024fa7594d323384dd9463ad33",
+    "crates/node/common/src/service/block_producer/vrf_evaluator.rs": "6a3f04fc0116a2a9c93b40502f531907113e6e5d75874b9884ffa1494ed10918",
+    "crates/node/common/src/service/block_producer/vrf_cache.rs": "6cc84ea7d5073dd6fb0eb8d628c83acb5a29c99620a1e7724580409dc24c26fc",
+    "crates/node/src/block_producer/vrf_evaluator/block_producer_vrf_evaluator_state.rs": "f3f4231ee2f0a84d01e837ecd3808e9e36826946560e1c974cab746f3c88ec48",
+    "crates/node/src/block_producer/vrf_evaluator/block_producer_vrf_evaluator_reducer.rs": "46bf0366ffaa325569dedf39cf35833abd50b39695d75145bb6a5c99066e998d",
+    "tools/consensus-diff/run.py": "94386cc9acd981efae7bfcc864dea5d5684de31c22aaa06d803feecfd2951a20",
+    "tools/consensus-diff/traces.py": "edae3fb275f07d4fca5d504c9d242202df03a3234e5b53460c86abaf28f84d71",
+    "tools/consensus-diff/regressions.json": "3faf7efb90415299a6bcdfb9a08ac9f2b9ec4da94ec447d64593dde9ae2eccf1"
+  },
+  "before_fix_round_1": {
+    "adapter_build_commits": [
+      "e2a61515c1200868b7fd68ffc8e6e6c7c22583d3",
+      "880574d63f0d0189209ec8c3fbbb3f418040a2a0"
+    ],
+    "compared_cases": 22520,
+    "mismatches": 0,
+    "note": "before fix round 1, without the same-slot trace; before and after rebasing onto main"
+  },
+  "fix_round_1_mutation_controls": {
+    "select-parent": [
+      "a_same_slot_win_after_an_empty_epoch_is_made_on_the_tips_parent",
+      "a_win_refused_for_its_parent_is_not_chosen_again_for_that_parent"
+    ],
+    "no-refused-guard": [
+      "a_win_refused_for_its_parent_is_not_chosen_again_for_that_parent"
+    ],
+    "cache-gap-drop": [
+      "a_restart_past_the_saved_range_starts_a_new_range"
+    ],
+    "select-parent_traces": {
+      "differences": 2,
+      "detected_in": [
+        "same-slot-after-empty-epoch step 1"
+      ]
+    }
+  }
+}

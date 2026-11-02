@@ -1,0 +1,37 @@
+{
+  "valid": [
+    "stun:example.org",
+    "stuns:example.org:5349",
+    "turn:example.org:3478?transport=udp",
+    "turn:127.0.0.1:1?transport=tcp",
+    "turns:example.org.:65535?transport=tcp",
+    "turn:[::1]:3478?transport=udp",
+    "stun:[2001:db8::1]"
+  ],
+  "invalid": [
+    "turn:",
+    "turn:example.org:70000",
+    "turn:example.org?transport=invalid",
+    "https://example.org",
+    "turn://example.org",
+    "turn:example.org:0",
+    "turn:example.org:-1",
+    "turn:example.org:",
+    "turn:example.org:65536",
+    "turn:example.org:123456",
+    "turn:example.org/path",
+    "turn:user@example.org",
+    "turn:example.org#fragment",
+    "turn:example.org?transport=udp&x=1",
+    "turn:example.org?transport=UDP",
+    "stun:example.org?transport=udp",
+    "turn:[not-ip]",
+    "turn:[:::1]",
+    "turn:::1",
+    "turn:example..org",
+    "turn:example.org..",
+    "turn: example.org",
+    "turn:example.org\n",
+    "turn:example.org?transport=tcp?transport=udp"
+  ]
+}

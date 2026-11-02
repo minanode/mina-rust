@@ -438,6 +438,14 @@ mod floating_point {
             self.value
         }
 
+        /// The bits are least significant first, so `k` zeros go in front.
+        /// The VRF threshold shifts an integer made by `create`, which has
+        /// no bits, so only the value and the interval change there; the
+        /// shift adds no constraint either way.
+        ///
+        /// OCaml: snarky `snarky_integer/integer.ml`, `shift_left`
+        /// <https://github.com/o1-labs/snarky/blob/9f55ef7c2f2570365aeb24b6ddfc713f48be3117/snarky_integer/integer.ml#L145-L153>
+        /// (snarky at Mina 4.0.4, `c9e2eac5`).
         fn shift_left(&self, k: usize) -> Self {
             let Self {
                 value,
@@ -450,7 +458,11 @@ mod floating_point {
             Self {
                 value: *value * F::from(two_to_k.clone()),
                 interval: interval.scale(two_to_k),
-                bits: bits.as_ref().map(|_| todo!()),
+                bits: bits.as_ref().map(|bits| {
+                    std::iter::repeat_n(false, k)
+                        .chain(bits.iter().copied())
+                        .collect()
+                }),
             }
         }
 
@@ -481,6 +493,33 @@ mod floating_point {
                     bits: Some(r_bits),
                 },
             )
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use mina_curves::pasta::Fp;
+
+        use super::*;
+
+        /// `shift_left` puts `k` zeros in front of the bits, least
+        /// significant first, so that they still pack to the value, and an
+        /// integer without bits, as the VRF threshold's, keeps none.
+        #[test]
+        fn shift_left_keeps_the_bits_of_the_value() {
+            let five = SnarkyInteger::<Fp> {
+                value: Fp::from(5u64),
+                interval: Interval::LessThan(BigUint::from(8u64)),
+                bits: Some(vec![true, false, true].into_boxed_slice()),
+            };
+            let twenty = five.shift_left(2);
+            assert_eq!(twenty.value, Fp::from(20u64));
+            assert_eq!(
+                twenty.bits.as_deref(),
+                Some(&[false, false, true, false, true][..])
+            );
+            let created = SnarkyInteger::create(Fp::from(5u64), BigUint::from(8u64));
+            assert!(created.shift_left(2).bits.is_none());
         }
     }
 
@@ -2996,4 +3035,102 @@ mod mesa_tests {
             assert!(!verifies(&other, &proof));
         }
     }
+
+    /// Proves `input` and returns the SHA-256 of the primary and auxiliary
+    /// values of the step and wrap witnesses, as `witness_hashes` records
+    /// them, and of the proof's binprot. The proof must verify. Under
+    /// `cfg(test)` the prover's randomness is seeded, so all three are
+    /// deterministic.
+    fn proof_hashes(
+        input: &v2::ProverExtendBlockchainInputStableV2,
+        provers: &BlockProver,
+    ) -> (Vec<(String, String)>, String) {
+        use crate::proofs::transaction::witness_hashes;
+        use mina_p2p_messages::binprot::BinProtWrite;
+        use sha2::{Digest, Sha256};
+
+        witness_hashes::enable();
+        let proof = prove(input, provers).unwrap();
+        let witnesses = witness_hashes::take();
+        assert!(verifies(&input.next_state, &proof));
+        let mut bytes = vec![];
+        v2::MinaBaseProofStableV2((&proof).into())
+            .binprot_write(&mut bytes)
+            .unwrap();
+        (witnesses, hex::encode(Sha256::digest(&bytes)))
+    }
+
+    /// PROVER-PANIC-SWEEP: the block proofs of the devnet offline block
+    /// 545436 and the mainnet offline block 548149, both past genesis, so
+    /// that the step evaluates the VRF threshold
+    /// (`floating_point::of_quotient`), are pinned: the sweep's changes to
+    /// the step and wrap verifiers leave both witnesses and the proof as
+    /// they were. Run each test in its own process: they set the global
+    /// network config.
+    #[test]
+    #[ignore = "needs the Mesa devnet circuit blobs: MINA_PROFILE=devnet \
+                tools/mesa-circuits/generate.sh <dir> tools/mesa-circuits/mesa-devnet-fork.json, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_devnet_offline_block_proof_is_pinned() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let provers = devnet_provers();
+        let hashes = proof_hashes(&offline_input(DEVNET_OFFLINE_545436), &provers);
+        eprintln!("devnet 545436 (step, wrap witnesses; proof): {hashes:?}");
+        assert_eq!(hashes, pinned(PINNED_DEVNET_545436));
+    }
+
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_offline_block_proof_is_pinned() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let provers = provers();
+        let hashes = proof_hashes(&offline_input(OFFLINE_548149), &provers);
+        eprintln!("mainnet 548149 (step, wrap witnesses; proof): {hashes:?}");
+        assert_eq!(hashes, pinned(PINNED_MAINNET_548149));
+    }
+
+    type Pinned = ([(&'static str, &'static str); 2], &'static str);
+
+    fn pinned((witnesses, proof): Pinned) -> (Vec<(String, String)>, String) {
+        let witnesses = witnesses
+            .iter()
+            .map(|(primary, aux)| (primary.to_string(), aux.to_string()))
+            .collect();
+        (witnesses, proof.to_string())
+    }
+
+    /// The step and wrap witnesses' primary and auxiliary hashes, and the
+    /// proof's, from the code before PROVER-PANIC-SWEEP (`cd6b3a152`).
+    const PINNED_DEVNET_545436: Pinned = (
+        [
+            (
+                "eb23a98ea1ba1c2eecb028bf6d23cefdff05aa2563b8e227439a6aa3571a60dc",
+                "876d6e45c9a1b7e5db90fbdad3d097cf489ea8992836152ba5746ee10db8a103",
+            ),
+            (
+                "f328308ef5e4beaa906b4f839ba7512668b0f6813c4acfbe440012d4748a03f9",
+                "cc22551e98f9f0b2cd18adf7d40c3189985ce0e19565fb6baee3e55d623f7f7a",
+            ),
+        ],
+        "0c12c845886d294b7080ac26f51f52065aa6ed25996ae2fdb18e391d5e09420b",
+    );
+
+    const PINNED_MAINNET_548149: Pinned = (
+        [
+            (
+                "6dacf4053931bfa87e26a37cb469b9b7991f02bf89010bffe76a329cc975fb41",
+                "9ebbc351884d422951fc602751ae6844e0559f43f9211145558f0df39d4fe6e0",
+            ),
+            (
+                "ec0679c1c06b60a9d439d71c59b3f4ffa6f1c12bd3891f869d8404d3dd3e0e0b",
+                "70fb755c6844b7eb6c88d03bbb226d10d1cfd0bdbeed1787b8f8a636d8d11b27",
+            ),
+        ],
+        "07f7ab00b378ee1015cf93f8c0a9270ebd7f72ebeeef95c4050cccac27962850",
+    );
 }

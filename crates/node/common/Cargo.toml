@@ -60,4 +60,6 @@ p2p-webrtc-ready-events = ["mina-node/p2p-webrtc-ready-events"]
 p2p-libp2p = ["mina-node/p2p-libp2p"]
 
 [dev-dependencies]
+# The panic hook of the prover recovery tests (`ledger/test-hooks`).
+ledger = { workspace = true, features = ["test-hooks"] }
 tempfile = { workspace = true }

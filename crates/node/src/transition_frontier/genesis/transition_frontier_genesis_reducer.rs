@@ -35,6 +35,12 @@ impl TransitionFrontierGenesisState {
             TransitionFrontierGenesisAction::LedgerLoadPending => {
                 *state = Self::LedgerLoadPending { time: meta.time() };
             }
+            TransitionFrontierGenesisAction::LedgerLoadError { error } => {
+                *state = Self::LedgerLoadError {
+                    time: meta.time(),
+                    error: error.clone(),
+                };
+            }
             TransitionFrontierGenesisAction::LedgerLoadSuccess { data } => {
                 *state = Self::LedgerLoadSuccess {
                     time: meta.time(),
@@ -65,7 +71,10 @@ impl TransitionFrontierGenesisState {
                     data.staking_epoch_total_currency.clone(),
                     data.next_epoch_total_currency.clone(),
                 ) else {
-                    error!(meta.time(); "invalid negative protocol state");
+                    *state = Self::LedgerLoadError {
+                        time: meta.time(),
+                        error: "invalid genesis protocol state".into(),
+                    };
                     return;
                 };
                 // The chain id commits to the genesis state with zero total
@@ -75,7 +84,10 @@ impl TransitionFrontierGenesisState {
                 let zero = || v2::CurrencyAmountStableV1(0u64.into());
                 let Ok((_, _, chain_id_genesis_hash)) = protocol_states(zero(), zero(), zero())
                 else {
-                    error!(meta.time(); "invalid negative protocol state");
+                    *state = Self::LedgerLoadError {
+                        time: meta.time(),
+                        error: "invalid genesis protocol state".into(),
+                    };
                     return;
                 };
 
@@ -84,7 +96,10 @@ impl TransitionFrontierGenesisState {
                 let Ok(block_with_dummy_proof) =
                     Self::build_block_with_dummy_proof(&genesis, &genesis_hash)
                 else {
-                    error!(meta.time(); "invalid genesis block");
+                    *state = Self::LedgerLoadError {
+                        time: meta.time(),
+                        error: "invalid genesis block".into(),
+                    };
                     return;
                 };
 

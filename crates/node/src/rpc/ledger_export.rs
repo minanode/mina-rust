@@ -99,7 +99,8 @@ pub struct RpcLedgerExport {
     pub ledger_hash: LedgerHash,
     pub best_tip: LedgerExportBestTip,
     pub num_accounts: u64,
-    pub accounts_json: String,
+    /// Not UTF-8 when a token symbol or zkApp URI is not, as OCaml's.
+    pub accounts_json: Vec<u8>,
 }
 
 pub type RpcLedgerExportResponse = Result<Arc<RpcLedgerExport>, String>;

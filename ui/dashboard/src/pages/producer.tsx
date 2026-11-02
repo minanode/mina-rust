@@ -129,7 +129,9 @@ export function ProducerPage() {
   );
 }
 
-function Producing({ stats }: { stats: ProducerStats }) {
+/** A producer's slots, attempts and their fate; minaweb's producer screen
+ * shows it too. */
+export function Producing({ stats }: { stats: ProducerStats }) {
   const { status } = useNodeStatus();
   const uptime = status.data?.uptimeSecs ?? null;
   const network = status.data?.network ?? null;

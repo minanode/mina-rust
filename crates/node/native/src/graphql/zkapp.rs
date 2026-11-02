@@ -1,7 +1,7 @@
 use crate::input_limits::{self as limits, bounded};
 use std::str::FromStr;
 
-use juniper::{GraphQLInputObject, GraphQLObject};
+use crate::graphql::api::{GraphQLInputObject, GraphQLObject};
 use ledger::{scan_state::transaction_logic::TransactionFailure, FpExt, VerificationKey};
 use mina_p2p_messages::{
     bigint::BigInt,
@@ -80,6 +80,7 @@ use super::{
 };
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct SendZkappInput {
     pub zkapp_command: InputGraphQLZkappCommand,
 }
@@ -92,12 +93,14 @@ impl TryFrom<SendZkappInput> for MinaBaseUserCommandStableV2 {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLSendZkappResponse {
     pub zkapp: GraphQLZkapp,
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L2019-L2055>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L2321-L2357>
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "ZkappCommandResult")]
 pub struct GraphQLZkapp {
     /// A cryptographic hash of the zkApp command
@@ -112,6 +115,7 @@ pub struct GraphQLZkapp {
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLZkapp {
     // pub hash: String,
     // pub failure_reason: Option<Vec<GraphQLFailureReason>>,
@@ -121,6 +125,7 @@ pub struct InputGraphQLZkapp {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLZkappCommand {
     pub memo: String,
     pub account_updates: Vec<GraphQLAccountUpdate>,
@@ -128,6 +133,7 @@ pub struct GraphQLZkappCommand {
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLZkappCommand {
     pub memo: Option<String>,
     pub account_updates: Vec<InputGraphQLAccountUpdate>,
@@ -304,18 +310,21 @@ fn try_tree_from_account_updates_aux(
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLFeePayer {
     pub body: GraphQLFeePayerBody,
     pub authorization: String,
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLFeePayer {
     pub body: InputGraphQLFeePayerBody,
     pub authorization: String,
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLFeePayerBody {
     pub public_key: String,
     pub fee: String,
@@ -324,6 +333,7 @@ pub struct GraphQLFeePayerBody {
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLFeePayerBody {
     pub public_key: String,
     pub fee: String,
@@ -332,24 +342,28 @@ pub struct InputGraphQLFeePayerBody {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLAccountUpdate {
     pub body: GraphQLAccountUpdateBody,
     pub authorization: GraphQLAuthorization,
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLAccountUpdate {
     pub body: InputGraphQLAccountUpdateBody,
     pub authorization: InputGraphQLAuthorization,
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLAuthorization {
     pub proof: Option<String>,
     pub signature: Option<String>,
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLAuthorization {
     pub proof: Option<String>,
     pub signature: Option<String>,
@@ -409,6 +423,7 @@ impl TryFrom<InputGraphQLAuthorization> for MinaBaseControlStableV2 {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLAccountUpdateBody {
     pub public_key: String,
     pub token_id: String,
@@ -427,6 +442,7 @@ pub struct GraphQLAccountUpdateBody {
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLAccountUpdateBody {
     pub public_key: String,
     pub token_id: String,
@@ -445,6 +461,7 @@ pub struct InputGraphQLAccountUpdateBody {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLAuthorizationKind {
     pub is_signed: bool,
     pub is_proved: bool,
@@ -452,19 +469,24 @@ pub struct GraphQLAuthorizationKind {
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLAuthorizationKind {
     pub is_signed: bool,
     pub is_proved: bool,
     pub verification_key_hash: Option<String>,
 }
 
+/// A signed or unauthorized update carries the dummy verification key's hash,
+/// as OCaml's structured authorization kind does.
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_base/account_update.ml#L91-L103>
 impl From<MinaBaseAccountUpdateAuthorizationKindStableV1> for GraphQLAuthorizationKind {
     fn from(value: MinaBaseAccountUpdateAuthorizationKindStableV1) -> Self {
+        let dummy_vk_hash = || Some(ledger::VerificationKeyWire::dummy_hash().to_decimal());
         match value {
             MinaBaseAccountUpdateAuthorizationKindStableV1::Signature => GraphQLAuthorizationKind {
                 is_signed: true,
                 is_proved: false,
-                verification_key_hash: None,
+                verification_key_hash: dummy_vk_hash(),
             },
             MinaBaseAccountUpdateAuthorizationKindStableV1::Proof(proof) => {
                 GraphQLAuthorizationKind {
@@ -476,7 +498,7 @@ impl From<MinaBaseAccountUpdateAuthorizationKindStableV1> for GraphQLAuthorizati
             MinaBaseAccountUpdateAuthorizationKindStableV1::NoneGiven => GraphQLAuthorizationKind {
                 is_signed: false,
                 is_proved: false,
-                verification_key_hash: None,
+                verification_key_hash: dummy_vk_hash(),
             },
         }
     }
@@ -510,12 +532,14 @@ impl TryFrom<InputGraphQLAuthorizationKind> for MinaBaseAccountUpdateAuthorizati
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLMayUseToken {
     pub parents_own_token: bool,
     pub inherit_from_parent: bool,
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLMayUseToken {
     pub parents_own_token: bool,
     pub inherit_from_parent: bool,
@@ -553,30 +577,35 @@ impl From<InputGraphQLMayUseToken> for MinaBaseAccountUpdateMayUseTokenStableV1 
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLEvent {
     pub event: String,
     pub data: String,
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLEvent {
     pub event: String,
     pub data: String,
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLAction {
     pub action: String,
     pub data: String,
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLAction {
     pub action: String,
     pub data: String,
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLPreconditions {
     pub network: GraphQLPreconditionsNetwork,
     pub account: GraphQLPreconditionsAccount,
@@ -584,6 +613,7 @@ pub struct GraphQLPreconditions {
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLPreconditions {
     pub network: InputGraphQLPreconditionsNetwork,
     pub account: InputGraphQLPreconditionsAccount,
@@ -591,6 +621,7 @@ pub struct InputGraphQLPreconditions {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLPreconditionsAccount {
     pub balance: Option<GraphQLPreconditionsNetworkBounds>,
     pub nonce: Option<GraphQLPreconditionsNetworkBounds>,
@@ -603,6 +634,7 @@ pub struct GraphQLPreconditionsAccount {
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLPreconditionsAccount {
     pub balance: Option<InputGraphQLPreconditionsNetworkBounds>,
     pub nonce: Option<InputGraphQLPreconditionsNetworkBounds>,
@@ -775,6 +807,7 @@ impl TryFrom<InputGraphQLPreconditionsAccount>
     }
 }
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLPreconditionsNetwork {
     pub snarked_ledger_hash: Option<String>,
     pub blockchain_length: Option<GraphQLPreconditionsNetworkBounds>,
@@ -786,6 +819,7 @@ pub struct GraphQLPreconditionsNetwork {
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLPreconditionsNetwork {
     pub snarked_ledger_hash: Option<String>,
     pub blockchain_length: Option<InputGraphQLPreconditionsNetworkBounds>,
@@ -797,6 +831,7 @@ pub struct InputGraphQLPreconditionsNetwork {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLPreconditionsNetworkEpochData {
     pub ledger: GraphQLPreconditionsNetworkLedger,
     pub seed: Option<String>,
@@ -806,6 +841,7 @@ pub struct GraphQLPreconditionsNetworkEpochData {
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLPreconditionsNetworkEpochData {
     pub ledger: InputGraphQLPreconditionsNetworkLedger,
     pub seed: Option<String>,
@@ -815,23 +851,27 @@ pub struct InputGraphQLPreconditionsNetworkEpochData {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLPreconditionsNetworkLedger {
     pub hash: Option<String>,
     pub total_currency: Option<GraphQLPreconditionsNetworkBounds>,
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLPreconditionsNetworkLedger {
     pub hash: Option<String>,
     pub total_currency: Option<InputGraphQLPreconditionsNetworkBounds>,
 }
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLPreconditionsNetworkBounds {
     pub upper: String,
     pub lower: String,
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLPreconditionsNetworkBounds {
     pub upper: String,
     pub lower: String,
@@ -1122,6 +1162,7 @@ impl TryFrom<InputGraphQLPreconditionsNetwork> for MinaBaseZkappPreconditionProt
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLAccountUpdateUpdate {
     pub app_state: Vec<Option<String>>,
     pub delegate: Option<String>,
@@ -1134,12 +1175,14 @@ pub struct GraphQLAccountUpdateUpdate {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLVerificationKey {
     pub data: String,
     pub hash: String,
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLAccountUpdateUpdate {
     pub app_state: Vec<Option<String>>,
     pub delegate: Option<String>,
@@ -1152,12 +1195,14 @@ pub struct InputGraphQLAccountUpdateUpdate {
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLVerificationKey {
     pub data: String,
     pub hash: String,
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLAccountUpdateUpdatePermissions {
     pub edit_state: String,
     pub access: String,
@@ -1175,12 +1220,14 @@ pub struct GraphQLAccountUpdateUpdatePermissions {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLSetVerificationKeyPermissions {
     pub auth: String,
     pub txn_version: String,
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLAccountUpdateUpdatePermissions {
     pub edit_state: String,
     pub access: String,
@@ -1198,6 +1245,7 @@ pub struct InputGraphQLAccountUpdateUpdatePermissions {
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLSetVerificationKeyPermissions {
     pub auth: String,
     pub txn_version: String,
@@ -1253,19 +1301,22 @@ impl TryFrom<InputGraphQLAccountUpdateUpdatePermissions> for MinaBasePermissions
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLBalanceChange {
     pub magnitude: String,
     pub sgn: String,
 }
 
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLBalanceChange {
     pub magnitude: String,
     pub sgn: String,
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L1738-L1753>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L2040-L2055>
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "ZkappCommandFailureReason")]
 pub struct GraphQLFailureReason {
     /// List index of the account update that failed
@@ -1792,7 +1843,7 @@ mod test {
 
     #[test]
     fn test_zkapp_from_input() {
-        use juniper::FromInputValue;
+        use crate::graphql::api::FromInputValue;
 
         // Keep the deployment fixture's verification-key and permissions coverage.
         // Only its four vectors were widened; this is a parsing fixture, not a
@@ -1802,7 +1853,7 @@ mod test {
         // Unmodified OCaml 4.0.2 GraphQL input and transaction-id bytes from
         // mainnet block 564394. This also covers signed/unsigned nested calls.
         let mesa = include_bytes!("../../../../../tests/files/zkapps/with_sig_auth.bin");
-        let mesa_input: juniper::InputValue = serde_json::from_str(include_str!(
+        let mesa_input: crate::graphql::api::InputValue = serde_json::from_str(include_str!(
             "../../../../../tests/files/zkapps/with_sig_auth_graphql.json"
         ))
         .unwrap();
@@ -1841,6 +1892,40 @@ mod test {
             kind.try_into();
 
         assert!(converted.is_ok());
+    }
+
+    /// A signed or unauthorized update shows the dummy verification key's
+    /// hash, and a proved one its own key's hash. The expected value is the
+    /// one an OCaml mainnet node returned for a signed update of a zkApp
+    /// command in its pool (MAINNET-ZKAPP-32).
+    #[test]
+    fn authorization_kind_shows_the_dummy_hash_unless_proved() {
+        const OCAML_DUMMY_VK_HASH: &str =
+            "3392518251768960475377392625298437850623664973002200885669375116181514017494";
+        for (kind, signed) in [
+            (
+                MinaBaseAccountUpdateAuthorizationKindStableV1::Signature,
+                true,
+            ),
+            (
+                MinaBaseAccountUpdateAuthorizationKindStableV1::NoneGiven,
+                false,
+            ),
+        ] {
+            let kind = GraphQLAuthorizationKind::from(kind);
+            assert_eq!(kind.is_signed, signed);
+            assert!(!kind.is_proved);
+            assert_eq!(
+                kind.verification_key_hash.as_deref(),
+                Some(OCAML_DUMMY_VK_HASH)
+            );
+        }
+        let hash = "19951435866906059835892103359374709356309230417850637795098911039647240505427";
+        let kind = GraphQLAuthorizationKind::from(
+            MinaBaseAccountUpdateAuthorizationKindStableV1::Proof(decimal_field(hash).unwrap()),
+        );
+        assert!(!kind.is_signed && kind.is_proved);
+        assert_eq!(kind.verification_key_hash.as_deref(), Some(hash));
     }
 
     #[test]

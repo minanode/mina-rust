@@ -133,6 +133,7 @@ fn store() -> TestStore {
             timeouts: Default::default(),
             limits: Default::default(),
             peer_discovery: false,
+            seed_only: false,
             meshsub: Default::default(),
             catchup_rpc: Default::default(),
         },
@@ -142,6 +143,7 @@ fn store() -> TestStore {
         archive: None,
         block_producer: Some(bp.config.clone()),
         global: crate::config::GlobalConfig {
+            snark_work_fee: None,
             build: Box::new(crate::config::BuildEnv::get()),
             snarker: None,
             consensus_constants: constants.clone(),

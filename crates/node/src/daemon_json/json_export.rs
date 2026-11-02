@@ -10,6 +10,8 @@ use mina_p2p_messages::v2::{
 };
 use serde::Serialize;
 
+use super::json_bytes::{OcamlFormatter, OcamlString};
+
 /// One account of `Runtime_config.Accounts.t`. Fields are in OCaml's record
 /// order; `[@default]` fields at their default are left out, as
 /// `ppx_deriving_yojson` does.
@@ -31,7 +33,7 @@ pub struct ExportedAccount {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub zkapp: Option<ExportedZkapp>,
     pub permissions: ExportedPermissions,
-    pub token_symbol: String,
+    pub token_symbol: OcamlString,
 }
 
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/runtime_config/runtime_config.ml#L72-L80>
@@ -78,7 +80,7 @@ pub struct ExportedZkapp {
     pub action_state: Vec<String>,
     pub last_action_slot: u32,
     pub proved_state: bool,
-    pub zkapp_uri: String,
+    pub zkapp_uri: OcamlString,
 }
 
 /// `Currency.to_mina_string`: whole MINA, then the nanomina remainder with
@@ -165,7 +167,7 @@ impl ExportedAccount {
             action_state: zkapp.action_state.iter().map(|f| f.to_decimal()).collect(),
             last_action_slot: zkapp.last_action_slot.as_u32(),
             proved_state: zkapp.proved_state,
-            zkapp_uri: String::from_utf8_lossy(&zkapp.zkapp_uri).into_owned(),
+            zkapp_uri: OcamlString(zkapp.zkapp_uri.to_vec()),
         });
         let nonce = account.nonce.as_u32();
         Self {
@@ -183,16 +185,18 @@ impl ExportedAccount {
             voting_for: StateHash::from_fp(account.voting_for.0).to_string(),
             zkapp,
             permissions: permissions(&account.permissions),
-            token_symbol: String::from_utf8_lossy(account.token_symbol.as_bytes()).into_owned(),
+            token_symbol: OcamlString(account.token_symbol.as_bytes().to_vec()),
         }
     }
 }
 
 /// Writes accounts as a JSON array, one account per line, in the order given.
 /// `mina ledger hash --ledger-file` and the runtime config read it as
-/// `Runtime_config.Accounts.t`.
+/// `Runtime_config.Accounts.t`. Token symbols and zkApp URIs are written as
+/// Yojson writes them, so a value that is not UTF-8 is not valid JSON, as in
+/// OCaml's export; read the file with [`super::from_ocaml_json_reader`].
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/app/cli/src/init/client.ml#L752-L772>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/app/cli/src/init/client.ml#L752-L772>
 pub fn write_accounts<'a, W: Write>(
     mut out: W,
     accounts: impl IntoIterator<Item = &'a Account>,
@@ -202,7 +206,9 @@ pub fn write_accounts<'a, W: Write>(
     for account in accounts {
         out.write_all(if first { b"\n" } else { b",\n" })?;
         first = false;
-        serde_json::to_writer(&mut out, &ExportedAccount::of_account(account))?;
+        ExportedAccount::of_account(account).serialize(
+            &mut serde_json::Serializer::with_formatter(&mut out, OcamlFormatter),
+        )?;
     }
     out.write_all(b"\n]\n")?;
     Ok(())
@@ -211,7 +217,7 @@ pub fn write_accounts<'a, W: Write>(
 /// The Merkle root of a ledger holding `accounts` at indexes 0, 1, ... in
 /// order, as `mina ledger hash --ledger-file` computes it.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/app/cli/src/init/client.ml#L841-L888>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/app/cli/src/init/client.ml#L841-L888>
 pub fn ledger_hash_of_accounts(
     accounts: &[super::Account],
 ) -> Result<LedgerHash, super::AccountConfigError> {
@@ -225,9 +231,26 @@ pub fn ledger_hash_of_accounts(
     Ok(LedgerHash::from_fp(mask.merkle_root()))
 }
 
+/// OCaml 4.0.2's `mina ledger hash --ledger-file` on
+/// `testdata/ocaml-ledger-export-non-utf8.json`.
+#[cfg(test)]
+pub(crate) const OCAML_NON_UTF8_SAMPLE_HASH: &str =
+    "jwvgBZtCmJbh1LiAUqSVg8f9n93tAkh4fHGwKLpJJuZJTU1cGbW";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn exported_line(account: &Account) -> String {
+        let mut out = Vec::new();
+        ExportedAccount::of_account(account)
+            .serialize(&mut serde_json::Serializer::with_formatter(
+                &mut out,
+                OcamlFormatter,
+            ))
+            .unwrap();
+        String::from_utf8(out).unwrap()
+    }
 
     #[test]
     fn mina_string_matches_ocaml() {
@@ -259,8 +282,7 @@ mod tests {
         for line in &lines {
             let config: super::super::Account = serde_json::from_str(line).unwrap();
             let account = config.to_account().unwrap();
-            let exported = serde_json::to_string(&ExportedAccount::of_account(&account)).unwrap();
-            assert_eq!(&exported, line);
+            assert_eq!(&exported_line(&account), line);
             accounts.push(account);
         }
 
@@ -280,5 +302,67 @@ mod tests {
             ledger_hash_of_accounts(&accounts).unwrap().to_string(),
             OCAML_SAMPLE_HASH
         );
+    }
+
+    /// Three accounts of the sample whose token symbols and zkApp URIs are
+    /// not UTF-8, written as Yojson 1.7.0 writes them: `0xff` (mainnet
+    /// `B62qjoWP2dCbr8z1Zt9XRhYsKJaDr66kNTJKGh9KKUbQz4hfphMduEZ` since block
+    /// 565083), a lone `0xc3`, and escaped quote, backslash, NUL and DEL. The
+    /// hash is OCaml's for the file; it reads the bytes as written.
+    const NON_UTF8_SAMPLE: &[u8] = include_bytes!("testdata/ocaml-ledger-export-non-utf8.json");
+
+    #[test]
+    fn non_utf8_hash_matches_ocaml_ledger_hash() {
+        let accounts: Vec<super::super::Account> =
+            super::super::from_ocaml_json_slice(NON_UTF8_SAMPLE).unwrap();
+        assert_eq!(accounts[0].token_symbol().as_bytes(), b"\xff");
+        assert_eq!(
+            ledger_hash_of_accounts(&accounts).unwrap().to_string(),
+            OCAML_NON_UTF8_SAMPLE_HASH
+        );
+    }
+
+    /// Token symbols that mix raw bytes with escapes Yojson reads: an escaped
+    /// surrogate pair, a lone low surrogate (encoded as any code point), a raw
+    /// control byte, and an escaped pair alone. The hash is OCaml 4.0.2's
+    /// `mina ledger hash --ledger-file` for the file.
+    #[test]
+    fn escapes_hash_matches_ocaml_ledger_hash() {
+        let accounts: Vec<super::super::Account> = super::super::from_ocaml_json_slice(
+            include_bytes!("testdata/ocaml-ledger-escapes.json"),
+        )
+        .unwrap();
+        let symbols: Vec<Vec<u8>> = accounts
+            .iter()
+            .map(|a| a.token_symbol().as_bytes().to_vec())
+            .collect();
+        assert_eq!(
+            symbols,
+            [
+                &b"\xff\xf0\x9f\x98\x80"[..],
+                b"\xff\xed\xb0\x80",
+                b"\x01A",
+                b"\xf0\x9f\x98\x80",
+            ]
+        );
+        assert_eq!(
+            ledger_hash_of_accounts(&accounts).unwrap().to_string(),
+            "jweHTgxayfHLriWCpTv1e78TdJbcvkUvMxFSdtyyFq6NzrAaEzT"
+        );
+    }
+
+    /// The export keeps the bytes: it is the file OCaml hashed, so reading it
+    /// back gives the same accounts.
+    #[test]
+    fn non_utf8_export_keeps_the_bytes() {
+        let accounts: Vec<Account> =
+            super::super::from_ocaml_json_slice::<Vec<super::super::Account>>(NON_UTF8_SAMPLE)
+                .unwrap()
+                .iter()
+                .map(|a| a.to_account().unwrap())
+                .collect();
+        let mut out = Vec::new();
+        write_accounts(&mut out, &accounts).unwrap();
+        assert_eq!(out, NON_UTF8_SAMPLE);
     }
 }

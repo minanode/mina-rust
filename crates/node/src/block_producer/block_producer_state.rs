@@ -33,6 +33,64 @@ pub struct BlockProducerEnabled {
     pub injected_blocks: BTreeSet<v2::StateHash>,
     #[serde(default)]
     pub proof_retried: bool,
+    /// One active uptime waiter. No blocks are retained without a waiter.
+    #[serde(default)]
+    pub uptime_produced_block: Option<UptimeProducedBlock>,
+    /// The last win `WonSlotProduceInit` refused because its parent takes
+    /// other epoch data, with that parent. The search does not choose the
+    /// same win for the same parent again.
+    #[serde(default)]
+    pub epoch_data_refused: Option<RefusedWin>,
+}
+
+/// A win refused for its parent's epoch data, and the parent.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct RefusedWin {
+    pub global_slot: u32,
+    pub epoch_data: Option<super::vrf_evaluator::EpochFingerprint>,
+    pub parent: v2::StateHash,
+}
+
+impl RefusedWin {
+    /// Whether a block for `won_slot` would be refused again: the same win
+    /// on the same parent, the best tip or, for a win of its slot, its
+    /// parent.
+    pub fn matches(&self, won_slot: &BlockProducerWonSlot, best_tip: &ArcBlockWithHash) -> bool {
+        let parent = if best_tip.global_slot() == won_slot.global_slot() {
+            best_tip.pred_hash()
+        } else {
+            best_tip.hash()
+        };
+        self.global_slot == won_slot.global_slot()
+            && self.epoch_data == won_slot.epoch_data
+            && &self.parent == parent
+    }
+}
+
+/// A bounded first-event latch, independent of subsequent frontier changes.
+/// OCaml's broadcast fills the current waiter's Ivar and replaces it. Later
+/// broadcasts cannot overwrite the value already handed to that waiter.
+/// OCaml: <https://github.com/janestreet/async_kernel/blob/v0.14.0/src/bvar.ml#L35-L49>
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UptimeProducedBlock {
+    pub subscription: u64,
+    pub block: Option<(ArcBlockWithHash, redux::Timestamp)>,
+}
+
+impl UptimeProducedBlock {
+    pub fn new(subscription: u64) -> Self {
+        Self {
+            subscription,
+            block: None,
+        }
+    }
+
+    /// Only a bounded reference handoff: no proving, allocation, I/O or wait.
+    pub fn complete(&mut self, block: &ArcBlockWithHash, slot_time: redux::Timestamp) {
+        if self.block.is_none() {
+            self.block = Some((block.clone(), slot_time));
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -154,6 +212,9 @@ pub enum BlockProducerWonSlotDiscardReason {
     ProofGenerationFailed,
     /// The won slot ended before its block was started.
     WonSlotExpired,
+    /// The block would extend a parent selecting other epoch data (seed,
+    /// staking ledger or total currency) than the win was evaluated with.
+    EpochDataChanged,
 }
 
 impl BlockProducerState {
@@ -165,6 +226,8 @@ impl BlockProducerState {
             injected_blocks: Default::default(),
             next_producer_timing: None,
             proof_retried: false,
+            uptime_produced_block: None,
+            epoch_data_refused: None,
         }))
     }
 
@@ -249,6 +312,37 @@ impl BlockProducerState {
     pub fn pending_transactions(&self) -> Vec<valid::UserCommand> {
         self.with(Vec::new(), |this| this.current.pending_transactions())
     }
+
+    /// When we next produce a block: the won slot we wait for or produce
+    /// now, else the next one the VRF evaluator found from
+    /// `cur_global_slot`. OCaml's `Produce` next producer timing, which the
+    /// uptime service reads.
+    pub fn next_production_time(
+        &self,
+        cur_global_slot: Option<u32>,
+        best_tip: Option<&ArcBlockWithHash>,
+    ) -> Option<redux::Timestamp> {
+        self.with(None, |this| match &this.current {
+            BlockProducerCurrentState::Idle { .. }
+            | BlockProducerCurrentState::WonSlotDiscarded { .. }
+            | BlockProducerCurrentState::Produced { .. }
+            | BlockProducerCurrentState::Injected { .. } => this
+                .next_won_slot(cur_global_slot?, best_tip?)
+                .map(|won_slot| won_slot.slot_time),
+            current => current.won_slot().map(|won_slot| won_slot.slot_time),
+        })
+    }
+
+    /// Our last block injected into the transition frontier, with its won
+    /// slot's start, while the producer hasn't moved on to another slot.
+    pub fn injected_block(&self) -> Option<(&ArcBlockWithHash, redux::Timestamp)> {
+        self.with(None, |this| match &this.current {
+            BlockProducerCurrentState::Injected {
+                block, won_slot, ..
+            } => Some((block, won_slot.slot_time)),
+            _ => None,
+        })
+    }
 }
 
 impl BlockProducerEnabled {
@@ -308,7 +402,14 @@ impl BlockProducerEnabled {
         best_tip: &ArcBlockWithHash,
     ) -> Option<BlockProducerWonSlot> {
         let from = self.current.won_slot_search_start(cur_global_slot);
-        self.vrf_evaluator.next_won_slot(from, best_tip)
+        self.vrf_evaluator
+            .won_slots_from(from, best_tip)
+            .find(|won_slot| {
+                !self
+                    .epoch_data_refused
+                    .as_ref()
+                    .is_some_and(|refused| refused.matches(won_slot, best_tip))
+            })
     }
 }
 
@@ -419,7 +520,8 @@ impl BlockProducerCurrentState {
     /// best tip of its own slot no longer rules it out, such a slot would
     /// otherwise be found again while it lasts, built and proved again. OCaml
     /// takes each won slot off a queue, so it tries a slot once, whatever
-    /// comes of it.
+    /// comes of it. A win dropped for changed epoch data was not the slot's
+    /// attempt: evaluated with the new data, the slot may be won again.
     ///
     /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/block_producer/block_producer.ml#L1106-L1191>
     pub fn won_slot_search_start(&self, cur_global_slot: u32) -> u32 {
@@ -450,6 +552,15 @@ impl BlockProducerCurrentState {
             }
             _ => false,
         }
+    }
+
+    /// Whether the won slot being produced extends a parent that selects the
+    /// epoch data the win was evaluated with. Only a state with a parent
+    /// chain can match.
+    pub fn parent_epoch_data_matches(&self) -> bool {
+        self.won_slot()
+            .zip(self.parent_chain().and_then(|chain| chain.last()))
+            .is_some_and(|(won_slot, parent)| won_slot.epoch_data_matches(parent.consensus_state()))
     }
 
     /// The consensus state and hash of the block we make, once it is built.
@@ -503,6 +614,15 @@ impl BlockProducerCurrentState {
             && &won_slot.staking_ledger_hash != best_tip.next_epoch_ledger_hash()
         {
             return Some(BlockProducerWonSlotDiscardReason::BestTipStakingLedgerDifferent);
+        }
+
+        // Before its block is started, a win stays only while a block on the
+        // best tip (or on its parent, which selects the same data for the
+        // win's epoch) would use the epoch data it was evaluated with.
+        if matches!(self, Self::WonSlot { .. } | Self::WonSlotWait { .. })
+            && !won_slot.epoch_data_matches(best_tip.consensus_state())
+        {
+            return Some(BlockProducerWonSlotDiscardReason::EpochDataChanged);
         }
 
         if self
@@ -609,6 +729,7 @@ mod tests {
             vrf_output: Box::new(mina_vrf::genesis_vrf(seed).unwrap()),
             value_with_threshold: None,
             staking_ledger_hash: v2::LedgerHash::zero(),
+            epoch_data: None,
         };
         BlockProducerCurrentState::WonSlot {
             time: slot_time,

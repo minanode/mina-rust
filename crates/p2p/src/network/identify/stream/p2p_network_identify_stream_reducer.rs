@@ -179,6 +179,7 @@ impl P2pNetworkIdentifyStreamState {
                     peer_id,
                     stream_id,
                 } => {
+                    *stream_state = P2pNetworkIdentifyStreamState::Closing;
                     let dispatcher = state_context.into_dispatcher();
                     Self::disconnect(dispatcher, addr, peer_id, stream_id)
                 }
@@ -251,6 +252,7 @@ impl P2pNetworkIdentifyStreamState {
                     peer_id,
                     stream_id,
                 } => {
+                    *stream_state = P2pNetworkIdentifyStreamState::Closing;
                     let dispatcher = state_context.into_dispatcher();
                     Self::disconnect(dispatcher, addr, peer_id, stream_id)
                 }
@@ -271,6 +273,7 @@ impl P2pNetworkIdentifyStreamState {
                     peer_id,
                     stream_id,
                 } => {
+                    *stream_state = P2pNetworkIdentifyStreamState::Closing;
                     let dispatcher = state_context.into_dispatcher();
                     Self::disconnect(dispatcher, addr, peer_id, stream_id)
                 }
@@ -280,6 +283,7 @@ impl P2pNetworkIdentifyStreamState {
                     stream_id,
                     addresses,
                 } => {
+                    *stream_state = P2pNetworkIdentifyStreamState::IdentifySent;
                     let (dispatcher, state) = state_context.into_dispatcher_and_state();
                     let state = state.substate()?;
                     Self::send_identify(dispatcher, state, addr, peer_id, stream_id, addresses);
@@ -291,7 +295,8 @@ impl P2pNetworkIdentifyStreamState {
                     Ok(())
                 }
             },
-            P2pNetworkIdentifyStreamState::IdentifyReceived { .. } => match action {
+            P2pNetworkIdentifyStreamState::IdentifySent
+            | P2pNetworkIdentifyStreamState::IdentifyReceived { .. } => match action {
                 P2pNetworkIdentifyStreamAction::Close {
                     addr,
                     peer_id,
@@ -302,12 +307,13 @@ impl P2pNetworkIdentifyStreamState {
                     peer_id,
                     stream_id,
                 } => {
+                    *stream_state = P2pNetworkIdentifyStreamState::Closing;
                     let dispatcher = state_context.into_dispatcher();
                     Self::disconnect(dispatcher, addr, peer_id, stream_id)
                 }
                 _ => Ok(()),
             },
-            P2pNetworkIdentifyStreamState::Error(_) => {
+            P2pNetworkIdentifyStreamState::Closing | P2pNetworkIdentifyStreamState::Error(_) => {
                 // TODO
                 Ok(())
             }
@@ -438,6 +444,37 @@ impl P2pNetworkIdentifyStreamState {
             addr,
             peer_id,
             stream_id,
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Mutated identify messages, read as the stream reads a whole one: each
+    /// is accepted or refused.
+    #[test]
+    fn mutated_messages_are_accepted_or_refused() {
+        let identify = P2pNetworkIdentify {
+            protocol_version: Some("ipfs/0.1.0".to_owned()),
+            agent_version: Some(
+                "github.com/codaprotocol/coda/tree/master/src/app/libp2p_helper".to_owned(),
+            ),
+            public_key: Some(crate::identity::SecretKey::deterministic(1).public_key()),
+            listen_addrs: vec!["/ip4/203.0.113.7/tcp/8302".parse().unwrap()],
+            observed_addr: Some("/ip4/198.51.100.1/tcp/40000".parse().unwrap()),
+            protocols: vec![token::StreamKind::Rpc(token::RpcAlgorithm::Rpc0_0_1)],
+        };
+        let bytes = identify.to_proto_message().unwrap().encode_to_vec();
+        let budget = mina_peer_input_fuzz::Budget::from_env();
+        mina_peer_input_fuzz::fuzz("identify", &[bytes], &budget, |bytes| {
+            let mut state = P2pNetworkIdentifyStreamState::RecvIdentify;
+            let _ = state.handle_incoming_identify_message(bytes.len(), bytes);
+            matches!(
+                state,
+                P2pNetworkIdentifyStreamState::IdentifyReceived { .. }
+            )
         });
     }
 }

@@ -196,6 +196,7 @@ fn state(seeds: &[u8]) -> State {
             timeouts: Default::default(),
             limits: Default::default(),
             peer_discovery: true,
+            seed_only: false,
             meshsub: P2pMeshsubConfig::default(),
             catchup_rpc: Default::default(),
         },
@@ -1212,4 +1213,278 @@ fn a_refusal_inside_a_batch_of_kademlia_requests_asks_no_peer_twice() {
         "{records:?}"
     );
     assert_eq!(STORE_ERRORS.with_borrow(Clone::clone), Vec::<String>::new());
+}
+
+// WEB-PRIVACY: these exercise the reducers directly as well as their guards.
+fn web_opts(n: u8, port: u16) -> P2pConnectionOutgoingInitOpts {
+    P2pConnectionOutgoingInitOpts::WebRTC {
+        peer_id: peer(n),
+        signaling: format!("/http/127.0.0.1/{port}").parse().unwrap(),
+    }
+}
+
+#[test]
+fn seed_only_browser_rejects_learned_addresses_and_rpc_bypasses() {
+    let mut s = state(&[]);
+    let seed = web_opts(1, 9360);
+    s.0.config.initial_peers = vec![seed.clone()];
+    s.0.config.seed_only = true;
+    s.0.config.peer_discovery = false;
+    s.0.config.enabled_channels = ChannelId::without_signaling().collect();
+    // Include a substituted address for an allowed identity, a new WebRTC
+    // peer, and an address learned by Identify/Kademlia/initial-peers RPC.
+    for learned in [web_opts(1, 9361), web_opts(2, 9360), opts(3)] {
+        let id = *learned.peer_id();
+        apply(
+            &mut s,
+            P2pPeerAction::Discovered {
+                peer_id: id,
+                dial_opts: Some(learned.clone()),
+            },
+            1,
+        );
+        // Simulate a stale persisted dial entry too: the boundary still wins.
+        s.0.peers.insert(
+            id,
+            P2pPeerState {
+                is_libp2p: learned.is_libp2p(),
+                dial_opts: Some(learned.clone()),
+                identify: None,
+                status: P2pPeerStatus::Disconnected { time: at(0) },
+            },
+        );
+        assert!(!s.0.dial_candidates(at(100)).contains(&&learned));
+        for rpc_id in [None, Some(mina_core::requests::RpcId::new_unchecked(1, 1))] {
+            for action in [
+                P2pConnectionOutgoingAction::Init {
+                    opts: learned.clone(),
+                    rpc_id,
+                    on_success: None,
+                },
+                P2pConnectionOutgoingAction::Reconnect {
+                    opts: learned.clone(),
+                    rpc_id,
+                },
+            ] {
+                assert!(!action.is_enabled(&s.0, at(100)));
+                let mut dispatcher = redux::Dispatcher::<Action, State>::new();
+                P2pState::reducer(
+                    Substate::new(&mut s, &mut dispatcher),
+                    ActionMeta::zero_custom(at(100)).with_action(action.into()),
+                )
+                .unwrap();
+                assert!(dispatcher.pop().is_none(), "reducer must not initiate I/O");
+                assert!(!s.0.peers[&id].status.is_connected_or_connecting());
+            }
+        }
+    }
+    s.0.peers.clear();
+    let action = P2pConnectionOutgoingAction::Init {
+        opts: seed,
+        rpc_id: None,
+        on_success: None,
+    };
+    assert!(action.is_enabled(&s.0, at(100)));
+    let mut dispatcher = redux::Dispatcher::<Action, State>::new();
+    P2pState::reducer(
+        Substate::new(&mut s, &mut dispatcher),
+        ActionMeta::zero_custom(at(100)).with_action(action.into()),
+    )
+    .unwrap();
+    assert!(matches!(
+        dispatcher.pop(),
+        Some(Action::P2pEffectful(P2pEffectfulAction::Connection(
+            mina_p2p::connection::P2pConnectionEffectfulAction::Outgoing(
+                P2pConnectionOutgoingEffectfulAction::Init { .. }
+            )
+        )))
+    ));
+}
+
+#[test]
+fn relay_drops_signaling_between_connected_webrtc_peers() {
+    use mina_p2p::channels::signaling::{
+        discovery::{P2pChannelsSignalingDiscoveryState, SignalingDiscoveryState},
+        exchange::{P2pChannelsSignalingExchangeState, SignalingExchangeState},
+    };
+    let mut s = state(&[]);
+    s.0.config.enabled_channels = ChannelId::without_signaling().collect();
+    for n in [1, 2] {
+        // Deliberately make the channel state ready to prove the configured
+        // policy also covers stale state and direct reducer invocations.
+        let mut ready = P2pPeerStatusReady::new(false, at(0), &ChannelId::iter_all().collect());
+        ready.channels.signaling.discovery = P2pChannelsSignalingDiscoveryState::Ready {
+            time: at(0),
+            local: SignalingDiscoveryState::Discovered {
+                time: at(0),
+                target_public_key: SecretKey::from_bytes([2; 32]).public_key(),
+            },
+            remote: SignalingDiscoveryState::WaitingForRequest { time: at(0) },
+        };
+        ready.channels.signaling.exchange = P2pChannelsSignalingExchangeState::Ready {
+            time: at(0),
+            local: SignalingExchangeState::Requested { time: at(0) },
+            remote: SignalingExchangeState::Requested { time: at(0) },
+        };
+        s.0.peers.insert(
+            peer(n),
+            P2pPeerState {
+                is_libp2p: false,
+                dial_opts: Some(web_opts(n, 9360)),
+                identify: None,
+                status: P2pPeerStatus::Ready(Box::new(ready)),
+            },
+        );
+    }
+    let offer = vec![0_u8; 32].into();
+    let relay = P2pChannelsSignalingExchangeAction::OfferSend {
+        peer_id: peer(2),
+        offerer_pub_key: SecretKey::from_bytes([1; 32]).public_key(),
+        offer,
+    };
+    assert!(!relay.is_enabled(&s.0, at(1)));
+    let mut dispatcher = redux::Dispatcher::<Action, State>::new();
+    P2pState::reducer(
+        Substate::new(&mut s, &mut dispatcher),
+        ActionMeta::zero_custom(at(1)).with_action(relay.clone().into()),
+    )
+    .unwrap();
+    assert!(dispatcher.pop().is_none());
+    let accept = P2pChannelsSignalingDiscoveryAction::DiscoveredAcceptReceived {
+        peer_id: peer(1),
+        offer: vec![0_u8; 32].into(),
+    };
+    assert!(!accept.is_enabled(&s.0, at(1)));
+    P2pState::reducer(
+        Substate::new(&mut s, &mut dispatcher),
+        ActionMeta::zero_custom(at(1)).with_action(accept.into()),
+    )
+    .unwrap();
+    assert!(dispatcher.pop().is_none());
+    // Explicit experimental opt-in preserves the native-to-native relay path.
+    s.0.config.enabled_channels = ChannelId::iter_all().collect();
+    assert!(relay.is_enabled(&s.0, at(1)));
+    P2pState::reducer(
+        Substate::new(&mut s, &mut dispatcher),
+        ActionMeta::zero_custom(at(1)).with_action(relay.into()),
+    )
+    .unwrap();
+    assert!(matches!(
+        dispatcher.pop(),
+        Some(Action::P2pEffectful(P2pEffectfulAction::Channels(
+            P2pChannelsEffectfulAction::MessageSend { .. }
+        )))
+    ));
+}
+
+#[test]
+fn native_direct_http_signaling_survives_but_browser_rejects_incoming() {
+    use mina_p2p::connection::incoming::{
+        IncomingSignalingMethod, P2pConnectionIncomingAction, P2pConnectionIncomingInitOpts,
+    };
+    let mut s = state(&[]);
+    s.0.config.enabled_channels = ChannelId::without_signaling().collect();
+    let offer = mina_p2p::webrtc::Offer {
+        sdp: String::new(),
+        chain_id: MAINNET_CHAIN_ID.clone(),
+        identity_pub_key: SecretKey::from_bytes([1; 32]).public_key(),
+        target_peer_id: s.0.my_id(),
+        host: "127.0.0.1".parse().unwrap(),
+        listen_port: None,
+    };
+    let action = P2pConnectionIncomingAction::Init {
+        opts: P2pConnectionIncomingInitOpts {
+            peer_id: peer(1),
+            signaling: IncomingSignalingMethod::Http,
+            offer: Box::new(offer),
+        },
+        rpc_id: None,
+    };
+    assert!(action.is_enabled(&s.0, at(1)));
+    s.0.config.seed_only = true;
+    assert!(!action.is_enabled(&s.0, at(1)));
+    let mut dispatcher = redux::Dispatcher::<Action, State>::new();
+    P2pState::reducer(
+        Substate::new(&mut s, &mut dispatcher),
+        ActionMeta::zero_custom(at(1)).with_action(action.clone().into()),
+    )
+    .unwrap();
+    assert!(dispatcher.pop().is_none());
+    assert!(s.0.peers.is_empty());
+    s.0.config.seed_only = false;
+    P2pState::reducer(
+        Substate::new(&mut s, &mut dispatcher),
+        ActionMeta::zero_custom(at(1)).with_action(action.into()),
+    )
+    .unwrap();
+    assert!(dispatcher.pop().is_some());
+    assert!(s.0.peers[&peer(1)].status.is_connected_or_connecting());
+}
+
+#[test]
+fn channel_open_failure_discards_pending_channels_and_finishes_once() {
+    use mina_p2p::disconnection::P2pDisconnectionReason;
+    let mut s = state(&[]);
+    let peer_id = peer(1);
+    s.0.peers.insert(
+        peer_id,
+        P2pPeerState {
+            is_libp2p: false,
+            dial_opts: None,
+            identify: None,
+            status: P2pPeerStatus::Ready(Box::new(P2pPeerStatusReady::new(
+                true,
+                at(0),
+                &ChannelId::iter_all().collect(),
+            ))),
+        },
+    );
+    apply(&mut s, P2pChannelsRpcAction::Init { peer_id }, 1);
+    apply(&mut s, P2pChannelsRpcAction::Pending { peer_id }, 1);
+    let reason =
+        P2pDisconnectionReason::P2pChannelOpenFailed(ChannelId::Rpc, "closed during open".into());
+    assert!(!reason.is_misbehaviour());
+    let failure = P2pDisconnectionAction::Init { peer_id, reason };
+    assert!(failure.is_enabled(&s.0, at(2)));
+    apply(&mut s, failure.clone(), 2);
+    assert!(matches!(
+        s.0.peers[&peer_id].status,
+        P2pPeerStatus::Disconnecting { .. }
+    ));
+    assert!(!failure.is_enabled(&s.0, at(2)));
+    assert!(!P2pChannelsRpcAction::Ready { peer_id }.is_enabled(&s.0, at(2)));
+    let finish = P2pDisconnectionAction::Finish { peer_id };
+    assert!(finish.is_enabled(&s.0, at(3)));
+    apply(&mut s, finish.clone(), 3);
+    assert!(matches!(
+        s.0.peers[&peer_id].status,
+        P2pPeerStatus::Disconnected { .. }
+    ));
+    assert!(!finish.is_enabled(&s.0, at(3)));
+}
+
+#[test]
+fn libp2p_never_initializes_webrtc_only_channels() {
+    let mut s = state(&[1]);
+    assert_eq!(timer_dials(&mut s, 0), vec![peer(1)]);
+    ready(&mut s, 1, 1);
+    let channels = &s.0.get_ready_peer(&peer(1)).unwrap().channels;
+    assert!(matches!(
+        channels.snark_job_commitment,
+        mina_p2p::channels::snark_job_commitment::P2pChannelsSnarkJobCommitmentState::Disabled
+    ));
+    let mut dispatcher = redux::Dispatcher::<Action, State>::new();
+    TRACE.with_borrow_mut(Vec::clear);
+    s.0.channels_init(&mut dispatcher, peer(1));
+    TRACE.with_borrow(|trace| {
+        assert!(!trace.iter().any(|a| matches!(
+            a,
+            P2pAction::Channels(
+                mina_p2p::channels::P2pChannelsAction::SnarkJobCommitment(_)
+                    | mina_p2p::channels::P2pChannelsAction::StreamingRpc(_)
+                    | mina_p2p::channels::P2pChannelsAction::SignalingDiscovery(_)
+                    | mina_p2p::channels::P2pChannelsAction::SignalingExchange(_)
+            )
+        )));
+    });
 }

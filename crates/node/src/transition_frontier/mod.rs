@@ -5,6 +5,7 @@ pub mod genesis;
 pub mod genesis_effectful;
 pub mod persist;
 pub mod persist_effectful;
+pub mod protocol_state;
 pub mod root_history;
 pub mod sync;
 

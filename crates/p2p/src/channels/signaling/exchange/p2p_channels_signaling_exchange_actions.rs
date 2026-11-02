@@ -80,6 +80,13 @@ impl P2pChannelsSignalingExchangeAction {
 
 impl redux::EnablingCondition<P2pState> for P2pChannelsSignalingExchangeAction {
     fn is_enabled(&self, state: &P2pState, _time: redux::Timestamp) -> bool {
+        if !state
+            .config
+            .enabled_channels
+            .contains(&crate::channels::ChannelId::SignalingExchange)
+        {
+            return false;
+        }
         match self {
             P2pChannelsSignalingExchangeAction::Init { peer_id } => {
                 state.get_ready_peer(peer_id).is_some_and(|p| {

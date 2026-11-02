@@ -9,16 +9,16 @@
 
 use std::sync::Arc;
 
+use crate::graphql::api::{
+    http::{GraphQLBatchRequest, GraphQLRequest},
+    EmptySubscription, RootNode,
+};
 use axum::{
     extract::{DefaultBodyLimit, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Extension, Json, Router,
-};
-use juniper::{
-    http::{GraphQLBatchRequest, GraphQLRequest},
-    EmptySubscription, RootNode,
 };
 
 use super::{
@@ -48,7 +48,11 @@ fn routes_with(
     public: bool,
     large: LargeBodies,
 ) -> Router<AppState> {
-    let schema = Arc::new(Schema::new(Query, Mutation, EmptySubscription::new()));
+    let schema = Arc::new(Schema::new_with_scalar_value(
+        Query,
+        Mutation,
+        EmptySubscription::new(),
+    ));
 
     let graphql =
         post(graphql_handler).layer(DefaultBodyLimit::max(SizeLimits::of(public).body_bytes));
@@ -113,7 +117,7 @@ pub(crate) async fn respond(
     let response = match request {
         GraphQLBatchRequest::Single(request) => respond_one(schema, context, request).await,
         GraphQLBatchRequest::Batch(requests) => serde_json::Value::Array(
-            juniper::futures::future::join_all(
+            crate::graphql::api::futures::future::join_all(
                 requests
                     .iter()
                     .map(|request| respond_one(schema, context, request)),
@@ -140,6 +144,8 @@ async fn respond_one(
     context: &Context,
     request: &GraphQLRequest,
 ) -> serde_json::Value {
+    let adapted = super::graphql_ocaml::archive_json_input(request, schema);
+    let request = adapted.as_ref().unwrap_or(request);
     if let Some(response) = super::graphql_ocaml::missing_variable(request, schema) {
         return response;
     }
@@ -153,7 +159,9 @@ async fn respond_one(
 /// Serves the GraphiQL IDE.
 #[cfg(feature = "graphiql")]
 async fn graphiql_handler() -> impl IntoResponse {
-    Html(juniper::http::graphiql::graphiql_source("/graphql", None))
+    Html(crate::graphql::api::http::graphiql::graphiql_source(
+        "/graphql", None,
+    ))
 }
 
 #[cfg(test)]

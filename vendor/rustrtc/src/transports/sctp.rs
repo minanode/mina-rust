@@ -1,6 +1,7 @@
 use crate::RtcConfiguration;
 use crate::errors::RtcError;
 use crate::platform::sync::{Mutex, Notify, mpsc};
+use crate::transports::packet_queue::{self, Kind};
 use crate::platform::time::Instant;
 pub use crate::transports::datachannel::*;
 use crate::transports::dtls::{DtlsState, DtlsTransport};
@@ -487,7 +488,7 @@ struct SctpInner {
     window_limited: AtomicBool,
 
     // Outgoing Packet Queue to prevent deadlocks
-    outgoing_packet_tx: mpsc::UnboundedSender<Bytes>,
+    outgoing_packet_tx: packet_queue::Sender,
 
     // Last SACK receive time (for RTO timeout error count handling)
     last_sack_time: Mutex<Option<Instant>>,
@@ -869,7 +870,7 @@ pub struct SctpTransport {
 impl SctpTransport {
     pub fn new(
         dtls_transport: Arc<DtlsTransport>,
-        incoming_data_rx: mpsc::UnboundedReceiver<Bytes>,
+        incoming_data_rx: packet_queue::Receiver,
         data_channels: Arc<Mutex<Vec<Weak<DataChannel>>>>,
         local_port: u16,
         remote_port: u16,
@@ -880,7 +881,7 @@ impl SctpTransport {
         Arc<Self>,
         impl core::future::Future<Output = ()> + Send + 'static,
     ) {
-        let (outgoing_packet_tx, mut outgoing_packet_rx) = mpsc::unbounded_channel::<Bytes>();
+        let (outgoing_packet_tx, mut outgoing_packet_rx) = dtls_transport.packet_association().channel(Kind::SctpOutput);
 
         let timer_notify = Arc::new(Notify::new());
         let inner = Arc::new(SctpInner {
@@ -1193,7 +1194,7 @@ impl SctpInner {
     async fn run_loop(
         &self,
         close_rx: Arc<Notify>,
-        mut incoming_data_rx: mpsc::UnboundedReceiver<Bytes>,
+        mut incoming_data_rx: packet_queue::Receiver,
     ) {
         debug!("SctpTransport run_loop started");
         *self.state.lock() = SctpState::Connecting;
@@ -1448,17 +1449,9 @@ impl SctpInner {
             }
 
             // Batch receive: drain any packets queued behind the first one.
-            // (tokio's try_recv yields T; the sync_embedded backend yields
-            // Option<T>.) Kept outside the select so the arm futures'
-            // receiver borrows have ended.
-            #[cfg(feature = "std")]
-            while let Ok(packet) = incoming_data_rx.try_recv() {
-                if let Err(e) = self.handle_packet(packet).await {
-                    trace!("SCTP handle packet error: {}", e);
-                }
-            }
-            #[cfg(not(feature = "std"))]
-            while let Ok(Some(packet)) = incoming_data_rx.try_recv() {
+            // Bound each batch so a continuous sender cannot starve teardown.
+            for _ in 0..64 {
+                let Ok(packet) = incoming_data_rx.try_recv() else { break; };
                 if let Err(e) = self.handle_packet(packet).await {
                     trace!("SCTP handle packet error: {}", e);
                 }
@@ -3486,8 +3479,11 @@ impl SctpInner {
             .fetch_add(packet_size as u64, Ordering::Relaxed);
         self.stats_packets_sent.fetch_add(1, Ordering::Relaxed);
 
-        if self.outgoing_packet_tx.send(buf.freeze()).is_err() {
-            debug!("Failed to send SCTP packet to transport: channel closed");
+        if let Err(error) = self.outgoing_packet_tx.send(buf.freeze()) {
+            if error == packet_queue::SendError::Overloaded {
+                self.dtls_transport.fail_dispatch();
+            }
+            debug!("Failed to send SCTP packet to transport: {:?}", error);
             *self.close_reason.lock() = Some("TRANSPORT_CLOSED".into());
             self.set_state(SctpState::Closed);
             return Err(RtcError::Internal("Transport channel closed".to_string()));
@@ -4281,6 +4277,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn raw_output_dispatch_overload_closes_association() {
+        let (socket_tx, _) = crate::platform::sync::watch::channel(None);
+        let conn = crate::transports::ice::conn::IceConn::new(
+            socket_tx.subscribe(), "127.0.0.1:5000".parse().unwrap(), None);
+        let (dtls, incoming, _) = DtlsTransport::new(conn,
+            crate::transports::dtls::generate_certificate().unwrap(), false, 1500, None).await.unwrap();
+        let (sctp, runner) = SctpTransport::new(dtls.clone(), incoming,
+            Arc::new(Mutex::new(Vec::new())), 5000, 5000, None, false, &RtcConfiguration::default());
+        for _ in 0..packet_queue::MAX_ITEMS {
+            sctp.inner.send_packet_with_tag(Vec::new(), 0).await.unwrap();
+        }
+        assert!(sctp.inner.send_packet_with_tag(Vec::new(), 0).await.is_err());
+        assert_eq!(*sctp.inner.state.lock(), SctpState::Closed);
+        assert!(matches!(dtls.get_state(), DtlsState::Failed));
+        drop(runner);
+        assert_eq!(sctp.inner.outgoing_packet_tx.send(Bytes::new()), Err(packet_queue::SendError::Closed));
+    }
+
+    #[tokio::test]
     async fn test_rto_backoff() {
         let mut calc = RtoCalculator::new(1.0, 0.2, 60.0);
         calc.update(0.1); // RTT 100ms
@@ -4509,7 +4524,7 @@ mod tests {
         config.sctp_rto_min = Duration::from_secs(1);
 
         // Create incoming channel (not used in this test)
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -4614,7 +4629,7 @@ mod tests {
         let mut config = RtcConfiguration::default();
         config.sctp_rto_initial = Duration::from_secs(1);
         config.sctp_rto_min = Duration::from_secs(1);
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, runner) = SctpTransport::new(
             dtls,
             incoming_rx,
@@ -4713,7 +4728,7 @@ mod tests {
         let mut config = RtcConfiguration::default();
         config.sctp_rto_initial = Duration::from_secs(1);
         config.sctp_rto_min = Duration::from_secs(1);
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, runner) = SctpTransport::new(
             dtls,
             incoming_rx,
@@ -4777,7 +4792,7 @@ mod tests {
         let mut config = RtcConfiguration::default();
         config.sctp_rto_initial = Duration::from_secs(1);
         config.sctp_rto_min = Duration::from_secs(1);
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, runner) = SctpTransport::new(
             dtls,
             incoming_rx,
@@ -4861,7 +4876,7 @@ mod tests {
         let mut config = RtcConfiguration::default();
         config.sctp_rto_initial = Duration::from_secs(1);
         config.sctp_rto_min = Duration::from_secs(1);
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, runner) = SctpTransport::new(
             dtls,
             incoming_rx,
@@ -4943,7 +4958,7 @@ mod tests {
         let mut config = config;
         config.sctp_max_association_retransmits = 10; // Higher threshold
 
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -5213,7 +5228,7 @@ mod tests {
         let mut config = config;
         config.sctp_max_association_retransmits = 10; // More realistic threshold
 
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -5403,7 +5418,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -5491,7 +5506,7 @@ mod tests {
         let mut config = RtcConfiguration::default();
         config.sctp_max_association_retransmits = 20;
 
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -5575,7 +5590,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -5722,7 +5737,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -6264,7 +6279,7 @@ mod tests {
 
         let mut config = RtcConfiguration::default();
         config.sctp_rto_max = Duration::from_secs(4);
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -6347,7 +6362,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -6430,7 +6445,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -6532,7 +6547,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -6660,7 +6675,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -6790,7 +6805,7 @@ mod tests {
         config.sctp_rto_initial = Duration::from_millis(100);
         config.sctp_rto_min = Duration::from_millis(50);
 
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -7631,7 +7646,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -7771,7 +7786,7 @@ mod tests {
         let mut config = RtcConfiguration::default();
         config.sctp_max_association_retransmits = 10; // Set a reasonable limit
 
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -7912,7 +7927,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -7999,7 +8014,7 @@ mod tests {
         let mut config = RtcConfiguration::default();
         config.sctp_max_association_retransmits = 5; // Low limit to test protection
 
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -8171,7 +8186,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -8313,7 +8328,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -8413,7 +8428,7 @@ mod tests {
         let mut config = RtcConfiguration::default();
         config.sctp_max_association_retransmits = 10;
 
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -8532,7 +8547,7 @@ mod tests {
         config.sctp_max_association_retransmits = 20;
         config.sctp_rto_initial = Duration::from_secs(3);
 
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -8695,7 +8710,7 @@ mod tests {
         let mut config = RtcConfiguration::default();
         config.sctp_max_association_retransmits = 5; // Low limit for fast test
 
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -8773,7 +8788,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -8976,7 +8991,7 @@ mod tests {
 
         // Test with default config
         let default_config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp_default, _runner) = SctpTransport::new(
             dtls.clone(),
             incoming_rx,
@@ -9002,7 +9017,7 @@ mod tests {
         turn_config.sctp_heartbeat_interval = Duration::from_secs(10);
         turn_config.sctp_max_heartbeat_failures = 8;
 
-        let (_incoming_tx2, incoming_rx2) = mpsc::unbounded_channel();
+        let (_incoming_tx2, incoming_rx2) = packet_queue::channel(Kind::DtlsData);
         let (sctp_turn, _runner2) = SctpTransport::new(
             dtls.clone(),
             incoming_rx2,
@@ -9040,7 +9055,7 @@ mod tests {
 
         // Default config: max_burst = 0 (heuristic)
         let default_config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp_default, _runner) = SctpTransport::new(
             dtls.clone(),
             incoming_rx,
@@ -9060,7 +9075,7 @@ mod tests {
         let mut turn_config = RtcConfiguration::default();
         turn_config.sctp_max_burst = 4;
 
-        let (_incoming_tx2, incoming_rx2) = mpsc::unbounded_channel();
+        let (_incoming_tx2, incoming_rx2) = packet_queue::channel(Kind::DtlsData);
         let (sctp_turn, _runner2) = SctpTransport::new(
             dtls.clone(),
             incoming_rx2,
@@ -9097,7 +9112,7 @@ mod tests {
         config.sctp_rto_initial = Duration::from_secs(1);
         config.sctp_rto_min = Duration::from_secs(1);
 
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, _runner) = SctpTransport::new(
             dtls.clone(),
             incoming_rx,
@@ -9191,7 +9206,7 @@ mod tests {
         config.sctp_rto_initial = Duration::from_secs(1);
         config.sctp_rto_min = Duration::from_secs(1);
 
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, _runner) = SctpTransport::new(
             dtls.clone(),
             incoming_rx,
@@ -9231,7 +9246,7 @@ mod tests {
         config.sctp_rto_min = Duration::from_millis(200);
         config.sctp_rto_max = Duration::from_secs(10);
 
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, _runner) = SctpTransport::new(
             dtls.clone(),
             incoming_rx,
@@ -9416,7 +9431,7 @@ mod tests {
         config.sctp_rto_min = Duration::from_secs(1);
         config.sctp_max_association_retransmits = 8;
 
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, _runner) = SctpTransport::new(
             dtls.clone(),
             incoming_rx,
@@ -9495,7 +9510,7 @@ mod tests {
         config.sctp_rto_initial = Duration::from_secs(1);
         config.sctp_rto_min = Duration::from_secs(1);
 
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, _runner) = SctpTransport::new(
             dtls.clone(),
             incoming_rx,
@@ -9663,7 +9678,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -9721,7 +9736,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -9819,7 +9834,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, runner) = SctpTransport::new(
             dtls,
             incoming_rx,
@@ -9898,7 +9913,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -10017,7 +10032,7 @@ mod tests {
             .await
             .unwrap();
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, runner) = SctpTransport::new(
             dtls,
             incoming_rx,
@@ -10142,7 +10157,7 @@ mod tests {
             .await
             .unwrap();
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, runner) = SctpTransport::new(
             dtls,
             incoming_rx,
@@ -10207,7 +10222,7 @@ mod tests {
             .unwrap();
         let mut config = RtcConfiguration::default();
         config.sctp_max_burst = 0; // use the default heuristic
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, runner) = SctpTransport::new(
             dtls,
             incoming_rx,
@@ -10279,7 +10294,7 @@ mod tests {
         let mut config = RtcConfiguration::default();
         config.sctp_rto_min = Duration::from_millis(50);
         config.sctp_rto_initial = Duration::from_millis(50);
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, runner) = SctpTransport::new(
             dtls,
             incoming_rx,
@@ -10373,7 +10388,7 @@ mod tests {
         let mut config = RtcConfiguration::default();
         config.sctp_rto_min = Duration::from_millis(200);
         config.sctp_rto_initial = Duration::from_millis(200);
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, runner) = SctpTransport::new(
             dtls,
             incoming_rx,
@@ -10432,7 +10447,7 @@ mod tests {
         let mut config = RtcConfiguration::default();
         config.sctp_rto_min = Duration::from_millis(500);
         config.sctp_rto_initial = Duration::from_millis(500);
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, runner) = SctpTransport::new(
             dtls,
             incoming_rx,
@@ -10539,7 +10554,7 @@ mod tests {
         let mut config = RtcConfiguration::default();
         config.sctp_rto_min = Duration::from_millis(500);
         config.sctp_rto_initial = Duration::from_millis(500);
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, runner) = SctpTransport::new(
             dtls,
             incoming_rx,
@@ -10626,7 +10641,7 @@ mod tests {
             .await
             .unwrap();
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, runner) = SctpTransport::new(
             dtls,
             incoming_rx,
@@ -10715,7 +10730,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -10773,7 +10788,7 @@ mod tests {
             .unwrap();
 
         let config = RtcConfiguration::default();
-        let (_incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
 
         let (sctp, runner) = SctpTransport::new(
             dtls,
@@ -10893,7 +10908,7 @@ mod receive_bounds_tests {
 
     async fn transport(
         channels: Arc<Mutex<Vec<Weak<DataChannel>>>>,
-    ) -> (Arc<SctpTransport>, mpsc::UnboundedSender<Bytes>) {
+    ) -> (Arc<SctpTransport>, packet_queue::Sender) {
         let (sctp, tx, _runner) = transport_with_runner(channels).await;
         (sctp, tx)
     }
@@ -10902,7 +10917,7 @@ mod receive_bounds_tests {
         channels: Arc<Mutex<Vec<Weak<DataChannel>>>>,
     ) -> (
         Arc<SctpTransport>,
-        mpsc::UnboundedSender<Bytes>,
+        packet_queue::Sender,
         impl core::future::Future<Output = ()>,
     ) {
         let (socket_tx, _) = crate::platform::sync::watch::channel(None);
@@ -10915,7 +10930,7 @@ mod receive_bounds_tests {
         let (dtls, _, _) = DtlsTransport::new(ice_conn, cert, true, 100, None)
             .await
             .unwrap();
-        let (incoming_tx, incoming_rx) = mpsc::unbounded_channel();
+        let (incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
         let (sctp, runner) = SctpTransport::new(
             dtls,
             incoming_rx,

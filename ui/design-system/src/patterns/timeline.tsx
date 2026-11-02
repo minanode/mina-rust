@@ -17,6 +17,8 @@ type TimelineStep = {
   /** When, on the right: a time or an offset. */
   time?: React.ReactNode;
   detail?: React.ReactNode;
+  /** Below the detail: a progress bar or other block content. */
+  body?: React.ReactNode;
   state: TimelineState;
   /** The dot's colour for a done step; ok by default. */
   tone?: Tone;
@@ -115,6 +117,11 @@ function Timeline({
               <p className="pt-0.5 text-xs text-muted-foreground">
                 {step.detail}
               </p>
+            ) : null}
+            {step.body ? (
+              <div data-part="body" className="pt-2.5 pb-1">
+                {step.body}
+              </div>
             ) : null}
           </li>
         );

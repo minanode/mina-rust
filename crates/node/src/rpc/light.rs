@@ -155,7 +155,7 @@ pub struct LightAccountRead {
 /// `MerklePathElement` shape: `Left(h)` means the path node is a left child
 /// and `h`, its sibling, is on the right.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L208-L223>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L210-L225>
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub enum LightMerklePathElement {
     Left(BigInt),

@@ -1,243 +1,138 @@
 #!/usr/bin/env bash
-# Script to validate OCaml reference comments in Rust code
-# Usage: ./.github/scripts/check-ocaml-refs.sh [--repo REPO_URL] [--branch BRANCH] [--update]
-#
-# Supports hyperlink format: /// OCaml: <https://github.com/MinaProtocol/mina/blob/COMMIT/path#L1-L10>
-
+# Validate each OCaml reference at its pinned commit, not a moving release.
+# --drift reports whole-file changes against --branch (4.0.4 by default).
+# --update explicitly repins only byte-identical files, after validation passes.
 set -euo pipefail
 
-# Default configuration
 OCAML_REPO="${OCAML_REPO:-https://github.com/MinaProtocol/mina.git}"
-OCAML_BRANCH="${OCAML_BRANCH:-compatible}"
+OCAML_BRANCH="${OCAML_BRANCH:-c9e2eac5344da621828c1e96c074b8bdce665b51}"
 UPDATE_MODE="${UPDATE_MODE:-false}"
+DRIFT_MODE=false
 RUST_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-
-# Parse arguments
 while [[ $# -gt 0 ]]; do
-    case $1 in
-        --repo)
-            OCAML_REPO="$2"
-            shift 2
-            ;;
-        --branch)
-            OCAML_BRANCH="$2"
-            shift 2
-            ;;
-        --update)
-            UPDATE_MODE="true"
-            shift
-            ;;
-        *)
-            echo "Unknown option: $1"
-            echo "Usage: ./.github/scripts/check-ocaml-refs.sh [--repo REPO_URL] [--branch BRANCH] [--update]"
-            exit 1
-            ;;
+    case "$1" in
+        --repo) OCAML_REPO="${2:?--repo requires a URL}"; shift 2 ;;
+        --branch) OCAML_BRANCH="${2:?--branch requires a revision}"; shift 2 ;;
+        --update) UPDATE_MODE=true; shift ;;
+        --drift) DRIFT_MODE=true; shift ;;
+        *) echo "Usage: $0 [--repo URL] [--branch REV] [--drift | --update]" >&2; exit 2 ;;
     esac
 done
-
-echo "Checking OCaml references against ${OCAML_REPO} (branch: ${OCAML_BRANCH})"
-
-# Create temporary directory
+if [[ "$DRIFT_MODE" == true && "$UPDATE_MODE" == true ]]; then
+    echo "--drift is read-only and cannot be combined with --update" >&2
+    exit 2
+fi
+if [[ ! "$OCAML_REPO" =~ ^https://github.com/([^/]+)/([^/]+)$ ]]; then
+    echo "Error: Repository URL must be a GitHub URL" >&2
+    exit 2
+fi
+GITHUB_OWNER="${BASH_REMATCH[1]}"
+GITHUB_REPO="${BASH_REMATCH[2]%.git}"
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
-# Extract GitHub owner and repo from URL (e.g., https://github.com/MinaProtocol/mina.git)
-GITHUB_URL_PATTERN="https://github.com/([^/]+)/(.+)"
-if [[ "$OCAML_REPO" =~ $GITHUB_URL_PATTERN ]]; then
-    GITHUB_OWNER="${BASH_REMATCH[1]}"
-    GITHUB_REPO="${BASH_REMATCH[2]%.git}"  # Remove .git suffix if present
-else
-    echo "Error: Repository URL must be a GitHub URL"
-    exit 1
+# Cache by revision and upstream path; repeated references need one download.
+fetch_file() {
+    local revision="$1" path="$2" destination="$3"
+    local key cached
+    key=$(printf '%s/%s' "$revision" "$path" | sha256sum | cut -d' ' -f1)
+    cached="$TEMP_DIR/$key"
+    if [[ ! -f "$cached" ]]; then
+        if ! curl -fsS --retry 2 --connect-timeout 10 --max-time 60 \
+            "https://raw.githubusercontent.com/$GITHUB_OWNER/$GITHUB_REPO/$revision/$path" \
+            -o "$cached.download"; then
+            return 1
+        fi
+        mv "$cached.download" "$cached"
+    fi
+    cp "$cached" "$destination"
+}
+
+TARGET_COMMIT="$OCAML_BRANCH"
+if [[ "$UPDATE_MODE" == true ]]; then
+    # Updates must write a resolved commit hash, never a branch name.
+    curl -fsS --retry 2 --connect-timeout 10 --max-time 60 \
+        "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/commits/$OCAML_BRANCH" \
+        -o "$TEMP_DIR/target.json"
+    TARGET_COMMIT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha"])' "$TEMP_DIR/target.json")
+    [[ "$TARGET_COMMIT" =~ ^[a-f0-9]{40}$ ]] || exit 1
 fi
 
-# Get current commit hash for the branch using GitHub API
-echo "Fetching current commit from ${OCAML_BRANCH}..."
-CURRENT_COMMIT=$(curl -s "https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/commits/${OCAML_BRANCH}" | grep -o '"sha": "[^"]*"' | head -1 | cut -d'"' -f4)
-
-if [ -z "$CURRENT_COMMIT" ]; then
-    echo "Error: Could not fetch current commit for branch ${OCAML_BRANCH}"
-    exit 1
+echo "Validating OCaml references at their pinned commits"
+if [[ "$DRIFT_MODE" == true || "$UPDATE_MODE" == true ]]; then
+    echo "Drift target: $OCAML_REPO (branch: $OCAML_BRANCH)"
+    echo "Changed sources require review: OCAML-404-CHANGED-REFS"
 fi
-
-echo "Current OCaml commit: ${CURRENT_COMMIT}"
-
-# Find all Rust files with OCaml references
-cd "${RUST_ROOT}"
-RUST_FILES=$(git grep -l -E "^/// OCaml: <https://github.com/MinaProtocol/mina/blob/" "*.rs" "**/*.rs" 2>/dev/null || true)
-
-if [ -z "$RUST_FILES" ]; then
-    echo "No OCaml references found in Rust code"
-    exit 0
-fi
-
-# Use temporary files to accumulate results
-RESULTS_FILE="${TEMP_DIR}/results.txt"
-touch "$RESULTS_FILE"
-
-echo ""
-echo "Validating references..."
-echo "========================"
-
-# Process each file
-echo "$RUST_FILES" | while IFS= read -r rust_file; do
-    # Process hyperlink format: /// OCaml: <URL>
-    grep -n "^/// OCaml: <https://github.com/MinaProtocol/mina/blob/" "$rust_file" 2>/dev/null | while IFS=: read -r line_num line_content; do
-        # Extract URL from angle brackets
-        URL=$(echo "$line_content" | sed -n 's/.*<\(https:\/\/github\.com\/MinaProtocol\/mina\/blob\/[^>]*\)>.*/\1/p')
-
-        if [ -z "$URL" ]; then
-            echo "INVALID|${rust_file}|LINE:${line_num}|MALFORMED_URL" >> "$RESULTS_FILE"
-            echo "[ERROR] INVALID: ${rust_file}:${line_num}"
-            echo "   Malformed OCaml reference URL"
+cd "$RUST_ROOT"
+TOTAL=0 VALID=0 INVALID=0 CHANGED=0 UNAVAILABLE=0 UPDATED=0
+# A grep miss is an empty inventory; repository/read failures must fail the gate.
+git grep -l -E '^/// OCaml: <https://github.com/MinaProtocol/mina/blob/' -- '*.rs' '**/*.rs' > "$TEMP_DIR/rust-files" || {
+    status=$?
+    [[ "$status" == 1 ]] || exit "$status"
+}
+touch "$TEMP_DIR/updates"
+URL_PATTERN='^https://github.com/MinaProtocol/mina/blob/([a-f0-9]+)/([^#[:space:]]+)(#L([0-9]+)(-L([0-9]+))?)?$'
+# Keep the established unindented /// scope; do not silently broaden the gate.
+while IFS= read -r rust_file; do
+    while IFS=: read -r line_num line_content; do
+        TOTAL=$((TOTAL + 1))
+        URL=$(printf '%s\n' "$line_content" | sed -n 's/.*<\([^>]*\)>.*/\1/p')
+        if [[ ! "$URL" =~ $URL_PATTERN ]]; then
+            echo "[ERROR] INVALID: $rust_file:$line_num MALFORMED_URL"
+            INVALID=$((INVALID + 1)); continue
+        fi
+        COMMIT="${BASH_REMATCH[1]}" OCAML_PATH="${BASH_REMATCH[2]}"
+        START_LINE="${BASH_REMATCH[4]}" END_LINE="${BASH_REMATCH[6]}"
+        END_LINE="${END_LINE:-$START_LINE}"
+        if ! fetch_file "$COMMIT" "$OCAML_PATH" "$TEMP_DIR/pinned"; then
+            echo "[ERROR] INVALID: $rust_file:$line_num PIN_OR_FILE_UNAVAILABLE $URL"
+            INVALID=$((INVALID + 1)); continue
+        fi
+        FILE_LINES=$(awk 'END { print NR }' "$TEMP_DIR/pinned")
+        if [[ -n "$START_LINE" ]] &&
+            (( 10#$START_LINE < 1 || 10#$END_LINE < 10#$START_LINE || 10#$END_LINE > FILE_LINES )); then
+            echo "[ERROR] INVALID: $rust_file:$line_num INVALID_LINE_RANGE $URL ($FILE_LINES lines)"
+            INVALID=$((INVALID + 1)); continue
+        fi
+        VALID=$((VALID + 1))
+        echo "[OK] VALID: $rust_file:$line_num -> $COMMIT/$OCAML_PATH"
+        if [[ "$DRIFT_MODE" == false && "$UPDATE_MODE" == false ]]; then
             continue
         fi
-
-        # Parse URL: https://github.com/MinaProtocol/mina/blob/COMMIT/path#L1-L10
-        # Pattern: blob/COMMIT/PATH with optional #L1-L10
-        if [[ "$URL" =~ blob/([a-f0-9]+)/([^#]+)(#L([0-9]+)(-L([0-9]+))?)? ]]; then
-            COMMIT="${BASH_REMATCH[1]}"
-            OCAML_PATH="${BASH_REMATCH[2]}"
-            START_LINE="${BASH_REMATCH[4]}"
-            END_LINE="${BASH_REMATCH[6]}"
-
-            # If only start line is specified, set end line to same
-            if [ -n "$START_LINE" ] && [ -z "$END_LINE" ]; then
-                END_LINE="$START_LINE"
-            fi
-
-            LINE_RANGE=""
-            if [ -n "$START_LINE" ]; then
-                LINE_RANGE="${START_LINE}-${END_LINE}"
-            fi
-        else
-            echo "INVALID|${rust_file}|LINE:${line_num}|INVALID_URL_FORMAT" >> "$RESULTS_FILE"
-            echo "[ERROR] INVALID: ${rust_file}:${line_num}"
-            echo "   URL does not match expected format: $URL"
-            continue
+        if ! fetch_file "$TARGET_COMMIT" "$OCAML_PATH" "$TEMP_DIR/target"; then
+            echo "[DRIFT] TARGET_UNAVAILABLE: $rust_file:$line_num $OCAML_PATH"
+            UNAVAILABLE=$((UNAVAILABLE + 1))
+        elif ! cmp -s "$TEMP_DIR/pinned" "$TEMP_DIR/target"; then
+            echo "[DRIFT] CHANGED: $rust_file:$line_num $OCAML_PATH (pin $COMMIT)"
+            CHANGED=$((CHANGED + 1))
+        elif [[ "$UPDATE_MODE" == true && "$COMMIT" != "$TARGET_COMMIT" ]]; then
+            printf '%s|%s|%s\n' "$rust_file" "$line_num" "$COMMIT" >> "$TEMP_DIR/updates"
         fi
-
-        # Fetch the OCaml file from the current branch
-        CURRENT_FILE="${TEMP_DIR}/current_${rust_file//\//_}_${OCAML_PATH//\//_}"
-        CURRENT_URL="https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/${OCAML_BRANCH}/${OCAML_PATH}"
-
-        if ! curl -sf "$CURRENT_URL" -o "$CURRENT_FILE"; then
-            echo "INVALID|${rust_file}|${OCAML_PATH}|FILE_NOT_FOUND" >> "$RESULTS_FILE"
-            echo "[ERROR] INVALID: ${rust_file}:${line_num}"
-            echo "   OCaml file not found: ${OCAML_PATH}"
-        else
-            # Validate line range if specified
-            RANGE_VALID=true
-            if [ -n "$LINE_RANGE" ]; then
-                FILE_LINES=$(wc -l < "$CURRENT_FILE")
-
-                if [ "$END_LINE" -gt "$FILE_LINES" ]; then
-                    echo "INVALID|${rust_file}|${OCAML_PATH}|LINE_RANGE_EXCEEDED|L:${LINE_RANGE}|${FILE_LINES}" >> "$RESULTS_FILE"
-                    echo "[ERROR] INVALID: ${rust_file}:${line_num}"
-                    echo "   Line range L:${LINE_RANGE} exceeds file length (${FILE_LINES} lines): ${OCAML_PATH}"
-                    RANGE_VALID=false
-                fi
-            fi
-
-            if [ "$RANGE_VALID" = "true" ]; then
-                # Verify that the code at the referenced commit matches the current branch
-                CODE_MATCHES=true
-                if [ -n "$LINE_RANGE" ]; then
-                    # Fetch the file from the referenced commit
-                    COMMIT_FILE="${TEMP_DIR}/commit_${rust_file//\//_}_${OCAML_PATH//\//_}"
-                    COMMIT_URL="https://raw.githubusercontent.com/${GITHUB_OWNER}/${GITHUB_REPO}/${COMMIT}/${OCAML_PATH}"
-
-                    if ! curl -sf "$COMMIT_URL" -o "$COMMIT_FILE"; then
-                        echo "INVALID|${rust_file}|${OCAML_PATH}|COMMIT_NOT_FOUND|${COMMIT}" >> "$RESULTS_FILE"
-                        echo "[ERROR] INVALID: ${rust_file}:${line_num}"
-                        echo "   Referenced commit does not exist: ${COMMIT}"
-                        CODE_MATCHES=false
-                    else
-                        # Extract the specific line ranges from both files and compare
-                        CURRENT_LINES=$(sed -n "${START_LINE},${END_LINE}p" "$CURRENT_FILE")
-                        COMMIT_LINES=$(sed -n "${START_LINE},${END_LINE}p" "$COMMIT_FILE")
-
-                        if [ "$CURRENT_LINES" != "$COMMIT_LINES" ]; then
-                            echo "INVALID|${rust_file}|${OCAML_PATH}|CODE_MISMATCH|${COMMIT}" >> "$RESULTS_FILE"
-                            echo "[ERROR] INVALID: ${rust_file}:${line_num}"
-                            echo "   Code at L:${LINE_RANGE} differs between commit ${COMMIT} and current branch"
-                            echo "   Referenced: https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/blob/${COMMIT}/${OCAML_PATH}#L${START_LINE}-L${END_LINE}"
-                            echo "   Current:    https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/blob/${OCAML_BRANCH}/${OCAML_PATH}#L${START_LINE}-L${END_LINE}"
-                            CODE_MATCHES=false
-                        fi
-                    fi
-                fi
-
-                if [ "$CODE_MATCHES" = "true" ]; then
-                    # Check if commit is stale
-                    if [ "$COMMIT" != "$CURRENT_COMMIT" ]; then
-                        echo "STALE|${rust_file}|${line_num}|${OCAML_PATH}|${COMMIT}|${LINE_RANGE}" >> "$RESULTS_FILE"
-                        echo "[OK] VALID: ${rust_file}:${line_num} -> ${OCAML_PATH} L:${LINE_RANGE}"
-                        echo "  [WARN] STALE COMMIT: ${COMMIT} (current: ${CURRENT_COMMIT})"
-                    else
-                        echo "VALID|${rust_file}|${line_num}|${OCAML_PATH}|${LINE_RANGE}" >> "$RESULTS_FILE"
-                        echo "[OK] VALID: ${rust_file}:${line_num} -> ${OCAML_PATH} L:${LINE_RANGE}"
-                    fi
-                fi
-            fi
-        fi
-    done
-done
-
-# Count results
-TOTAL_REFS=$(wc -l < "$RESULTS_FILE")
-VALID_REFS=$(grep -c "^VALID|" "$RESULTS_FILE" || true)
-INVALID_REFS=$(grep -c "^INVALID|" "$RESULTS_FILE" || true)
-STALE_COMMITS=$(grep -c "^STALE|" "$RESULTS_FILE" || true)
+    done < <(grep -n '^/// OCaml: <https://github.com/MinaProtocol/mina/blob/' "$rust_file")
+done < "$TEMP_DIR/rust-files"
 
 echo ""
-echo "Summary"
-echo "======="
-echo "Total references found: ${TOTAL_REFS}"
-echo "Valid references: $((VALID_REFS + STALE_COMMITS))"
-echo "Invalid references: ${INVALID_REFS}"
-echo "Stale commits: ${STALE_COMMITS}"
-
-if [ "$UPDATE_MODE" = "true" ] && [ "${STALE_COMMITS}" -gt 0 ]; then
-    echo ""
-    echo "Updating stale commit hashes..."
-
-    # Update hyperlink format
-    grep "^STALE|" "$RESULTS_FILE" | while IFS='|' read -r _status rust_file line_num ocaml_path old_commit line_range; do
-        echo "Updating ${rust_file}:${line_num}..."
-
-        # Build new URL
-        NEW_URL="https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/blob/${CURRENT_COMMIT}/${ocaml_path}"
-        if [ -n "$line_range" ] && [ "$line_range" != "" ]; then
-            START_LINE=$(echo "$line_range" | cut -d'-' -f1)
-            END_LINE=$(echo "$line_range" | cut -d'-' -f2)
-            NEW_URL="${NEW_URL}#L${START_LINE}-L${END_LINE}"
-        fi
-
-        # Use sed to replace the URL at the specific line
-        # We need to escape special characters in the URL for sed
-        OLD_COMMIT_ESCAPED=$(echo "$old_commit" | sed 's/[\/&]/\\&/g')
-        CURRENT_COMMIT_ESCAPED=$(echo "$CURRENT_COMMIT" | sed 's/[\/&]/\\&/g')
-
-        sed -i "${line_num}s/blob\/${OLD_COMMIT_ESCAPED}\//blob\/${CURRENT_COMMIT_ESCAPED}\//" "${RUST_ROOT}/${rust_file}"
-    done
-
-    echo "Updated ${STALE_COMMITS} reference(s)"
+echo "Total references found: $TOTAL"
+echo "Valid references: $VALID"
+echo "Invalid references: $INVALID"
+if [[ "$DRIFT_MODE" == true || "$UPDATE_MODE" == true ]]; then
+    echo "Changed upstream references: $CHANGED"
+    echo "Unavailable upstream references (deleted path or fetch failure): $UNAVAILABLE"
 fi
-
-# Exit with error if there are invalid references
-if [ "${INVALID_REFS}" -gt 0 ]; then
-    echo ""
-    echo "[ERROR] Validation failed: ${INVALID_REFS} invalid reference(s) found"
-    exit 1
-fi
-
-if [ "${STALE_COMMITS}" -gt 0 ] && [ "$UPDATE_MODE" = "false" ]; then
-    echo ""
-    echo "[WARN] Warning: ${STALE_COMMITS} reference(s) have stale commits"
-    echo "Run with --update to update them automatically"
+if [[ "$DRIFT_MODE" == true ]]; then
+    echo "[INFO] Advisory drift report only; exit 0 is not a validation result."
+    echo "[INFO] Run without --drift for the enforcing pinned-reference check."
     exit 0
 fi
-
-echo ""
+if (( INVALID > 0 || UNAVAILABLE > 0 )); then
+    echo "[ERROR] Validation failed; no pins updated"
+    exit 1
+fi
+if [[ "$UPDATE_MODE" == true ]]; then
+    while IFS='|' read -r rust_file line_num old_commit; do
+        sed -i "${line_num}s@blob/${old_commit}/@blob/${TARGET_COMMIT}/@" "$rust_file"
+        UPDATED=$((UPDATED + 1))
+    done < "$TEMP_DIR/updates"
+    echo "Updated $UPDATED reference(s); changed files retained for review"
+fi
 echo "[OK] All OCaml references are valid!"

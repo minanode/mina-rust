@@ -4,6 +4,15 @@
   "private": true,
   "description": "The node dashboard that mina node serves on its HTTP port",
   "type": "module",
+  "exports": {
+    "./pages/peers": "./src/pages/peers.tsx",
+    "./pages/producer": "./src/pages/producer.tsx",
+    "./pages/worker": "./src/pages/worker.tsx",
+    "./components/states": "./src/components/states.tsx",
+    "./components/block-contents": "./src/components/block-contents.tsx",
+    "./components/account-detail": "./src/components/account-detail.tsx",
+    "./components/pending-transactions": "./src/components/pending-transactions.tsx"
+  },
   "scripts": {
     "dev": "vite --port 4282 --strictPort",
     "build": "vite build",

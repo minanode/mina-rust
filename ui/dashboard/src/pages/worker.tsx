@@ -277,7 +277,7 @@ function ControlOff() {
   );
 }
 
-function WorkerStatus({
+export function WorkerStatus({
   control: c,
   jobs,
 }: {
@@ -645,7 +645,7 @@ function ControlCard({
   );
 }
 
-function RecentJobs({ control: c }: { control: WorkerControl }) {
+export function RecentJobs({ control: c }: { control: WorkerControl }) {
   const { shown, toggle } = useShowAll(c.recent, "newest");
   return (
     <PageSection
@@ -703,7 +703,7 @@ function RecentJobs({ control: c }: { control: WorkerControl }) {
   );
 }
 
-function IncludedSection({
+export function IncludedSection({
   included,
   tip,
   market,

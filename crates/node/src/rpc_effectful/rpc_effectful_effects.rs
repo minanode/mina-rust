@@ -293,6 +293,15 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
 
             let _ = store.service.respond_heartbeat_get(rpc_id, response);
         }
+        RpcEffectfulAction::ReportingSnapshotGet { rpc_id } => {
+            let snapshot = reporting_snapshot(store.state(), meta.time());
+            respond_or_log!(
+                store
+                    .service
+                    .respond_reporting_snapshot_get(rpc_id, snapshot),
+                meta.time()
+            );
+        }
         RpcEffectfulAction::ActionStatsGet { rpc_id, query } => match query {
             ActionStatsQuery::SinceStart => {
                 let resp = store
@@ -459,80 +468,14 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
                 })
                 .collect();
 
-            let mut response = RpcMessageProgressResponse {
+            let (staking_ledger_sync, next_epoch_ledger_sync, root_ledger_sync) =
+                rpc::ledger_sync_progress(store.state());
+            let response = RpcMessageProgressResponse {
                 messages_stats,
-                staking_ledger_sync: None,
-                next_epoch_ledger_sync: None,
-                root_ledger_sync: None,
+                staking_ledger_sync,
+                next_epoch_ledger_sync,
+                root_ledger_sync,
             };
-
-            match &store.state().transition_frontier.sync {
-                TransitionFrontierSyncState::StakingLedgerPending(state) => {
-                    if let TransitionFrontierSyncLedgerState::Snarked(state) = &state.ledger {
-                        response.staking_ledger_sync = state.estimation()
-                    }
-                }
-                TransitionFrontierSyncState::NextEpochLedgerPending(state) => {
-                    if let TransitionFrontierSyncLedgerState::Snarked(state) = &state.ledger {
-                        response.next_epoch_ledger_sync = state.estimation()
-                    }
-                }
-                TransitionFrontierSyncState::RootLedgerPending(state) => match &state.ledger {
-                    TransitionFrontierSyncLedgerState::Snarked(state) => {
-                        response.root_ledger_sync =
-                            state.estimation().map(|data| RootLedgerSyncProgress {
-                                fetched: data.fetched,
-                                estimation: data.estimation,
-                                staged: None,
-                            });
-                    }
-                    TransitionFrontierSyncLedgerState::Staged(state) => {
-                        let unknown_staged_progress = || RootStagedLedgerSyncProgress {
-                            fetched: 0,
-                            total: 1,
-                        };
-                        let staged = match state.fetch_attempts() {
-                            None => state.target_with_parts().map(|(_, parts)| {
-                                let v = parts
-                                    .map(|parts| parts.total_pieces_to_transfer())
-                                    .unwrap_or(0);
-                                RootStagedLedgerSyncProgress {
-                                    fetched: v,
-                                    total: v,
-                                }
-                            }),
-                            Some(attempts) => attempts
-                                .iter()
-                                .find(|(_, s)| s.fetch_pending_rpc_id().is_some())
-                                .map(|(id, _)| id)
-                                .and_then(|peer_id| store.state().p2p.get_ready_peer(peer_id))
-                                .map(|peer| {
-                                    match peer.channels.streaming_rpc.pending_local_rpc_progress() {
-                                        None => unknown_staged_progress(),
-                                        Some(
-                                            P2pStreamingRpcReceiveProgress::StagedLedgerParts(
-                                                progress,
-                                            ),
-                                        ) => {
-                                            let (fetched, total) = progress.progress();
-                                            RootStagedLedgerSyncProgress { fetched, total }
-                                        }
-                                    }
-                                }),
-                        };
-
-                        // We want to answer with a result that will serve as a 100% complete process for the
-                        // frontend while it is still waiting for the staged ledger to complete. Could be cleaner.
-                        response.root_ledger_sync = Some(RootLedgerSyncProgress {
-                            fetched: 1,
-                            estimation: 1,
-                            staged,
-                        });
-                    }
-                    _ => {}
-                },
-                _ => {}
-            }
 
             let _ = store
                 .service
@@ -596,10 +539,56 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
             }) else {
                 let _ = store.service.respond_scan_state_summary_get(
                     rpc_id,
-                    Err("target block not found".to_string()),
+                    Err(match req.map(|r| &r.req) {
+                        Some(rpc::RpcRequest::ScanStateSummaryGet(
+                            rpc::RpcScanStateSummaryGetQuery::Graphql(hash),
+                        )) => {
+                            if store.state().transition_frontier.bootstrap.in_progress
+                                || store
+                                    .state()
+                                    .transition_frontier
+                                    .is_bootstrapping(meta.time())
+                            {
+                                if hash.is_some() {
+                                    "Could not obtain transition frontier"
+                                } else {
+                                    "System is bootstrapping"
+                                }
+                                .to_owned()
+                            } else if let Some(hash) = hash {
+                                format!(
+                                    "Block with state hash {hash} not found in transition frontier"
+                                )
+                            } else {
+                                "System is bootstrapping".to_owned()
+                            }
+                        }
+                        _ => "target block not found".to_owned(),
+                    }),
                 );
                 return;
             };
+            // GraphQL reads only the block hash and the tree counters: skip
+            // hashing the block's transactions and the snark pool lookups.
+            let metrics_only = req.is_some_and(|req| match &req.req {
+                rpc::RpcRequest::ScanStateSummaryGet(query) => query.is_metrics_only(),
+                _ => false,
+            });
+            if metrics_only {
+                let res = scan_state.map(|scan_state| RpcScanStateSummary {
+                    block: RpcScanStateSummaryBlock {
+                        hash: block.hash().clone(),
+                        height: block.height(),
+                        global_slot: block.global_slot_since_genesis(),
+                        transactions: Vec::new(),
+                        completed_works: Vec::new(),
+                    },
+                    scan_state: Vec::new(),
+                    trees: scan_state.trees,
+                });
+                let _ = store.service.respond_scan_state_summary_get(rpc_id, res);
+                return;
+            }
             let coinbases =
                 block
                     .coinbase_fee_transfers_iter()
@@ -628,45 +617,49 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
             };
 
             let snark_pool = &store.state().snark_pool;
-            scan_state.iter_mut().flatten().flatten().for_each(|job| {
-                if let RpcScanStateSummaryScanStateJob::Todo {
-                    job_id,
-                    bundle_job_id,
-                    job: kind,
-                    seq_no,
-                } = job
-                {
-                    let Some(data) = snark_pool.get(bundle_job_id) else {
-                        return;
-                    };
-                    let commitment = data.commitment.clone().map(Box::new);
-                    let snark = data
-                        .snark
-                        .as_ref()
-                        .map(|snark| RpcSnarkPoolJobSnarkWork {
-                            snarker: snark.work.snarker.clone(),
-                            fee: snark.work.fee.clone(),
-                            received_t: snark.received_t,
-                            sender: snark.sender,
-                        })
-                        .map(Box::new);
+            scan_state
+                .iter_mut()
+                .flat_map(|s| s.jobs.iter_mut().flatten())
+                .for_each(|job| {
+                    if let RpcScanStateSummaryScanStateJob::Todo {
+                        job_id,
+                        bundle_job_id,
+                        job: kind,
+                        seq_no,
+                    } = job
+                    {
+                        let Some(data) = snark_pool.get(bundle_job_id) else {
+                            return;
+                        };
+                        let commitment = data.commitment.clone().map(Box::new);
+                        let snark = data
+                            .snark
+                            .as_ref()
+                            .map(|snark| RpcSnarkPoolJobSnarkWork {
+                                snarker: snark.work.snarker.clone(),
+                                fee: snark.work.fee.clone(),
+                                received_t: snark.received_t,
+                                sender: snark.sender,
+                            })
+                            .map(Box::new);
 
-                    if commitment.is_none() && snark.is_none() {
-                        return;
+                        if commitment.is_none() && snark.is_none() {
+                            return;
+                        }
+                        *job = RpcScanStateSummaryScanStateJob::Pending {
+                            job_id: job_id.clone(),
+                            bundle_job_id: bundle_job_id.clone(),
+                            job: Box::new(kind.clone()),
+                            seq_no: *seq_no,
+                            commitment,
+                            snark,
+                        };
                     }
-                    *job = RpcScanStateSummaryScanStateJob::Pending {
-                        job_id: job_id.clone(),
-                        bundle_job_id: bundle_job_id.clone(),
-                        job: Box::new(kind.clone()),
-                        seq_no: *seq_no,
-                        commitment,
-                        snark,
-                    };
-                }
-            });
+                });
             let res = scan_state.map(|scan_state| RpcScanStateSummary {
                 block: block_summary,
-                scan_state,
+                scan_state: scan_state.jobs,
+                trees: scan_state.trees,
             });
             let _ = store.service.respond_scan_state_summary_get(rpc_id, res);
         }
@@ -1117,6 +1110,24 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
                 meta.time()
             )
         }
+        RpcEffectfulAction::BestChainHeadersGet { rpc_id, response } => {
+            respond_or_log!(
+                store.service().respond_best_chain_headers(rpc_id, response),
+                meta.time()
+            )
+        }
+        RpcEffectfulAction::BestChainBlockGet { rpc_id, response } => {
+            respond_or_log!(
+                store.service().respond_best_chain_block(rpc_id, response),
+                meta.time()
+            )
+        }
+        RpcEffectfulAction::SyncProgressGet { rpc_id, response } => {
+            respond_or_log!(
+                store.service().respond_sync_progress(rpc_id, response),
+                meta.time()
+            )
+        }
         RpcEffectfulAction::LightBestTip { rpc_id, response } => {
             respond_or_log!(
                 store.service().respond_light_best_tip(rpc_id, response),
@@ -1144,6 +1155,183 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
                     .respond_ledger_account_delegators_get(rpc_id, response),
                 meta.time()
             )
+        }
+    }
+}
+
+/// The opt-in reporters' sample (R43e.2): cheap, as it clones only `Arc`s
+/// and small values. The reporter thread serializes the blocks.
+pub(crate) fn reporting_snapshot(
+    state: &crate::State,
+    time: redux::Timestamp,
+) -> rpc::RpcReportingSnapshot {
+    let p2p = state.p2p.ready();
+    let best_tip = state.transition_frontier.best_tip();
+    let (verified, unverified) = state.transition_frontier.candidates.max_heights();
+    let (participating, sync_phase) = reporting_sync_phase(state);
+    let best_tip = best_tip.filter(|_| participating);
+    let uptime_job = best_tip.map(|best_tip| reporting_uptime_job(state, best_tip));
+    let uptime_spec = match &uptime_job {
+        Some(rpc::RpcReportingUptimeJob::Transition { pair, index, .. }) => {
+            state.snark_pool.get(pair).and_then(|pair| {
+                let job = pair.job.iter().nth(*index)?.clone();
+                let spec = available_job_to_snark_worker_spec(
+                    ledger::scan_state::scan_state::transaction_snark::OneOrTwo::One(job),
+                    &state.transition_frontier,
+                ).ok()?;
+                match spec {
+                    mina_p2p_messages::v2::SnarkWorkerWorkerRpcsVersionedGetWorkV2TResponseA0Instances::One(single) => Some(Box::new(single)),
+                    _ => None,
+                }
+            })
+        }
+        _ => None,
+    };
+    rpc::RpcReportingSnapshot {
+        time,
+        chain_id: p2p.map(|p2p| p2p.chain_id.to_hex()),
+        peer_id: p2p.map(|p2p| p2p.my_id().to_libp2p_string()),
+        peer_count: p2p.map_or(0, |p2p| p2p.ready_peers_iter().count()),
+        best_tip: best_tip.cloned(),
+        max_observed_block_height: verified,
+        max_observed_unvalidated_block_height: verified.max(unverified),
+        sync_phase: sync_phase.map(str::to_owned),
+        block_producer: state
+            .block_producer
+            .config()
+            .map(|config| AccountPublicKey::from(config.pub_key.clone())),
+        next_production_time: state.block_producer.next_production_time(
+            state.cur_global_slot(),
+            state.transition_frontier.best_tip(),
+        ),
+        produced_block: reporting_produced_block(state),
+        external_ip: state
+            .p2p
+            .config()
+            .external_addrs
+            .first()
+            .map(|addr| addr.to_string()),
+        uptime_job,
+        uptime_spec,
+        snark_work_fee: state
+            .config
+            .snarker
+            .as_ref()
+            .map(|config| config.fee.clone())
+            .or_else(|| state.config.snark_work_fee.clone()),
+    }
+}
+
+/// The SNARK job OCaml's uptime service would prove for `best_tip`. OCaml
+/// lists the best tip staged ledger's work pairs, which fails when a job's
+/// protocol state is not in the frontier, then takes the first Transition
+/// whose target second-pass ledger is the block's staged ledger hash. The
+/// SNARK pool holds those pairs, in that order, for the block in
+/// `jobs_tip`.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/uptime_service/uptime_service.ml#L224-L328>
+pub(crate) fn reporting_uptime_job(
+    state: &crate::State,
+    best_tip: &ArcBlockWithHash,
+) -> rpc::RpcReportingUptimeJob {
+    use ledger::scan_state::scan_state::AvailableJobMessage;
+    use mina_p2p_messages::v2::{
+        MinaBaseUserCommandStableV2 as UserCommand, MinaTransactionTransactionStableV2,
+    };
+    use rpc::RpcReportingUptimeJob as Job;
+
+    let pool = &state.snark_pool;
+    if pool.jobs_tip() != Some(best_tip.hash()) {
+        return Job::Unavailable("the SNARK pool's jobs are not the best tip's".to_owned());
+    }
+    let mut pairs = pool.jobs_iter().collect::<Vec<_>>();
+    if pairs.is_empty() {
+        return Job::NoJobs;
+    }
+    pairs.sort_by_key(|pair| pair.order);
+    let ledger = &best_tip.staged_ledger_hashes().non_snark.ledger_hash;
+    let mut found = None;
+    for pair in pairs {
+        for (index, job) in pair.job.iter().enumerate() {
+            let AvailableJobMessage::Base(base) = job else {
+                continue;
+            };
+            if state
+                .transition_frontier
+                .get_state_body(&base.state_hash.0)
+                .is_none()
+            {
+                return Job::Unavailable(format!(
+                    "the protocol state {} of a job is not in the transition frontier",
+                    base.state_hash.0
+                ));
+            }
+            if found.is_none() && &base.statement.0.target.second_pass_ledger == ledger {
+                found = Some(Job::Transition {
+                    pair: pair.id.clone(),
+                    index,
+                    zkapp: matches!(
+                        &base.transaction_with_status.data,
+                        MinaTransactionTransactionStableV2::Command(command)
+                            if matches!(command.as_ref(), UserCommand::ZkappCommand(_))
+                    ),
+                });
+            }
+        }
+    }
+    found.unwrap_or(Job::NoMatchingTransition)
+}
+
+/// The local production notification, independent of later frontier changes.
+/// A matching producer key on a received block is not a local production event.
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/uptime_service/uptime_service.ml#L166-L198>
+pub(crate) fn reporting_produced_block(
+    state: &crate::State,
+) -> Option<rpc::RpcReportingProducedBlock> {
+    let waiter = state
+        .block_producer
+        .as_ref()?
+        .uptime_produced_block
+        .as_ref()?;
+    let (block, slot_time) = waiter.block.as_ref()?;
+    Some(rpc::RpcReportingProducedBlock {
+        block: block.clone(),
+        subscription: waiter.subscription,
+        slot_time: *slot_time,
+    })
+}
+
+/// Whether the node takes part in the chain, and its sync phase, as OCaml's
+/// uptime and error reports see them. OCaml has no transition frontier
+/// while it bootstraps; this node's frontier holds the genesis block until
+/// its first sync commits. Genesis injection itself sets `Synced`, so that flag
+/// alone does not establish a usable frontier. Restore, ledger recovery and
+/// deferred genesis loading must finish too. Catch-up from a real frontier
+/// remains eligible: OCaml does not require the daemon's `Synced` status.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/uptime_service/uptime_service.ml#L207-L217>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transition_router/transition_router.ml#L111-L172>
+pub(crate) fn reporting_sync_phase(state: &crate::State) -> (bool, Option<&'static str>) {
+    use crate::transition_frontier::sync::SyncPhase;
+    let sync = &state.transition_frontier.sync;
+    if matches!(sync, TransitionFrontierSyncState::Idle) {
+        return (false, None);
+    }
+    let Some(best_tip) = state.transition_frontier.best_tip() else {
+        return (false, Some("Bootstrap"));
+    };
+    let frontier = &state.transition_frontier;
+    if best_tip.is_genesis() || frontier.persist_holds_sync() || frontier.ledger_recovery_pending()
+    {
+        return (false, Some("Bootstrap"));
+    }
+    match sync.sync_phase() {
+        SyncPhase::Synced => (true, Some("Synced")),
+        SyncPhase::Catchup => (true, Some("Catchup")),
+        // `sync_phase` never returns `Connecting` or `Listening`, the phases
+        // reported before a peer is heard from; OCaml is bootstrapping then.
+        SyncPhase::Bootstrap | SyncPhase::Connecting | SyncPhase::Listening => {
+            (false, Some("Bootstrap"))
         }
     }
 }
@@ -1204,6 +1392,7 @@ fn compute_node_status<S: Service>(store: &mut Store<S>) -> RpcNodeStatus {
         coinbase_receiver,
         next_block_production,
         transition_frontier: RpcNodeStatusTransitionFrontier {
+            ledger_recovery: state.transition_frontier.ledger_recovery.clone(),
             root: state.transition_frontier.root().map(block_summary),
             best_tip: state.transition_frontier.best_tip().map(block_summary),
             sync: RpcNodeStatusTransitionFrontierSync {
@@ -1239,7 +1428,10 @@ fn compute_node_status<S: Service>(store: &mut Store<S>) -> RpcNodeStatus {
                 acc.total_jobs = acc.total_jobs.saturating_add(1);
                 acc
             }),
+        bootstrap: state.transition_frontier.bootstrap.clone(),
         transaction_pool: RpcNodeStatusTransactionPool {
+            max_size: state.transaction_pool.max_size(),
+            minimum_fee_per_weight_unit: state.transaction_pool.minimum_fee_per_weight_unit(),
             transactions: state.transaction_pool.size(),
             transactions_for_propagation: state.transaction_pool.for_propagation_size(),
             transaction_candidates: state.transaction_pool.candidates.transactions_count(),

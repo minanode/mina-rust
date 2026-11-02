@@ -1815,6 +1815,42 @@ fn zkapp_command_segments<'a>(
     Ok(segments)
 }
 
+/// OCaml uptime proves one terminal segment without replacing its zero SOK.
+/// This deliberately preserves 4.0.3/4.0.4 behavior, including the delegation
+/// verifier's SOK rejection; ordinary SNARK work must continue to bind SOK.
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/uptime_service/uptime_snark_worker.ml#L11-L112>
+pub(super) fn generate_uptime_zkapp_proof(
+    statement: &v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement,
+    witness: &v2::TransactionWitnessStableV2,
+    target: &v2::LedgerHash,
+    provers: &super::provers::ZkappProver,
+) -> anyhow::Result<(v2::LedgerProofProdStableV2, f64)> {
+    let command = zkapp_command_of_witness(witness)?;
+    let segments = zkapp_command_segments(statement, witness, &command)?;
+    // The work partitioner returns account-update order (it reverses the
+    // witness generator's last-first order), just like our segment helper.
+    let target = target.to_field()?;
+    let (witness, spec, statement) = segments
+        .into_iter()
+        .find(|(_, _, statement)| statement.target.second_pass_ledger == target)
+        .ok_or_else(|| anyhow::anyhow!("no uptime zkApp segment ends at block ledger"))?;
+    let started = super::snark_worker::uptime_wall_time();
+    let proof = of_zkapp_command_segment(
+        statement,
+        &witness,
+        &spec,
+        &provers.step_opt_signed_opt_signed_prover,
+        &provers.step_opt_signed_prover,
+        &provers.step_proof_prover,
+        &provers.tx_wrap_prover,
+        None,
+        None,
+        false,
+    )?;
+    let elapsed = (super::snark_worker::uptime_wall_time() - started).abs();
+    Ok(((&proof).into(), elapsed))
+}
+
 pub fn generate_zkapp_proof(params: ZkappParams) -> anyhow::Result<LedgerProof> {
     let ZkappParams {
         statement,

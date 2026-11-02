@@ -323,6 +323,18 @@ impl TransitionFrontierCandidatesState {
         self.get(hash).is_some_and(|s| s.chain_proof.is_none())
     }
 
+    /// The greatest heights among the candidates: of those whose proof was
+    /// verified, and of all of them, verified or not.
+    pub fn max_heights(&self) -> (Option<u32>, Option<u32>) {
+        let verified = self
+            .ordered
+            .iter()
+            .filter(|s| s.status.is_snark_verify_success())
+            .map(|s| s.height())
+            .max();
+        (verified, self.ordered.iter().map(|s| s.height()).max())
+    }
+
     pub fn best_verified_block(&self) -> Option<&ArcBlockWithHash> {
         self.best_verified().map(|s| &s.block)
     }

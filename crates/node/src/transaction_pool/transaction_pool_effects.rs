@@ -1,70 +1,77 @@
 use std::collections::BTreeMap;
 
+use super::TransactionPoolEffectfulAction;
 use crate::{ledger::LedgerService, snark::SnarkStore};
 
-use super::TransactionPoolEffectfulAction;
-
 impl TransactionPoolEffectfulAction {
-    /// `synced`: whether the node is synced to a block after genesis. Before
-    /// that, as at every start, the best tip's ledger may not be loaded yet,
-    /// which is no error.
-    pub fn effects<Store, S>(self, store: &mut Store, synced: bool)
+    pub fn effects<Store, S>(self, store: &mut Store, _synced: bool)
     where
         Store: SnarkStore<S>,
         Store::Service: LedgerService,
     {
         match self {
-            TransactionPoolEffectfulAction::FetchAccounts {
+            Self::FetchAccounts {
                 account_ids,
                 ledger_hash,
-                on_result,
                 pending_id,
+                generation,
+                pinned,
+                on_result,
                 from_source,
             } => {
-                mina_core::log::debug!(
-                    mina_core::log::system_time();
-                    kind = "TransactionPoolEffectfulFetchAccounts",
-                    summary = "fetching accounts for tx pool");
-                // FIXME: the ledger ctx `get_accounts` function doesn't ensure that every account we
-                // asked for is included in the result.
-                // TODO: should be asynchronous. Once asynchronous, watch out for race
-                // conditions between tx pool and transition frontier. By the time the
-                // accounts have been fetched the best tip may have changed already.
-                let accounts = match store
+                if let Some(id) = pending_id {
+                    store.service().ledger_manager().transaction_pool_accounts(
+                        id,
+                        ledger_hash,
+                        account_ids.into_iter().collect(),
+                        generation,
+                        pinned,
+                    );
+                } else {
+                    store.dispatch_callback(
+                        on_result,
+                        (Err("missing account read id".to_owned()), None, from_source),
+                    );
+                }
+            }
+            Self::PinLedger {
+                pending_id,
+                ledger_hash,
+            } => {
+                store
                     .service()
                     .ledger_manager()
-                    .get_accounts(&ledger_hash, account_ids.iter().cloned().collect())
-                {
-                    Ok(accounts) => Ok(accounts
-                        .into_iter()
-                        .map(|account| (account.id(), account))
-                        .collect::<BTreeMap<_, _>>()),
-                    Err(err) => {
-                        if is_ledger_still_loading(synced, &err) {
-                            // At every start, before the ledger is loaded
-                            // (RC7-FIXES): `mina report` titled healthy
-                            // nodes' reports with it at ERROR.
-                            mina_core::log::debug!(
-                                mina_core::log::system_time();
-                                kind = "TransactionPoolLedgerLoading",
-                                summary = "tx pool accounts not fetched: the ledger isn't loaded yet",
-                                ledger = ledger_hash.to_string());
-                        } else {
-                            mina_core::log::error!(
-                                mina_core::log::system_time();
-                                kind = "Error",
-                                summary = "failed to fetch accounts for tx pool",
-                                error = format!("ledger {:?}, error: {:?}", ledger_hash, err));
-                        }
-                        // Still call back, so that the pending action is
-                        // answered and removed.
-                        Err(format!("failed to fetch accounts: {err:?}"))
-                    }
-                };
-
-                store.dispatch_callback(on_result, (accounts, pending_id, from_source));
+                    .pin_transaction_pool_ledger(pending_id, ledger_hash);
+            }
+            Self::CancelReads { generation } => {
+                store
+                    .service()
+                    .ledger_manager()
+                    .cancel_transaction_pool_reads(generation);
             }
         }
+    }
+}
+
+pub(crate) fn report_account_read_error(
+    state: &crate::State,
+    id: u32,
+    result: &Result<BTreeMap<ledger::AccountId, ledger::Account>, String>,
+) {
+    // Cancelled responses release admission slots without reporting a failure.
+    let Some(read) = state.transaction_pool.pending_actions.get(&id) else {
+        return;
+    };
+    let Err(err) = result else { return };
+    let frontier = &state.transition_frontier;
+    let synced =
+        frontier.sync.is_synced() && frontier.best_tip().is_some_and(|tip| !tip.is_genesis());
+    if is_ledger_still_loading(synced, err) {
+        mina_core::log::debug!(mina_core::log::system_time(); kind = "TransactionPoolLedgerLoading",
+            summary = "tx pool accounts not fetched: the ledger isn't loaded yet", ledger = read.ledger_hash.to_string());
+    } else {
+        mina_core::log::error!(mina_core::log::system_time(); kind = "Error",
+            summary = "failed to fetch accounts for tx pool", error = format!("ledger {:?}, error: {:?}", read.ledger_hash, err));
     }
 }
 

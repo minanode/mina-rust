@@ -20,7 +20,7 @@ use ledger::scan_state::{
 use mina_core::{
     block::genesis::genesis_and_negative_one_protocol_states, constants::constraint_constants,
 };
-use mina_p2p_messages::{bigint::InvalidBigInt, v2};
+use mina_p2p_messages::v2;
 
 use crate::{account::AccountSecretKey, block_producer::calc_epoch_seed};
 
@@ -38,9 +38,14 @@ impl GenesisConfigLoaded {
             v2::MinaStateProtocolStateValueStableV2,
             v2::StateHash,
         ),
-        InvalidBigInt,
+        GenesisConfigError,
     > {
-        let genesis_vrf = ::mina_vrf::genesis_vrf(self.staking_epoch_seed.clone()).unwrap();
+        // These values come from external compact/prebuilt genesis inputs.
+        self.staking_epoch_seed
+            .to_field::<mina_curves::pasta::Fp>()?;
+        self.next_epoch_seed.to_field::<mina_curves::pasta::Fp>()?;
+        let genesis_vrf = ::mina_vrf::genesis_vrf(self.staking_epoch_seed.clone())
+            .map_err(|error| GenesisConfigError::Runtime(format!("genesis VRF: {error}")))?;
         let genesis_vrf_hash = genesis_vrf.hash();
         genesis_and_negative_one_protocol_states(
             self.constants.clone(),
@@ -59,6 +64,7 @@ impl GenesisConfigLoaded {
             self.next_epoch_seed.clone(),
             calc_epoch_seed(&self.next_epoch_seed, genesis_vrf_hash),
         )
+        .map_err(Into::into)
     }
 }
 
@@ -68,8 +74,8 @@ impl GenesisConfigLoaded {
 /// (its account in the staking epoch ledger, `genesis_producer_stake_proof`)
 /// with its private key, and the empty pending coinbase.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/prover/prover.ml#L571-L617>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L772-L787>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/prover/prover.ml#L571-L617>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L772-L787>
 pub fn genesis_block_prover_input(
     negative_one: &v2::MinaStateProtocolStateValueStableV2,
     genesis: &v2::MinaStateProtocolStateValueStableV2,

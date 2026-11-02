@@ -25,7 +25,7 @@ pub const EPOCH_LEDGER_PREFIX: &str = "epoch_ledger";
 /// the name changes when the account layout or its default permissions do.
 ///
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/genesis_ledger_helper/genesis_ledger_helper.ml#L92-L100>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/account.ml#L671-L672>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_base/account.ml#L669-L670>
 pub fn tarball_name(prefix: &str, ledger_hash: &v2::LedgerHash) -> String {
     let empty: v2::MinaBaseAccountBinableArgStableV2 = (&ledger::Account::empty()).into();
     let mut empty_bytes = Vec::new();

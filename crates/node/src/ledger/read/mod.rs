@@ -26,7 +26,7 @@ use crate::{
     rpc::{
         AccountQuery, DelegatorsQuery, HardForkExportRequest, LedgerExportRequest,
         LightAccountRead, RpcHardForkExportResponse, RpcLedgerExportResponse,
-        RpcLightAccountResponse, RpcScanStateSummaryScanStateJob,
+        RpcLightAccountResponse,
     },
 };
 
@@ -42,6 +42,7 @@ pub enum LedgerReadKind {
     GetChildAccountsAtAddr,
     GetStagedLedgerAuxAndPendingCoinbases,
     ScanStateSummary,
+    ScanStateMetrics,
     AccountsForRpc,
     GetLedgerStatus,
     GetAccountDelegators,
@@ -53,13 +54,13 @@ pub enum LedgerReadKind {
 /// Most levels of hashes served for one `WhatChildHashes` query, as OCaml
 /// mainnet nodes serve.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/syncable_ledger/syncable_ledger.ml#L381-L389>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/syncable_ledger/syncable_ledger.ml#L411-L419>
 pub use crate::p2p::channels::rpc::{
     MAX_SERVED_ACCOUNT_SUBTREE_HEIGHT, MAX_SERVED_CHILD_HASHES_DEPTH,
 };
 
 /// Clamp to OCaml's configured maximum, then reject addresses past the leaves.
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/syncable_ledger/syncable_ledger.ml#L381-L389>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/syncable_ledger/syncable_ledger.ml#L411-L419>
 pub fn served_child_hashes_depth(addr: &LedgerAddress, depth: u64) -> Option<usize> {
     let depth = usize::try_from(depth)
         .unwrap_or(usize::MAX)
@@ -82,6 +83,8 @@ pub enum LedgerReadRequest {
     GetStagedLedgerAuxAndPendingCoinbases(LedgerReadStagedLedgerAuxAndPendingCoinbases),
     // rpcs
     ScanStateSummary(v2::MinaBaseStagedLedgerHashStableV1),
+    /// Only the tree counters of `ScanStateSummary`: no job is built.
+    ScanStateMetrics(v2::MinaBaseStagedLedgerHashStableV1),
     AccountsForRpc(RpcId, v2::LedgerHash, AccountQuery),
     GetLedgerStatus(RpcId, v2::LedgerHash),
     GetAccountDelegators(RpcId, DelegatorsQuery, AccountId),
@@ -110,7 +113,8 @@ pub enum LedgerReadResponse {
     GetChildAccountsAtAddr(Result<Vec<v2::MinaBaseAccountBinableArgStableV2>, String>),
     GetStagedLedgerAuxAndPendingCoinbases(Option<Arc<StagedLedgerAuxAndPendingCoinbases>>),
     // rpcs
-    ScanStateSummary(Result<Vec<Vec<RpcScanStateSummaryScanStateJob>>, String>),
+    ScanStateSummary(Result<crate::rpc::RpcScanStateSummaryData, String>),
+    ScanStateMetrics(Result<Vec<(u64, u64, u64)>, String>),
     AccountsForRpc(RpcId, Vec<Account>, AccountQuery),
     GetLedgerStatus(RpcId, Option<LedgerStatus>),
     GetAccountDelegators(RpcId, Option<Vec<Account>>),
@@ -127,6 +131,11 @@ pub struct LedgerReadStagedLedgerAuxAndPendingCoinbases {
 }
 
 impl LedgerReadRequest {
+    /// The prover account read for a proof of our own SNARK worker's.
+    pub fn is_own_snark_work(&self) -> bool {
+        matches!(self, Self::SnarkPoolProver(request) if request.is_sender_local)
+    }
+
     pub fn kind(&self) -> LedgerReadKind {
         match self {
             Self::SnarkPoolProver(..) => LedgerReadKind::SnarkPoolProver,
@@ -140,6 +149,7 @@ impl LedgerReadRequest {
                 LedgerReadKind::GetStagedLedgerAuxAndPendingCoinbases
             }
             Self::ScanStateSummary(..) => LedgerReadKind::ScanStateSummary,
+            Self::ScanStateMetrics(..) => LedgerReadKind::ScanStateMetrics,
             Self::AccountsForRpc(..) => LedgerReadKind::AccountsForRpc,
             Self::GetLedgerStatus(..) => LedgerReadKind::GetLedgerStatus,
             Self::GetAccountDelegators(..) => LedgerReadKind::GetAccountDelegators,
@@ -172,6 +182,8 @@ impl LedgerReadRequest {
                 .unwrap_or(usize::MAX),
             Self::GetStagedLedgerAuxAndPendingCoinbases(..) => 100,
             Self::ScanStateSummary(..) => 100,
+            // A few counters per tree.
+            Self::ScanStateMetrics(..) => 1,
             // TODO(adonagy): not sure
             // Full-ledger work, not an indexed account lookup. TokenOwner's
             // first read per ledger hash also derives a token per account.
@@ -214,6 +226,7 @@ impl LedgerReadResponse {
                 LedgerReadKind::GetStagedLedgerAuxAndPendingCoinbases
             }
             Self::ScanStateSummary(..) => LedgerReadKind::ScanStateSummary,
+            Self::ScanStateMetrics(..) => LedgerReadKind::ScanStateMetrics,
             Self::AccountsForRpc(..) => LedgerReadKind::AccountsForRpc,
             Self::GetLedgerStatus(..) => LedgerReadKind::GetLedgerStatus,
             Self::GetAccountDelegators(..) => LedgerReadKind::GetAccountDelegators,

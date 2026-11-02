@@ -35,6 +35,7 @@ members = [
   "tools/hash-tool",
   "tools/isolated-prover",
   "tools/light-probe",
+  "tools/peer-input-fuzz",
   "tools/rpc-capture",
   "tools/ledger-tool",
   "tools/testing",
@@ -59,7 +60,7 @@ edition = "2021"
 homepage = "https://o1-labs.github.io/mina-rust/"
 license = "Apache-2.0"
 repository = "https://github.com/o1-labs/mina-rust"
-version = "0.20.0"
+version = "0.20.1"
 
 [workspace.lints.clippy]
 #unwrap_used = "warn"

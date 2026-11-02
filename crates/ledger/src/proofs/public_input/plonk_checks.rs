@@ -974,6 +974,8 @@ mod scalars {
 
     #[cfg(test)]
     mod tests {
+        use std::collections::BTreeSet;
+
         use kimchi::circuits::berkeley_columns::BerkeleyChallenges;
 
         use super::*;
@@ -1047,6 +1049,66 @@ mod scalars {
         fn linearization_constants_are_closed_forms() {
             check_linearization::<Fp>();
             check_linearization::<Fq>();
+        }
+
+        /// Every `(zk_rows, offset)` row an `UnnormalizedLagrangeBasis` of
+        /// `e` asks for, `IfFeature` branches and caches included.
+        fn lagrange_rows_of<F: FieldWitness>(e: &Const<F>, out: &mut BTreeSet<(bool, i32)>) {
+            match e {
+                Operations::Atom(ExprInner::UnnormalizedLagrangeBasis(row)) => {
+                    out.insert((row.zk_rows, row.offset));
+                }
+                Operations::Atom(_) => {}
+                Operations::Pow(x, _)
+                | Operations::Double(x)
+                | Operations::Square(x)
+                | Operations::Cache(_, x) => lagrange_rows_of(x, out),
+                Operations::Add(x, y)
+                | Operations::Mul(x, y)
+                | Operations::Sub(x, y)
+                | Operations::IfFeature(_, x, y) => {
+                    lagrange_rows_of(x, out);
+                    lagrange_rows_of(y, out);
+                }
+            }
+        }
+
+        fn lagrange_rows<F: FieldWitness>() -> BTreeSet<(bool, i32)> {
+            let terms = linearization::<F>();
+            let (constant_term, index_terms) = &*terms;
+            let mut rows = BTreeSet::new();
+            lagrange_rows_of(constant_term, &mut rows);
+            for term in index_terms.values() {
+                lagrange_rows_of(term, &mut rows);
+            }
+            rows
+        }
+
+        /// The rows OCaml's and both of our `unnormalized_lagrange_basis`
+        /// closures handle (`make_scalars_env` and
+        /// `make_scalars_env_checked`): any other is unreachable for the
+        /// pinned kimchi. The rows come from the linearization, never from a
+        /// proof. The lookup argument asks for the first row and the last
+        /// one before the zero-knowledge rows; without lookups (`Fq`'s
+        /// linearization, all features off) there is none.
+        ///
+        /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/plonk_checks/plonk_checks.ml#L310-L329>
+        #[test]
+        fn linearization_lagrange_rows_are_handled() {
+            const HANDLED: [(bool, i32); 7] = [
+                (false, 0),
+                (false, 1),
+                (false, -1),
+                (false, -2),
+                (false, -3),
+                (true, 0),
+                (true, -1),
+            ];
+            let fp = lagrange_rows::<Fp>();
+            let fq = lagrange_rows::<Fq>();
+            assert_eq!(fp, BTreeSet::from([(false, 0), (true, -1)]));
+            assert_eq!(fq, BTreeSet::new());
+            assert!(fp.iter().chain(&fq).all(|row| HANDLED.contains(row)));
         }
 
         /// The September 2025 migration recursively witnessed arithmetic inside

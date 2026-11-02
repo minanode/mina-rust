@@ -1,5 +1,6 @@
 pub mod datachannel;
 pub mod dtls;
+pub mod packet_queue;
 pub mod ice;
 pub mod rtp;
 pub mod sctp;

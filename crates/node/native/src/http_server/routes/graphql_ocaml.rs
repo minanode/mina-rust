@@ -12,7 +12,7 @@
 //! OCaml: <https://github.com/andreas/ocaml-graphql-server/blob/0.13.0/graphql/src/graphql_schema.ml#L266-L289>
 use std::collections::{HashMap, HashSet};
 
-use juniper::{
+use crate::graphql::api::{
     http::GraphQLRequest,
     parser::parse_document_source,
     validation::{visit_all_rules, ValidatorContext},
@@ -174,4 +174,166 @@ pub(super) fn post_process(mut response: Value) -> Value {
         }
     }
     response
+}
+
+// A parsing-only schema leaves opaque scalar contents untyped. Juniper's
+// schema-aware parser otherwise refuses object literals before scalar coercion.
+// Execution and validation always use the real schema, never this one.
+struct JsonParsingQuery;
+#[juniper::graphql_object(scalar = crate::graphql::scalars::MinaScalarValue)]
+impl JsonParsingQuery {
+    fn integer() -> crate::graphql::scalars::CommandNonceScalar {
+        crate::graphql::scalars::CommandNonceScalar(0)
+    }
+    fn float() -> f64 {
+        0.0
+    }
+}
+
+pub(super) fn parse_archive_document<'a>(
+    query: &'a str,
+    schema: &Schema,
+) -> juniper::parser::UnlocatedParseResult<
+    Vec<Definition<'a, crate::graphql::scalars::MinaScalarValue>>,
+> {
+    parse_document_source(query, &schema.schema).or_else(|error| {
+        if !query.contains("archiveVersionedPrecomputedBlock") {
+            return Err(error);
+        }
+        static PARSING: std::sync::OnceLock<
+            juniper::SchemaType<crate::graphql::scalars::MinaScalarValue>,
+        > = std::sync::OnceLock::new();
+        let parsing = PARSING.get_or_init(|| {
+            juniper::SchemaType::new::<
+                JsonParsingQuery,
+                juniper::EmptyMutation<()>,
+                juniper::EmptySubscription<()>,
+            >(&(), &(), &())
+        });
+        parse_document_source(query, parsing)
+    })
+}
+
+/// Adapt OCaml's opaque JSON input scalar to Juniper, which otherwise rejects
+/// objects/lists even when the scalar's FromInputValue accepts them. Admission
+/// and public policy run on the original request before this adapter. Only the
+/// versioned archive scalar is affected; null and wrong variable types retain
+/// Juniper's normal validation. The archive is unconfigured, so the resolver
+/// returns the upstream configuration error and never forwards this encoding.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L3011-L3023>
+pub(super) fn archive_json_input(
+    request: &GraphQLRequest,
+    schema: &Schema,
+) -> Option<GraphQLRequest> {
+    use crate::graphql::api::parser::Spanning;
+    fn opaque(value: &InputValue) -> bool {
+        matches!(value, InputValue::Object(_) | InputValue::List(_))
+            && value.referenced_variables().is_empty()
+    }
+    fn replacement(value: &Spanning<InputValue>, edits: &mut Vec<(usize, usize, String)>) {
+        if opaque(&value.item) {
+            let json = serde_json::to_string(&value.item).expect("InputValue serializes");
+            edits.push((
+                value.span.start.index(),
+                value.span.end.index(),
+                serde_json::to_string(&json).expect("String serializes"),
+            ));
+        }
+    }
+    fn walk(
+        selections: &[Selection<'_, crate::graphql::scalars::MinaScalarValue>],
+        edits: &mut Vec<(usize, usize, String)>,
+    ) {
+        for selection in selections {
+            match selection {
+                Selection::Field(field) => {
+                    if field.item.name.item == "archiveVersionedPrecomputedBlock" {
+                        for (name, value) in field.item.arguments.iter().flat_map(|a| &a.item.items)
+                        {
+                            if name.item == "block" {
+                                replacement(value, edits);
+                            }
+                        }
+                    }
+                    if let Some(children) = &field.item.selection_set {
+                        walk(children, edits);
+                    }
+                }
+                Selection::InlineFragment(fragment) => walk(&fragment.item.selection_set, edits),
+                Selection::FragmentSpread(_) => {}
+            }
+        }
+    }
+    if !request.query.contains("archiveVersionedPrecomputedBlock") {
+        return None;
+    }
+    let doc = parse_archive_document(&request.query, schema).ok()?;
+    let selected =
+        juniper::executor::get_operation(&doc, request.operation_name.as_deref()).ok()?;
+    let names: HashSet<_> = selected
+        .item
+        .variable_definitions
+        .iter()
+        .flat_map(|d| &d.item.items)
+        .filter(|(_, d)| {
+            d.var_type.item.to_string().trim_end_matches('!') == "VersionedPrecomputedBlock"
+        })
+        .map(|(name, _)| name.item)
+        .collect();
+    let mut variables = request.variables.clone();
+    let mut changed = false;
+    if let Some(InputValue::Object(entries)) = &mut variables {
+        for (name, value) in entries {
+            if names.contains(name.item.as_str()) && opaque(&value.item) {
+                value.item = InputValue::scalar(
+                    serde_json::to_string(&value.item).expect("InputValue serializes"),
+                );
+                changed = true;
+            }
+        }
+    }
+    let mut edits = vec![];
+    for definition in &doc {
+        match definition {
+            Definition::Operation(op) => {
+                walk(&op.item.selection_set, &mut edits);
+                for (_, d) in op
+                    .item
+                    .variable_definitions
+                    .iter()
+                    .flat_map(|d| &d.item.items)
+                {
+                    if d.var_type.item.to_string().trim_end_matches('!')
+                        == "VersionedPrecomputedBlock"
+                    {
+                        if let Some(value) = &d.default_value {
+                            replacement(value, &mut edits);
+                        }
+                    }
+                }
+            }
+            Definition::Fragment(f) => walk(&f.item.selection_set, &mut edits),
+        }
+    }
+    if !changed && edits.is_empty() {
+        return None;
+    }
+    // Juniper positions count Unicode scalar values, not UTF-8 bytes.
+    let offsets: Vec<_> = request
+        .query
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(request.query.len()))
+        .collect();
+    let mut query = request.query.clone();
+    edits.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
+    for (start, end, replacement) in edits {
+        query.replace_range(*offsets.get(start)?..*offsets.get(end)?, &replacement);
+    }
+    Some(GraphQLRequest::new(
+        query,
+        request.operation_name.clone(),
+        variables,
+    ))
 }

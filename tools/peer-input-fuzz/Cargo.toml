@@ -1,0 +1,18 @@
+[package]
+name = "mina-peer-input-fuzz"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bounded-time, structure-aware fuzzing of the decoders and checks that take peer input"
+publish = false
+
+[dependencies]
+rand = { workspace = true, features = ["small_rng"] }
+
+[dev-dependencies]
+binprot = { workspace = true }
+ledger = { workspace = true }
+mina-core = { workspace = true }
+mina-curves = { workspace = true }
+mina-p2p-messages = { workspace = true }
+mina-signer = { workspace = true }

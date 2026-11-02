@@ -45,6 +45,11 @@ pub enum TransitionFrontierAction {
         /// Required protocol states for root block.
         needed_protocol_states: BTreeSet<StateHash>,
     },
+    /// A local ledger fault: quarantine the frontier and bootstrap afresh.
+    LedgerRecovery {
+        block_hash: StateHash,
+        error: String,
+    },
     SyncFailed {
         best_tip: ArcBlockWithHash,
         error: SyncError,
@@ -65,10 +70,12 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierAction {
     fn is_enabled(&self, state: &crate::State, time: redux::Timestamp) -> bool {
         match self {
             TransitionFrontierAction::VerificationRecorded { .. } => true,
+            TransitionFrontierAction::LedgerRecovery { .. } => true,
             TransitionFrontierAction::Genesis(a) => a.is_enabled(state, time),
             TransitionFrontierAction::GenesisEffect(a) => a.is_enabled(state, time),
             TransitionFrontierAction::GenesisInject => {
-                state.transition_frontier.root().is_none()
+                !state.transition_frontier.ledger_recovery_pending()
+                    && state.transition_frontier.root().is_none()
                     && state
                         .transition_frontier
                         .genesis
@@ -76,6 +83,9 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierAction {
                         .is_some()
             }
             TransitionFrontierAction::GenesisProvenInject => {
+                if state.transition_frontier.ledger_recovery_pending() {
+                    return false;
+                }
                 let Some(genesis) = state.transition_frontier.genesis.proven_block() else {
                     return false;
                 };

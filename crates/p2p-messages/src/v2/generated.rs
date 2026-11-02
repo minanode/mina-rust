@@ -87,6 +87,7 @@ pub struct MinaBaseSparseLedgerBaseStableV2 {
 pub struct MinaBaseAccountBinableArgStableV2 {
     pub public_key: NonZeroCurvePoint,
     pub token_id: TokenIdKeyHash,
+    #[binprot_read_with("crate::string::read_account_token_symbol")]
     pub token_symbol: crate::string::ByteString,
     pub balance: CurrencyBalanceStableV1,
     pub nonce: UnsignedExtendedUInt32StableV1,
@@ -1312,7 +1313,9 @@ pub enum MinaBaseSparseLedgerBaseStableV2Tree {
     Hash(LedgerHash),
     Node(
         LedgerHash,
+        #[binprot_read_with("crate::nesting::read_nested_tree")]
         Box<MinaBaseSparseLedgerBaseStableV2Tree>,
+        #[binprot_read_with("crate::nesting::read_nested_tree")]
         Box<MinaBaseSparseLedgerBaseStableV2Tree>,
     ),
 }
@@ -1328,7 +1331,9 @@ pub enum MinaBasePendingCoinbaseMerkleTreeVersionedStableV2Tree {
     Hash(PendingCoinbaseHash),
     Node(
         PendingCoinbaseHash,
+        #[binprot_read_with("crate::nesting::read_nested_tree")]
         Box<MinaBasePendingCoinbaseMerkleTreeVersionedStableV2Tree>,
+        #[binprot_read_with("crate::nesting::read_nested_tree")]
         Box<MinaBasePendingCoinbaseMerkleTreeVersionedStableV2Tree>,
     ),
 }
@@ -1717,6 +1722,7 @@ pub struct MinaBaseSignedCommandPayloadStableV2 {
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct MinaBaseSignedCommandStableV2 {
     pub payload: MinaBaseSignedCommandPayloadStableV2,
+    #[binprot_read_with("crate::v2::read_decompressible_point")]
     pub signer: NonZeroCurvePoint,
     pub signature: Signature,
 }
@@ -2471,6 +2477,7 @@ pub struct MinaBaseZkappCommandVerifiableStableV1AccountUpdatesAA {
         Option<MinaBaseZkappCommandVerifiableStableV1AccountUpdatesDataA>,
     ),
     pub account_update_digest: MinaBaseZkappCommandCallForestMakeDigestStrAccountUpdateStableV1,
+    #[binprot_read_with("crate::nesting::read_nested_call")]
     pub calls: List<MinaBaseZkappCommandVerifiableStableV1AccountUpdatesAACallsA>,
 }
 
@@ -2486,6 +2493,7 @@ pub struct MinaBaseZkappCommandTStableV1WireStableV1AccountUpdatesAA {
     pub account_update: MinaBaseAccountUpdateTStableV1,
     #[serde(deserialize_with = "always_unit")]
     pub account_update_digest: (),
+    #[binprot_read_with("crate::nesting::read_nested_call")]
     pub calls: List<MinaBaseZkappCommandTStableV1WireStableV1AccountUpdatesAACallsA>,
 }
 
@@ -3634,7 +3642,7 @@ pub struct TransactionSnarkScanStateStableV2ScanState {
 /// Mesa replaced Berkeley's applied transaction (`transaction_with_info`) with
 /// the transaction and its status, and `init_stack` is now the stack itself.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L21-L46>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L21-L46>
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite)]
 pub struct TransactionSnarkScanStateTransactionWithWitnessStableV2 {
     pub transaction_with_status:

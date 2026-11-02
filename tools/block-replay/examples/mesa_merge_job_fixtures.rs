@@ -164,7 +164,7 @@ fn describe_node(jobs: &[JobValueWithIndex<'_>], index: usize) -> String {
 /// The `Merge` work a snark worker gets for a merge job: the merged
 /// statement, and the two child proofs.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L1363-L1369>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L1364-L1370>
 fn merge_spec(
     left: &LedgerProof,
     right: &LedgerProof,

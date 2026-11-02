@@ -272,13 +272,14 @@ impl LedgerIntf for Mask {
         Ok((action, account, addr))
     }
 
-    /// <https://github.com/MinaProtocol/mina/blob/05c2f73d0f6e4f1341286843814ce02dcb3919e0/src/lib/mina_ledger/ledger.ml#L304>
+    /// Returns an error for an account that exists, as OCaml's
+    /// `create_new_account` does (`Or_error`).
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_ledger/ledger.ml#L482-L494>
     fn create_new_account(&mut self, account_id: AccountId, account: Account) -> Result<(), ()> {
-        match BaseLedger::get_or_create_account(self, account_id, account).unwrap() {
-            GetOrCreated::Added(_) => {}
-            GetOrCreated::Existed(_) => panic!(),
+        match BaseLedger::get_or_create_account(self, account_id, account) {
+            Ok(GetOrCreated::Added(_)) => Ok(()),
+            Ok(GetOrCreated::Existed(_)) | Err(_) => Err(()),
         }
-        Ok(())
     }
 
     fn remove_accounts_exn(&mut self, account_ids: &[AccountId]) {

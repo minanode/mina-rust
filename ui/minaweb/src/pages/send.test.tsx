@@ -1,0 +1,157 @@
+// @vitest-environment jsdom
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+
+// Shapes only: not real keys.
+const FROM = `B62q${"1".repeat(51)}`;
+const TO = `B62q${"2".repeat(51)}`;
+const PRIVATE = `EK${"3".repeat(50)}`;
+
+const sendPayment = vi.fn();
+
+vi.mock("../config", () => ({ CONFIG: { network: "devnet" } }));
+vi.mock("../roles/hooks", () => {
+  const account = (publicKey: string) => ({
+    publicKey,
+    balance: 100_000_000_000n,
+    nonce: 4,
+    delegate: null,
+  });
+  const node = {
+    available: true,
+    sendPayment: (...args: unknown[]) => sendPayment(...args),
+    account: async (pk: string) => account(pk),
+    inclusion: async () => ({ tipHeight: 10, depthSearched: 40, found: null }),
+    inPool: async () => true,
+  };
+  return {
+    useKeys: () => ({
+      key: { publicKey: FROM, privateKey: PRIVATE, origin: "generated" },
+      saved: null,
+    }),
+    useKeyGlue: () => ({
+      generate_account_key: () => null,
+      account_public_key: () => FROM,
+      account_public_key_valid: (k: string) => k === FROM || k === TO,
+    }),
+    useRoleNode: () => node,
+    useAccount: (pk: string | null) => ({
+      data: pk ? account(pk) : null,
+      loading: false,
+      error: null,
+      updatedAt: 1,
+      refresh: () => {},
+    }),
+  };
+});
+
+const { SendPage } = await import("./send");
+
+beforeEach(() => {
+  sendPayment.mockReset();
+  sendPayment.mockResolvedValue({
+    hash: "5JuTest",
+    accepted: true,
+    rejection: null,
+  });
+});
+afterEach(cleanup);
+
+const field = (id: string) => document.getElementById(id) as HTMLInputElement;
+const type = (id: string, value: string) =>
+  fireEvent.change(field(id), { target: { value } });
+
+test("an edit after Review drops it: what is signed is what is shown", async () => {
+  render(<SendPage />);
+  type("send-to", TO);
+  type("send-amount", "1");
+  type("send-fee", "0.1");
+  type("send-memo", "a private note");
+  fireEvent.click(screen.getByRole("button", { name: "Review" }));
+  const memo = await screen.findByText('"a private note"');
+  expect(memo).toBeTruthy();
+  expect(document.querySelector("[data-review-to]")?.textContent).toBe(TO);
+
+  // The visitor clears the memo: the review is gone, nothing to sign.
+  type("send-memo", "");
+  expect(document.querySelector("[data-action=confirm-send]")).toBeNull();
+
+  fireEvent.click(screen.getByRole("button", { name: "Review" }));
+  expect(document.querySelector("[data-review-memo]")?.textContent).toBe(
+    "None",
+  );
+  await act(async () => {
+    fireEvent.click(
+      document.querySelector("[data-action=confirm-send]") as HTMLElement,
+    );
+  });
+  expect(sendPayment).toHaveBeenCalledOnce();
+  const [key, signed] = sendPayment.mock.calls[0];
+  expect(key).toBe(PRIVATE);
+  expect(signed).toEqual({
+    from: FROM,
+    to: TO,
+    amount: 1_000_000_000n,
+    fee: 100_000_000n,
+    nonce: 4,
+    memo: "",
+  });
+});
+
+test("every field is in the confirmation, and each edit drops it", () => {
+  render(<SendPage />);
+  type("send-to", TO);
+  type("send-amount", "2.5");
+  type("send-fee", "0.01");
+  for (const [id, value] of [
+    ["send-to", FROM],
+    ["send-amount", "3"],
+    ["send-fee", "0.02"],
+    ["send-memo", "x"],
+  ] as const) {
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const review = document.querySelector("[data-review]");
+    if (review) {
+      expect(review.textContent).toMatch(/Amount.*Fee.*Memo.*Nonce/);
+    }
+    type(id, value);
+    expect(document.querySelector("[data-action=confirm-send]")).toBeNull();
+  }
+});
+
+test("two payments accepted back to back are both kept", async () => {
+  render(<SendPage />);
+  // The store lives as long as the page: earlier tests' payments are in it.
+  const before = document.querySelectorAll("[data-sent]").length;
+  for (const [hash, amount] of [
+    ["5JuOne", "1"],
+    ["5JuTwo", "2"],
+  ]) {
+    sendPayment.mockResolvedValueOnce({
+      hash,
+      accepted: true,
+      rejection: null,
+    });
+    type("send-to", TO);
+    type("send-amount", amount);
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    await act(async () => {
+      fireEvent.click(
+        document.querySelector("[data-action=confirm-send]") as HTMLElement,
+      );
+    });
+  }
+  await waitFor(() =>
+    expect(document.querySelectorAll("[data-sent]").length).toBe(before + 2),
+  );
+  // The second took the next nonce.
+  const [first, second] = sendPayment.mock.calls.map(c => c[1].nonce);
+  expect(second).toBe(first + 1);
+});

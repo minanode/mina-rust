@@ -30,10 +30,7 @@ describe("the base URL", () => {
     expect(client.url("graphql")).toBe("/graphql");
   });
   test("another node, with or without a trailing slash or a path", async () => {
-    for (const base of [
-      "http://192.0.2.44:3600",
-      "http://192.0.2.44:3600/",
-    ]) {
+    for (const base of ["http://192.0.2.44:3600", "http://192.0.2.44:3600/"]) {
       const { fetch, client } = answering(200, "{}", base);
       await client.getJson("/status", x => x);
       expect(calls(fetch)[0][0]).toBe("http://192.0.2.44:3600/status");

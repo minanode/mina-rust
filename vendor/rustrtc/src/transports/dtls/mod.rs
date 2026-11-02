@@ -15,7 +15,7 @@ use aes_gcm::{
 };
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use core::fmt;
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use hmac::{Hmac, Mac};
 #[cfg(feature = "std")]
 use rcgen::generate_simple_self_signed;
@@ -28,8 +28,9 @@ use self::handshake::{
 use self::record::{ContentType, DtlsRecord, ProtocolVersion};
 use crate::platform::atomic64::AtomicU64;
 use crate::platform::crypto::{self, EcdhSecret, SigningKey};
-use crate::platform::sync::{Mutex, Notify, mpsc, watch};
+use crate::platform::sync::{Mutex, Notify, watch};
 use crate::transports::ice::conn::IceConn;
+use crate::transports::packet_queue::{self, Kind};
 use tracing::{debug, trace, warn};
 
 pub type Result<T> = core::result::Result<T, crate::errors::RtcError>;
@@ -196,7 +197,9 @@ struct DtlsInner {
     state: Arc<Mutex<DtlsState>>,
     state_tx: watch::Sender<DtlsState>,
     state_rx: watch::Receiver<DtlsState>,
-    handshake_rx_feeder: mpsc::UnboundedSender<Bytes>,
+    handshake_rx_feeder: packet_queue::Sender,
+    dispatch_failed: AtomicBool,
+    overload: Notify,
     write_seq: AtomicU64,
     write_epoch: AtomicU16,
     is_client: bool,
@@ -280,11 +283,12 @@ impl DtlsTransport {
         expected_remote_fingerprint: Option<String>,
     ) -> Result<(
         Arc<Self>,
-        mpsc::UnboundedReceiver<Bytes>,
+        packet_queue::Receiver,
         impl core::future::Future<Output = ()> + Send,
     )> {
-        let (incoming_data_tx, incoming_data_rx) = mpsc::unbounded_channel();
-        let (handshake_rx_feeder, handshake_rx) = mpsc::unbounded_channel();
+        let association = packet_queue::Association::new();
+        let (incoming_data_tx, incoming_data_rx) = association.channel(Kind::DtlsData);
+        let (handshake_rx_feeder, handshake_rx) = association.channel(Kind::DtlsWire);
         let (state_tx, state_rx) = watch::channel(DtlsState::New);
 
         let inner = Arc::new(DtlsInner {
@@ -293,11 +297,19 @@ impl DtlsTransport {
             state_tx,
             state_rx,
             handshake_rx_feeder,
+            dispatch_failed: AtomicBool::new(false),
+            overload: Notify::new(),
             write_seq: AtomicU64::new(0),
             write_epoch: AtomicU16::new(0),
             is_client,
             expected_remote_fingerprint,
         });
+
+        // Weak ownership avoids an association -> callback -> DTLS cycle.
+        let weak_inner = Arc::downgrade(&inner);
+        association.on_shed(Arc::new(move || {
+            if let Some(inner) = weak_inner.upgrade() { inner.fail_dispatch(); }
+        }));
 
         let close_tx = Arc::new(Notify::new());
         let close_rx = close_tx.clone();
@@ -312,16 +324,21 @@ impl DtlsTransport {
 
         let inner_clone = inner.clone();
         let runner = async move {
-            if let Err(e) = inner_clone
+            let handshake = inner_clone
                 .handshake(
                     certificate,
                     is_client,
                     incoming_data_tx,
                     handshake_rx,
                     close_rx,
-                )
-                .await
-            {
+                );
+            let mut handshake = core::pin::pin!(handshake);
+            let mut overload = core::pin::pin!(inner_clone.overload.notified());
+            let result = match crate::platform::select::select2(&mut overload, &mut handshake).await {
+                crate::platform::select::Either::A(_) => Err(dtls_err!("raw dispatch overload")),
+                crate::platform::select::Either::B(result) => result,
+            };
+            if let Err(e) = result {
                 debug!(
                     label = inner_clone.conn.label.as_deref().unwrap_or("-"),
                     "DTLS handshake failed: {e} (remote={})",
@@ -338,6 +355,15 @@ impl DtlsTransport {
 
     pub fn subscribe_state(&self) -> watch::Receiver<DtlsState> {
         self.inner.state_rx.clone()
+    }
+
+    /// Fatal dispatch overload: wake the runner independently of its packet queues.
+    pub(crate) fn fail_dispatch(&self) {
+        self.inner.fail_dispatch();
+    }
+
+    pub(crate) fn packet_association(&self) -> Arc<packet_queue::Association> {
+        self.inner.handshake_rx_feeder.association()
     }
 
     pub fn close(&self) {
@@ -470,6 +496,16 @@ impl Drop for DtlsTransport {
 }
 
 impl DtlsInner {
+    fn fail_dispatch(&self) {
+        if !self.dispatch_failed.swap(true, Ordering::AcqRel) {
+            packet_queue::record_teardown();
+            *self.state.lock() = DtlsState::Failed;
+            let _ = self.state_tx.send(DtlsState::Failed);
+            self.handshake_rx_feeder.association().close();
+            self.overload.notify_one();
+        }
+    }
+
     /// Sends a new handshake flight and keeps it for retransmission.
     ///
     /// The flight is stored before sending and a failed send is only logged,
@@ -518,7 +554,7 @@ impl DtlsInner {
         &self,
         packet: Bytes,
         ctx: &mut HandshakeContext,
-        incoming_data_tx: &mpsc::UnboundedSender<Bytes>,
+        incoming_data_tx: &packet_queue::Sender,
         certificate: &Certificate,
         is_client: bool,
     ) -> Result<()> {
@@ -636,7 +672,7 @@ impl DtlsInner {
         epoch: u16,
         payload: Bytes,
         ctx: &mut HandshakeContext,
-        incoming_data_tx: &mpsc::UnboundedSender<Bytes>,
+        incoming_data_tx: &packet_queue::Sender,
         certificate: &Certificate,
         is_client: bool,
     ) -> Result<()> {
@@ -650,7 +686,10 @@ impl DtlsInner {
                 ctx.read_epoch = ctx.read_epoch.saturating_add(1);
             }
             ContentType::ApplicationData => {
-                let _ = incoming_data_tx.send(payload);
+                if let Err(error) = incoming_data_tx.send(payload) {
+                    if error == packet_queue::SendError::Overloaded { self.fail_dispatch(); }
+                    return Err(dtls_err!("DTLS application dispatch closed: {:?}", error));
+                }
             }
             ContentType::Handshake => {
                 self.process_handshake_payload(payload, epoch, ctx, certificate, is_client)
@@ -1874,8 +1913,8 @@ impl DtlsInner {
         &self,
         certificate: Certificate,
         is_client: bool,
-        incoming_data_tx: mpsc::UnboundedSender<Bytes>,
-        mut handshake_rx: mpsc::UnboundedReceiver<Bytes>,
+        incoming_data_tx: packet_queue::Sender,
+        mut handshake_rx: packet_queue::Receiver,
         close_rx: Arc<Notify>,
     ) -> Result<()> {
         *self.state.lock() = DtlsState::Handshaking;
@@ -2131,8 +2170,9 @@ use core::net::SocketAddr;
 #[async_trait::async_trait]
 impl PacketReceiver for DtlsTransport {
     async fn receive(&self, packet: Bytes, _addr: SocketAddr, _marshal_buf: &mut Vec<u8>) {
-        if self.inner.handshake_rx_feeder.send(packet).is_err() {
-            warn!("DTLS handshake channel closed, dropping inbound packet");
+        if self.inner.dispatch_failed.load(Ordering::Acquire) { return; }
+        if let Err(packet_queue::SendError::Overloaded) = self.inner.handshake_rx_feeder.send(packet) {
+            self.fail_dispatch();
         }
     }
 }

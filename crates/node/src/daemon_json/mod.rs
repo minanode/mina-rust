@@ -1,9 +1,15 @@
 use serde::{Deserialize, Serialize};
 
+mod json_bytes;
+pub use json_bytes::{
+    from_ocaml_json_reader, from_ocaml_json_slice, write_ocaml_string, OcamlJsonReader, OcamlString,
+};
 mod json_daemon;
 mod json_proof;
 pub use json_proof::{Proof, TransactionCapacity};
 mod json_export;
+#[cfg(test)]
+pub(crate) use json_export::OCAML_NON_UTF8_SAMPLE_HASH;
 pub use json_export::{ledger_hash_of_accounts, to_mina_string, write_accounts, ExportedAccount};
 mod json_fork;
 pub use json_fork::{

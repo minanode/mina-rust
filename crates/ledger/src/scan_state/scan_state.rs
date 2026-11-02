@@ -39,7 +39,8 @@ use crate::{
 use self::transaction_snark::{LedgerProof, OneOrTwo, Registers};
 
 use super::{
-    currency::{Fee, Slot},
+    currency::{Fee, Magnitude, Slot},
+    fee_excess::FeeExcess,
     parallel_scan::ParallelScan,
     snark_work,
     transaction_logic::{
@@ -899,7 +900,7 @@ fn sha256_digest(bytes: &[u8]) -> GenericArray<u8, U32> {
 /// SHA-256 of a job's bin_prot encoding, the per-job hash Mesa feeds into the
 /// staged ledger aux hash.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L142-L149>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L142-L149>
 fn job_hash<T: binprot::BinProtWrite>(job: &T) -> GenericArray<u8, U32> {
     let mut bytes = Vec::with_capacity(32 * 1024);
     job.binprot_write(&mut bytes).unwrap();
@@ -1010,7 +1011,7 @@ impl ScanState {
     }
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L316-L399>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L317-L400>
 fn create_expected_statement<F>(
     constraint_constants: &ConstraintConstants,
     get_state: F,
@@ -1117,6 +1118,19 @@ pub enum StatementCheck<F: Fn(Fp) -> MinaStateProtocolStateValueStableV2> {
     Full(F),
 }
 
+/// Why [`ScanState::scan_statement`] found no statement, as OCaml tells an
+/// empty scan state from an error.
+enum ScanStatementError {
+    Empty,
+    Error(String),
+}
+
+impl From<String> for ScanStatementError {
+    fn from(error: String) -> Self {
+        Self::Error(error)
+    }
+}
+
 impl ScanState {
     pub fn scan_statement<F>(
         &self,
@@ -1124,6 +1138,23 @@ impl ScanState {
         statement_check: StatementCheck<F>,
         verifier: &Verifier,
     ) -> Result<Statement<()>, String>
+    where
+        F: Fn(Fp) -> MinaStateProtocolStateValueStableV2,
+    {
+        self.scan_statement_impl(constraint_constants, statement_check, verifier)
+            .map_err(|error| match error {
+                ScanStatementError::Empty => "Empty".to_string(),
+                ScanStatementError::Error(error) => error,
+            })
+    }
+
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L497-L636>
+    fn scan_statement_impl<F>(
+        &self,
+        constraint_constants: &ConstraintConstants,
+        statement_check: StatementCheck<F>,
+        verifier: &Verifier,
+    ) -> Result<Statement<()>, ScanStatementError>
     where
         F: Fn(Fp) -> MinaStateProtocolStateValueStableV2,
     {
@@ -1256,31 +1287,84 @@ impl ScanState {
         )?;
 
         match res {
-            (Acc(None), _) => Err("Empty".to_string()),
+            (Acc(None), _) => Err(ScanStatementError::Empty),
             (Acc(Some((res, proofs))), _) => match verifier.verify(proofs.as_slice()) {
                 Ok(Ok(())) => Ok(res),
-                Ok(Err(e)) => Err(format!("Verifier issue {:?}", e)),
-                Err(e) => Err(e),
+                Ok(Err(e)) => Err(format!("Verifier issue {:?}", e).into()),
+                Err(e) => Err(e.into()),
             },
         }
     }
 
+    /// The scan state's statement must connect with the last emitted proof,
+    /// end at `registers_end`, and carry no fee excess. An empty scan state is
+    /// valid if the last proof ends at `registers_end`.
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L638-L717>
     pub fn check_invariants<F>(
         &self,
         constraint_constants: &ConstraintConstants,
         statement_check: StatementCheck<F>,
         verifier: &Verifier,
-        _error_prefix: &'static str,
-        _last_proof_statement: Option<Statement<()>>,
-        _registers_end: Registers,
+        error_prefix: &'static str,
+        last_proof_statement: Option<Statement<()>>,
+        registers_end: Registers,
     ) -> Result<(), String>
     where
         F: Fn(Fp) -> MinaStateProtocolStateValueStableV2,
     {
-        // TODO: OCaml does much more than this (pretty printing error)
-        match self.scan_statement(constraint_constants, statement_check, verifier) {
-            Ok(_) => Ok(()),
-            Err(s) => Err(s),
+        let clarify_error = |cond: bool, error: &str| {
+            if cond {
+                Ok(())
+            } else {
+                Err(format!("{error_prefix} : {error}"))
+            }
+        };
+        let check_registers = |reg1: &Registers, reg2: &Registers| {
+            clarify_error(
+                reg1.first_pass_ledger == reg2.first_pass_ledger,
+                "did not connect with snarked fee payment ledger hash",
+            )?;
+            clarify_error(
+                reg1.second_pass_ledger == reg2.second_pass_ledger,
+                "did not connect with snarked parties ledger hash",
+            )?;
+            clarify_error(
+                pending_coinbase::Stack::connected(
+                    &reg1.pending_coinbase_stack,
+                    &reg2.pending_coinbase_stack,
+                    None,
+                ),
+                "did not connect with pending-coinbase stack",
+            )?;
+            clarify_error(
+                reg1.local_state == reg2.local_state,
+                "did not connect with local state",
+            )
+        };
+
+        match self.scan_statement_impl(constraint_constants, statement_check, verifier) {
+            Err(ScanStatementError::Error(error)) => Err(error),
+            Err(ScanStatementError::Empty) => match &last_proof_statement {
+                None => Ok(()),
+                Some(statement) => check_registers(&statement.target, &registers_end),
+            },
+            Ok(statement) => {
+                if let Some(last_proof_statement) = &last_proof_statement {
+                    last_proof_statement.merge(&statement)?;
+                }
+                check_registers(&registers_end, &statement.target)?;
+                let FeeExcess {
+                    fee_token_l,
+                    fee_excess_l,
+                    fee_token_r,
+                    fee_excess_r,
+                } = &statement.fee_excess;
+                // `Fee.Signed.equal` counts a zero of either sign as zero.
+                clarify_error(fee_excess_l.magnitude.is_zero(), "nonzero fee excess")?;
+                clarify_error(fee_excess_r.magnitude.is_zero(), "nonzero fee excess")?;
+                clarify_error(fee_token_l.is_default(), "nondefault fee token")?;
+                clarify_error(fee_token_r.is_default(), "nondefault fee token")
+            }
         }
     }
 
@@ -2383,6 +2467,11 @@ impl ScanState {
 
     /// Iterates on the scan state by tree
     /// And for each tree we iterate on all its values (from root to leaves)
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/parallel_scan/parallel_scan.ml#L1336-L1344>
+    pub fn tree_metrics(&self) -> Vec<(u64, u64, u64)> {
+        self.scan_state.tree_metrics()
+    }
+
     pub fn view(&self) -> impl Iterator<Item = impl Iterator<Item = JobValueWithIndex<'_>>> {
         self.scan_state.trees.iter().map(|tree| tree.view())
     }
@@ -2734,5 +2823,16 @@ mod long_run_tests {
         // OCaml one_or_two.ml zip rejects both unequal-cardinality cases.
         assert!(OneOrTwo::zip(OneOrTwo::One(1), OneOrTwo::Two((2, 3))).is_err());
         assert!(OneOrTwo::zip(OneOrTwo::Two((1, 2)), OneOrTwo::One(3)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod status_404_metrics_tests {
+    use super::*;
+    #[test]
+    fn empty_tree_matches_ocaml_metrics() {
+        // OCaml Parallel_scan.empty 8 work_delay: one tree, eight base
+        // weights available and no Full Todo jobs (parallel_scan.ml metrics).
+        assert_eq!(ScanState::create(2, 3).tree_metrics(), vec![(8, 0, 0)]);
     }
 }

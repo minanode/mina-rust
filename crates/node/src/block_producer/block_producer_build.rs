@@ -4,22 +4,21 @@
 //! that tools can call too (`tools/block-replay/examples/mesa_offline_chain.rs`
 //! proves blocks built with them).
 
-use ledger::scan_state::currency::{Amount, Signed};
-use mina_core::{
-    block::AppliedBlock,
-    consensus::{next_consensus_state, ConsensusConstants, ConsensusStateUpdate},
-};
+use mina_core::{block::AppliedBlock, consensus::ConsensusConstants};
 use mina_node_account::AccountSecretKey;
 use mina_p2p_messages::{list::List, v2};
 
 use super::{BlockProducerConfig, BlockProducerWonSlot, BlockWithoutProof};
+use crate::transition_frontier::protocol_state::{
+    emitted_proof_statement, next_protocol_state, ProtocolStateInputs,
+};
 
 /// The block a producer builds on top of `chain` for `won_slot`, with the
 /// staged ledger diff it created, and the block's state hash.
 ///
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/block_producer/block_producer.ml#L173-L436>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L1855-L1955>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L3236-L3290>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L1855-L1955>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L3253-L3326>
 #[allow(clippy::too_many_arguments)]
 pub fn build_unproven_block(
     consensus_constants: &ConsensusConstants,
@@ -36,83 +35,34 @@ pub fn build_unproven_block(
         return Err("no predecessor block".to_owned());
     };
 
-    let pred_consensus_state = &pred_block.header().protocol_state.body.consensus_state;
-    let pred_blockchain_state = &pred_block.header().protocol_state.body.blockchain_state;
-
-    let genesis_ledger_hash = &pred_blockchain_state.genesis_ledger_hash;
-
-    let block_timestamp = won_slot.timestamp();
     let global_slot_since_genesis =
         won_slot.global_slot_since_genesis(pred_block.global_slot_diff());
-
     let block_stake_winner = won_slot.delegator.0.clone();
-
-    let ledger_proof_statement = ledger_proof_statement_from_emitted_proof(
-        emitted_ledger_proof,
-        &pred_blockchain_state.ledger_proof_statement,
-    );
-
-    let supply_increase = emitted_ledger_proof.map_or(Signed::zero(), |v| {
-        Signed::from(&v.statement.supply_increase)
-    });
-
-    let total_currency = {
-        let (amount, overflowed) = Amount::from(pred_consensus_state.total_currency.clone())
-            .add_signed_flagged(supply_increase);
-        if overflowed {
-            return Err("total_currency overflowed".to_owned());
-        }
-        amount
-    };
-
     let supercharge_coinbase = can_apply_supercharged_coinbase(
         &block_stake_winner,
         stake_proof_sparse_ledger,
         &global_slot_since_genesis,
     );
-    let consensus_state = next_consensus_state(
+    let statement = emitted_ledger_proof.map(emitted_proof_statement);
+    let protocol_state = next_protocol_state(
         consensus_constants,
-        pred_consensus_state,
+        &pred_block.header().protocol_state,
         pred_block.hash(),
-        ConsensusStateUpdate {
-            curr_global_slot_since_hard_fork: won_slot.global_slot.clone(),
+        ProtocolStateInputs {
+            slot: won_slot.global_slot.slot_number.clone(),
             vrf_hash: won_slot.vrf_output.hash(),
             last_vrf_output: (*won_slot.vrf_output).clone().into(),
-            snarked_ledger_hash: pred_block.snarked_ledger_hash().clone(),
-            genesis_ledger_hash: genesis_ledger_hash.clone(),
-            total_currency: (&total_currency).into(),
             block_stake_winner,
             block_creator: config.pub_key.clone(),
             coinbase_receiver: config.coinbase_receiver().clone(),
             supercharge_coinbase,
+            timestamp: won_slot.timestamp(),
         },
+        staged_ledger_hash,
+        diff_hash,
+        statement.as_ref(),
     )?;
     let proposed_protocol_version_opt = config.proposed_protocol_version.clone();
-
-    let protocol_state = v2::MinaStateProtocolStateValueStableV2 {
-        previous_state_hash: pred_block.hash().clone(),
-        body: v2::MinaStateProtocolStateBodyValueStableV2 {
-            genesis_state_hash: if pred_block.is_genesis() {
-                pred_block.hash().clone()
-            } else {
-                pred_block
-                    .header()
-                    .protocol_state
-                    .body
-                    .genesis_state_hash
-                    .clone()
-            },
-            constants: pred_block.header().protocol_state.body.constants.clone(),
-            blockchain_state: v2::MinaStateBlockchainStateValueStableV2 {
-                staged_ledger_hash: staged_ledger_hash.clone(),
-                genesis_ledger_hash: genesis_ledger_hash.clone(),
-                ledger_proof_statement,
-                timestamp: block_timestamp,
-                body_reference: diff_hash.clone(),
-            },
-            consensus_state,
-        },
-    };
 
     let chain_proof_len = pred_block.constants().delta.as_u32() as usize;
     let delta_block_chain_proof = match chain_proof_len {
@@ -163,7 +113,7 @@ pub fn build_unproven_block(
 /// The producer's private key is a placeholder, the genesis winner's: the
 /// prover service puts the producer's in (`BlockProducerService::prove`).
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/prover/prover.ml#L518-L569>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/prover/prover.ml#L518-L569>
 #[allow(clippy::too_many_arguments)]
 pub fn block_prover_input(
     won_slot: &BlockProducerWonSlot,
@@ -221,22 +171,4 @@ fn can_apply_supercharged_coinbase(
     let global_slot = (global_slot_since_genesis).into();
 
     StagedLedger::can_apply_supercharged_coinbase_exn(winner, &epoch_ledger, global_slot)
-}
-
-fn ledger_proof_statement_from_emitted_proof(
-    emitted_ledger_proof: Option<&v2::LedgerProofProdStableV2>,
-    pred_proof_statement: &v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement,
-) -> v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement {
-    match emitted_ledger_proof.map(|proof| &proof.statement) {
-        None => pred_proof_statement.clone(),
-        Some(stmt) => v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement {
-            source: stmt.source.clone(),
-            target: stmt.target.clone(),
-            connecting_ledger_left: stmt.connecting_ledger_left.clone(),
-            connecting_ledger_right: stmt.connecting_ledger_right.clone(),
-            supply_increase: stmt.supply_increase.clone(),
-            fee_excess: stmt.fee_excess.clone(),
-            sok_digest: (),
-        },
-    }
 }

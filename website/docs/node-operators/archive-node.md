@@ -1,5 +1,41 @@
 # Run an archive node
 
+## OCaml 4.0.4 compatibility
+
+Use the archive binary and SQL from the same release. The regression pin is
+OCaml 4.0.4, commit `c9e2eac5344da621828c1e96c074b8bdce665b51`; package and
+schema hashes are recorded in `tools/regression/archive/pin.json`.
+
+Before upgrading an existing archive, back up the database, verify the restore,
+and stop its archive writer. Retain the Rust node's archive outbox. Even a 4.0.3
+database with `bytea` columns needs the 4.0.4 package's migration:
+
+```bash
+psql -X -v ON_ERROR_STOP=1 "$ARCHIVE_DATABASE_URI" \
+  -f "$ARCHIVE_PREFIX/etc/mina/archive/upgrade.sql"
+```
+
+The migration adds `genesis_accounts` and indexes on the fee payer, source and
+receiver columns of `user_commands`. Check the newest `migration_history` row
+for version `0.0.3` and status `applied`, and check that the indexes are valid.
+The script's `4.0.0` / `5.0.0` labels are protocol eras, not package versions.
+For a fresh database, use the matching `create_schema.sql` instead.
+
+Restart the archive and compare stored block hashes with the retained outbox;
+RPC acknowledgement alone does not prove database commitment. The private
+`POST /archive/resend` endpoint replays retained diffs if needed. The live
+feeder continues to use `Send_archive_diff` v0, matching OCaml's daemon.
+
+Historical versioned JSON import and genesis-ledger population are separate
+operations. Creating `genesis_accounts` does not fill it: use the pinned
+`mina-archive-hardfork-toolbox populate-genesis-accounts` command with each
+era's actual runtime config. Rust's live feed does not reconstruct untouched
+genesis accounts. See `tools/regression/archive/README.md` for the complete
+recipe and regression command. A rollback to a text schema can fail on NUL or
+invalid UTF-8 bytes; do not assume a lossless downgrade.
+
+## Devnet deployment
+
 This guide is intended for setting up archive nodes on **Mina Devnet** only. Do
 not use this guide for Mina Mainnet until necessary security audits are
 complete.

@@ -42,6 +42,7 @@ struct Service {
     /// What the node asked the store thread for.
     asked: Vec<TransitionFrontierPersistEffectfulAction>,
     reads: Vec<crate::ledger::read::LedgerReadRequest>,
+    account_answers: Vec<usize>,
 }
 
 impl redux::Service for Service {}
@@ -65,6 +66,12 @@ fn effects(store: &mut Store, action: crate::ActionWithMeta) {
     ) = action.action()
     {
         store.service.reads.push(request.clone());
+    }
+    if let crate::Action::RpcEffectful(
+        crate::rpc_effectful::RpcEffectfulAction::LedgerAccountsGetSuccess { accounts, .. },
+    ) = action.action()
+    {
+        store.service.account_answers.push(accounts.len());
     }
 }
 
@@ -100,6 +107,7 @@ fn state(restore: bool) -> State {
             timeouts: Default::default(),
             limits: Default::default(),
             peer_discovery: false,
+            seed_only: false,
             meshsub: Default::default(),
             catchup_rpc: Default::default(),
         },
@@ -107,6 +115,7 @@ fn state(restore: bool) -> State {
         archive: None,
         block_producer: None,
         global: crate::config::GlobalConfig {
+            snark_work_fee: None,
             build: Box::new(crate::config::BuildEnv::get()),
             snarker: None,
             consensus_constants: consensus_constants.clone(),
@@ -156,6 +165,7 @@ fn store_of(state: State) -> Store {
             started: now,
             asked: Vec::new(),
             reads: Vec::new(),
+            account_answers: Vec::new(),
         },
         redux::SystemTime::UNIX_EPOCH,
         state,
@@ -1485,7 +1495,7 @@ fn answered_ledger_read_rpcs_leave_the_request_map() {
         }
         assert!(store.dispatch(RpcAction::ScanStateSummaryGetSuccess {
             rpc_id: summary,
-            scan_state: Ok(Vec::new()),
+            scan_state: Ok(Default::default()),
         }));
     }
 
@@ -1700,29 +1710,11 @@ fn failed_deferred_genesis_load_keeps_all_ledger_work_held() {
         })
     );
     assert_ledger_work_held(&mut store);
-    assert!(!store.dispatch(TransitionFrontierAction::GenesisLedgersLoadInit));
-}
-
-#[cfg(not(target_family = "wasm"))]
-#[test]
-fn failed_deferred_genesis_load_stops_the_node() {
-    const MODE: &str = "MINA_I5D2_FATAL_GENESIS_TEST";
-    if std::env::var_os(MODE).is_some() {
-        crate::transition_frontier::transition_frontier_effects::genesis_ledgers_load_failed(
-            "config unreadable",
-        );
-    }
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "transition_frontier::persist::transition_frontier_restore_tests::failed_deferred_genesis_load_stops_the_node", "--nocapture"])
-        .env(MODE, "1")
-        .output().unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("Fatal: deferred genesis ledger load failed"),
-        "{stderr}"
+    assert_eq!(
+        store.state().transition_frontier.startup_error(),
+        Some("config unreadable")
     );
-    assert!(stderr.contains("config unreadable"), "{stderr}");
+    assert!(!store.dispatch(TransitionFrontierAction::GenesisLedgersLoadInit));
 }
 
 #[test]
@@ -1899,4 +1891,27 @@ fn ledger_0201_handoff_winner_is_not_abandoned_by_the_cancellation_cap() {
         restore_state(&store),
         PersistRestoreState::Replaying { .. }
     ));
+}
+
+#[test]
+fn account_requests_without_a_best_tip_answer_and_finish() {
+    use crate::rpc::{AccountQuery, RpcAction};
+    use mina_core::requests::RpcId;
+    let mut initial = state(false);
+    initial.transition_frontier.best_chain.clear();
+    assert!(initial.transition_frontier.best_tip().is_none());
+    let mut store = store_of(initial);
+    for (i, account_query) in [AccountQuery::All, AccountQuery::StakingEpochIds(vec![])]
+        .into_iter()
+        .enumerate()
+    {
+        let rpc_id = RpcId::new_unchecked(0, i);
+        assert!(store.dispatch(RpcAction::LedgerAccountsGetInit {
+            rpc_id,
+            account_query
+        }));
+        assert!(!store.state().rpc.requests.contains_key(&rpc_id));
+    }
+    assert_eq!(store.service.account_answers, vec![0, 0]);
+    assert!(store.service.reads.is_empty());
 }

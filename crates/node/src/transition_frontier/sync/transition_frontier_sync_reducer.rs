@@ -795,7 +795,7 @@ pub(crate) fn restore_chain(
 /// that exact applied root; disconnected forks retain the ledger sync path.
 /// OCaml attaches to a retained parent and catches up to a known ancestor.
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transition_handler/processor.ml#L242-L297>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/ledger_catchup/super_catchup.ml#L355-L398>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/ledger_catchup/super_catchup.ml#L355-L398>
 fn reuse_applied_root<'a>(
     best_chain: &'a [AppliedBlock],
     requested_root: &'a ArcBlockWithHash,

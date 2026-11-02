@@ -45,6 +45,7 @@ const sidebars: SidebarsConfig = {
         'node-operators/node-management',
         'node-runners/operator-cli',
         'node-runners/bug-reports',
+        'node-runners/uptime-reporting',
       ],
     },
     {

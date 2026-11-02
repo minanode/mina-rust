@@ -13,6 +13,9 @@ pub use block_prover::{
 
 mod frontier_store;
 
+mod keys;
+pub use keys::{account_public_key, account_public_key_valid, generate_account_key};
+
 mod memory;
 pub use memory::memory_stats;
 
@@ -40,6 +43,20 @@ use wasm_bindgen::prelude::*;
 
 use crate::node::P2pTaskRemoteSpawner;
 
+/// Refresh ICE configuration on the main thread without restarting connections.
+#[wasm_bindgen]
+pub fn update_ice_servers(servers: JsValue) -> Result<(), JsError> {
+    let parsed: Vec<IceServer> = servers
+        .into_serde()
+        .map_err(|_| JsError::new("invalid ICE server list"))?;
+    IceServer::validate_list(&parsed).map_err(|_| JsError::new("invalid ICE server list"))?;
+    mina_node::p2p::service_impl::webrtc::update_webrtc_ice_servers(
+        &JsValue::from_serde(&parsed).map_err(|_| JsError::new("invalid ICE server list"))?,
+    )
+    .map_err(|_| JsError::new("invalid ICE renewal configuration"))?;
+    Ok(())
+}
+
 /// Automatically run after wasm is loaded.
 #[wasm_bindgen(start)]
 fn main() {
@@ -63,18 +80,16 @@ pub fn build_env() -> JsValue {
     JsValue::from_serde(&::mina_node::BuildEnv::get()).unwrap_or_default()
 }
 
-fn parse_bp_key(key: JsValue) -> Option<AccountSecretKey> {
+fn parse_bp_key(key: JsValue) -> Result<Option<AccountSecretKey>, &'static str> {
     if key.is_falsy() {
-        return None;
+        return Ok(None);
     }
 
-    if key.is_string() {
-        return Some(
-            key.as_string()
-                .unwrap()
-                .parse()
-                .expect("failed to parse passed block producer keys"),
-        );
+    if let Some(key) = key.as_string() {
+        return key
+            .parse()
+            .map(Some)
+            .map_err(|_| "failed to parse passed block producer key");
     }
 
     let (encrypted, password) = if key.is_array() {
@@ -82,20 +97,19 @@ fn parse_bp_key(key: JsValue) -> Option<AccountSecretKey> {
         let password = arr
             .at(1)
             .as_string()
-            .expect("invalid block_producer password");
+            .ok_or("invalid block_producer password")?;
         let encrypted = arr
             .at(0)
             .into_serde()
-            .expect("block_producer encrypted key decode failed");
+            .map_err(|_| "block_producer encrypted key decode failed")?;
         (encrypted, password)
     } else {
-        panic!("unsupported block_producer keys type: {key:?}");
+        return Err("unsupported block_producer key type");
     };
 
-    Some(
-        AccountSecretKey::from_encrypted(&encrypted, &password)
-            .expect("block_producer secret key decrypt failed"),
-    )
+    AccountSecretKey::from_encrypted(&encrypted, &password)
+        .map(Some)
+        .map_err(|_| "block_producer secret key decrypt failed")
 }
 
 /// The options of [`run`] after its positional arguments: a JavaScript
@@ -103,6 +117,9 @@ fn parse_bp_key(key: JsValue) -> Option<AccountSecretKey> {
 #[derive(serde::Deserialize, Debug, Default)]
 #[serde(rename_all = "camelCase", default)]
 struct RunOptions {
+    /// Experimental unrestricted peering. Off by default: only the supplied
+    /// seed relays are dialled, with no incoming peer-to-peer signaling.
+    peer_discovery: bool,
     /// Keep a frontier store in this browser's Origin Private File System,
     /// and restore from it at the next start instead of downloading the
     /// ledgers again (I5e). Off unless set.
@@ -191,6 +208,10 @@ impl RunOptions {
 ///   `--snark-worker-fee` reads it (default 0.1). Requires `snarker`. A key
 ///   without an account must ask at least 1 MINA, or OCaml refuses the work.
 /// * `options` - Optional object of further options:
+///   - `peerDiscovery` (boolean): experimental unrestricted peering, off by
+///     default. Enables peer discovery and peer-to-peer signaling; peers can
+///     learn each other's network addresses. Otherwise only the supplied seed
+///     relay addresses are dialled and incoming connections are refused.
 ///   - `frontierStore` (boolean): keep the node's verified ledgers and blocks
 ///     in this browser's Origin Private File System and, at the next start,
 ///     restore from them with every check instead of downloading them again.
@@ -210,17 +231,17 @@ impl RunOptions {
 ///
 /// An `RpcSender` that can be used to send RPC commands to the running node.
 /// Rejects the JavaScript promise if the receiver is malformed or supplied
-/// without a block producer key, or if configuring the receiver fails; if
-/// the SNARK worker's key or fee is not valid, without repeating the value,
-/// which may be a private key given by mistake; if both a block producer
-/// key and a SNARK worker are given; or if `options` is not an object of the
-/// fields above. A non-release fork in the genesis config also rejects the
-/// promise before either verifier is created.
+/// without a block producer key, if the block producer key cannot be parsed
+/// or decrypted, or if configuring the receiver fails; if the SNARK worker's
+/// key or fee is not valid, without repeating the value, which may be a
+/// private key given by mistake; if both a block producer key and a SNARK
+/// worker are given; or if `options` is not an object of the fields above. A
+/// non-release fork in the genesis config also rejects the promise before
+/// either verifier is created.
 ///
 /// # Panics
 ///
 /// Panics if:
-/// - Block producer key parsing fails
 /// - Genesis configuration cannot be fetched
 ///
 /// # Example
@@ -259,13 +280,16 @@ pub async fn run(
         return Err(JsError::new(SNARKER_WITH_PRODUCER));
     }
     let options = RunOptions::parse(options)?;
-    let block_producer = parse_bp_key(block_producer);
+    let block_producer = parse_bp_key(block_producer).map_err(JsError::new)?;
     let network = network.unwrap_or_else(|| "devnet".to_owned());
     mina_node::core::NetworkConfig::init(&network).expect("failed to set the network");
 
     let (rpc_sender_tx, rpc_sender_rx) = ::mina_node::core::channels::oneshot::channel();
     let _ = thread::spawn(move || {
         wasm_bindgen_futures::spawn_local(async move {
+            let genesis_input = genesis_config_url
+                .clone()
+                .unwrap_or_else(|| "embedded network genesis".into());
             let node = setup_node(
                 block_producer,
                 seed_nodes_urls,
@@ -278,12 +302,33 @@ pub async fn run(
             )
             .await;
             match node {
-                Ok(mut node) => {
+                Ok((mut node, prover_ready)) => {
+                    // A bridge failure must not be hidden behind genesis
+                    // preparation that could itself require a prover.
+                    if let Some(ready) = prover_ready {
+                        let result = ready
+                            .await
+                            .unwrap_or_else(|_| Err("prover stopped during startup".to_owned()));
+                        if let Err(error) = result {
+                            let _ =
+                                rpc_sender_tx.send(Err(format!("Prover startup failed: {error}")));
+                            return;
+                        }
+                    }
+                    if let Err(error) = node.wait_for_genesis().await {
+                        let _ = rpc_sender_tx
+                            .send(Err(format!("genesis input {genesis_input}: {error}")));
+                        return;
+                    }
                     let _ = rpc_sender_tx.send(Ok(node.rpc()));
-                    node.run_forever().await;
+                    if let Err(error) = node.run_forever().await {
+                        mina_node::core::error!(mina_node::core::log::system_time();
+                            summary = "node stopped", error = error);
+                    }
                 }
                 Err(error) => {
-                    let _ = rpc_sender_tx.send(Err(error.to_string()));
+                    let _ = rpc_sender_tx
+                        .send(Err(format!("genesis input {genesis_input}: {error:#}")));
                 }
             }
         });
@@ -315,14 +360,19 @@ async fn setup_node(
     coinbase_receiver: Option<AccountPublicKey>,
     snarker: Option<(AccountPublicKey, u64)>,
     options: RunOptions,
-) -> anyhow::Result<mina_node_common::Node<NodeService>> {
+) -> anyhow::Result<(
+    mina_node_common::Node<NodeService>,
+    Option<mina_node::core::channels::oneshot::Receiver<Result<(), String>>>,
+)> {
     let genesis_config: std::sync::Arc<GenesisConfig> =
         if let Some(genesis_config_url) = genesis_config_url {
             let bytes = ::mina_node::core::http::get_bytes(&genesis_config_url)
                 .await
-                .expect("failed to fetch genesis config");
+                .map_err(|error| {
+                    anyhow::anyhow!("genesis input {genesis_config_url}: fetch failed: {error:?}")
+                })?;
             GenesisConfig::from_bytes(bytes)
-                .expect("failed to read genesis config")
+                .map_err(|error| anyhow::anyhow!("genesis input {genesis_config_url}: {error}"))?
                 .into()
         } else {
             ::mina_node::config::default_genesis_config(
@@ -338,6 +388,10 @@ async fn setup_node(
     node_builder
         .block_verifier_index(block_verifier_index.clone())
         .work_verifier_index(work_verifier_index.clone());
+
+    if options.peer_discovery {
+        node_builder.p2p_peer_discovery();
+    }
 
     // TODO(binier): refactor
     let mut all_raw_peers = seed_nodes_addresses.unwrap_or_default();
@@ -370,13 +424,15 @@ async fn setup_node(
     // in an isolated prover instance with its own memory, never in this one
     // (I34c, P5.3). Its circuits start loading now, long before the first
     // won slot or job.
-    if block_producer.is_some() || snarker.is_some() {
-        node_builder.isolated_prover(
+    let prover_ready = if block_producer.is_some() || snarker.is_some() {
+        Some(node_builder.isolated_prover(
             block_producer.map(|key| (key, block_verifier_index)),
             snarker.is_some(),
             network,
-        );
-    }
+        )?)
+    } else {
+        None
+    };
     if let Some(receiver) = coinbase_receiver {
         node_builder
             .custom_coinbase_receiver(receiver.into())
@@ -403,7 +459,8 @@ async fn setup_node(
         .p2p_custom_task_spawner(P2pTaskRemoteSpawner {})
         .unwrap();
     node_builder.gather_stats();
-    node_builder.build().context("node build failed!")
+    let node = node_builder.build().context("node build failed!")?;
+    Ok((node, prover_ready))
 }
 
 pub(crate) fn keep_worker_alive_cursed_hack() {

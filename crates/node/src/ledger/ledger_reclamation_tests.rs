@@ -94,7 +94,7 @@ fn root_commit_keeps_equal_pending_then_reclaims_finalized_accounts() {
         if disk {
             snarked.freeze_to_disk(dir.path()).unwrap().unwrap();
         }
-        assert!(ctx.commit_root_staged_ledger(&hash, &snarked_hash));
+        assert!(ctx.commit_root_staged_ledger(&hash, &snarked_hash).is_ok());
         assert_eq!(staged.num_own_accounts(), 1, "pending equal account");
         assert_eq!(staged.clone().merkle_root(), root);
         ctx.staged_ledgers.take();
@@ -103,7 +103,7 @@ fn root_commit_keeps_equal_pending_then_reclaims_finalized_accounts() {
             staged.clone(),
             ScanState::empty(constraint_constants()),
         );
-        assert!(ctx.commit_root_staged_ledger(&hash, &snarked_hash));
+        assert!(ctx.commit_root_staged_ledger(&hash, &snarked_hash).is_ok());
         assert_eq!(staged.num_own_accounts(), 0, "fully emitted account");
         assert_eq!(staged.clone().merkle_root(), root);
         if disk {
@@ -185,7 +185,7 @@ fn root_staged_ownership_is_bounded_by_pending_window() {
             block,
             pending_scan(accounts[start..end].iter().cloned()),
         );
-        assert!(ctx.commit_root_staged_ledger(&hash, &root_hash));
+        assert!(ctx.commit_root_staged_ledger(&hash, &root_hash).is_ok());
         staged = ctx.staged_ledgers.get(&hash).unwrap().ledger();
         assert_eq!(staged.get_uuid(), staged_uuid);
         assert_eq!(staged.num_own_accounts(), end - start, "round {round}");

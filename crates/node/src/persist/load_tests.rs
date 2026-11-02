@@ -1273,6 +1273,53 @@ fn block_proofs_are_verified_in_a_batch() {
     }
 }
 
+/// A block proof whose challenge polynomial commitment is (0, 0), the point
+/// at infinity, fails verification without a panic.
+#[test]
+fn a_block_proof_commitment_at_infinity_fails_without_a_panic() {
+    use ledger::proofs::verification::{verify_block, verify_blocks};
+    use mina_p2p_messages::bigint::BigInt;
+
+    let verifier = mainnet_verifier();
+    let blocks = mainnet_blocks();
+    let header = blocks[0].header();
+    assert!(verify_block(header, &verifier.index, &verifier.srs));
+    let zero = (BigInt::zero(), BigInt::zero());
+    let statement = &header.protocol_state_proof.0.statement;
+    let mut changed = Vec::new();
+    let mut wrap = header.clone();
+    Arc::make_mut(&mut wrap.protocol_state_proof)
+        .0
+        .statement
+        .proof_state
+        .messages_for_next_wrap_proof
+        .challenge_polynomial_commitment = zero.clone();
+    changed.push(wrap);
+    for i in 0..statement
+        .messages_for_next_step_proof
+        .challenge_polynomial_commitments
+        .len()
+    {
+        let mut step = header.clone();
+        *Arc::make_mut(&mut step.protocol_state_proof)
+            .0
+            .statement
+            .messages_for_next_step_proof
+            .challenge_polynomial_commitments
+            .iter_mut()
+            .nth(i)
+            .unwrap() = zero.clone();
+        changed.push(step);
+    }
+    for (i, bad) in changed.iter().enumerate() {
+        assert!(!verify_block(bad, &verifier.index, &verifier.srs), "{i}");
+        assert!(
+            !verify_blocks(&[header, bad], &verifier.index, &verifier.srs),
+            "{i}"
+        );
+    }
+}
+
 /// The synthetic blocks carry a proof of another protocol state, as blocks
 /// whose proofs were replaced would: with the node's verifier, a chain of
 /// them is damage and the store is deleted, a root-only chain too. Without a

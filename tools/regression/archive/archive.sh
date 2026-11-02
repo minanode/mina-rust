@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run OCaml's 4.0.2 archive process on ARCHIVE_PORT, writing to the e2e
+# Run OCaml's pinned 4.0.4 archive process on ARCHIVE_PORT, writing to the e2e
 # Postgres. Prints nothing; logs JSON to $E2E/archive.log. Its PID is $!.
 set -euo pipefail
 source "$(dirname "$0")/env.sh"

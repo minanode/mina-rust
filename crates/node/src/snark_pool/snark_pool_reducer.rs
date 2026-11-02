@@ -18,15 +18,110 @@ use super::{
     SnarkPoolState, SnarkWork,
 };
 
-/// A rejected SNARK work is per-proof detail, including when it is ours;
-/// peers' work can also be rejected many times a minute (O1/P5.4).
+/// A rejected peer's SNARK work is per-proof detail: it can be rejected many
+/// times a minute (O1/P5.4). Our worker's is said once more, at WARN, by
+/// [`SnarkPoolState::own_work_rejected`] (SNARK-POOL-OWN-WORK).
 macro_rules! admission_rejected {
-    ($local:expr; $($tts:tt)*) => {{
+    ($($tts:tt)*) => {{
         // A rejection describes one proof and can repeat each time work is
         // offered. Keep it with other per-proof detail at DEBUG (O1/P5.4).
-        let _ = $local;
         mina_core::debug!($($tts)*)
     }};
+}
+
+impl SnarkPoolState {
+    /// Our worker's proof was not admitted: says why, once per proof
+    /// (SNARK-POOL-OWN-WORK). A proof as cheap stored first is a race lost,
+    /// not a fault. The job keeps our commitment, so the worker does not
+    /// prove it again: OCaml's selector keeps a job it handed out in
+    /// `jobs_scheduled` until the job leaves the best tip's available jobs,
+    /// also when the pool refuses its proof, and its reassignment wait sends
+    /// again only work still out at a worker, which a submitted result ends.
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/work_selector/work_lib.ml#L142-L173>
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/work_partitioner/work_partitioner.ml#L58-L86>
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/work_partitioner/work_partitioner.ml#L306-L326>
+    fn own_work_rejected(
+        work: &mina_core::snark::Snark,
+        stage: AdmissionStage,
+        error: AdmissionError,
+        time: redux::Timestamp,
+    ) {
+        let job_id = work.job_id();
+        if error == AdmissionError::NotCheaper {
+            mina_core::info!(time;
+                kind = "SnarkWorkerProofRejected",
+                summary = "the pool kept a proof as cheap as our worker's",
+                job_id = display(&job_id),
+                stage = debug(stage),
+                reason = debug(error));
+        } else {
+            mina_core::warn!(time;
+                kind = "SnarkWorkerProofRejected",
+                summary = "the pool refused our worker's proof",
+                job_id = display(&job_id),
+                stage = debug(stage),
+                reason = debug(error));
+        }
+    }
+
+    /// The account of a prover of stored works, read at a new best tip
+    /// (`JobsUpdate` reads each prover once). As OCaml does at a new best tip,
+    /// its works that the prover rule refuses for the account are dropped
+    /// and the others kept. A failed read (busy, or no ledger) says nothing
+    /// about the prover: its works are kept, unused until a read succeeds
+    /// (`CheckTimeouts` reads again). Dropping them there lost our worker's
+    /// proofs while its commitments kept their jobs (SNARK-POOL-OWN-WORK).
+    /// A job whose work is dropped keeps our commitment, as OCaml's selector
+    /// keeps the job scheduled ([`Self::own_work_rejected`]).
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/snark_pool.ml#L167-L198>
+    fn revalidated(
+        &mut self,
+        request: &super::ProverAccountRequest,
+        result: &Result<ProverAccount, String>,
+        own_key: Option<&mina_p2p_messages::v2::NonZeroCurvePoint>,
+        time: redux::Timestamp,
+    ) {
+        let prover = &request.work.snarker;
+        let own = own_key == Some(prover);
+        let account = match result {
+            Ok(account) => *account,
+            Err(error) => {
+                self.admission_stats.revalidation_deferred += 1;
+                // Once per best tip: the periodic check reads again.
+                if self.revalidation_deferred_tip.as_ref() != Some(&request.best_tip) {
+                    self.revalidation_deferred_tip = Some(request.best_tip.clone());
+                    mina_core::warn!(time;
+                        kind = "SnarkPoolRevalidationDeferred",
+                        summary = "kept a prover's stored works unchecked: its account could not be read at the new best tip",
+                        prover = display(prover),
+                        own = own,
+                        error = display(error));
+                }
+                return;
+            }
+        };
+        self.cache_prover_account(prover.clone().into(), request.best_tip.clone(), account);
+        let refused = self.refused_works_of(prover, account);
+        for (job_id, error) in &refused {
+            self.admission_stats
+                .rejected(AdmissionStage::Revalidate, *error);
+            self.remove_snark_work(job_id);
+            if own {
+                mina_core::warn!(time;
+                    kind = "SnarkWorkerProofRemoved",
+                    summary = "the pool dropped our worker's proof at a new best tip",
+                    job_id = display(job_id),
+                    reason = debug(error));
+            }
+        }
+        if !own && !refused.is_empty() {
+            mina_core::debug!(time;
+                kind = "SnarkPoolRevalidationRemoved",
+                summary = "dropped a prover's stored works at a new best tip",
+                prover = display(prover),
+                works = refused.len());
+        }
+    }
 }
 
 impl SnarkPoolState {
@@ -52,6 +147,17 @@ impl SnarkPoolState {
             }
             _ => false,
         };
+        // Our worker's key: says which works and commitments are ours.
+        let own_key = state_context
+            .unsafe_get_state()
+            .config
+            .snarker
+            .as_ref()
+            .map(|config| {
+                let key: &mina_p2p_messages::v2::NonZeroCurvePoint = config.public_key.as_ref();
+                key.clone()
+            });
+        let own_key = own_key.as_ref();
         let Ok(state) = state_context.get_substate_mut() else {
             // TODO: log or propagate
             return;
@@ -78,7 +184,15 @@ impl SnarkPoolState {
                     state
                         .admission_stats
                         .rejected(*stage, AdmissionError::NotCheaper);
-                    admission_rejected!(*is_sender_local; meta.time(); kind = "SnarkPoolAdmissionRejected", stage = debug(stage), reason = debug(AdmissionError::NotCheaper), job_id = display(work.job_id()));
+                    admission_rejected!(meta.time(); kind = "SnarkPoolAdmissionRejected", stage = debug(stage), reason = debug(AdmissionError::NotCheaper), job_id = display(work.job_id()));
+                    if *is_sender_local {
+                        Self::own_work_rejected(
+                            work,
+                            *stage,
+                            AdmissionError::NotCheaper,
+                            meta.time(),
+                        );
+                    }
                     return;
                 }
                 let Some(tip) = tip
@@ -92,8 +206,16 @@ impl SnarkPoolState {
                     )
                     .err()
                     .unwrap_or(AdmissionError::NoFrontier);
-                    state.admission_stats.rejected(*stage, error);
-                    admission_rejected!(*is_sender_local; meta.time(); kind = "SnarkPoolAdmissionRejected", stage = debug(stage), reason = debug(error), job_id = display(work.job_id()));
+                    if *stage == AdmissionStage::Revalidate {
+                        // Nothing is removed: a later tip revalidates.
+                        state.admission_stats.revalidation_deferred += 1;
+                    } else {
+                        state.admission_stats.rejected(*stage, error);
+                    }
+                    admission_rejected!(meta.time(); kind = "SnarkPoolAdmissionRejected", stage = debug(stage), reason = debug(error), job_id = display(work.job_id()));
+                    if *is_sender_local {
+                        Self::own_work_rejected(work, *stage, error, meta.time());
+                    }
                     return;
                 };
                 state.account_request_id = state.account_request_id.wrapping_add(1);
@@ -119,6 +241,7 @@ impl SnarkPoolState {
                     });
                 } else {
                     let read = LedgerReadRequest::SnarkPoolProver(request.clone());
+                    // Admitted over the limit for our worker's proof.
                     if global.ledger.read.can_admit(&read) {
                         dispatcher.push(LedgerReadAction::Init {
                             request: read,
@@ -165,15 +288,25 @@ impl SnarkPoolState {
                         });
                     return;
                 }
+                if request.stage == AdmissionStage::Revalidate {
+                    state.revalidated(request, result, own_key, meta.time());
+                    return;
+                }
                 // Another proof may have been stored while the ledger read
                 // waited. Recheck before inspecting or caching its account.
-                if request.stage != AdmissionStage::Revalidate
-                    && !state.work_fee_is_competitive(&request.work)
-                {
+                if !state.work_fee_is_competitive(&request.work) {
                     state
                         .admission_stats
                         .rejected(request.stage, AdmissionError::NotCheaper);
-                    admission_rejected!(request.is_sender_local; meta.time(); kind = "SnarkPoolAdmissionRejected", stage = debug(request.stage), reason = debug(AdmissionError::NotCheaper), job_id = display(request.work.job_id()));
+                    admission_rejected!(meta.time(); kind = "SnarkPoolAdmissionRejected", stage = debug(request.stage), reason = debug(AdmissionError::NotCheaper), job_id = display(request.work.job_id()));
+                    if request.is_sender_local {
+                        Self::own_work_rejected(
+                            &request.work,
+                            request.stage,
+                            AdmissionError::NotCheaper,
+                            meta.time(),
+                        );
+                    }
                     return;
                 }
                 let checked = result
@@ -201,26 +334,16 @@ impl SnarkPoolState {
                 if let Err(error) = checked {
                     state.admission_stats.rejected(request.stage, error);
                     // These context/fee failures are not invalid proofs. Do not
-                    // disconnect a peer for them. Also hide retained work as soon
-                    // as its prover becomes ineligible at a new tip.
-                    if request.stage == AdmissionStage::Revalidate
-                        && state
-                            .get(&request.work.job_id())
-                            .and_then(|job| job.snark.as_ref())
-                            .is_some_and(|stored| {
-                                stored.work.snarker == request.work.snarker
-                                    && stored.work.fee == request.work.fee
-                                    && stored.work.proofs == request.work.proofs
-                            })
-                    {
-                        state.remove_snark_work(&request.work.job_id());
-                    }
+                    // disconnect a peer for them.
                     state
                         .candidates
                         .peer_work_remove(request.sender, &request.work.job_id());
-                    admission_rejected!(request.is_sender_local; meta.time(); kind = "SnarkPoolAdmissionRejected", stage = debug(request.stage), reason = debug(error), job_id = display(request.work.job_id()));
-                    if let (true, Ok(account)) = (request.is_sender_local, result) {
-                        state.warn_own_fee_refused(&request.work, *account, meta.time());
+                    admission_rejected!(meta.time(); kind = "SnarkPoolAdmissionRejected", stage = debug(request.stage), reason = debug(error), job_id = display(request.work.job_id()));
+                    if request.is_sender_local {
+                        if let Ok(account) = result {
+                            state.warn_own_fee_refused(&request.work, *account, meta.time());
+                        }
+                        Self::own_work_rejected(&request.work, request.stage, error, meta.time());
                     }
                     return;
                 }
@@ -230,9 +353,6 @@ impl SnarkPoolState {
                         request.best_tip.clone(),
                         *account,
                     );
-                }
-                if request.stage == AdmissionStage::Revalidate {
-                    return;
                 }
                 if matches!(request.stage, AdmissionStage::Received(_)) {
                     state.admission_stats.candidates += 1;
@@ -318,10 +438,11 @@ impl SnarkPoolState {
                     });
                 }
 
-                let revalidate = state
-                    .jobs_iter()
-                    .filter_map(|job| job.snark.clone())
-                    .collect::<Vec<_>>();
+                // One account read per prover, not per work: with a read per
+                // work, a pool of more than the ledger reads' capacity (256)
+                // had the reads of its newest works refused as busy, and
+                // dropped those works (SNARK-POOL-OWN-WORK).
+                let revalidate = state.works_by_prover();
 
                 state.candidates_prune();
                 state.zkapp_jobs = state
@@ -635,12 +756,30 @@ impl SnarkPoolState {
             } => {
                 state.admission_stats.admitted += 1;
                 mina_core::debug!(meta.time(); kind = "SnarkPoolAdmissionAdmitted", job_id = display(snark.job_id()));
-                state.set_snark_work(SnarkWork {
+                let replaced = state.set_snark_work(SnarkWork {
                     work: snark.clone(),
                     received_t: meta.time(),
                     sender: *sender,
                 });
                 state.candidates.remove_inferior_snarks(snark);
+                // What became of each proof of our worker's (SNARK-POOL-OWN-WORK).
+                if *is_sender_local {
+                    mina_core::info!(meta.time();
+                        kind = "SnarkWorkerProofAdmitted",
+                        summary = "the pool took our worker's proof",
+                        job_id = display(snark.job_id()));
+                } else if let Some(replaced) = replaced
+                    .filter(|replaced| own_key == Some(&replaced.work.snarker))
+                    .filter(|_| own_key != Some(&snark.snarker))
+                {
+                    mina_core::info!(meta.time();
+                        kind = "SnarkWorkerProofReplaced",
+                        summary = "a cheaper proof replaced our worker's",
+                        job_id = display(snark.job_id()),
+                        our_fee = replaced.work.fee.0.as_u64(),
+                        fee = snark.fee.0.as_u64(),
+                        prover = display(&snark.snarker));
+                }
 
                 // Dispatch
                 let snark = snark.clone();
@@ -726,11 +865,6 @@ impl SnarkPoolState {
 
                 // Dispatch
                 let (dispatcher, global_state) = state_context.into_dispatcher_and_state();
-                let own_key = global_state
-                    .config
-                    .snarker
-                    .as_ref()
-                    .map(|config| config.public_key.as_ref());
                 let timed_out_ids = global_state
                     .snark_pool
                     .timed_out_commitments_iter(meta.time(), own_key)
@@ -738,6 +872,35 @@ impl SnarkPoolState {
                     .collect::<Vec<_>>();
                 for job_id in timed_out_ids {
                     dispatcher.push(SnarkPoolAction::JobCommitmentTimeout { job_id });
+                }
+
+                // Read again the accounts that a new best tip's revalidation
+                // could not read, unless a read for the prover is under way
+                // (SNARK-POOL-OWN-WORK).
+                let tip = global_state.transition_frontier.best_tip();
+                if tip.is_some_and(|tip| global_state.snark_pool.jobs_tip() == Some(tip.hash())) {
+                    let reading = global_state
+                        .ledger
+                        .read
+                        .pending_requests()
+                        .filter_map(|(_, request, _)| match request {
+                            LedgerReadRequest::SnarkPoolProver(request) => {
+                                Some(&request.work.snarker)
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>();
+                    for snark in global_state.snark_pool.unchecked_works_by_prover() {
+                        if !reading.contains(&&snark.work.snarker) {
+                            dispatcher.push(SnarkPoolAction::WorkCheck {
+                                work: snark.work,
+                                sender: snark.sender,
+                                is_sender_local: false,
+                                stage: AdmissionStage::Revalidate,
+                                retry: true,
+                            });
+                        }
+                    }
                 }
             }
             SnarkPoolAction::WorkerPausedForBlock { paused } => {

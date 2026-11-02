@@ -1,0 +1,34 @@
+[
+  {
+    "timestamp": "2026-10-28 19:40:30.000302Z",
+    "level": "Info",
+    "source": {
+      "module": "Uptime_service",
+      "location": "File \"src/lib/uptime_service/uptime_service.ml\", line 501, characters 18-29"
+    },
+    "message": "Uptime service will attempt to send a block and SNARK work",
+    "metadata": {
+      "host": "127.0.0.1",
+      "peer_id": "12D3KooWNRurw557xxvUrnKEoNNebCNL5pjvsZ5LJHTh8K17AFgo",
+      "port": 8802
+    }
+  },
+  {
+    "timestamp": "2026-10-28 19:40:43.358619Z",
+    "level": "Info",
+    "source": {
+      "module": "Uptime_service",
+      "location": "File \"src/lib/uptime_service/uptime_service.ml\", line 66, characters 12-23"
+    },
+    "message": "Sent block with state hash $state_hash to uptime service at URL $url",
+    "metadata": {
+      "host": "127.0.0.1",
+      "includes_snark_work": true,
+      "is_produced_block": false,
+      "peer_id": "12D3KooWNRurw557xxvUrnKEoNNebCNL5pjvsZ5LJHTh8K17AFgo",
+      "port": 8802,
+      "state_hash": "3NKDkwpDMVmodrw8egvRUPiwq6BoHSTMdN2AWqv1BAPsFLoKQBWX",
+      "url": "http://127.0.0.1:8803/uptime"
+    }
+  }
+]

@@ -73,13 +73,21 @@ impl generated::ConsensusVrfOutputTruncatedStableV1 {
 #[derive(Hash, Eq, PartialEq, Ord, PartialOrd, Clone)]
 pub struct TransactionHash(Arc<[u8; 32]>);
 
+/// Current transaction hashes carry a binprot string behind Base58Check.
+/// Require the 32-byte digest length before accessing the payload.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transaction/transaction_hash.ml#L26-L36>
 impl std::str::FromStr for TransactionHash {
     type Err = bs58::decode::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let bytes = bs58::decode(s).with_check(Some(0x1D)).into_vec()?;
-        dbg!(bytes.len());
-        let bytes = (&bytes[2..])
+        if bytes.get(1) != Some(&32) {
+            return Err(bs58::decode::Error::BufferTooSmall);
+        }
+        let bytes = bytes
+            .get(2..)
+            .ok_or(bs58::decode::Error::BufferTooSmall)?
             .try_into()
             .map_err(|_| bs58::decode::Error::BufferTooSmall)?;
         Ok(Self(Arc::new(bytes)))

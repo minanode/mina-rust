@@ -106,6 +106,9 @@ in_nodejs = []
 fuzzing = []
 openapi = ["dep:utoipa"]
 peak-alloc = []
+# Test-only hooks (`verifier::test_hooks`) for the node crates' proving tests:
+# only their dev-dependencies enable it, never a node or release build.
+test-hooks = []
 
 [profile.release]
 debug = true

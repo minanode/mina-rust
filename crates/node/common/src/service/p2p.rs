@@ -32,7 +32,7 @@ impl webrtc::P2pServiceWebrtc for NodeService {
         self.event_sender()
     }
 
-    fn cmd_sender(&self) -> &mpsc::TrackedUnboundedSender<webrtc::Cmd> {
+    fn cmd_sender(&self) -> &mina_node::p2p::webrtc::queue::Sender<webrtc::Cmd> {
         &self.p2p.webrtc.cmd_sender
     }
 

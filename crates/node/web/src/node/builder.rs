@@ -46,7 +46,7 @@ impl NodeBuilder {
             genesis_config,
             p2p_sec_key: None,
             p2p_is_seed: false,
-            p2p_no_discovery: false,
+            p2p_no_discovery: true,
             p2p_is_started: false,
             initial_peers: Vec::new(),
             block_producer: None,
@@ -80,6 +80,13 @@ impl NodeBuilder {
 
     pub fn p2p_no_discovery(&mut self) -> &mut Self {
         self.p2p_no_discovery = true;
+        self
+    }
+
+    /// Experimental unrestricted peering; visitors can expose their address
+    /// to other peers. The public demo must leave this disabled.
+    pub fn p2p_peer_discovery(&mut self) -> &mut Self {
+        self.p2p_no_discovery = false;
         self
     }
 
@@ -153,13 +160,14 @@ impl NodeBuilder {
     /// see [`Self::snarker`]). Not both: a block producer's prover refuses the
     /// SNARK worker (`isolated::ProverRole`), so that no block proof waits
     /// behind SNARK work. The first instance starts loading its circuits at
-    /// once.
+    /// once. The receiver resolves when its files have been checked and the
+    /// prover is ready, or returns its setup error.
     pub fn isolated_prover(
         &mut self,
         producer: Option<(AccountSecretKey, BlockVerifier)>,
         work: bool,
         network: String,
-    ) -> &mut Self {
+    ) -> anyhow::Result<mina_node::core::channels::oneshot::Receiver<Result<(), String>>> {
         // The node's own verifier SRS, the one `build` uses.
         let srs = self.verifier_srs.clone().unwrap_or_else(get_srs);
         let producer = producer.map(|(key, verifier)| {
@@ -175,8 +183,8 @@ impl NodeBuilder {
             };
             (key, checker)
         });
-        crate::block_prover::start(&mut self.service, producer, work, network);
-        self
+        crate::block_prover::start(&mut self.service, producer, work, network)
+            .map_err(|error| anyhow::anyhow!("Prover startup failed: {error}"))
     }
 
     /// Receive block producer's coinbase reward to another account.
@@ -291,11 +299,12 @@ impl NodeBuilder {
             .daemon
             .unwrap_or(mina_node::daemon_json::Daemon::DEFAULT);
         let p2p_sec_key = self.p2p_sec_key.unwrap_or_else(P2pSecretKey::rand);
-        let initial_peers = if self.initial_peers.is_empty() && !self.p2p_is_seed {
-            default_peers()
-        } else {
-            self.initial_peers
-        };
+        let initial_peers =
+            if self.initial_peers.is_empty() && !self.p2p_is_seed && !self.p2p_no_discovery {
+                default_peers()
+            } else {
+                self.initial_peers
+            };
         let initial_peers = initial_peers
             .into_iter()
             .filter(|opts| *opts.peer_id() != p2p_sec_key.public_key().peer_id())
@@ -324,6 +333,7 @@ impl NodeBuilder {
             .unwrap_or_default();
         let node_config = mina_node::Config {
             global: GlobalConfig {
+                snark_work_fee: None,
                 build: mina_node::BuildEnv::get().into(),
                 snarker: self.snarker,
                 consensus_constants: consensus_consts.clone(),
@@ -342,8 +352,13 @@ impl NodeBuilder {
                 identity_pub_key: p2p_sec_key.public_key(),
                 initial_peers,
                 external_addrs: vec![],
-                enabled_channels: ChannelId::iter_all().collect(),
+                enabled_channels: if self.p2p_no_discovery {
+                    ChannelId::without_signaling().collect()
+                } else {
+                    ChannelId::iter_all().collect()
+                },
                 peer_discovery: !self.p2p_no_discovery,
+                seed_only: self.p2p_no_discovery,
                 meshsub: P2pMeshsubConfig {
                     initial_time: Duration::ZERO,
                     ..Default::default()

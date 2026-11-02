@@ -4,19 +4,10 @@ import { Search, Wallet } from "lucide-react";
 import { Button } from "@minanode/design-system/components/button";
 import { Input } from "@minanode/design-system/components/input";
 import { EmptyState } from "@minanode/design-system/patterns/empty-state";
-import { Hash } from "@minanode/design-system/patterns/hash";
-import { KeyValueList } from "@minanode/design-system/patterns/key-value-list";
-import { Amount } from "@minanode/design-system/patterns/amount";
 import { PageHeader } from "@minanode/design-system/patterns/page-header";
-import {
-  formatCount,
-  formatHeight,
-  formatMina,
-  isTimed,
-  PUBLIC_KEY_PATTERN,
-  type Account,
-} from "@minanode/node-client";
+import { PUBLIC_KEY_PATTERN } from "@minanode/node-client";
 import { useAccount } from "@minanode/node-client/react";
+import { AccountDetail } from "../components/account-detail";
 import { Loaded, PolledAge } from "../components/states";
 
 import { navigate } from "../app/router";
@@ -124,101 +115,5 @@ function AccountSearch({ initial }: { initial: string }) {
         </p>
       ) : null}
     </form>
-  );
-}
-
-function AccountDetail({ account: a }: { account: Account }) {
-  const timed = isTimed(a);
-  return (
-    <div className="grid gap-6 lg:grid-cols-2">
-      <KeyValueList
-        title="Account"
-        rows={[
-          {
-            label: "Public key",
-            value: (
-              <Hash
-                value={a.publicKey}
-                label="public key"
-                className="sm:justify-end"
-              />
-            ),
-          },
-          {
-            label: "Balance",
-            value: <Amount unit="MINA" value={formatMina(a.balance)} />,
-            tone: "brand",
-          },
-          ...(timed
-            ? [
-                {
-                  label: "Liquid",
-                  value: <Amount unit="MINA" value={formatMina(a.liquid)} />,
-                },
-                {
-                  label: "Locked",
-                  value: <Amount unit="MINA" value={formatMina(a.locked)} />,
-                },
-              ]
-            : []),
-          { label: "Nonce", value: a.nonce ?? "–" },
-          {
-            label: "Delegates to",
-            value:
-              a.delegate === null ? (
-                "Nobody"
-              ) : a.delegate === a.publicKey ? (
-                "Itself"
-              ) : (
-                <Hash
-                  value={a.delegate}
-                  label="delegate key"
-                  className="sm:justify-end"
-                />
-              ),
-          },
-          {
-            label: "Balance as of block",
-            value: formatHeight(a.balanceHeight),
-          },
-        ]}
-      />
-      {timed ? (
-        <KeyValueList
-          title="Vesting"
-          rows={[
-            {
-              label: "Initial minimum balance",
-              value: (
-                <Amount
-                  unit="MINA"
-                  value={formatMina(a.timing.initialMinimumBalance)}
-                />
-              ),
-            },
-            { label: "Cliff slot", value: formatCount(a.timing.cliffTime) },
-            {
-              label: "Cliff amount",
-              value: (
-                <Amount unit="MINA" value={formatMina(a.timing.cliffAmount)} />
-              ),
-            },
-            {
-              label: "Vesting period",
-              value: `${formatCount(a.timing.vestingPeriod)} slots`,
-            },
-            {
-              label: "Vesting increment",
-              value: (
-                <Amount
-                  unit="MINA"
-                  value={formatMina(a.timing.vestingIncrement)}
-                />
-              ),
-            },
-          ]}
-        />
-      ) : null}
-    </div>
   );
 }

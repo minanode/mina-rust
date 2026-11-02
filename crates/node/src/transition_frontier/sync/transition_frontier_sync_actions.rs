@@ -152,6 +152,7 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncAction {
         match self {
             TransitionFrontierSyncAction::Init { best_tip, .. } => {
                 !state.transition_frontier.persist_holds_sync()
+                    && state.transition_frontier.ledger_recovery_ready(time)
                     && !state.transition_frontier.sync.is_pending()
                     && !state.transition_frontier.sync.is_synced()
                     && state
@@ -179,7 +180,7 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncAction {
                 && state
                     .transition_frontier
                     .best_tip()
-                    .is_some_and( |tip| best_tip.hash != tip.hash)
+                    .is_none_or( |tip| best_tip.hash != tip.hash)
                 && state
                     .transition_frontier
                     .sync

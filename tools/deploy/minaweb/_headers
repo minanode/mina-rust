@@ -1,0 +1,13 @@
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  Cache-Control: no-cache
+/*.js
+  Content-Type: application/javascript; charset=utf-8
+/*.json
+  Content-Type: application/json; charset=utf-8
+/webnode-devnet/ice-servers.json
+  Cache-Control: no-store

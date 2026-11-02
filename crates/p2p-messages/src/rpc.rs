@@ -61,7 +61,7 @@ mina_rpc!(
 /// after them. Mina 4.0.2 builds that list from `all_rpcs`, one version each:
 ///
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_networking/rpcs.ml#L1203-L1214>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/gossip_net/libp2p.ml#L352-L373>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/gossip_net/libp2p.ml#L354-L375>
 /// OCaml: <https://github.com/janestreet/async_rpc_kernel/blob/v0.14.0/src/versioned_rpc.ml#L601-L619>
 pub const VERSIONED_RPC_MENU: [(&str, Ver); 10] = [
     (

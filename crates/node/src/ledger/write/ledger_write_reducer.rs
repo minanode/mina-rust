@@ -131,7 +131,13 @@ impl LedgerWriteState {
                 block_hash: hash,
                 result,
             } => match result {
-                Err(error) => {
+                Err(super::BlockApplyError::LocalState(error)) => {
+                    dispatcher.push(crate::TransitionFrontierAction::LedgerRecovery {
+                        block_hash: hash,
+                        error,
+                    });
+                }
+                Err(super::BlockApplyError::InvalidBlock(error)) => {
                     dispatcher
                         .push(TransitionFrontierSyncAction::BlocksNextApplyError { hash, error });
                 }
@@ -151,8 +157,17 @@ impl LedgerWriteState {
                 result,
             } => {
                 let best_tip = state.transition_frontier.sync.best_tip();
-                if best_tip.is_some_and(|tip| tip.hash() == &best_tip_hash) {
-                    dispatcher.push(TransitionFrontierSyncAction::CommitSuccess { result });
+                match result {
+                    Err(error) => {
+                        dispatcher.push(crate::TransitionFrontierAction::LedgerRecovery {
+                            block_hash: best_tip_hash,
+                            error,
+                        });
+                    }
+                    Ok(result) if best_tip.is_some_and(|tip| tip.hash() == &best_tip_hash) => {
+                        dispatcher.push(TransitionFrontierSyncAction::CommitSuccess { result });
+                    }
+                    Ok(_) => {}
                 }
             }
             LedgerWriteResponse::PersistCheckpoint { root, result } => match result {

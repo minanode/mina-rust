@@ -29,6 +29,10 @@ pub enum P2pNetworkIdentifyStreamState {
     RecvIdentify,
     /// Prepare to send the Identify messge to the remote peer.
     SendIdentify,
+    /// Identify has been sent; only stream shutdown remains.
+    IdentifySent,
+    /// FIN was queued; the stream can now be pruned.
+    Closing,
     /// A portion of data from the stream is received.
     IncomingPartialData {
         len: usize,

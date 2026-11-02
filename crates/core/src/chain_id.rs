@@ -376,7 +376,9 @@ impl ChainId {
     /// ```
     pub fn from_hex(s: &str) -> Result<ChainId, hex::FromHexError> {
         let h = hex::decode(s)?;
-        let bs = h[..32]
+        // Exactly 32 bytes; anything else is invalid input.
+        let bs = h
+            .as_slice()
             .try_into()
             .or(Err(hex::FromHexError::InvalidStringLength))?;
         Ok(ChainId(bs))
@@ -609,5 +611,17 @@ mod test {
             MAINNET_CHAIN_ID.to_hex(),
             "0718f61ab88f9d0fa643ff4dc3a3d5998dd6d51a6008b2b0339b0dbb26133886"
         );
+    }
+
+    /// A chain id is 64 hex digits; shorter or longer is an error.
+    #[test]
+    fn hex_of_the_wrong_length_is_an_error() {
+        let hex = MAINNET_CHAIN_ID.to_hex();
+        assert_eq!(ChainId::from_hex(&hex).unwrap(), MAINNET_CHAIN_ID);
+        for wrong in ["", "00", &hex[..62], &format!("{hex}00")] {
+            assert!(ChainId::from_hex(wrong).is_err(), "{wrong:?}");
+            let json = format!("{wrong:?}");
+            assert!(serde_json::from_str::<ChainId>(&json).is_err(), "{json}");
+        }
     }
 }

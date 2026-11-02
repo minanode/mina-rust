@@ -1,8 +1,9 @@
 //! Local verification telemetry; intentionally separate from Mina consensus data.
-use juniper::GraphQLObject;
+use crate::graphql::api::GraphQLObject;
 use mina_node::verification::{CheckReceipt, VerificationReceipt, VerificationSnapshot};
 
 #[derive(GraphQLObject)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct LocalCheck {
     status: String,
     checked_at: Option<String>,
@@ -25,6 +26,7 @@ impl From<CheckReceipt> for LocalCheck {
     }
 }
 #[derive(GraphQLObject)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct LocalVerificationReceipt {
     state_hash: String,
     height: String,
@@ -60,6 +62,7 @@ pub const MAX_PUBLIC_RECEIPT_HASHES: usize = 20;
 /// One check of a [`PublicVerificationReceipt`]. A fixed public projection
 /// of [`CheckReceipt`]: fields added there do not appear here.
 #[derive(GraphQLObject)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct PublicVerificationCheck {
     /// `notRun`, `pending`, `passed`, `failed` or `skipped`.
     status: String,
@@ -80,6 +83,7 @@ impl From<&CheckReceipt> for PublicVerificationCheck {
 /// are named one by one, so a field added to the private receipt
 /// ([`VerificationReceipt`], `/stats/verification`) is not published.
 #[derive(GraphQLObject)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct PublicVerificationReceipt {
     state_hash: String,
     height: String,
@@ -119,7 +123,7 @@ impl From<&VerificationReceipt> for PublicVerificationReceipt {
 pub async fn public_receipts(
     context: &super::Context,
     state_hashes: Vec<String>,
-) -> juniper::FieldResult<Vec<PublicVerificationReceipt>> {
+) -> crate::graphql::api::FieldResult<Vec<PublicVerificationReceipt>> {
     use crate::input_limits::{bounded, STATE_HASH};
     use mina_node::{rpc::RpcRequest, verification::VerificationQuery};
     if state_hashes.len() > MAX_PUBLIC_RECEIPT_HASHES {
@@ -135,9 +139,11 @@ pub async fn public_receipts(
             bounded(hash, STATE_HASH)
                 .ok()
                 .and_then(|hash| hash.parse().ok())
-                .ok_or_else(|| juniper::FieldError::from(format!("Invalid state hash {hash:.52}")))
+                .ok_or_else(|| {
+                    crate::graphql::api::FieldError::from(format!("Invalid state hash {hash:.52}"))
+                })
         })
-        .collect::<juniper::FieldResult<Vec<_>>>()?;
+        .collect::<crate::graphql::api::FieldResult<Vec<_>>>()?;
     if hashes.is_empty() {
         return Ok(Vec::new());
     }
@@ -163,7 +169,7 @@ fn arrival(v: mina_node::verification::Arrival) -> &'static str {
 
 pub struct LocalVerificationStats(VerificationSnapshot);
 
-#[juniper::graphql_object(context = super::Context)]
+#[crate::graphql::api::graphql_object(scalar = crate::graphql::scalars::MinaScalarValue, context = super::Context)]
 impl LocalVerificationStats {
     fn capacity(&self) -> i32 {
         self.0.capacity as i32
@@ -190,7 +196,7 @@ impl LocalVerificationStats {
         context: &super::Context,
         limit: Option<i32>,
         offset: Option<i32>,
-    ) -> juniper::FieldResult<Vec<LocalVerificationReceipt>> {
+    ) -> crate::graphql::api::FieldResult<Vec<LocalVerificationReceipt>> {
         use mina_node::{
             rpc::RpcRequest,
             verification::{VerificationQuery, MAX_RECEIPT_PAGE_SIZE},
@@ -221,8 +227,10 @@ impl From<VerificationSnapshot> for LocalVerificationStats {
 
 #[cfg(test)]
 mod tests {
-    use crate::graphql::{Context, Mutation, Query};
-    use juniper::{http::GraphQLRequest, EmptySubscription, RootNode};
+    use crate::graphql::{
+        api::{http::GraphQLRequest, EmptySubscription, RootNode},
+        Context, Mutation, Query,
+    };
     use mina_node::{core::channels::mpsc, rpc::RpcRequest, verification::VerificationState};
     use mina_node_common::rpc::{NodeRpcRequest, RpcSender};
 
@@ -250,7 +258,7 @@ mod tests {
                 seen
             });
             let context = Context::new(RpcSender::new(tx));
-            let schema = RootNode::new(Query, Mutation, EmptySubscription::new());
+            let schema = RootNode::new_with_scalar_value(Query, Mutation, EmptySubscription::new());
             let response = GraphQLRequest::new(query.into(), None, None).execute(&schema, &context).await;
             let response = serde_json::to_value(&response).unwrap();
             assert_eq!(response.get("errors").is_none(), succeeds, "{response}");

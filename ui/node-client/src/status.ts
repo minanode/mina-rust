@@ -40,6 +40,11 @@ export interface NodeStatus {
   /** The phase the node reports (F-dash3): Connecting, Listening,
    * Bootstrap, Catchup or Synced; older nodes may say something else. */
   phase: string;
+  ledgerRecovery?: {
+    error: string;
+    blockHash: string | null;
+    active: boolean;
+  } | null;
   /** When the node's sync state last changed, ms since the epoch. */
   syncTimeMs: number | null;
   bestTip: TipSummary | null;
@@ -117,6 +122,14 @@ export function parseStatus(raw: unknown): NodeStatus {
     network: str(s.network),
     chainId: str(s.chain_id),
     uptimeSecs: num(s.uptime_secs),
+    ledgerRecovery: obj(frontier.ledger_recovery)
+      ? {
+          error:
+            str(obj(frontier.ledger_recovery)?.error) ?? "Local ledger failure",
+          blockHash: str(obj(frontier.ledger_recovery)?.block_hash),
+          active: obj(frontier.ledger_recovery)?.recovered_at == null,
+        }
+      : null,
     phase: str(sync.phase) ?? str(sync.status) ?? "Pending",
     syncTimeMs: nanosToMs(sync.time),
     bestTip: tip(frontier.best_tip),

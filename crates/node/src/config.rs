@@ -32,6 +32,10 @@ pub struct Config {
 pub struct GlobalConfig {
     pub build: Box<BuildEnv>,
     pub snarker: Option<SnarkerConfig>,
+    /// Last configured worker fee, retained while the worker is off for uptime.
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/73134bfd3a43c3f4d8ee564b3d04a0c6ed2e0b3c/src/lib/mina_lib/mina_lib.ml#L823-L832>
+    #[serde(default)]
+    pub snark_work_fee: Option<CurrencyFeeStableV1>,
     pub consensus_constants: ConsensusConstants,
     pub client_port: Option<u16>,
     pub testing_run: bool,
@@ -122,8 +126,8 @@ pub struct SnarkerSetting {
 /// ([`crate::snark_pool::SnarkPoolState::jobs_to_prove_iter`]): OCaml's
 /// `--work-selection`, whose default is `rand`. OCaml's third method,
 /// `roffset`, is not implemented.
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/app/cli/src/cli_entrypoint/mina_cli_entrypoint.ml#L267-L272>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/app/cli/src/cli_entrypoint/mina_cli_entrypoint.ml#L946-L953>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/app/cli/src/cli_entrypoint/mina_cli_entrypoint.ml#L258-L263>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/app/cli/src/cli_entrypoint/mina_cli_entrypoint.ml#L936-L943>
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SnarkerStrategy {
     /// OCaml's `seq`: the first in scan-state order.

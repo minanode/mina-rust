@@ -210,6 +210,23 @@ impl redux::EnablingCondition<P2pState> for P2pNetworkPubsubAction {
     fn is_enabled(&self, state: &P2pState, time: redux::Timestamp) -> bool {
         let pubsub = &state.network.scheduler.broadcast_state;
         match self {
+            // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/snark_pool_diff.ml#L119>
+            P2pNetworkPubsubAction::Broadcast {
+                message:
+                    GossipNetMessageV2::SnarkPoolDiff {
+                        message:
+                            mina_p2p_messages::v2::NetworkPoolSnarkPoolDiffVersionedStableV2::Empty,
+                        ..
+                    },
+            }
+            | P2pNetworkPubsubAction::WebRtcRebroadcast {
+                message:
+                    GossipNetMessageV2::SnarkPoolDiff {
+                        message:
+                            mina_p2p_messages::v2::NetworkPoolSnarkPoolDiffVersionedStableV2::Empty,
+                        ..
+                    },
+            } => false,
             P2pNetworkPubsubAction::OutgoingMessage { peer_id } => pubsub
                 .clients
                 .get(peer_id)
@@ -312,6 +329,7 @@ mod tests {
             timeouts: Default::default(),
             limits: Default::default(),
             peer_discovery: false,
+            seed_only: false,
             meshsub: P2pMeshsubConfig::default(),
             catchup_rpc: Default::default(),
         };
@@ -323,6 +341,35 @@ mod tests {
             message: GossipNetMessageV2::NewState(block.clone()),
         }
         .is_enabled(state, super::super::block_gossip::tests::slot_start(block))
+    }
+
+    #[test]
+    fn ocaml_404_empty_snark_diffs_are_not_broadcast() {
+        let state = p2p_state();
+        let empty = GossipNetMessageV2::SnarkPoolDiff {
+            message: mina_p2p_messages::v2::NetworkPoolSnarkPoolDiffVersionedStableV2::Empty,
+            nonce: 0u64.into(),
+        };
+        assert!(!P2pNetworkPubsubAction::Broadcast {
+            message: empty.clone()
+        }
+        .is_enabled(&state, Timestamp::ZERO));
+        assert!(
+            !P2pNetworkPubsubAction::WebRtcRebroadcast { message: empty }
+                .is_enabled(&state, Timestamp::ZERO)
+        );
+        // A real OCaml solved-work fixture still takes the broadcast path.
+        let bytes = include_bytes!("../../../../ledger/src/verifier/fixtures/mainnet-551267-1.bin");
+        let work = mina_p2p_messages::v2::TransactionSnarkWorkTStableV2::binprot_read(
+            &mut bytes.as_slice(),
+        )
+        .unwrap();
+        let snark: mina_core::snark::Snark = work.into();
+        let message = GossipNetMessageV2::SnarkPoolDiff {
+            message: snark.gossip_diff().unwrap(),
+            nonce: 0u64.into(),
+        };
+        assert!(P2pNetworkPubsubAction::Broadcast { message }.is_enabled(&state, Timestamp::ZERO));
     }
 
     /// A block a libp2p peer gave us, by gossip or RPC, is never gossiped in

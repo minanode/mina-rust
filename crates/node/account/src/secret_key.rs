@@ -103,6 +103,11 @@ impl AccountSecretKey {
         password: &str,
     ) -> Result<Self, EncryptionError> {
         let decrypted: Vec<u8> = Self::try_decrypt(encrypted, password)?;
+        if decrypted.len() != 33 || decrypted.first() != Some(&Self::SECRET_KEY_PREFIX_BYTE) {
+            return Err(EncryptionError::InvalidFormat(
+                "invalid account key length or version",
+            ));
+        }
         AccountSecretKey::from_bytes(&decrypted[1..])
             .map_err(|err| EncryptionError::Other(err.to_string()))
     }

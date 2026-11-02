@@ -27,8 +27,8 @@ pub const INVALID_CHILD_ADDRESS: &str = "Invalid address in What_child_hashes re
 
 /// Validate before converting the wire address (whose length is a u64) or
 /// scheduling ledger work. OCaml bounds contents at 2^6 and hashes at 2^8.
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_ledger/sync_ledger.ml#L25-L57>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/syncable_ledger/syncable_ledger.ml#L321-L430>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_ledger/sync_ledger.ml#L22-L40>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/syncable_ledger/syncable_ledger.ml#L351-L460>
 pub fn validate_ledger_query(query: &Query, ledger_depth: usize) -> Result<(), &'static str> {
     let (addr, contents) = match query {
         Query::NumAccounts => return Ok(()),

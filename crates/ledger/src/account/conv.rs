@@ -10,7 +10,6 @@ use crate::{
     AccountIndex, Permissions, ProofVerified, ReceiptChainHash, SetVerificationKey, Timing,
     TokenSymbol, VerificationKey, VotingFor, ZkAppAccount,
 };
-use ark_ec::short_weierstrass::Affine;
 use ark_ff::{Field, PrimeField};
 use mina_curves::pasta::Fp;
 use mina_p2p_messages::{
@@ -112,7 +111,7 @@ where
     F: Field + Into<BigInt>,
 {
     fn from(fps: InnerCurve<F>) -> Self {
-        let Affine { x, y, .. } = fps.to_affine();
+        let (x, y) = fps.wire_coordinates();
         (x.into(), y.into())
     }
 }
@@ -136,7 +135,7 @@ where
     F: Field + Into<BigInt>,
 {
     fn from(fps: &InnerCurve<F>) -> Self {
-        let Affine { x, y, .. } = fps.to_affine();
+        let (x, y) = fps.wire_coordinates();
         (x.into(), y.into())
     }
 }
@@ -638,6 +637,10 @@ impl TryFrom<&MinaBaseAccountBinableArgStableV2> for Account {
             public_key: acc.public_key.inner().try_into()?,
             token_id: acc.token_id.inner().try_into()?,
             token_symbol: {
+                // OCaml refuses a longer symbol when it reads an account.
+                if acc.token_symbol.len() > mina_p2p_messages::string::TOKEN_SYMBOL_MAX_LENGTH {
+                    return Err(InvalidBigInt);
+                }
                 let s = acc.token_symbol.0.clone();
                 TokenSymbol::from(s)
             },

@@ -55,6 +55,7 @@ export function RequestFailed({
   if (kind === "absent") {
     return (
       <EmptyState
+        data-request-failed={kind}
         icon={<Unplug />}
         title={`This node doesn't serve ${what}`}
         description={
@@ -68,6 +69,7 @@ export function RequestFailed({
   }
   return (
     <EmptyState
+      data-request-failed={kind}
       tone={kind === "offline" ? "destructive" : "caution"}
       icon={kind === "offline" ? <Unplug /> : <TriangleAlert />}
       title={

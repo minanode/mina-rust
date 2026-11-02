@@ -1,0 +1,107 @@
+{
+  "byte_offsets": "zero-based, end-exclusive; string value spans include JSON quotes",
+  "outer_field_order": [
+    "version",
+    "data",
+    "signature",
+    "submitter"
+  ],
+  "data_field_order": [
+    "block",
+    "created_at",
+    "peer_id",
+    "snark_work",
+    "built_with_commit_sha"
+  ],
+  "omitted_optional_data_fields": [
+    "graphql_control_port"
+  ],
+  "request_bytes": 128598,
+  "trailing_newline": false,
+  "fields": [
+    {
+      "path": "version",
+      "json_type": "int",
+      "value_start": 11,
+      "value_end_exclusive": 12,
+      "value_bytes": 1
+    },
+    {
+      "path": "data",
+      "json_type": "dict",
+      "value_start": 20,
+      "value_end_exclusive": 128416,
+      "value_bytes": 128396
+    },
+    {
+      "path": "signature",
+      "json_type": "str",
+      "value_start": 128429,
+      "value_end_exclusive": 128527,
+      "value_bytes": 98
+    },
+    {
+      "path": "submitter",
+      "json_type": "str",
+      "value_start": 128540,
+      "value_end_exclusive": 128597,
+      "value_bytes": 57
+    },
+    {
+      "path": "data.block",
+      "json_type": "str",
+      "value_start": 29,
+      "value_end_exclusive": 113275,
+      "value_bytes": 113246,
+      "string_bytes": 113244
+    },
+    {
+      "path": "data.created_at",
+      "json_type": "str",
+      "value_start": 113289,
+      "value_end_exclusive": 113311,
+      "value_bytes": 22,
+      "string_bytes": 20
+    },
+    {
+      "path": "data.peer_id",
+      "json_type": "str",
+      "value_start": 113322,
+      "value_end_exclusive": 113376,
+      "value_bytes": 54,
+      "string_bytes": 52
+    },
+    {
+      "path": "data.snark_work",
+      "json_type": "str",
+      "value_start": 113390,
+      "value_end_exclusive": 128380,
+      "value_bytes": 14990,
+      "string_bytes": 14988
+    },
+    {
+      "path": "data.built_with_commit_sha",
+      "json_type": "str",
+      "value_start": 128405,
+      "value_end_exclusive": 128415,
+      "value_bytes": 10,
+      "string_bytes": 8
+    }
+  ],
+  "snark_work_bin_prot": {
+    "version_prefix": null,
+    "ledger_proof": [
+      0,
+      11227
+    ],
+    "proof_time_float64_little_endian": [
+      11227,
+      11235
+    ],
+    "fee": [
+      11235,
+      11240
+    ],
+    "fee_hex": "fd40420f00"
+  }
+}

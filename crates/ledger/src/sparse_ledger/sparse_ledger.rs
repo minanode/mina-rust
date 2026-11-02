@@ -431,14 +431,23 @@ impl TryFrom<&mina_p2p_messages::v2::MinaBaseSparseLedgerBaseStableV2> for Spars
             MinaBaseSparseLedgerBaseStableV2Tree::{Account, Hash, Node},
         };
 
+        // The shape is checked as the tree is converted: an account only at
+        // a leaf, a node only above one, and indexes within the tree. The
+        // conversion back to the wire type relies on it. Every sparse ledger
+        // OCaml builds has this shape.
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/sparse_ledger_lib/sparse_ledger.ml#L46-L96>
         fn build_matrix(
             matrix: &mut HashesMatrix,
             addr: Address,
+            depth: usize,
             node: &MinaBaseSparseLedgerBaseStableV2Tree,
             values: &mut BTreeMap<AccountIndex, crate::Account>,
         ) -> Result<(), InvalidBigInt> {
             match node {
                 Account(account) => {
+                    if addr.length() != depth {
+                        return Err(InvalidBigInt);
+                    }
                     let account: crate::Account = (&**account).try_into()?;
                     // matrix.set(&addr, account.hash()); Do not hash here, it's slow
                     values.insert(addr.to_index(), account);
@@ -447,15 +456,21 @@ impl TryFrom<&mina_p2p_messages::v2::MinaBaseSparseLedgerBaseStableV2> for Spars
                     matrix.set(&addr, hash.to_field()?);
                 }
                 Node(hash, left, right) => {
+                    if addr.length() >= depth {
+                        return Err(InvalidBigInt);
+                    }
                     matrix.set(&addr, hash.to_field()?);
-                    build_matrix(matrix, addr.child_left(), left, values)?;
-                    build_matrix(matrix, addr.child_right(), right, values)?;
+                    build_matrix(matrix, addr.child_left(), depth, left, values)?;
+                    build_matrix(matrix, addr.child_right(), depth, right, values)?;
                 }
             }
             Ok(())
         }
 
-        let depth = value.depth.as_u64() as usize;
+        let depth = usize::try_from(value.depth.as_u64()).map_err(|_| InvalidBigInt)?;
+        if depth > Address::MAX_LENGTH {
+            return Err(InvalidBigInt);
+        }
         let mut indexes = HashMap::with_capacity(value.indexes.len());
         let mut indexes_list = VecDeque::with_capacity(value.indexes.len());
         let mut hashes_matrix = HashesMatrix::new(depth);
@@ -463,7 +478,13 @@ impl TryFrom<&mina_p2p_messages::v2::MinaBaseSparseLedgerBaseStableV2> for Spars
 
         for (account_id, account_index) in value.indexes.iter() {
             let account_id: AccountId = account_id.try_into()?;
-            let account_index = AccountIndex::from(account_index.as_u64() as usize);
+            // `u64`, not `usize`: on a 32-bit target (the web node) a cast
+            // would drop bits of an index from 2^32 up.
+            let account_index = account_index.as_u64();
+            if account_index >> depth != 0 {
+                return Err(InvalidBigInt);
+            }
+            let account_index = AccountIndex(account_index);
 
             let addr = Address::from_index(account_index, depth);
 
@@ -474,6 +495,7 @@ impl TryFrom<&mina_p2p_messages::v2::MinaBaseSparseLedgerBaseStableV2> for Spars
         build_matrix(
             &mut hashes_matrix,
             Address::root(),
+            depth,
             &value.tree,
             &mut values,
         )?;
@@ -494,10 +516,12 @@ impl TryFrom<&mina_p2p_messages::v2::MinaBaseSparseLedgerBaseStableV2> for Spars
 mod tests {
     use std::sync::Barrier;
 
-    use mina_p2p_messages::v2::MinaBaseSparseLedgerBaseStableV2;
+    use mina_p2p_messages::v2::{
+        MinaBaseSparseLedgerBaseStableV2, MinaBaseSparseLedgerBaseStableV2Tree as Tree,
+    };
 
     use super::*;
-    use crate::{BaseLedger, Mask};
+    use crate::{BaseLedger, Mask, TreeVersion, V2};
 
     fn sparse_ledger(num_accounts: usize) -> SparseLedger {
         let mut mask = Mask::new_unattached(constraint_constants().ledger_depth as usize);
@@ -542,6 +566,189 @@ mod tests {
                 assert!(equal && thread_equal);
                 assert_eq!(root, thread_root);
             });
+        }
+    }
+
+    fn wire(ledger: &SparseLedger) -> MinaBaseSparseLedgerBaseStableV2 {
+        MinaBaseSparseLedgerBaseStableV2::from(ledger)
+    }
+
+    /// The root recomputed from a leaf and its Merkle path, as the
+    /// transaction SNARK does, without the sparse ledger's cached hashes.
+    fn root_from_path(leaf: Fp, path: &[MerklePath]) -> Fp {
+        path.iter()
+            .enumerate()
+            .fold(leaf, |hash, (height, step)| match step {
+                MerklePath::Left(right) => V2::hash_node(height, hash, *right),
+                MerklePath::Right(left) => V2::hash_node(height, *left, hash),
+            })
+    }
+
+    /// A subtree the sparse ledger only knows by its hash, as close to the
+    /// root as possible: a sibling on the path of the leftmost accounts.
+    fn hidden_subtree(tree: &mut Tree) -> Option<&mut mina_p2p_messages::v2::LedgerHash> {
+        let Tree::Node(_, left, right) = tree else {
+            return None;
+        };
+        match (&mut **left, &mut **right) {
+            (_, Tree::Hash(hash)) | (Tree::Hash(hash), _) => Some(hash),
+            (left, right) => hidden_subtree(left).or_else(|| hidden_subtree(right)),
+        }
+    }
+
+    #[test]
+    fn a_wire_ledger_converts_back_to_the_same_bytes() {
+        let ledger = sparse_ledger(20);
+        let want = wire(&ledger);
+        let back = SparseLedger::try_from(&want).unwrap();
+        assert!(wire(&back) == want);
+    }
+
+    /// A sparse ledger's root is its cached root hash, as in OCaml
+    /// (`Sparse_ledger.merkle_root` returns the top node's hash): a subtree
+    /// whose hash was replaced keeps the root. Such a ledger encodes to other
+    /// bytes, so a scan state holding it has another hash, and the root
+    /// recomputed from an account's path differs, as the SNARK computes it.
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/sparse_ledger_lib/sparse_ledger.ml#L162-L172>
+    #[test]
+    fn a_replaced_inner_hash_keeps_the_cached_root_but_not_the_bytes() {
+        let mut honest = sparse_ledger(3);
+        let honest_root = honest.merkle_root();
+        let honest_wire = wire(&honest);
+
+        let mut tampered_wire = honest_wire.clone();
+        let hidden = hidden_subtree(&mut tampered_wire.tree).expect("a hidden subtree");
+        *hidden = to_ledger_hash(&Fp::from(12345u64));
+        let mut tampered = SparseLedger::try_from(&tampered_wire).unwrap();
+
+        assert_eq!(tampered.merkle_root(), honest_root);
+        assert!(wire(&tampered) == tampered_wire);
+        assert!(tampered_wire != honest_wire);
+
+        // An account whose path passes the replaced subtree: the leftmost
+        // account witnessed, at index 0. Its path from the honest ledger gives the root;
+        // its path from the tampered one doesn't.
+        let addr = honest
+            .with(|this| this.values.keys().next().copied())
+            .unwrap();
+        let addr = Address::from_index(addr, honest.with(|this| this.depth));
+        let leaf = honest.get_exn(&addr).hash();
+        let honest_path = honest.path_exn(addr.clone());
+        let tampered_path = tampered.path_exn(addr);
+        assert_eq!(root_from_path(leaf, &honest_path), honest_root);
+        assert_ne!(root_from_path(leaf, &tampered_path), honest_root);
+    }
+
+    /// A wire sparse ledger of any shape converts to an error or to a
+    /// ledger that converts back. OCaml builds no other shape:
+    /// accounts at the leaves, nodes above them, indexes in the tree.
+    #[test]
+    fn a_malformed_wire_ledger_is_an_error() {
+        let honest = wire(&sparse_ledger(2));
+        let depth = honest.depth.as_u64();
+        let account = || {
+            let account: mina_p2p_messages::v2::MinaBaseAccountBinableArgStableV2 =
+                (&Account::empty()).into();
+            Box::new(Tree::Account(Box::new(account)))
+        };
+        let hash = || Box::new(Tree::Hash(to_ledger_hash(&Fp::from(7u64))));
+        let node = |left, right| Tree::Node(to_ledger_hash(&Fp::from(9u64)), left, right);
+        // `levels` nodes, each with a hash on its right.
+        let chain = |levels: usize, bottom: Box<Tree>| {
+            (0..levels).fold(bottom, |below, _| Box::new(node(below, hash())))
+        };
+
+        let mut cases = Vec::new();
+        // An account at the root, or one level above the leaves.
+        cases.push(("account at the root", *account()));
+        cases.push((
+            "account above the leaves",
+            *chain(depth as usize - 1, account()),
+        ));
+        // Nodes below the leaves, as deep as an address can go and deeper.
+        for extra in [1, 6, 40] {
+            cases.push((
+                "node below the leaves",
+                *chain(depth as usize + extra, hash()),
+            ));
+        }
+        for (what, tree) in cases {
+            let ledger = MinaBaseSparseLedgerBaseStableV2 {
+                tree,
+                ..honest.clone()
+            };
+            assert!(SparseLedger::try_from(&ledger).is_err(), "{what}");
+        }
+
+        // Depths an address can't hold.
+        for depth in [36, 41, 64, u64::MAX] {
+            let ledger = MinaBaseSparseLedgerBaseStableV2 {
+                depth: depth.into(),
+                tree: Tree::Hash(to_ledger_hash(&Fp::from(1u64))),
+                ..honest.clone()
+            };
+            assert!(SparseLedger::try_from(&ledger).is_err(), "depth {depth}");
+        }
+
+        // An index outside the tree.
+        let mut ledger = honest.clone();
+        let index: mina_p2p_messages::number::UInt64 = (1u64 << depth).into();
+        ledger.indexes.iter_mut().next().unwrap().1 = index;
+        assert!(SparseLedger::try_from(&ledger).is_err());
+
+        // The leaf level itself is fine: an account there, under nodes.
+        let ledger = MinaBaseSparseLedgerBaseStableV2 {
+            indexes: mina_p2p_messages::list::List::new(),
+            tree: *chain(depth as usize, account()),
+            ..honest.clone()
+        };
+        let converted = SparseLedger::try_from(&ledger).unwrap();
+        assert!(wire(&converted) == ledger);
+    }
+
+    /// Indexes past 32 bits survive a sparse ledger, its wire form and back,
+    /// at the ledger depth. OCaml's `add_path` computes the index from the
+    /// path's directions, bit `i` set where step `i` from the leaf is `Right`.
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/sparse_ledger_lib/sparse_ledger.ml#L232-L246>
+    #[test]
+    fn indexes_past_32_bits_round_trip() {
+        let depth = constraint_constants().ledger_depth as usize;
+        assert_eq!(depth, 35);
+        let indexes = [
+            0,
+            (1u64 << 32) - 1,
+            1u64 << 32,
+            (1u64 << 32) + 1,
+            (1u64 << 34) + 5,
+            (1u64 << 35) - 1,
+        ];
+
+        for &index in &indexes {
+            // The path of an empty ledger: empty siblings at each height.
+            let path = (0..depth)
+                .map(|height| {
+                    let sibling = V2::empty_hash_at_height(height);
+                    if index >> height & 1 == 1 {
+                        MerklePath::Right(sibling)
+                    } else {
+                        MerklePath::Left(sibling)
+                    }
+                })
+                .collect::<Vec<_>>();
+            let id = Account::rand().id();
+            let mut alone = SparseLedger::create(depth, V2::empty_hash_at_height(depth));
+            alone.add_path(&path, id.clone(), Account::empty());
+            let addr = alone.find_index_exn(id.clone());
+            assert_eq!(addr.to_index(), AccountIndex(index));
+            assert_eq!(addr.length(), depth);
+            assert_eq!(alone.path_exn(addr.clone()), path);
+            assert_eq!(alone.merkle_root(), V2::empty_hash_at_height(depth));
+
+            let (_, wire_index) = wire(&alone).indexes.iter().next().cloned().unwrap();
+            assert_eq!(wire_index.as_u64(), index);
+            let mut back = SparseLedger::try_from(&wire(&alone)).unwrap();
+            assert_eq!(back.find_index_exn(id), addr);
+            assert_eq!(back.path_exn(addr), path);
         }
     }
 }

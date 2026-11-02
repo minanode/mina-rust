@@ -453,7 +453,10 @@ impl P2pNetworkNoiseStateResponder {
             Self::Middle { r_esk, noise } => {
                 let msg = &mut chunk[2..];
                 let len = msg.len();
-                if len < 152 {
+                // The static key and its tag, then the payload and its tag.
+                // The payload holds the identity key (bytes 2..38) and its
+                // signature (bytes 40..104), so it is at least 104 bytes.
+                if len < 32 + 16 + 104 + 16 {
                     return Err(ChunkTooShort);
                 }
 
@@ -627,5 +630,109 @@ mod measurement {
                 _ => 0,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PROTOCOL: [u8; 32] = *b"Noise_XX_25519_ChaChaPoly_SHA256";
+
+    /// The handshake payload: the identity key, then its signature of the
+    /// static key, as `sign_key` makes it.
+    fn payload(identity: &libp2p_identity::Keypair, spk: &Pk) -> Vec<u8> {
+        let signed = [b"noise-libp2p-static-key:", spk.0.as_bytes().as_ref()].concat();
+        let mut payload = b"\x0a\x24".to_vec();
+        payload.extend_from_slice(&identity.public().encode_protobuf());
+        payload.extend_from_slice(b"\x12\x40");
+        payload.extend_from_slice(&identity.sign(&signed).unwrap());
+        payload
+    }
+
+    /// Runs a handshake to the initiator's last message, whose payload is
+    /// `initiator_payload`, and returns the responder and that message.
+    fn third_message(
+        initiator_payload: impl FnOnce(&Pk) -> Vec<u8>,
+    ) -> (P2pNetworkNoiseStateResponder, Vec<u8>) {
+        let (i_esk, i_ssk) = (Sk::from_random([1; 32]), Sk::from_random([2; 32]));
+        let (r_esk, r_ssk) = (Sk::from_random([3; 32]), Sk::from_random([4; 32]));
+        let (i_epk, i_spk, r_spk) = (i_esk.pk(), i_ssk.pk(), r_ssk.pk());
+
+        let mut noise = NoiseState::new(PROTOCOL);
+        noise.mix_hash(b"");
+        let r_payload = payload(&libp2p_identity::Keypair::generate_ed25519(), &r_spk);
+        let mut responder = P2pNetworkNoiseStateResponder::Init {
+            r_esk,
+            r_spk,
+            r_ssk,
+            buffer: vec![],
+            payload: r_payload.into(),
+            noise,
+        };
+
+        let mut noise = NoiseState::new(PROTOCOL);
+        noise.mix_hash(b"");
+        noise.mix_hash(i_epk.0.as_bytes());
+        noise.mix_hash(b"");
+        let i_payload = initiator_payload(&i_spk);
+        let mut initiator = P2pNetworkNoiseStateInitiator {
+            i_esk,
+            i_spk,
+            i_ssk,
+            r_epk: None,
+            payload: i_payload.into(),
+            noise,
+            remote_pk: None,
+        };
+
+        let mut first = vec![0, 32];
+        first.extend_from_slice(i_epk.0.as_bytes());
+        assert!(responder.consume(&mut first).unwrap().is_none());
+        let mut second = responder.generate(&[]).unwrap();
+        initiator.consume(&mut second).unwrap();
+        let third = initiator.generate(&[]).unwrap().unwrap().chunk;
+        (responder, third)
+    }
+
+    #[test]
+    fn a_complete_handshake_is_accepted() {
+        let identity = libp2p_identity::Keypair::generate_ed25519();
+        let (mut responder, mut third) = third_message(|spk| payload(&identity, spk));
+        let output = responder.consume(&mut third).unwrap().unwrap();
+        assert_eq!(
+            output.output.remote_pk.peer_id(),
+            PeerId::try_from(identity.public().to_peer_id()).unwrap()
+        );
+    }
+
+    /// A payload that authenticates but stops inside the signature is too
+    /// short: an error.
+    #[test]
+    fn a_payload_shorter_than_its_signature_is_rejected() {
+        let identity = libp2p_identity::Keypair::generate_ed25519();
+        for len in [88, 100, 103] {
+            let (mut responder, mut third) =
+                third_message(|spk| payload(&identity, spk)[..len].to_vec());
+            assert!(
+                matches!(
+                    responder.consume(&mut third),
+                    Err(NoiseError::ChunkTooShort)
+                ),
+                "payload of {len} bytes"
+            );
+        }
+    }
+
+    /// Mutated payloads that authenticate: each is accepted or refused.
+    #[test]
+    fn mutated_payloads_are_refused_without_a_panic() {
+        let identity = libp2p_identity::Keypair::generate_ed25519();
+        let valid = payload(&identity, &Sk::from_random([2; 32]).pk());
+        let budget = mina_peer_input_fuzz::Budget::from_env();
+        mina_peer_input_fuzz::fuzz("noise-payload", &[valid], &budget, |bytes| {
+            let (mut responder, mut third) = third_message(|_| bytes.to_vec());
+            matches!(responder.consume(&mut third), Ok(Some(_)))
+        });
     }
 }

@@ -638,7 +638,7 @@ async fn test_dtls_close_during_handshake_exits_task() -> Result<()> {
 async fn spawn_connected_dtls_pair() -> Result<(
     Arc<DtlsTransport>,
     Arc<DtlsTransport>,
-    mpsc::UnboundedReceiver<Bytes>,
+    packet_queue::Receiver,
 )> {
     let client_socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await?);
     let server_socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await?);
@@ -688,7 +688,7 @@ async fn spawn_connected_dtls_pair() -> Result<(
 /// than `MAX_APP_DATA_RECORD_SIZE` would prove an MTU violation.
 async fn send_and_collect_records(
     client_dtls: &Arc<DtlsTransport>,
-    server_rx: &mut mpsc::UnboundedReceiver<Bytes>,
+    server_rx: &mut packet_queue::Receiver,
     payload: &[u8],
 ) -> Result<(usize, Vec<u8>)> {
     client_dtls.send(Bytes::copy_from_slice(payload)).await?;
@@ -1475,4 +1475,165 @@ async fn server_resends_final_flight_once_per_client_flight() -> Result<()> {
         assert_eq!(ccs.load(SeqCst), want_ccs, "{case}: server CCS records");
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn raw_dispatch_overload_is_terminal_and_releases_queued_packets() {
+    // Keep the runner unpolled to deterministically saturate real DTLS ingress.
+    let (socket_tx, _) = watch::channel(None);
+    let conn = IceConn::new(socket_tx.subscribe(), "127.0.0.1:5000".parse().unwrap(), None);
+    let (dtls, data, runner) = DtlsTransport::new(conn, generate_certificate().unwrap(), false, 1500, None).await.unwrap();
+    for _ in 0..=packet_queue::MAX_ITEMS {
+        dtls.receive(Bytes::from_static(b"x"), "127.0.0.1:5000".parse().unwrap(), &mut Vec::new()).await;
+    }
+    assert!(matches!(dtls.get_state(), DtlsState::Failed));
+    tokio::time::timeout(std::time::Duration::from_secs(1), runner).await.unwrap();
+    assert!(matches!(dtls.get_state(), DtlsState::Failed));
+    assert_eq!(dtls.inner.handshake_rx_feeder.send(Bytes::new()), Err(packet_queue::SendError::Closed));
+    drop(data);
+}
+
+#[tokio::test]
+async fn decrypted_dispatch_overload_fails_dtls() {
+    let (socket_tx, _) = watch::channel(None);
+    let conn = IceConn::new(socket_tx.subscribe(), "127.0.0.1:5000".parse().unwrap(), None);
+    let cert = generate_certificate().unwrap();
+    let (dtls, _, _) = DtlsTransport::new(conn, cert.clone(), false, 1500, None).await.unwrap();
+    let (tx, _rx) = packet_queue::channel(Kind::DtlsData);
+    for _ in 0..packet_queue::MAX_ITEMS { tx.send(Bytes::new()).unwrap(); }
+    let mut context = HandshakeContext::new(None).unwrap();
+    assert!(dtls.inner.handle_decrypted_record(ContentType::ApplicationData, 1,
+        Bytes::new(), &mut context, &tx, &cert, false).await.is_err());
+    assert!(matches!(dtls.get_state(), DtlsState::Failed));
+}
+
+#[tokio::test]
+async fn aggregate_pressure_preserves_connected_light_peer() {
+    // Isolate the process-wide pool from other transport tests. The same test
+    // establishes a real DTLS session on both sides of the policy change.
+    const CHILD: &str = "RUSTRTC_GLOBAL_CONNECTED_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let name = format!(
+            "{}::aggregate_pressure_preserves_connected_light_peer",
+            module_path!().split_once("::").unwrap().1
+        );
+        assert!(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &name, "--nocapture"])
+                .env(CHILD, "1")
+                .status()
+                .unwrap()
+                .success()
+        );
+        return;
+    }
+    let client_socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let server_socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let (client_socket_tx, _) = watch::channel(Some(IceSocketWrapper::Udp(client_socket.clone())));
+    let (server_socket_tx, _) = watch::channel(Some(IceSocketWrapper::Udp(server_socket.clone())));
+    let client_conn = IceConn::new(
+        client_socket_tx.subscribe(),
+        server_socket.local_addr().unwrap(),
+        None,
+    );
+    let server_conn = IceConn::new(
+        server_socket_tx.subscribe(),
+        client_socket.local_addr().unwrap(),
+        None,
+    );
+    let (client, client_rx, cr) = DtlsTransport::new(
+        client_conn.clone(),
+        generate_certificate().unwrap(),
+        true,
+        1500,
+        None,
+    )
+    .await
+    .unwrap();
+    let (server, mut server_rx, sr) = DtlsTransport::new(
+        server_conn.clone(),
+        generate_certificate().unwrap(),
+        false,
+        1500,
+        None,
+    )
+    .await
+    .unwrap();
+    spawn_socket_pump(client_socket, client_conn);
+    spawn_socket_pump(server_socket, server_conn);
+    let ct = tokio::spawn(cr);
+    let st = tokio::spawn(sr);
+    assert!(matches!(
+        wait_for_terminal_state(&client).await.unwrap(),
+        DtlsState::Connected(..)
+    ));
+    assert!(matches!(
+        wait_for_terminal_state(&server).await.unwrap(),
+        DtlsState::Connected(..)
+    ));
+    assert_eq!(packet_queue::metrics().bytes, 0);
+
+    let mut flooders = Vec::new();
+    for _ in 0..11 {
+        let (socket_tx, _) = watch::channel(None);
+        let conn = IceConn::new(
+            socket_tx.subscribe(),
+            "127.0.0.1:5000".parse().unwrap(),
+            None,
+        );
+        let (dtls, data, runner) =
+            DtlsTransport::new(conn, generate_certificate().unwrap(), false, 1500, None)
+                .await
+                .unwrap();
+        // Stall the consumer, not admission. Every flooder stays within its own
+        // 4,096-item / 8 MiB queue budget; together they fill exactly 64 MiB.
+        let mut remaining = (packet_queue::GLOBAL_BYTES - packet_queue::metrics().bytes)
+            .min(packet_queue::MAX_ITEMS * (1500 + 64));
+        while remaining > 0 {
+            let charge = remaining.min(1500 + 64);
+            assert!(charge >= 64);
+            dtls.receive(
+                Bytes::from(vec![0; charge - 64]),
+                "127.0.0.1:5000".parse().unwrap(),
+                &mut Vec::new(),
+            )
+            .await;
+            remaining -= charge;
+        }
+        assert!(!matches!(dtls.get_state(), DtlsState::Failed));
+        flooders.push((dtls, data, runner));
+    }
+    assert_eq!(packet_queue::metrics().bytes, packet_queue::GLOBAL_BYTES);
+    let ordinary = Bytes::from_static(b"ordinary authenticated application record");
+    client.send(ordinary.clone()).await.unwrap();
+    let received = tokio::time::timeout(std::time::Duration::from_secs(3), server_rx.recv())
+        .await
+        .unwrap();
+    assert_eq!(
+        received,
+        Some(ordinary),
+        "global pressure must not kill the light peer"
+    );
+    assert!(matches!(server.get_state(), DtlsState::Connected(..)));
+    assert!(matches!(client.get_state(), DtlsState::Connected(..)));
+    let shed = flooders
+        .iter()
+        .filter(|(dtls, _, _)| matches!(dtls.get_state(), DtlsState::Failed))
+        .count();
+    assert!(shed > 0, "the budget holder must be shed");
+    assert!(packet_queue::metrics().bytes < packet_queue::GLOBAL_BYTES);
+    println!(
+        "aggregate_pressure honest_connected=true shed={shed} peak_bytes={}",
+        packet_queue::metrics().peak_bytes
+    );
+    drop(flooders);
+    client.close();
+    server.close();
+    ct.abort();
+    st.abort();
+    let _ = ct.await;
+    let _ = st.await;
+    drop(client_rx);
+    drop(server_rx);
+    assert_eq!(packet_queue::metrics().bytes, 0);
 }

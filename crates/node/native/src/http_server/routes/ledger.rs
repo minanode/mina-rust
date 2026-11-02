@@ -223,9 +223,9 @@ fn hard_fork_body(export: Arc<RpcHardForkExport>, permit: SemaphorePermit<'stati
             loop {
                 let data: &[u8] = match segments.get(segment)? {
                     Segment::Owned(bytes) => bytes,
-                    Segment::Ledger(i) => [&export.ledger, &export.staking, &export.next][*i]
-                        .accounts_json
-                        .as_bytes(),
+                    Segment::Ledger(i) => {
+                        &[&export.ledger, &export.staking, &export.next][*i].accounts_json
+                    }
                 };
                 if offset < data.len() {
                     let end = (offset + EXPORT_CHUNK_BYTES).min(data.len());
@@ -286,7 +286,7 @@ struct ExportJson(Arc<RpcLedgerExport>);
 
 impl AsRef<[u8]> for ExportJson {
     fn as_ref(&self) -> &[u8] {
-        self.0.accounts_json.as_bytes()
+        &self.0.accounts_json
     }
 }
 
@@ -349,7 +349,7 @@ mod tests {
                 hash: summary.hash.parse().unwrap(),
                 migrated_hash: summary.migrated_hash.parse().unwrap(),
                 num_accounts: summary.num_accounts,
-                accounts_json: accounts.to_string(),
+                accounts_json: accounts.to_string().into_bytes(),
             }
         };
         let mut inputs = manifest.inputs;
@@ -496,7 +496,7 @@ mod tests {
                     epoch: 0,
                 },
                 num_accounts: 17,
-                accounts_json: sample.to_owned(),
+                accounts_json: sample.as_bytes().to_vec(),
             })))
             .unwrap();
         let response = pending.await.unwrap().unwrap();

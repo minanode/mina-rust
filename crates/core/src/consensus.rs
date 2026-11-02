@@ -63,7 +63,7 @@ fn curr_epoch_and_slot(s: &MinaConsensusState) -> (u32, u32) {
 /// The epochs are those of the tips' slots, not `epoch_count`: they differ
 /// after an epoch without blocks.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L2771-L2787>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L2788-L2804>
 // TODO(binier): do we need to verify constants? Probably they are verified
 // using block proof verification, but check just to be sure.
 pub fn is_short_range_fork(a: &MinaConsensusState, b: &MinaConsensusState) -> bool {
@@ -96,7 +96,7 @@ pub fn is_short_range_fork(a: &MinaConsensusState, b: &MinaConsensusState) -> bo
 /// were extended without blocks to `max_slot`, the later of two tips' slots:
 /// the tip's own at that slot, otherwise a virtual block's there.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L2864-L2879>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L2885-L2895>
 pub fn virtual_min_window_density(state: &MinaConsensusState, max_slot: u32) -> u32 {
     let slot = global_slot(state);
     if slot == max_slot {
@@ -132,7 +132,7 @@ fn global_slot(b: &MinaConsensusState) -> u32 {
 /// longer chain, then the greater Blake2b digest of the truncated VRF
 /// output, then the greater state hash; on equality, the existing tip.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L2838-L2860>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L2855-L2877>
 pub fn short_range_fork_take(
     tip_cs: &MinaConsensusState,
     candidate_cs: &MinaConsensusState,
@@ -165,7 +165,7 @@ pub fn short_range_fork_take(
 /// greater virtual minimum window density at the later of their slots, then
 /// as [`short_range_fork_take`].
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L2861-L2884>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L2878-L2901>
 pub fn long_range_fork_take(
     tip_cs: &MinaConsensusState,
     candidate_cs: &MinaConsensusState,
@@ -196,7 +196,7 @@ pub fn long_range_fork_take(
 /// Whether `candidate` is to replace `tip` as the best tip: OCaml's
 /// `select`, `Take` being `true`.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L2791-L2898>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L2808-L2915>
 pub fn consensus_take(
     tip_cs: &MinaConsensusState,
     candidate_cs: &MinaConsensusState,
@@ -254,7 +254,7 @@ impl From<&ConsensusConstants> for DensityConstants {
 /// a sub-window, or before the grace period ends, the minimum is the parent's.
 /// `next_global_slot` must not be lower than `prev_global_slot`.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L1165-L1279>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L1165-L1279>
 pub fn update_min_window_density(
     constants: DensityConstants,
     prev_global_slot: u32,
@@ -324,7 +324,7 @@ pub fn update_min_window_density(
 /// The epoch seed after a block with VRF output hash `vrf_hash` in the seed
 /// update range.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L140-L144>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L140-L144>
 pub fn calc_epoch_seed(
     prev_epoch_seed: &v2::EpochSeed,
     vrf_hash: mina_curves::pasta::Fp,
@@ -364,8 +364,8 @@ pub struct ConsensusStateUpdate {
 /// `prev_state_hash`: OCaml's `Consensus_state.update`, which its checked
 /// counterpart, `update_var`, enforces in the block proof.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L1855-L1955>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L1062-L1109>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L1855-L1955>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L1062-L1109>
 pub fn next_consensus_state(
     constants: &ConsensusConstants,
     prev: &MinaConsensusState,

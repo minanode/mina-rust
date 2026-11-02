@@ -236,6 +236,26 @@ test("Timeline says in words how each step went", () => {
   ]);
 });
 
+test("Timeline shows a step's body under its detail", () => {
+  const { container } = render(
+    <Timeline
+      label="Boot"
+      steps={[
+        {
+          label: "Download",
+          state: "current",
+          detail: "12 MB of 50 MB",
+          body: <div role="progressbar" aria-valuenow={24} />,
+        },
+      ]}
+    />,
+  );
+  const body = container.querySelector('[data-part="body"]');
+  expect(body?.querySelector("[role=progressbar]")).not.toBeNull();
+  // The detail is a paragraph; the body sits after it, not inside it.
+  expect(body?.closest("p")).toBeNull();
+});
+
 test("AppShell's menu opens, marks the current page, and closes on Escape", () => {
   render(
     <AppShell

@@ -22,6 +22,10 @@ pub struct P2pConfig {
     pub identity_pub_key: PublicKey,
     /// A list addresses of seed nodes.
     pub initial_peers: Vec<P2pConnectionOutgoingInitOpts>,
+    /// Restrict outgoing connections to exact initial peer addresses and reject
+    /// incoming connections. Used by the public browser node.
+    #[serde(default)]
+    pub seed_only: bool,
     /// External addresses
     pub external_addrs: Vec<IpAddr>,
 
@@ -40,6 +44,12 @@ pub struct P2pConfig {
     /// peer set restricts serving for isolated tests or private deployments.
     #[serde(default)]
     pub catchup_rpc: P2pCatchupRpcConfig,
+}
+
+impl P2pConfig {
+    pub fn allows_dial(&self, opts: &P2pConnectionOutgoingInitOpts) -> bool {
+        !self.seed_only || self.initial_peers.contains(opts)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -795,5 +805,22 @@ mod catchup_tests {
         assert!(!config.allows(&other));
         config.enabled = false;
         assert!(!config.allows(&own));
+    }
+}
+
+#[cfg(test)]
+mod privacy_tests {
+    use super::*;
+
+    #[test]
+    fn direct_peer_channels_keep_rpc_and_gossip_without_signaling() {
+        let channels: BTreeSet<_> = ChannelId::without_signaling().collect();
+        assert!(!channels.contains(&ChannelId::SignalingDiscovery));
+        assert!(!channels.contains(&ChannelId::SignalingExchange));
+        assert!(channels.contains(&ChannelId::Rpc));
+        assert!(channels.contains(&ChannelId::StreamingRpc));
+        assert!(channels.contains(&ChannelId::BestTipPropagation));
+        assert!(channels.contains(&ChannelId::TransactionPropagation));
+        assert!(channels.contains(&ChannelId::SnarkPropagation));
     }
 }

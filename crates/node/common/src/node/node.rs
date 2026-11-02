@@ -71,45 +71,60 @@ impl<Serv: Service + AsMut<NodeService>> Node<Serv> {
         &mut self.service_common_mut().event_receiver
     }
 
-    pub async fn run_forever(&mut self) {
+    pub async fn wait_for_genesis(&mut self) -> Result<(), String> {
+        while self.state().genesis_block().is_none() {
+            self.process_events().await?;
+        }
+        Ok(())
+    }
+
+    pub async fn run_forever(&mut self) -> Result<(), String> {
         loop {
-            self.store_mut().dispatch(EventSourceAction::WaitForEvents);
+            self.process_events().await?;
+        }
+    }
 
-            let (event_receiver, rpc_receiver) = self.event_receiver_with_rpc_receiver();
-            let wait_for_events = event_receiver.wait_for_events();
-            let rpc_req_fut = async {
-                // TODO(binier): optimize maybe to not check it all the time.
-                match rpc_receiver.recv().await {
-                    Some(v) => v,
-                    None => std::future::pending().await,
-                }
-            };
+    async fn process_events(&mut self) -> Result<(), String> {
+        self.store_mut().dispatch(EventSourceAction::WaitForEvents);
 
-            let timeout = Duration::from_millis(100);
-
-            #[cfg(not(target_arch = "wasm32"))]
-            let timeout = tokio::time::sleep(timeout);
-            #[cfg(target_arch = "wasm32")]
-            let timeout = gloo_timers::future::TimeoutFuture::new(timeout.as_millis() as u32);
-
-            tokio::select! {
-                _ = wait_for_events => {
-                    while self.event_receiver().has_next() {
-                        self.store_mut().dispatch(EventSourceAction::ProcessEvents);
-                    }
-                    // No event waits, so RPC requests owe events nothing,
-                    // and the wait ahead isn't a request's.
-                    self.service_common_mut().rpc.events_drained();
-                }
-                req = rpc_req_fut => {
-                    self.service_common_mut().process_rpc_request(req);
-                }
-                _ = timeout => {
-                    self.store_mut().dispatch(EventSourceAction::WaitTimeout);
-                }
+        let (event_receiver, rpc_receiver) = self.event_receiver_with_rpc_receiver();
+        let wait_for_events = event_receiver.wait_for_events();
+        let rpc_req_fut = async {
+            // TODO(binier): optimize maybe to not check it all the time.
+            match rpc_receiver.recv().await {
+                Some(v) => v,
+                None => std::future::pending().await,
             }
+        };
 
-            self.status_log.update(self.store.state.get());
+        let timeout = Duration::from_millis(100);
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let timeout = tokio::time::sleep(timeout);
+        #[cfg(target_arch = "wasm32")]
+        let timeout = gloo_timers::future::TimeoutFuture::new(timeout.as_millis() as u32);
+
+        tokio::select! {
+            _ = wait_for_events => {
+                while self.event_receiver().has_next() {
+                    self.store_mut().dispatch(EventSourceAction::ProcessEvents);
+                }
+                // No event waits, so RPC requests owe events nothing,
+                // and the wait ahead isn't a request's.
+                self.service_common_mut().rpc.events_drained();
+            }
+            req = rpc_req_fut => {
+                self.service_common_mut().process_rpc_request(req);
+            }
+            _ = timeout => {
+                self.store_mut().dispatch(EventSourceAction::WaitTimeout);
+            }
+        }
+
+        self.status_log.update(self.store.state.get());
+        match self.state().transition_frontier.startup_error() {
+            Some(error) => Err(format!("genesis startup failed: {error}")),
+            None => Ok(()),
         }
     }
 

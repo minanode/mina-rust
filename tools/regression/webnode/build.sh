@@ -17,17 +17,23 @@
 #   npx -y serve@14 -s . -l <port> -c serve.json
 #
 # Any port or host works: the seed list is a path on the page's own origin.
-# Open /loading-web-node and press "Start the web node".
+# The page (ui/minaweb) starts the node when it opens. The Angular page
+# (UI=angular) starts it from /loading-web-node, "Start the web node".
 #
 # Environment:
+#   UI           the page: minaweb (default), the web node app in the
+#                minanode design system (ui/minaweb), or angular, the old
+#                Angular frontend (frontend/, --configuration webnode-local)
 #   NETWORK      mainnet (default) or devnet
 #   RELAY        required: your relay's reachable WebRTC multiaddr
 #   GENESIS      genesis config without ledgers (default
 #                $REPO/genesis_ledgers/mesa-<network>-without-ledgers.json)
-#   CONTROLS     MINA_FRONTEND_CONTROLS: empty for a view-only page (default),
-#                or a comma-separated list of producer and send, or all
-#   NATIVE       MINA_NATIVE_NODE_URL: the HTTP API of a native node whose
-#                block explorer the page offers next to the web node (default
+#   CONTROLS     UI=angular only. MINA_FRONTEND_CONTROLS: empty for a
+#                view-only page (default), or a comma-separated list of
+#                producer and send, or all. The minaweb page has its own
+#                key and role screens, on devnet only
+#   NATIVE       UI=angular only. MINA_NATIVE_NODE_URL: the HTTP API of a
+#                native node whose block explorer the page offers (default
 #                the soak node on this machine, http://127.0.0.1:3200; empty
 #                for none). The visitor's browser calls it, so it must be
 #                reachable from there and answer CORS requests
@@ -48,14 +54,17 @@
 #                /assets/webnode/circuit-blobs on the page's origin. With it
 #                the caches go to OUT/upload/circuit-blobs, for that host,
 #                which must send CORS headers (tools/deploy/site/README.md)
-#                With CIRCUITS_URL the SHA-256 of every circuit file the build
-#                ships is compiled into the WASM, which refuses a file
-#                without its pin or with other bytes (W1 fix round)
+#                Both modes compile canonical OCaml prover hashes and each
+#                shipped verifier cache's SHA-256 into the WASM. Missing pins,
+#                unknown prover files and changed bytes are refused.
 #   PROVER_CIRCUITS  a directory of prover circuit files for this network
 #                (*_gates.json, *_internal_vars.bin, *_rows_rev.bin), shipped
 #                and pinned with the verifier caches, for a producer's or
-#                SNARK worker's page. Without it, a build with CIRCUITS_URL
-#                has no pinned prover circuits and refuses to load any
+#                SNARK worker's page. Must be the complete canonical set.
+#                Without it, observer builds still pin canonical prover hashes;
+#                starting a prover role fails if its files are unavailable.
+#   VERIFIER_CACHES  auto (default) or omit; archives omit host-local caches
+#   SOURCE_DATE_EPOCH  reproducible payload timestamp, when set
 #   WASM_URL     a directory URL on another host the page loads the WASM
 #                from, for a static host that caps files below its 35 MB
 #                (Cloudflare Pages: 25 MiB). The WASM files then go to
@@ -69,7 +78,8 @@
 #
 # Needs: cargo +nightly-2026-07-15 with the wasm32-unknown-unknown target and
 # rust-src, wasm-bindgen 0.2.106 (the version of the crate in Cargo.lock),
-# node 24; npm ci installs frontend dependencies in this checkout when absent.
+# node 24; npm ci installs the page's dependencies (ui/ or frontend/) in this
+# checkout when absent.
 set -euo pipefail
 
 TOOLCHAIN=nightly-2026-07-15
@@ -84,6 +94,7 @@ step() { echo "== $(date -u +%H:%M:%S) $*"; }
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(git -C "$HERE" rev-parse --show-toplevel)
 WORK=$REPO/.work
+UI=${UI:-minaweb}
 NETWORK=${NETWORK:-mainnet}
 RELAY=${RELAY:-}
 GENESIS=${GENESIS:-$REPO/genesis_ledgers/mesa-$NETWORK-without-ledgers.json}
@@ -102,8 +113,15 @@ case $NETWORK in
 mainnet | devnet) ;;
 *) die "NETWORK is mainnet or devnet, not $NETWORK" ;;
 esac
+case $UI in
+minaweb)
+	[[ -z $CONTROLS ]] || die "CONTROLS is for UI=angular: the minaweb page has its own key and role screens"
+	;;
+angular) ;;
+*) die "UI is minaweb or angular, not $UI" ;;
+esac
 [[ -n $RELAY ]] || die "set RELAY to your reachable relay's WebRTC multiaddr (see the reproduction guide)"
-[[ $RELAY == /ip4/*/tcp/*/webrtc/http*/p2p/* || $RELAY == /dns4/*/tcp/*/webrtc/http*/p2p/* ]] || die "RELAY must be a WebRTC multiaddr"
+[[ $RELAY == /ip4/*/tcp/*/webrtc/http*/p2p/* || $RELAY == /ip6/*/tcp/*/webrtc/http*/p2p/* || $RELAY == /dns*/*/tcp/*/webrtc/http*/p2p/* ]] || die "RELAY must be a WebRTC multiaddr"
 [[ -f $GENESIS ]] || die "no genesis config at $GENESIS (set GENESIS)"
 [[ $FRONTIER_STORE == on || $FRONTIER_STORE == off ]] || die "FRONTIER_STORE is on or off, not $FRONTIER_STORE"
 url_ok() { [[ -z $1 || $1 =~ ^https?://[A-Za-z0-9.:/_~%-]+$ ]]; }
@@ -120,18 +138,23 @@ fi
 OUT=${1:-$WORK/webnode/builds/${COMMIT:0:12}-$NETWORK}
 
 # Tools.
-have=$(wasm-bindgen --version 2>/dev/null | awk '{print $2}') || true
+WASM_BINDGEN=${WASM_BINDGEN:-wasm-bindgen}
+have=$("$WASM_BINDGEN" --version 2>/dev/null | awk '{print $2}') || true
 [[ $have == "$WASM_BINDGEN_VERSION" ]] ||
 	die "wasm-bindgen $WASM_BINDGEN_VERSION needed, found '${have:-none}' (cargo install wasm-bindgen-cli --version $WASM_BINDGEN_VERSION)"
 RUSTC_VERSION=$(rustc +$TOOLCHAIN --version) || die "toolchain $TOOLCHAIN missing (rustup toolchain install $TOOLCHAIN)"
 NODE_VERSION=$(node --version) || die "node missing"
 FRONTEND=$REPO/frontend
+UI_DIR=$REPO/ui
 rustup component list --installed --toolchain "$TOOLCHAIN" | grep -q '^rust-src' ||
   die "rust-src missing: rustup component add rust-src --toolchain $TOOLCHAIN"
 rustup target list --installed --toolchain "$TOOLCHAIN" | grep -qx wasm32-unknown-unknown ||
   die "WASM target missing: rustup target add wasm32-unknown-unknown --toolchain $TOOLCHAIN"
-if [[ ! -e $FRONTEND/node_modules ]]; then
+if [[ $UI == angular && ! -e $FRONTEND/node_modules ]]; then
   (cd "$FRONTEND" && npm ci)
+fi
+if [[ $UI == minaweb && ! -e $UI_DIR/node_modules ]]; then
+  (cd "$UI_DIR" && npm ci)
 fi
 # The ICE servers, checked as the page will check them: a list it would drop
 # fails the build instead.
@@ -143,7 +166,7 @@ if [[ -n $ICE_SERVERS ]]; then
 		const { parseIceServers } = await import(process.argv[1]);
 		const servers = parseIceServers(JSON.parse(readFileSync(process.argv[2], "utf8")));
 		if (typeof servers === "string") { console.error(servers); process.exit(1); }
-	' "$FRONTEND/src/app/shared/helpers/ice-servers.helper.ts" "$ICE_SERVERS" ||
+	' "$([[ $UI == angular ]] && echo "$FRONTEND/src/app/shared/helpers/ice-servers.helper.ts" || echo "$UI_DIR/minaweb/src/boot/ice.ts")" "$ICE_SERVERS" ||
 		die "ICE_SERVERS $ICE_SERVERS is not a list the page can use"
 	ICE_URL=/webnode-$NETWORK/ice-servers.json
 fi
@@ -152,8 +175,8 @@ step "building $STAMP for $NETWORK into $OUT"
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/webnode-build.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT
 
-# 0. Circuit files, chosen before the WASM is built: with CIRCUITS_URL their
-# SHA-256s are compiled into it, as CIRCUIT_BLOBS_SHA256 (W1 fix round). The
+# 0. Circuit files, validated before the WASM is built. Canonical prover pins
+# and staged cache pins become CIRCUIT_BLOBS_SHA256 in both hosting modes. The
 # verifier index cache (R11), if this machine has it: about 9 s less per
 # start. A cache starts with the SHA-256 of the index source it was made from;
 # only one made from the source this build embeds is shipped, as the node
@@ -163,7 +186,12 @@ CIRCUITS=$([[ $NETWORK == mainnet ]] && echo 4.0.2mainnet || echo 4.0.2devnet)
 SOURCES=$REPO/crates/ledger/src/proofs/data
 CSTAGE=$STAGE/circuit-blobs/$CIRCUITS
 mkdir -p "$CSTAGE"
+case ${VERIFIER_CACHES:-auto} in
+    auto | omit) ;;
+    *) die "VERIFIER_CACHES must be auto or omit" ;;
+esac
 for kind in block:blockchain transaction:transaction; do
+    [[ ${VERIFIER_CACHES:-auto} != omit ]] || continue
 	cache=$HOME/.mina/circuit-blobs/$CIRCUITS/${kind%%:*}_verifier_index.postcard
 	source=$SOURCES/${NETWORK}_${kind##*:}_verifier_index.json
 	[[ -f $cache ]] || {
@@ -181,13 +209,11 @@ if [[ -n $PROVER_CIRCUITS ]]; then
 	[[ -d $PROVER_CIRCUITS ]] || die "PROVER_CIRCUITS is not a directory: $PROVER_CIRCUITS"
 	cp -L "$PROVER_CIRCUITS"/* "$CSTAGE/"
 fi
-PINS=
-if [[ -n $CIRCUITS_URL ]]; then
-	PINS=$(cd "$STAGE/circuit-blobs" && find . -type f | sed 's|^\./||' | sort |
-		while read -r f; do printf '%s=%s;' "$f" "$(sha256sum "$f" | awk '{print $1}')"; done)
-	PINS=${PINS:--}
-	echo "pinning $(find "$CSTAGE" -type f | wc -l) circuit files in the WASM"
-fi
+# Canonical prover pins and build-specific cache pins in both hosting modes.
+# A partial, unknown or changed prover set fails before compilation.
+PINS=$(python3 -B "$REPO/tools/mesa-circuits/web_pins.py" "$NETWORK" "$CSTAGE" \
+    ${PROVER_CIRCUITS:+--require-provers}) || die "circuit asset validation failed"
+echo "pinning canonical $NETWORK provers and $(find "$CSTAGE" -type f | wc -l) staged assets"
 
 # 1. WASM. Touching build.rs reruns vergen, which embeds the commit: cargo
 # does not rerun it when HEAD moves in a worktree. CIRCUIT_BLOBS_HTTP_PREFIX
@@ -197,10 +223,11 @@ step "WASM"
 touch "$REPO/crates/node/build.rs"
 (
 	if [[ -n $CIRCUITS_URL ]]; then
-		export CIRCUIT_BLOBS_HTTP_PREFIX=$CIRCUITS_URL CIRCUIT_BLOBS_SHA256=$PINS
+		export CIRCUIT_BLOBS_HTTP_PREFIX=$CIRCUITS_URL
 	else
-		unset CIRCUIT_BLOBS_HTTP_PREFIX CIRCUIT_BLOBS_SHA256
+		unset CIRCUIT_BLOBS_HTTP_PREFIX
 	fi
+	export CIRCUIT_BLOBS_SHA256=$PINS
 	cd "$REPO/crates/node/web"
 	# .cargo/config.toml there sets build-std, atomics and the 4 GiB memory.
 	cargo +$TOOLCHAIN build --release --target wasm32-unknown-unknown \
@@ -210,15 +237,15 @@ touch "$REPO/crates/node/build.rs"
 TARGET_DIR=$(cd "$REPO" && cargo metadata --format-version 1 --no-deps |
 	python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
 WASM_IN=$TARGET_DIR/wasm32-unknown-unknown/release/mina_node_web.wasm
-wasm-bindgen --keep-debug --web --out-dir "$STAGE/pkg" "$WASM_IN"
+"$WASM_BINDGEN" --keep-debug --web --out-dir "$STAGE/pkg" "$WASM_IN"
 grep -qa "$COMMIT" "$STAGE/pkg/mina_node_web_bg.wasm" ||
 	die "the WASM does not embed $COMMIT: its build_env would name another commit"
 if [[ -n $CIRCUITS_URL ]]; then
 	grep -qa "$CIRCUITS_URL" "$STAGE/pkg/mina_node_web_bg.wasm" ||
 		die "the WASM does not embed CIRCUITS_URL $CIRCUITS_URL"
-	grep -qaF "$PINS" "$STAGE/pkg/mina_node_web_bg.wasm" ||
-		die "the WASM does not embed the circuit pins"
 fi
+grep -qaF "$PINS" "$STAGE/pkg/mina_node_web_bg.wasm" ||
+    die "the WASM does not embed the circuit pins"
 
 # The WASM under a name of its content, which the glue loads it by, so that a
 # server can let browsers keep it for good (serve.json): another build is
@@ -255,30 +282,53 @@ gzip -9 -k -n "$WASM" &
 gz=$!
 wait $br && wait $zst && wait $gz || die "compressing the WASM failed"
 
-# 2. Frontend. Paths, not URLs, for the genesis and the seed list, so the
+# 2. The page. Paths, not URLs, for the genesis and the seed list, so the
 # build serves from any origin.
-step "frontend"
-(
-	cd "$FRONTEND"
-	npx ng build --configuration webnode-local --output-path "$STAGE/dist" \
-		--define MINA_WEBNODE_NETWORK="\"$NETWORK\"" \
-		--define MINA_WEBNODE_GENESIS_URL="\"/webnode-$NETWORK/genesis.json\"" \
-		--define MINA_WEBNODE_BOOTNODES="\"$RELAY\"" \
-		--define MINA_WEBNODE_SEED_URLS="\"/webnode-$NETWORK/peers.txt\"" \
-		--define MINA_FRONTEND_COMMIT="\"$STAMP\"" \
-		--define MINA_FRONTEND_CONTROLS="\"$CONTROLS\"" \
-		--define MINA_NATIVE_NODE_URL="\"$NATIVE\"" \
-		--define MINA_WEBNODE_FRONTIER_STORE="\"$FRONTIER_STORE\"" \
-		--define MINA_WEBNODE_ICE_SERVERS_URL="\"$ICE_URL\"" \
-		--define MINA_WEBNODE_WASM_URL="\"$PAGE_WASM_URL\"" \
-		--define MINA_WEBNODE_WASM_SHA256="\"$PAGE_WASM_SHA256\""
-)
-if [[ -n $PAGE_WASM_SHA256 ]]; then
-	grep -lq "$PAGE_WASM_SHA256" "$STAGE/dist/browser"/*.js ||
-		die "the bundle does not pin the WASM's SHA-256"
-fi
 B=$STAGE/dist/browser
-grep -lq "$STAMP" "$B"/*.js || die "the bundle does not carry the stamp $STAMP"
+if [[ $UI == minaweb ]]; then
+	# The page checks the WASM's SHA-256 before it compiles it, wherever the
+	# WASM is served from.
+	step "page (ui/minaweb)"
+	(
+		cd "$UI_DIR/minaweb"
+		MINAWEB_NETWORK=$NETWORK \
+			MINAWEB_RELAYS=$RELAY \
+			MINAWEB_SEED_URLS=/webnode-$NETWORK/peers.txt \
+			MINAWEB_GENESIS_URL=/webnode-$NETWORK/genesis.json \
+			MINAWEB_ICE_SERVERS_URL=$ICE_URL \
+			MINAWEB_FRONTIER_STORE=$FRONTIER_STORE \
+			MINAWEB_WASM_URL=${WASM_URL:-/assets/webnode/pkg}/$WASM_NAME \
+			MINAWEB_WASM_SHA256=$WASM_SHA \
+			MINAWEB_WASM_BYTES=$(stat -c %s "$WASM") \
+			MINAWEB_COMMIT=$STAMP \
+			npx vite build --outDir "$B" --emptyOutDir
+	)
+	grep -lq "$WASM_SHA" "$B"/assets/app/*.js || die "the bundle does not pin the WASM's SHA-256"
+	grep -lq "$STAMP" "$B"/assets/app/*.js || die "the bundle does not carry the stamp $STAMP"
+	mkdir -p "$B/assets/webnode"
+else
+	step "frontend (Angular)"
+	(
+		cd "$FRONTEND"
+		npx ng build --configuration webnode-local --output-path "$STAGE/dist" \
+			--define MINA_WEBNODE_NETWORK="\"$NETWORK\"" \
+			--define MINA_WEBNODE_GENESIS_URL="\"/webnode-$NETWORK/genesis.json\"" \
+			--define MINA_WEBNODE_BOOTNODES="\"$RELAY\"" \
+			--define MINA_WEBNODE_SEED_URLS="\"/webnode-$NETWORK/peers.txt\"" \
+			--define MINA_FRONTEND_COMMIT="\"$STAMP\"" \
+			--define MINA_FRONTEND_CONTROLS="\"$CONTROLS\"" \
+			--define MINA_NATIVE_NODE_URL="\"$NATIVE\"" \
+			--define MINA_WEBNODE_FRONTIER_STORE="\"$FRONTIER_STORE\"" \
+			--define MINA_WEBNODE_ICE_SERVERS_URL="\"$ICE_URL\"" \
+			--define MINA_WEBNODE_WASM_URL="\"$PAGE_WASM_URL\"" \
+			--define MINA_WEBNODE_WASM_SHA256="\"$PAGE_WASM_SHA256\""
+	)
+	if [[ -n $PAGE_WASM_SHA256 ]]; then
+		grep -lq "$PAGE_WASM_SHA256" "$B"/*.js ||
+			die "the bundle does not pin the WASM's SHA-256"
+	fi
+	grep -lq "$STAMP" "$B"/*.js || die "the bundle does not carry the stamp $STAMP"
+fi
 
 # 3. Assemble.
 step "assemble"
@@ -307,7 +357,7 @@ size() { stat -c %s "$1"; }
 W=$B/assets/webnode/pkg/$WASM_NAME
 [[ -z $WASM_URL ]] || W=$UPLOAD/wasm/$WASM_NAME
 python3 - "$B/build-info.json" <<EOF
-import json, sys
+import datetime, json, os, sys
 json.dump({
     "commit": "$COMMIT",
     "stamp": "$STAMP",
@@ -315,20 +365,23 @@ json.dump({
     "relay": "$RELAY",
     "seedList": "/webnode-$NETWORK/peers.txt",
     "genesis": {"path": "/webnode-$NETWORK/genesis.json", "sha256": "$(sha "$GENESIS")"},
-    "controls": "$CONTROLS" or "view-only",
-    "nativeNode": "$NATIVE" or None,
+    "controls": ("$CONTROLS" or "view-only") if "$UI" == "angular" else ("roles" if "$NETWORK" == "devnet" else "view-only"),
+    "nativeNode": ("$NATIVE" or None) if "$UI" == "angular" else None,
     "frontierStore": "$FRONTIER_STORE" == "on",
     "iceServers": "$ICE_URL" or None,
     "circuitsUrl": "$CIRCUITS_URL" or "/assets/webnode/circuit-blobs",
-    "circuitPins": "$PINS".count("=") if "$CIRCUITS_URL" else None,
+    "circuitPins": "$PINS".count("="),
     "wasm": {"path": "${WASM_URL:-/assets/webnode/pkg}/$WASM_NAME", "sha256": "$(sha "$W")",
              "bytes": $(size "$W"), "br": $(size "$W.br"), "zst": $(size "$W.zst"),
              "gz": $(size "$W.gz"),
              "rustc": "$RUSTC_VERSION", "wasmBindgen": "$WASM_BINDGEN_VERSION",
              "features": "${WASM_FEATURES:-}" or None,
-             "pinnedInPage": bool("$PAGE_WASM_SHA256")},
-    "frontend": {"node": "$NODE_VERSION", "configuration": "webnode-local"},
-    "builtAt": "$(date -u +%FT%TZ)",
+             "pinnedInPage": "$UI" == "minaweb" or bool("$PAGE_WASM_SHA256")},
+    "frontend": {"ui": "$UI", "node": "$NODE_VERSION",
+                 "configuration": "webnode-local" if "$UI" == "angular" else None},
+    "builtAt": datetime.datetime.fromtimestamp(
+        int(os.environ["SOURCE_DATE_EPOCH"]), datetime.timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ") if "SOURCE_DATE_EPOCH" in os.environ else "$(date -u +%FT%TZ)",
 }, open(sys.argv[1], "w"), indent=2)
 EOF
 

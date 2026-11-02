@@ -1,7 +1,8 @@
-use juniper::GraphQLEnum;
+use crate::graphql::api::GraphQLEnum;
 use mina_node::rpc::TransactionStatus;
 
 #[derive(Clone, Copy, Debug, GraphQLEnum)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[allow(non_camel_case_types)]
 pub enum GraphQLTransactionStatus {
     INCLUDED,

@@ -19,6 +19,9 @@
 //   BASE          the frontend's origin, e.g. http://localhost:4210 (required)
 //   PAGE          the path to open (default /loading-web-node)
 //   BUTTON        the button that starts the node (default "Start Non BP")
+//   AUTOSTART     1 for minaweb, which starts without a button
+//   MIN_SYNC_HEIGHT minimum tip height for UNTIL_SYNCED (default 0); set to
+//                 the relay's tip minus one to exclude initial genesis sync
 //   EVERY_MS      the sampling interval (default 30000)
 //   POLL_MS       also call status() from the page every POLL_MS, at most one
 //                 call in flight and without a timeout, and log each answer's
@@ -45,7 +48,7 @@
 //   LOCK_WAIT     give up after waiting this many seconds for the browser lock
 //                 (default: wait as long as it takes; 0: don't wait)
 //   MINA_LOCK_DIR where the lock files are (default the main checkout's
-//                 .work/locks)
+//                 local lock directory)
 //   MINA_NO_LOCK  1 to run without the lock, on a machine you have to yourself
 //
 // Writes to OUT:
@@ -272,6 +275,7 @@ try {
   if (!isolated) log(`${elapsed()} warning: not cross-origin isolated, so no threads; serve with serve.json`);
   // The setup screen: start without a block producer.
   const button = process.env.BUTTON ?? "Start Non BP";
+  if (process.env.AUTOSTART !== "1") {
   await page.waitForFunction(
     (label) => [...document.querySelectorAll("button")].some((b) => b.innerText.trim() === label),
     { timeout: 60000 },
@@ -281,6 +285,7 @@ try {
     [...document.querySelectorAll("button")].find((b) => b.innerText.trim() === label).click();
   }, button);
   log(`${elapsed()} clicked ${button}`);
+  }
 
   let syncedAt = null;
   while (Date.now() - started < minutes * 60000) {
@@ -332,7 +337,8 @@ try {
     log(
       `${elapsed()} rss=${browserRss()}MB wasm=${JSON.stringify(wasm)}MB status=${JSON.stringify(status)?.slice(0, 400)} rtc=${JSON.stringify(rtc)}`,
     );
-    if (syncedAt === null && untilSynced !== null && status?.sync === "Synced") syncedAt = Date.now();
+    if (syncedAt === null && untilSynced !== null && status?.sync === "Synced" &&
+        status?.best_tip >= Number(process.env.MIN_SYNC_HEIGHT ?? 0)) syncedAt = Date.now();
   }
   if (pollMs > 0) {
     await page

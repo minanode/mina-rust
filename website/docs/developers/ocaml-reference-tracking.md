@@ -61,41 +61,54 @@ The `.github/scripts/check-ocaml-refs.sh` script validates all OCaml references
 in the hyperlink format.
 
 ```bash
-# Validate against compatible branch (default)
+# Enforce file and line-range validity at each reference's pinned commit
 ./.github/scripts/check-ocaml-refs.sh
 
-# Validate against a specific branch
-./.github/scripts/check-ocaml-refs.sh --branch develop
+# Advisory whole-file drift against OCaml 4.0.4 (never fails for drift)
+./.github/scripts/check-ocaml-refs.sh --drift
 
-# Validate against a specific repository
-./.github/scripts/check-ocaml-refs.sh --repo https://github.com/MinaProtocol/mina.git --branch develop
+# Advisory drift against another branch
+./.github/scripts/check-ocaml-refs.sh --drift --branch develop
 
-# Automatically update stale commit hashes
+# Explicitly repin only byte-identical files after all pins validate
 ./.github/scripts/check-ocaml-refs.sh --update
 ```
 
 ### What the script checks
 
-1. **File existence**: Verifies the OCaml file exists at the specified path
-2. **Line ranges**: Validates that line ranges don't exceed the file length
-3. **Code consistency**: Verifies that the code at the referenced commit matches
-   the code on the current branch (ensures the reference is still accurate)
-4. **Commit staleness**: Checks if the commit hash matches the current HEAD
+1. **Pinned source**: fetches each file at the commit named by its URL,
+   including references without a line range. Mixed release pins are supported.
+2. **Line ranges**: rejects zero, reversed or out-of-bounds ranges and malformed
+   URLs. Missing commits/files and fetch failures fail validation.
+3. **Advisory drift**: `--drift` compares complete files with the selected
+   release and lists changed or unavailable sources for follow-up. This mode
+   does not edit references and is not evidence that validation passed.
+4. **Explicit updates**: `--update` retains changed files and updates only
+   byte-identical files. It makes no edits if any pin is invalid or any target
+   file cannot be fetched. It cannot be combined with `--drift`.
+
+`--branch` and `OCAML_BRANCH` select only the drift/update target; they do not
+change which commits the default validation checks. The default target is the
+peeled OCaml 4.0.4 commit. `--repo` selects the GitHub source repository.
 
 ### Exit codes
 
-- `0`: All references are valid or only stale commits (warning)
-- `1`: Invalid references found (missing files or invalid line ranges)
+- Default: `0` when every discovered reference validates; `1` for invalid
+  references or unavailable pinned sources.
+- `--drift`: `0` for an advisory report, including changed/deleted sources or
+  unavailable comparisons. Inspect the report; use default mode as the gate.
+- Invalid command-line options or infrastructure errors can exit nonzero.
 
 ## Automated verification
 
-A GitHub Actions workflow runs weekly to:
+The GitHub Actions workflow enforces pinned-reference validation on pull
+requests, merge groups, its weekly schedule and manual runs. Validation errors
+fail CI. A separate advisory step reports latest-release drift without treating
+changed upstream sources as invalid pins. Source changes require review.
 
-1. Validate all OCaml references against the latest `compatible` branch
-2. Automatically update stale commit hashes and verification dates
-3. Create a pull request with the updates
-
-The workflow can also be triggered manually via the Actions tab.
+A manual workflow run can request `update: true` to propose a pull request
+repinning byte-identical files. Scheduled and pull-request runs do not repin
+references automatically.
 
 ## Adding new references
 

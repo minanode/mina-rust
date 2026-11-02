@@ -1250,7 +1250,9 @@ fn a_restored_root_staged_ledger_is_a_mask_and_moves_as_a_bootstrapped_one() {
         ctx.drop_snarked_ledgers(&keep);
         ctx.staged_ledgers.retain(|hash| keep.contains(hash));
         ctx.compact_snarked_ledgers(&keep);
-        assert!(ctx.commit_root_staged_ledger(&new_root_staged, &hashes[0]));
+        assert!(ctx
+            .commit_root_staged_ledger(&new_root_staged, &hashes[0])
+            .is_ok());
 
         // The new snarked ledger went into the old database; the new root's
         // mask into the old root staged ledger's, still a mask over it.
@@ -1429,7 +1431,7 @@ fn a_restored_root_staged_ledger_is_a_mask_and_moves_as_a_bootstrapped_one() {
         assert_same(name, &mask, &staged);
         assert_same(name, &ctx.snarked_ledgers[&r], &snarked);
         // The replay's commit keeps the root: nothing moves.
-        assert!(ctx.commit_root_staged_ledger(&staged_hash, &r));
+        assert!(ctx.commit_root_staged_ledger(&staged_hash, &r).is_ok());
         let after = root_staged(ctx, &staged_hash, &r);
         assert_eq!(after.get_uuid(), mask.get_uuid());
         assert_eq!(hash_of(&ctx.snarked_ledgers[&r]), r, "{name}");

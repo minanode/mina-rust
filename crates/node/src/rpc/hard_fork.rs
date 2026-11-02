@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 /// Which block the next chain continues from.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_lib/mina_lib.ml#L2742-L2754>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_lib/mina_lib.ml#L2745-L2757>
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HardForkBlockSpec {
@@ -97,7 +97,7 @@ pub struct HardForkInputs {
 /// The newest block of `best_chain` (root first) whose slot since the hard
 /// fork is below `slot_tx_end`; the best tip if there is no `slot_tx_end`.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_lib/mina_lib.ml#L2704-L2737>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_lib/mina_lib.ml#L2707-L2740>
 pub fn block_before_stop_slot(
     best_chain: &[AppliedBlock],
     stops: StopSlots,
@@ -123,7 +123,7 @@ pub fn block_before_stop_slot(
 /// genesis, moved forward as far as its slot since the hard fork moves to
 /// the scheduled genesis slot.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_lib/mina_lib.ml#L2908-L2944>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_lib/mina_lib.ml#L2911-L2947>
 pub fn scheduled_global_slot_since_genesis(
     block_slot_since_hard_fork: u32,
     block_slot_since_genesis: u32,
@@ -145,7 +145,7 @@ pub fn scheduled_global_slot_since_genesis(
 /// The start of `slot` (since this hard fork) on this chain's clock, in
 /// milliseconds since the epoch.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_lib/mina_lib.ml#L2882-L2887>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_lib/mina_lib.ml#L2885-L2890>
 pub fn slot_start_ms(genesis_timestamp_ms: u64, slot_duration_ms: u64, slot: u32) -> u64 {
     genesis_timestamp_ms.saturating_add(slot_duration_ms.saturating_mul(slot as u64))
 }
@@ -171,7 +171,7 @@ pub fn iso8601_basic_utc(ms: u64) -> Result<String, String> {
 /// The fork inputs at `spec`, from the best chain (root first), the runtime
 /// stop slots and the slot duration.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_lib/mina_lib.ml#L2946-L2987>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_lib/mina_lib.ml#L2949-L2990>
 pub fn hard_fork_inputs(
     best_chain: &[AppliedBlock],
     stops: StopSlots,
@@ -256,8 +256,8 @@ pub struct HardForkLedger {
     pub migrated_hash: LedgerHash,
     pub num_accounts: u64,
     /// `Runtime_config.Accounts.t` JSON, as [`crate::daemon_json::write_accounts`]
-    /// writes it.
-    pub accounts_json: String,
+    /// writes it: not UTF-8 when a token symbol or zkApp URI is not.
+    pub accounts_json: Vec<u8>,
 }
 
 /// The export: the inputs and the genesis, staking and next epoch ledgers.

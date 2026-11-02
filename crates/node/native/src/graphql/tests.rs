@@ -9,7 +9,7 @@
 
 use std::{any::Any, path::PathBuf, sync::Arc};
 
-use juniper::{http::GraphQLRequest, EmptySubscription, RootNode};
+use crate::graphql::api::{http::GraphQLRequest, EmptySubscription, RootNode};
 use ledger::{scan_state::currency::Balance, Account, AccountId};
 use mina_core::{
     block::{AppliedBlock, ArcBlockWithHash, BlockWithHash},
@@ -174,6 +174,7 @@ struct FakeNode {
     last_epoch_delegators: Option<Vec<Account>>,
     expected_last_epoch_limit: Option<Option<usize>>,
     status: Option<RpcNodeStatus>,
+    scan_state: Option<mina_node::rpc::RpcScanStateSummaryGetResponse>,
     metrics: Option<RpcMetricsGetResponse>,
     staking_lookups: Option<Arc<std::sync::atomic::AtomicUsize>>,
     /// The ledger light account reads answer from (LN2); `None`: the node
@@ -194,6 +195,24 @@ fn respond<T: 'static + Send>(responder: Box<dyn Send + Any>, response: T) {
 impl FakeNode {
     fn handle(&self, NodeRpcRequest { req, responder }: NodeRpcRequest) {
         match req {
+            RpcRequest::GraphqlStatusGet => {
+                let s = self.status.clone().expect("status snapshot");
+                respond(
+                    responder,
+                    mina_node::rpc::RpcGraphqlStatusResponse {
+                        bootstrap: s.bootstrap,
+                        pool_size: s.transaction_pool.transactions,
+                        pool_max_size: s.transaction_pool.max_size,
+                        pool_min_fee: s.transaction_pool.minimum_fee_per_weight_unit,
+                    },
+                );
+            }
+            RpcRequest::ScanStateSummaryGet(_) => {
+                respond(
+                    responder,
+                    self.scan_state.clone().expect("scan state response"),
+                );
+            }
             RpcRequest::BestChain(max_length) => {
                 let skip = self.best_chain.len().saturating_sub(max_length as usize);
                 let response: RpcBestChainResponse =
@@ -417,7 +436,7 @@ async fn execute(node: FakeNode, operation_name: &str, query: &str, variables: V
         "variables": variables,
     }))
     .unwrap();
-    let schema = Schema::new(Query, Mutation, EmptySubscription::new());
+    let schema = Schema::new_with_scalar_value(Query, Mutation, EmptySubscription::new());
     let context = Context::new(node.spawn());
     let response = request.execute(&schema, &context).await;
     serde_json::to_value(&response).unwrap()
@@ -642,7 +661,7 @@ async fn daemon_metrics_keep_ocaml_non_null_shape_and_snapshot_values() {
         })
     );
 
-    let schema = Schema::new(Query, Mutation, EmptySubscription::new());
+    let schema = Schema::new_with_scalar_value(Query, Mutation, EmptySubscription::new());
     let request: GraphQLRequest = serde_json::from_value(json!({
         "query": "{ __type(name: \"Metrics\") { fields { name type { kind } } } }"
     }))
@@ -696,10 +715,14 @@ async fn write_introspection() {
     let Ok(path) = std::env::var("GRAPHQL_INTROSPECTION_OUT") else {
         return;
     };
-    let schema = Schema::new(Query, Mutation, EmptySubscription::new());
+    let schema = Schema::new_with_scalar_value(Query, Mutation, EmptySubscription::new());
     let context = Context::new(best_chain_node().spawn());
-    let (value, errors) =
-        juniper::introspect(&schema, &context, juniper::IntrospectionFormat::default()).unwrap();
+    let (value, errors) = crate::graphql::api::introspect(
+        &schema,
+        &context,
+        crate::graphql::api::IntrospectionFormat::default(),
+    )
+    .unwrap();
     assert!(errors.is_empty());
     let json = serde_json::to_string_pretty(&json!({ "data": value })).unwrap();
     std::fs::write(path, json).unwrap();
@@ -1242,8 +1265,9 @@ async fn execute_http(node: FakeNode, request: Value) -> (u16, Value) {
 }
 
 async fn respond_http(rpc: RpcSender, request: Value, public: bool) -> (u16, Value) {
-    let request: juniper::http::GraphQLBatchRequest = serde_json::from_value(request).unwrap();
-    let schema = Schema::new(Query, Mutation, EmptySubscription::new());
+    let request: crate::graphql::api::http::GraphQLBatchRequest =
+        serde_json::from_value(request).unwrap();
+    let schema = Schema::new_with_scalar_value(Query, Mutation, EmptySubscription::new());
     let context = Context::new(rpc).with_public_graphql(public);
     let (status, response) =
         crate::http_server::routes::graphql::respond(&schema, &context, &request, public).await;
@@ -1254,9 +1278,9 @@ async fn respond_http(rpc: RpcSender, request: Value, public: bool) -> (u16, Val
 /// it lets the request through (to a fake node), `Err` with the refusal's
 /// code when it refuses it, which must be before any RPC.
 async fn public(request: Value) -> Result<Value, String> {
-    let batch: juniper::http::GraphQLBatchRequest =
+    let batch: crate::graphql::api::http::GraphQLBatchRequest =
         serde_json::from_value(request.clone()).unwrap();
-    let schema = Schema::new(Query, Mutation, EmptySubscription::new());
+    let schema = Schema::new_with_scalar_value(Query, Mutation, EmptySubscription::new());
     if let Some(code) = crate::http_server::routes::graphql::public_refusal(&batch, &schema) {
         let (tx, mut rx) = mpsc::channel::<NodeRpcRequest>(1);
         let (status, response) = respond_http(RpcSender::new(tx), request, true).await;
@@ -1388,7 +1412,7 @@ async fn block_not_found_as_ocaml() {
 #[tokio::test]
 async fn token_owner_as_ocaml() {
     let (tx, mut rx) = mpsc::channel::<NodeRpcRequest>(1);
-    let schema = Schema::new(Query, Mutation, EmptySubscription::new());
+    let schema = Schema::new_with_scalar_value(Query, Mutation, EmptySubscription::new());
     let context = Context::new(RpcSender::new(tx));
     let request: GraphQLRequest = serde_json::from_value(json!({
         "query": "{ tokenOwner(tokenId: \"wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf\") { publicKey } }"
@@ -1433,7 +1457,7 @@ async fn token_owner_as_ocaml() {
 #[tokio::test]
 async fn out_of_field_token_id_is_an_argument_error() {
     let (tx, mut rx) = mpsc::channel::<NodeRpcRequest>(1);
-    let schema = Schema::new(Query, Mutation, EmptySubscription::new());
+    let schema = Schema::new_with_scalar_value(Query, Mutation, EmptySubscription::new());
     let context = Context::new(RpcSender::new(tx));
     let token = mina_p2p_messages::v2::TokenIdKeyHash::from(
         mina_p2p_messages::v2::MinaBaseAccountIdDigestStableV1(
@@ -1563,6 +1587,10 @@ async fn public_policy_refuses_before_rpc() {
             (one(&format!("{{ accounts(publicKey: \"{key}\") {{ publicKey }} }}")), &not_allowed),
             (one("{ tokenOwner(tokenId: \"wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf\") { publicKey } }"), &not_allowed),
             (one("{ getPeers { host } }"), &not_allowed),
+            (one("{ scanState { trees { availableSpace } } }"), &not_allowed),
+            (one("{ bootstrapStatus { phase } }"), &not_allowed),
+            (one("{ transactionPoolStatus { size } }"), &not_allowed),
+            (one("mutation { archiveVersionedPrecomputedBlock(block: {}) { applied } }"), &not_allowed),
             (one("{ daemonStatus { peers { host } } }"), &not_allowed),
             (one("{ daemonStatus { addrsAndPorts { externalIp } } }"), &not_allowed),
             (one("{ version }"), &not_allowed),
@@ -1667,10 +1695,14 @@ async fn public_receipts_are_bounded_and_fixed() {
 
     // The public types are named field by field in the allow-list, so a
     // field added to them is refused until it is listed.
-    let schema = Schema::new(Query, Mutation, EmptySubscription::new());
+    let schema = Schema::new_with_scalar_value(Query, Mutation, EmptySubscription::new());
     let context = Context::new(best_chain_node().spawn());
-    let (value, errors) =
-        juniper::introspect(&schema, &context, juniper::IntrospectionFormat::default()).unwrap();
+    let (value, errors) = crate::graphql::api::introspect(
+        &schema,
+        &context,
+        crate::graphql::api::IntrospectionFormat::default(),
+    )
+    .unwrap();
     assert!(errors.is_empty());
     let value = serde_json::to_value(value).unwrap();
     let fields = |name: &str| -> Vec<String> {
@@ -1987,10 +2019,14 @@ async fn send_schema_matches_ocaml() {
         names.sort();
         names
     }
-    let schema = Schema::new(Query, Mutation, EmptySubscription::new());
+    let schema = Schema::new_with_scalar_value(Query, Mutation, EmptySubscription::new());
     let context = Context::new(best_chain_node().spawn());
-    let (value, errors) =
-        juniper::introspect(&schema, &context, juniper::IntrospectionFormat::default()).unwrap();
+    let (value, errors) = crate::graphql::api::introspect(
+        &schema,
+        &context,
+        crate::graphql::api::IntrospectionFormat::default(),
+    )
+    .unwrap();
     assert!(errors.is_empty());
     let schema = serde_json::to_value(value).unwrap();
     let expected = ocaml_response("SendSchema");
@@ -2047,10 +2083,12 @@ fn producer_status(
         target: None,
     };
     RpcNodeStatus {
+        bootstrap: Default::default(),
         network: "devnet".to_owned(),
         uptime_secs: 0,
         chain_id: None,
         transition_frontier: RpcNodeStatusTransitionFrontier {
+            ledger_recovery: None,
             root: None,
             best_tip: None,
             sync,
@@ -2684,4 +2722,317 @@ async fn membership_takes_at_most_32_accounts_in_one_ledger_call() {
     assert!(error.contains("at most 32"), "{response}");
     // Refused before any ledger read.
     assert_eq!(lookups.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn query_descriptions_belong_to_the_correct_field() {
+    let (_, response) = execute_http(
+        FakeNode::default(),
+        json!({"query":
+        "{ __type(name: \"Query\") { fields { name description } } }"}),
+    )
+    .await;
+    let fields = response["data"]["__type"]["fields"].as_array().unwrap();
+    let description = |name| {
+        fields.iter().find(|f| f["name"] == name).unwrap()["description"]
+            .as_str()
+            .unwrap()
+    };
+    assert!(description("account").starts_with("Retrieve account information"));
+    assert_eq!(
+        description("verification"),
+        "Bounded receipts produced by this process; no archive or peer claims."
+    );
+}
+
+#[tokio::test]
+async fn truncated_transaction_encodings_return_graphql_errors() {
+    for argument in ["payment", "zkappTransaction"] {
+        for encoded in ["", "Ag==", "AgA=", "AQ==", "AA=="] {
+            let query = format!("{{ transactionStatus({argument}: {encoded:?}) }}");
+            let (status, response) =
+                execute_http(FakeNode::default(), json!({"query": query})).await;
+            assert_eq!(status, 200);
+            assert!(
+                response["errors"][0]["message"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Invalid transaction provided"),
+                "{response}"
+            );
+        }
+    }
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let original = STANDARD
+        .decode(include_str!("../../../../../tests/files/zkapps/with_sig_auth_id.txt").trim())
+        .unwrap();
+    let mut wrong_version = original.clone();
+    wrong_version[0] = 1;
+    let mut trailing = original;
+    trailing.push(0);
+    for bytes in [wrong_version, trailing] {
+        let id = STANDARD.encode(bytes);
+        let query = format!("{{ transactionStatus(zkappTransaction: {id:?}) }}");
+        let (_, response) = execute_http(FakeNode::default(), json!({"query": query})).await;
+        assert!(response["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("Invalid transaction provided"));
+    }
+    for bytes in [vec![], vec![32], vec![31; 33], vec![32; 32], vec![32; 34]] {
+        let hash = bs58::encode(bytes).with_check_version(0x1d).into_string();
+        for field in ["pooledUserCommands", "pooledZkappCommands"] {
+            let query = format!("{{ {field}(hashes: [{hash:?}]) {{ id }} }}");
+            let (status, response) =
+                execute_http(FakeNode::default(), json!({"query": query})).await;
+            assert_eq!(status, 200);
+            assert!(response["errors"].is_array(), "{response}");
+        }
+    }
+}
+
+/// Source-captured OCaml 4.0.4 schema contract, not a Rust schema snapshot.
+#[tokio::test]
+async fn status_404_schema_matches_ocaml_source() {
+    let expected: Value = serde_json::from_str(include_str!(
+        "../../tests/files/graphql/ocaml/status-schema-4.0.4.json"
+    ))
+    .unwrap();
+    fn type_name(t: &Value) -> String {
+        match t["kind"].as_str().unwrap() {
+            "NON_NULL" => format!("{}!", type_name(&t["ofType"])),
+            "LIST" => format!("[{}]", type_name(&t["ofType"])),
+            _ => t["name"].as_str().unwrap().to_owned(),
+        }
+    }
+    for (name, spec) in expected["types"].as_object().unwrap() {
+        let query = format!(
+            r#"query Schema {{ __type(name: "{name}") {{ name description enumValues {{ name description }} fields {{ name description args {{ name description defaultValue type {{ kind name ofType {{ kind name }} }} }} type {{ kind name ofType {{ kind name ofType {{ kind name ofType {{ kind name }} }} }} }} }} }} }}"#
+        );
+        let response = execute(FakeNode::default(), "Schema", &query, json!({})).await;
+        assert!(response.get("errors").is_none(), "{response}");
+        let actual = &response["data"]["__type"];
+        assert_eq!(actual["name"], *name, "missing type {name}");
+        if spec.get("description").is_some() {
+            assert_eq!(
+                actual["description"], spec["description"],
+                "{name} description"
+            );
+        }
+        if let Some(values) = spec["enumValues"].as_array() {
+            assert_eq!(actual["enumValues"], json!(values), "{name} enum");
+        }
+        if let Some(fields) = spec["fields"].as_array() {
+            let got = actual["fields"].as_array().unwrap();
+            if name != "Query" && name != "Mutation" {
+                assert_eq!(got.len(), fields.len(), "{name} field count");
+            }
+            for field in fields {
+                let f = got
+                    .iter()
+                    .find(|f| f["name"] == field["name"])
+                    .unwrap_or_else(|| panic!("missing {name}.{}", field["name"]));
+                assert_eq!(
+                    type_name(&f["type"]),
+                    field["type"],
+                    "{name}.{} type",
+                    field["name"]
+                );
+                assert_eq!(
+                    f["description"], field["description"],
+                    "{name}.{} description",
+                    field["name"]
+                );
+                let args = f["args"].as_array().unwrap();
+                let empty = vec![];
+                let expected_args = field["args"].as_array().unwrap_or(&empty);
+                assert_eq!(args.len(), expected_args.len());
+                for (a, e) in args.iter().zip(expected_args) {
+                    for key in ["name", "description", "defaultValue"] {
+                        assert_eq!(a[key], e[key], "{name} argument {key}");
+                    }
+                    assert_eq!(type_name(&a["type"]), e["type"]);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn status_404_pool_and_bootstrap_node_snapshots() {
+    use mina_node::bootstrap_status::{
+        BootstrapPhase, BootstrapStatus, LedgerSync, LedgerSyncProgress, SyncedLedger,
+    };
+    let mut status = producer_status(None, None);
+    status.transaction_pool.max_size = 3000;
+    // OCaml returns null for an empty pool, an integer for weight one, and
+    // an exact reduced fraction for weighted commands.
+    for (size, fee) in [(0, None), (1, Some("1000000")), (2, Some("1000000001/3"))] {
+        status.transaction_pool.transactions = size;
+        status.transaction_pool.minimum_fee_per_weight_unit = fee.map(str::to_owned);
+        let response = execute(
+            FakeNode {
+                status: Some(status.clone()),
+                ..Default::default()
+            },
+            "Pool",
+            "query Pool { transactionPoolStatus { size maxSize minimumFeePerWeightUnit } }",
+            json!({}),
+        )
+        .await;
+        assert_eq!(
+            response,
+            json!({"data":{"transactionPoolStatus":{"size":size,"maxSize":3000,"minimumFeePerWeightUnit":fee}}})
+        );
+    }
+    status.bootstrap = BootstrapStatus::new(0);
+    let query = "query Bootstrap { bootstrapStatus { phase phaseStartedAt bootstrapStartedAt bootstrapAttempts lastAttemptFailure ledgerSyncs { ledger target active progress { targets targetSetAt synced answersAccepted answersRejected answersIgnored accountsReceived accountsSettled numAccounts pendingChildHashes pendingContents lastAcceptedAnswerAt } } } }";
+    let response = execute(
+        FakeNode {
+            status: Some(status.clone()),
+            ..Default::default()
+        },
+        "Bootstrap",
+        query,
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        response["data"]["bootstrapStatus"],
+        json!({"phase":"STARTING","phaseStartedAt":"1970-01-01 00:00:00.000000Z","bootstrapStartedAt":null,"bootstrapAttempts":0,"lastAttemptFailure":null,"ledgerSyncs":[]})
+    );
+    status.bootstrap.phase = BootstrapPhase::SyncingRootLedger;
+    status.bootstrap.bootstrap_started_at = Some(1_000_000_000);
+    status.bootstrap.bootstrap_attempts = 2;
+    status.bootstrap.last_attempt_failure = Some("ledger reconstruction failed".into());
+    status.bootstrap.ledger_syncs.push(LedgerSync {
+        ledger: SyncedLedger::RootSnarked,
+        target: None,
+        active: true,
+        progress: LedgerSyncProgress {
+            targets: 2,
+            num_accounts: Some(100),
+            accounts_received: 64,
+            accounts_settled: 64,
+            answers_accepted: 3,
+            pending_contents: 1,
+            ..Default::default()
+        },
+    });
+    let response = execute(
+        FakeNode {
+            status: Some(status),
+            ..Default::default()
+        },
+        "Bootstrap",
+        query,
+        json!({}),
+    )
+    .await;
+    assert!(response.get("errors").is_none(), "{response}");
+    assert_eq!(
+        response["data"]["bootstrapStatus"]["phase"],
+        "SYNCING_ROOT_LEDGER"
+    );
+    assert_eq!(response["data"]["bootstrapStatus"]["bootstrapAttempts"], 2);
+    assert_eq!(
+        response["data"]["bootstrapStatus"]["ledgerSyncs"][0]["progress"]["accountsSettled"],
+        64
+    );
+}
+
+#[tokio::test]
+async fn status_404_archive_without_versioned_rpc_returns_ocaml_error() {
+    for block in [
+        json!({"version":3,"data":{"future":[1,true,null]}}),
+        json!([1, 2]),
+        json!("opaque"),
+        json!(7),
+        json!(false),
+    ] {
+        let (_, response) = respond_http(FakeNode::default().spawn(), json!({"query":"mutation Archive($block: VersionedPrecomputedBlock!) { archiveVersionedPrecomputedBlock(block: $block) { applied } }", "operationName":"Archive", "variables":{"block":block}}), false).await;
+        assert_eq!(
+            response["errors"][0]["message"], "Could not find an archive process to connect to",
+            "{response}"
+        );
+        assert!(response["data"].is_null(), "{response}");
+    }
+    for query in [
+        "mutation Archive { archiveVersionedPrecomputedBlock(block: {version: 3, data: {future: [1, true, null]}}) { applied } }",
+        "mutation Archive($block: VersionedPrecomputedBlock = {version: 3}) { archiveVersionedPrecomputedBlock(block: $block) { applied } }",
+        "# Unicode before the argument: é\nmutation Archive { alias: archiveVersionedPrecomputedBlock(block: []) { applied } }",
+    ] {
+        let (_, response) = respond_http(FakeNode::default().spawn(), json!({"query":query}), false).await;
+        assert_eq!(response["errors"][0]["message"], "Could not find an archive process to connect to", "{response}");
+    }
+    // The parsing adapter must not bypass public policy or schema validation.
+    let query = "mutation { archiveVersionedPrecomputedBlock(block: {version: 3}) { applied } }";
+    let (_, response) =
+        respond_http(FakeNode::default().spawn(), json!({"query":query}), true).await;
+    assert_eq!(
+        response["errors"][0]["extensions"]["code"],
+        "PUBLIC_GRAPHQL_NOT_ALLOWED"
+    );
+    let query = "mutation { archiveVersionedPrecomputedBlock(block: {version: 3}) { unknown } }";
+    let (_, response) =
+        respond_http(FakeNode::default().spawn(), json!({"query":query}), false).await;
+    assert!(
+        response["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown"),
+        "{response}"
+    );
+    let query = format!(
+        "mutation {{ archiveVersionedPrecomputedBlock(block: {}0{}) {{ applied }} }}",
+        "[".repeat(33),
+        "]".repeat(33)
+    );
+    let (_, response) =
+        respond_http(FakeNode::default().spawn(), json!({"query":query}), false).await;
+    assert!(
+        response["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("nesting exceeds"),
+        "{response}"
+    );
+    for variables in [json!({}), json!({"block":null})] {
+        let (_, response) = respond_http(FakeNode::default().spawn(), json!({"query":"mutation Archive($block: VersionedPrecomputedBlock!) { archiveVersionedPrecomputedBlock(block: $block) { applied } }","variables":variables}), false).await;
+        assert_ne!(
+            response["errors"][0]["message"], "Could not find an archive process to connect to",
+            "{response}"
+        );
+        assert!(response.get("errors").is_some());
+    }
+}
+
+#[tokio::test]
+async fn status_404_scan_state_errors_and_oldest_first_metrics() {
+    use mina_node::rpc::{RpcScanStateSummary, RpcScanStateSummaryBlock};
+    for message in ["System is bootstrapping", "Could not obtain transition frontier", "Block with state hash 3NK5Kp6Qu2CrGJCt3cbRmM11Ehn11WhQSGUtfEmCNUXVx7rk33Xw not found in transition frontier"] {
+        let response = execute(FakeNode { scan_state: Some(Err(message.to_owned())), ..Default::default() }, "Scan", "query Scan { scanState { stateHash trees { availableSpace } } }", json!({})).await;
+        assert_eq!(response["errors"][0]["message"], message);
+        assert!(response["data"].is_null());
+    }
+    // OCaml metrics counts Full Todo, excluding Done and partially filled
+    // merges. An older full tree precedes a newer half-full tree.
+    let summary = RpcScanStateSummary {
+        block: RpcScanStateSummaryBlock {
+            hash: BLOCKS[0].1.parse().unwrap(),
+            height: BLOCKS[0].0,
+            global_slot: 0,
+            transactions: vec![],
+            completed_works: vec![],
+        },
+        trees: vec![(0, 0, 1), (4, 4, 0)],
+        scan_state: vec![],
+    };
+    for arg in [String::new(), format!("(stateHash: \"{}\")", BLOCKS[0].1)] {
+        let response = execute(FakeNode { scan_state: Some(Ok(summary.clone())), ..Default::default() }, "Scan", &format!("query Scan {{ scanState{arg} {{ stateHash trees {{ availableSpace baseJobsTodo mergeJobsTodo }} }} }}"), json!({})).await;
+        assert_eq!(
+            response,
+            json!({"data":{"scanState":{"stateHash":BLOCKS[0].1,"trees":[{"availableSpace":0,"baseJobsTodo":0,"mergeJobsTodo":1},{"availableSpace":4,"baseJobsTodo":4,"mergeJobsTodo":0}]}}})
+        );
+    }
 }

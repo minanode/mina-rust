@@ -348,6 +348,22 @@ const DEVNET_PROVED_FEATURES: &[u8] =
     include_bytes!("../data/mesa_devnet_zkapp_proved_features_base_job.bin");
 const DEVNET_PROVED_FEATURES_WORK: &[u8] =
     include_bytes!("../data/mesa_devnet_zkapp_proved_features_ocaml_work.bin");
+/// Devnet, global slot 927764, after block 581811: a command from
+/// B62qopdEoPpXbEGgasvK77QCqL2ZY9nvEkhZvQwPpc7htbAJRgHV4HQ, nonce 1, whose
+/// first account update, for
+/// B62qkoSh4XASzpaDkL9EvVLwBN1EsUFpP9zM4GyNYHgzSmTf1ZS7mMD, is authorised by
+/// a proof and has two signed calls. The proof's circuit has the largest step
+/// domain, 2^16 rows (`domain_log2` 16), and proving the job panicked our
+/// snark worker on public devnet, three times in three runs; OCaml's workers
+/// proved it. Taken from the worker's job, the job's second member. The
+/// work is OCaml 4.0.3's production worker's (`perform_single`), proved
+/// offline through the differential corpus adapter for the corpus's sok
+/// message, 0.001 MINA from
+/// B62qkpvaoFuysurKw8qFUjYgFwaRZDKomMuNtrXLZ8QFuzvkyn9HKR6.
+const DEVNET_PROVED_DOMAIN16: &[u8] =
+    include_bytes!("../data/mesa_devnet_zkapp_proved_domain16_base_job.bin");
+const DEVNET_PROVED_DOMAIN16_WORK: &[u8] =
+    include_bytes!("../data/mesa_devnet_zkapp_proved_domain16_ocaml_work.bin");
 
 /// Each fixture has the shape its name says, is applied, and OCaml's work
 /// for it proves its statement: the same statement but for the sok digest,
@@ -391,6 +407,12 @@ fn mesa_zkapp_fixtures_are_their_shapes() {
             DEVNET_PROVED_FEATURES,
             Some(DEVNET_PROVED_FEATURES_WORK),
             "SP",
+        ),
+        (
+            "devnet proved, 2^16 domain",
+            DEVNET_PROVED_DOMAIN16,
+            Some(DEVNET_PROVED_DOMAIN16_WORK),
+            "SPSS",
         ),
     ] {
         let (statement, tx_witness) = fixture(job);
@@ -491,6 +513,27 @@ fn mesa_devnet_zkapp_proved_proof_verifies() {
         DEVNET_PROVED,
         Some(DEVNET_PROVED_WORK),
         &["OptSigned", "Proved"],
+    );
+}
+
+/// The public devnet job whose zkApp proof is from a circuit with a 2^16
+/// step domain: the fee payer alone in `opt_signed`, the proved account
+/// update, then its two signed calls in `opt_signed-opt_signed`, with the
+/// devnet circuits. The `proved` segment's step circuit verifies the proof
+/// on its 2^16 domain; with no generator for that domain, it panicked.
+#[test]
+#[ignore = "needs the Mesa devnet circuit blobs: MINA_PROFILE=devnet \
+            tools/mesa-circuits/generate.sh <dir> tools/mesa-circuits/mesa-devnet-fork.json, \
+            then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+fn mesa_devnet_zkapp_proved_domain16_proof_verifies() {
+    let _turn = PROVING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    init_devnet_with_mesa_blobs();
+    prove_and_verify(
+        DEVNET_PROVED_DOMAIN16,
+        Some(DEVNET_PROVED_DOMAIN16_WORK),
+        &["OptSigned", "Proved", "OptSignedOptSigned"],
     );
 }
 
@@ -616,6 +659,37 @@ fn mesa_devnet_zkapp_features_fixture_has_custom_gates() {
             .count();
     // Two step witness values each: the 22 extra of ZK1's failures.
     assert_eq!(optional, 11);
+}
+
+/// The proof authorising the SPSS job's first account update is from a
+/// circuit with the largest step domain a side-loaded proof may have,
+/// `max_domains.h`, 2^16 rows, and its key has one proof verified and the
+/// N1 wrap domain. No blobs needed.
+#[test]
+fn mesa_devnet_zkapp_domain16_fixture_has_the_largest_domain() {
+    use crate::{proofs::wrap::Domains, ProofVerified};
+
+    let fixture = fixture(DEVNET_PROVED_DOMAIN16);
+    assert_eq!(
+        segment_kinds(&fixture),
+        ["OptSigned", "Proved", "OptSignedOptSigned"]
+    );
+    let (statement, tx_witness) = &fixture;
+    let zkapp_command = zkapp_command_of_witness(tx_witness).unwrap();
+    let segments = zkapp_command_segments(statement, tx_witness, &zkapp_command).unwrap();
+    let (proof, vk) = snapp_proof_data(&segments[1].0).unwrap();
+    let branch_data = &proof.statement.proof_state.deferred_values.branch_data;
+    assert_eq!(
+        branch_data.domain_log2.as_u8() as u64,
+        Domains::max().h.log2_size()
+    );
+    assert_eq!(branch_data.domain_log2.as_u8(), 16);
+    assert!(matches!(
+        branch_data.proofs_verified,
+        v2::PicklesBaseProofsVerifiedStableV1::N1
+    ));
+    assert!(matches!(vk.max_proofs_verified, ProofVerified::N1));
+    assert!(matches!(vk.actual_wrap_domain_size, ProofVerified::N1));
 }
 
 /// The node's verifier on 578848's command, as `Verifier::verify_commands`
@@ -991,4 +1065,85 @@ fn mesa_failed_proved_zkapp_without_key_proof_verifies() {
     let mut bytes = Vec::new();
     mina_p2p_messages::binprot::BinProtWrite::binprot_write(&job, &mut bytes).unwrap();
     prove_and_verify(&bytes, None, &["OptSigned", "Proved"]);
+}
+
+/// zkApp jobs whose proofs use one custom gate each: xor, rot, foreign field
+/// multiplication and the lookup gate, with the range checks some of them
+/// bring, and the flags expected of each proof. o1js 3.1.0 made the commands
+/// (`tools/prover-div-corpus/zkapp-gates/gen.mjs`), and `zkapp_gate_jobs`
+/// applied them to a new ledger on devnet block 581805, so their statements
+/// are not the chain's. Every devnet proof with these gates is from a circuit
+/// with a 2^16-row step domain; these have small ones, so they test the gates
+/// alone.
+const DEVNET_GATES: [(&str, &[u8], [bool; 8]); 4] = [
+    (
+        "xor",
+        include_bytes!("../data/mesa_devnet_zkapp_gate_xor_base_job.bin"),
+        [false, false, false, false, true, false, false, false],
+    ),
+    (
+        "rot",
+        include_bytes!("../data/mesa_devnet_zkapp_gate_rot_base_job.bin"),
+        [true, false, false, false, false, true, false, false],
+    ),
+    (
+        "ffmul",
+        include_bytes!("../data/mesa_devnet_zkapp_gate_ffmul_base_job.bin"),
+        [true, true, false, true, false, false, false, false],
+    ),
+    (
+        "lookup",
+        include_bytes!("../data/mesa_devnet_zkapp_gate_lookup_base_job.bin"),
+        [true, false, false, false, false, false, true, false],
+    ),
+];
+
+/// Each gate fixture is a fee payer and one proof-authorised update whose
+/// proof has its gate's flags, a joint combiner and a step domain under
+/// 2^16. No blobs needed.
+#[test]
+fn mesa_devnet_zkapp_gate_fixtures_use_their_gates() {
+    for (name, job, expected) in DEVNET_GATES {
+        let fixture = fixture(job);
+        assert_eq!(segment_kinds(&fixture), ["OptSigned", "Proved"], "{name}");
+        let (statement, tx_witness) = &fixture;
+        let zkapp_command = zkapp_command_of_witness(tx_witness).unwrap();
+        let segments = zkapp_command_segments(statement, tx_witness, &zkapp_command).unwrap();
+        let (proof, _vk) = snapp_proof_data(&segments[1].0).unwrap();
+        let deferred = &proof.statement.proof_state.deferred_values;
+        let flags = &deferred.plonk.feature_flags;
+        assert_eq!(
+            [
+                flags.range_check0,
+                flags.range_check1,
+                flags.foreign_field_add,
+                flags.foreign_field_mul,
+                flags.xor,
+                flags.rot,
+                flags.lookup,
+                flags.runtime_tables,
+            ],
+            expected,
+            "{name}"
+        );
+        assert!(deferred.plonk.joint_combiner.is_some(), "{name}");
+        assert!(deferred.branch_data.domain_log2.as_u8() < 16, "{name}");
+    }
+}
+
+/// Each gate fixture proves, segment by segment and merged, and the proof
+/// verifies with the devnet key, and not for another fee or with the mainnet
+/// key. OCaml 4.0.3's worker proves the same jobs in the prover corpus.
+#[test]
+#[ignore = "needs the Mesa devnet circuit blobs: MINA_PROFILE=devnet \
+            tools/mesa-circuits/generate.sh <dir> tools/mesa-circuits/mesa-devnet-fork.json, \
+            then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+fn mesa_devnet_zkapp_gate_proofs_verify() {
+    let _turn = PROVING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    init_devnet_with_mesa_blobs();
+    for (_, job, _) in DEVNET_GATES {
+        prove_and_verify(job, None, &["OptSigned", "Proved"]);
+    }
 }

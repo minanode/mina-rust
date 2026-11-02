@@ -1557,6 +1557,10 @@ impl TransactionPool {
         self.pool.size()
     }
 
+    pub fn minimum_fee_per_weight_unit(&self) -> Option<String> {
+        self.pool.min_fee().map(|fee| fee.to_string())
+    }
+
     pub fn get_all_transactions(&self) -> Vec<ValidCommandWithHash> {
         self.pool.get_all_transactions()
     }

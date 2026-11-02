@@ -36,6 +36,10 @@ die() {
 here=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 mina=${MINA:-$here/mina}
 [[ -x $mina ]] || die "$mina is not executable"
+# Public relays require the opt-in signalling relay behavior added after 0.20.0.
+help=$("$mina" node --help)
+[[ $help == *--webrtc-signaling-relay* ]] || die "build main with PR 173 (or a qualified 0.20.1); 0.20.0 is not a public relay"
+[[ ${EXTRA_ARGS:-} != *--webrtc-signaling-relay* ]] || die "public relay must not forward visitor signalling"
 
 key=$CREDENTIALS_DIRECTORY/p2p_key
 [[ -s $key ]] || die "no libp2p key in the p2p_key credential"
@@ -47,6 +51,8 @@ args=(
 	--network "${NETWORK:-devnet}" node
 	-d "$STATE_DIRECTORY/node"
 	-p "${HTTP_PORT:-3000}"
+	--http-addr 127.0.0.1
+	--webrtc-signal-addr 127.0.0.1
 	--libp2p-port "${MINA_LIBP2P_PORT:-8302}"
 	--max-peers "${MAX_PEERS:-100}"
 	--frontier-store

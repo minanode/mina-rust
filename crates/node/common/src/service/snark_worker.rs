@@ -3,8 +3,11 @@ use std::sync::Arc;
 use std::{fs, io::Write, path::Path};
 
 use ledger::{
-    proofs::snark_worker::{
-        check_work, is_zkapp_command, prove_work, spec_jobs, WorkProveError, WorkProvers,
+    proofs::{
+        catch_prover_panic,
+        snark_worker::{
+            check_work, is_zkapp_command, prove_work, spec_jobs, WorkProveError, WorkProvers,
+        },
     },
     scan_state::scan_state::transaction_snark::SokMessage,
 };
@@ -407,24 +410,16 @@ fn stop_for_prover_error(event_sender: &EventSender, error: String) {
 
 /// Runs one job's proving; a panic in a prover (P5.1: a failed zkApp command
 /// whose proved update has no verification key) becomes this job's error, so
-/// the job is dropped and the worker and node keep running.
+/// the job is dropped and the worker and node keep running. The worker's next
+/// proof makes its SRS again if the panic poisoned it.
 fn contain_panic(
     prove: impl FnOnce() -> Result<Snark, ExternalSnarkWorkerWorkError>,
 ) -> Result<Snark, ExternalSnarkWorkerWorkError> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(prove)).unwrap_or_else(|payload| {
+    catch_prover_panic("SNARK work", prove).unwrap_or_else(|message| {
         Err(ExternalSnarkWorkerWorkError::Error(format!(
-            "prover panicked: {}",
-            panic_message(&*payload)
+            "prover panicked: {message}"
         )))
     })
-}
-
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-    payload
-        .downcast_ref::<&str>()
-        .map(|s| s.to_string())
-        .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_default()
 }
 
 /// Makes the zkApp step provers, on the first zkApp command job, and logs
@@ -519,7 +514,7 @@ pub struct WorkTimes {
 /// in-process worker and the isolated prover's bridge (P5.3) use this. The
 /// work is returned whole: the node offers it only for the key it was made
 /// for, at the fee its sok digest commits to (P5.4).
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/snark_pool.ml#L319-L476>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/network_pool/snark_pool.ml#L319-L476>
 pub fn check_proved_work(
     work: Snark,
     times: WorkTimes,
@@ -606,6 +601,102 @@ mod tests {
             contain_panic(|| Err(ExternalSnarkWorkerWorkError::Cancelled)),
             Err(ExternalSnarkWorkerWorkError::Cancelled)
         ));
+    }
+
+    /// A job whose proof panics holding the worker thread's prover SRS lock
+    /// fails alone: on public devnet such a panic poisoned the SRS, and every
+    /// later job failed until the node restarted. Here the worker thread goes
+    /// on to prove and check a merge, whose step verifies its two children
+    /// with the new SRS, and a base job. Devnet's own jobs (P4.8).
+    #[test]
+    #[ignore = "proves devnet jobs: run alone, in release, \
+                with --features ledger/embedded-circuits"]
+    fn a_job_that_panics_holding_the_srs_fails_alone() {
+        use ledger::{proofs::verifiers::TransactionVerifier, verifier};
+        use mina_node::event_source::Event;
+        use mina_p2p_messages::binprot::BinProtRead;
+
+        type BaseFixture = (
+            v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement,
+            v2::TransactionWitnessStableV2,
+        );
+        type MergeFixture = (
+            v2::MinaStateSnarkedLedgerStateStableV2,
+            v2::LedgerProofProdStableV2,
+            v2::LedgerProofProdStableV2,
+        );
+        const BASE: &[u8] = include_bytes!(
+            "../../../../ledger/src/proofs/data/mesa_devnet_merge_of_bases_left_base_job.bin"
+        );
+        const MERGE: &[u8] =
+            include_bytes!("../../../../ledger/src/proofs/data/mesa_devnet_merge_of_bases_job.bin");
+        // The public genesis winner, as the worker's fee key.
+        const PROVER: &str = "B62qiy32p8kAKnny8ZFwoMhYpBppM1DWVCqAPBYNcXnsAHhnfAAuXgg";
+
+        mina_core::NetworkConfig::init("devnet").unwrap();
+        let base = {
+            let (statement, witness) = BaseFixture::binprot_read(&mut &*BASE).unwrap();
+            SnarkWorkSpec::One(
+                v2::SnarkWorkerWorkerRpcsVersionedGetWorkV2TResponseA0Single::Transition(
+                    v2::MinaStateSnarkedLedgerStateStableV2(statement),
+                    witness,
+                ),
+            )
+        };
+        let merge = SnarkWorkSpec::One(
+            v2::SnarkWorkerWorkerRpcsVersionedGetWorkV2TResponseA0Single::Merge(Box::new(
+                MergeFixture::binprot_read(&mut &*MERGE).unwrap(),
+            )),
+        );
+        let fee = v2::CurrencyFeeStableV1(v2::UnsignedExtendedUInt64Int64ForVersionTagsStableV1(
+            1_000_000u64.into(),
+        ));
+        let verifier = TransactionVerifier::make();
+        let srs = verifier::get_srs::<mina_curves::pasta::Fp>();
+        let worker = Worker {
+            sok_message: SokMessage::create(
+                (&fee).into(),
+                CompressedPubKey::from_address(PROVER).unwrap(),
+            ),
+            snarker: PROVER.parse().unwrap(),
+            fee,
+            work_verifier: verifier.clone(),
+            verifier_srs: srs.clone(),
+        };
+        let (cmds, cmd_receiver) = mpsc::unbounded_channel();
+        let (event_sender, mut events) = mpsc::unbounded_channel();
+        let thread = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || worker_thread(cmd_receiver, event_sender, worker))
+            .unwrap();
+        let mut next = || match events.blocking_recv().expect("the worker thread is gone") {
+            Event::ExternalSnarkWorker(event) => event,
+            event => panic!("not a worker event: {event:?}"),
+        };
+        assert!(matches!(next(), ExternalSnarkWorkerEvent::Started));
+
+        let rebuilds = verifier::prover_srs_rebuilds();
+        verifier::test_hooks::panic_next_proof_holding_srs();
+        cmds.send(Cmd::Submit(Box::new(base.clone()))).unwrap();
+        match next() {
+            ExternalSnarkWorkerEvent::WorkError(ExternalSnarkWorkerWorkError::Error(error)) => {
+                assert!(error.starts_with("prover panicked: test hook"), "{error}")
+            }
+            event => panic!("expected the job's error, got {event:?}"),
+        }
+        for spec in [merge, base] {
+            cmds.send(Cmd::Submit(Box::new(spec))).unwrap();
+            match next() {
+                ExternalSnarkWorkerEvent::WorkResult(work) => {
+                    check_work(&work, &verifier, &srs).expect("the work verifies")
+                }
+                event => panic!("expected a proof, got {event:?}"),
+            }
+        }
+        assert_eq!(verifier::prover_srs_rebuilds(), rebuilds + 1);
+        cmds.send(Cmd::Kill).unwrap();
+        assert!(matches!(next(), ExternalSnarkWorkerEvent::Killed));
+        thread.join().unwrap();
     }
 
     #[test]

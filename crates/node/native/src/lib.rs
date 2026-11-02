@@ -17,6 +17,7 @@ mod input_limits;
 
 pub mod graphql;
 pub mod http_server;
+pub mod reporting;
 
 mod service;
 pub use service::{NodeService, *};

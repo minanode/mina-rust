@@ -1,0 +1,160 @@
+{
+  "date": "2026-10-30",
+  "ocaml_commit": "c9e2eac5344da621828c1e96c074b8bdce665b51",
+  "ocaml_tag_object": "e09d43035917b1e4723935cec48fd0957c660dbb",
+  "rust_build_commit": "9b37cf41e35eff3e52a7ed7625715c2ed9f19c3c",
+  "dependency_environment": "OCaml 4.14.2 and the retained 4.0.3 compiler/dependency environment, as documented by the 4.0.4 tools recipe; not an official distribution binary",
+  "full_parity": false,
+  "early_evaluation_enabled": false,
+  "known_open_case": "BP-MN-3A: Rust defers epoch-start evaluation where OCaml selects next epoch data",
+  "seed": 184562691,
+  "binaries": {
+    "rust": "77a7eee7b152318cc665d1a8762e847e4eda8a130148a7721235d3066ac75714",
+    "ocaml": "6a70a9dacf9e85bf1e8123cabd7be2bf8bf5610c14f1b4c660022651ed9f2502",
+    "ocaml_executable": "99a8c958987af01108fd8d7355a8c8f889c0e1d516e59f44a1976187c4c53bf5"
+  },
+  "full_run_exit": 1,
+  "full_run_passed": false,
+  "compared_cases": 22400,
+  "matched_cases": 22348,
+  "mismatches": 52,
+  "unexpected_mismatches": 0,
+  "elapsed_seconds": 55.580427029170096,
+  "worker_exits": {
+    "mainnet": [
+      0,
+      0
+    ],
+    "devnet": [
+      0,
+      0
+    ]
+  },
+  "networks": {
+    "mainnet": {
+      "counts": {
+        "constants": 1,
+        "arithmetic": 1026,
+        "epoch_bounds": 1026,
+        "density": 2000,
+        "selection_generated": 6000,
+        "selection_hash_ties": 64,
+        "epoch_selection": 50,
+        "epoch_start_deferred": 26,
+        "epoch_precompute": 25,
+        "epoch_update": 250,
+        "vrf": 512,
+        "delegation": 32,
+        "regressions": 2,
+        "threshold": 53,
+        "selection_recorded": 128,
+        "selection_recorded_forks": 6
+      },
+      "threshold_calibration_queries": 5060,
+      "known_epoch_start_mismatches": 26
+    },
+    "devnet": {
+      "counts": {
+        "constants": 1,
+        "arithmetic": 1026,
+        "epoch_bounds": 1026,
+        "density": 2000,
+        "selection_generated": 6000,
+        "selection_hash_ties": 64,
+        "epoch_selection": 50,
+        "epoch_start_deferred": 26,
+        "epoch_precompute": 25,
+        "epoch_update": 250,
+        "vrf": 512,
+        "delegation": 32,
+        "regressions": 2,
+        "threshold": 53,
+        "selection_recorded": 128,
+        "selection_recorded_forks": 4
+      },
+      "threshold_calibration_queries": 5060,
+      "known_epoch_start_mismatches": 26
+    }
+  },
+  "source_guards": {
+    "valid_404": "accepted; removing the hook recovers the original source",
+    "403": "rejected before writes",
+    "modified_404": "rejected before writes"
+  },
+  "runner_controls": {
+    "passed": 5,
+    "failed": 0
+  },
+  "checker_controls": {
+    "passed": 9,
+    "failed": 0
+  },
+  "reference_audit": {
+    "references": 176,
+    "exact_old_pin_to_403_spans": 176,
+    "exact_old_pin_to_404_spans": 164,
+    "repinned": 174,
+    "retained": 2,
+    "source_files": 30,
+    "classification_counts": {
+      "behavioural/other lane": 2,
+      "behavioural/ours": 5,
+      "non-behavioural": 169
+    }
+  },
+  "empty_account_oracle": {
+    "operation": "account_defaults",
+    "verification_key_permission": [
+      [
+        "Signature"
+      ],
+      "4"
+    ],
+    "empty_hash_decimal": "28328037583256331742860088544984623105766605252477591487013162091232255973154"
+  },
+  "evidence_sha256": {
+    "full-diff/report.json": "6cb2d5e4bbaac7e9e56c7baa0a7336a0de6c0e561622b869e8ffe230e0cf2e8e",
+    "full-diff/mainnet.jsonl": "cc2630352d845c384fd41aaf947444fb2984f3367d730c5ab57e7bb4e9388b55",
+    "full-diff/devnet.jsonl": "83f69b18ae5d719ac157175c024c1811139f140d10e305c50b07fe63f52ab66e",
+    "full-diff/divergences.json": "b538e89f03196bef1f1df7c9d6b4a7ef81356ec6dc0f03e5ef31aec219281f2d",
+    "source-guard-tests.json": "da976a95e09d3d391a2f998ffb4b934ec0a26db039b4033d8da483306c99ca3c",
+    "reference-verification.json": "90902554973a6f3a010748292bdabeb868262bc6d0e93384d5536ca1d390762c",
+    "runner-tests.log": "8e0aba18a352d4a0654fc60fe1a89addee3b4cb56ad5d624621a2c76ba4c8d1d",
+    "checker-tests.log": "3f0d1053550cbb74aa3dd582908e4fae0c1a6c73cdd34571c98d9f15e0a53385",
+    "oracle-defaults.jsonl": "f4744dde311d34f4dca4dd4f2a978401891b065b24c3a8e097af73d1bae62d08",
+    "ledger-tests-final.log": "80153de8631a44465c38f12c3186f912afffaaf9ebef2253de47bca1aaa8430d",
+    "transaction-pool-tests.log": "920b1dcf563bee4359d9812f59f585a68b04d6368e754cf85424f63637597310",
+    "ledger-test-provenance.json": "249b9a9e0489e88c7baa47d911ee33795dc10c0868189ee30d9b9e14d8c1082b"
+  },
+  "source_sha256": {
+    "crates/node/examples/consensus_diff.rs": "8df153fc7bb19eb1ba22d4d64c810d014ba66a5921529bdb9b48e8231c4751be",
+    "crates/core/src/consensus.rs": "c907f221eea1dd697f68beec59b6f0c41e433934133338adea082f6920ca9591",
+    "crates/ledger/src/account/account.rs": "ac6ee7daf921c1a4dcd5d78aeda1244760579f287518e921fa3ff269cced5f88",
+    "crates/node/src/block_producer/vrf_evaluator/block_producer_vrf_evaluator_state.rs": "de0e79a246d087b56f01c6ce920006abd25877a7cdcca34c992c681b22d3751a",
+    "tools/consensus-diff/run.py": "ac46e3bf756d9efdf1f70f57749042f6b8f476405b4401eedc7477b8a5b61d65",
+    "tools/consensus-diff/prepare-ocaml.py": "404afee7b70b200827d08a4c949cb673f44d9b22c4d78170b9e6f28242202443",
+    "tools/consensus-diff/ocaml/hook.ml": "6db2cd3b3db42cfa02562149a2cbe9a308870ba0cf02916720dba8122a0f51b8",
+    "tools/consensus-diff/regressions.json": "3faf7efb90415299a6bcdfb9a08ac9f2b9ec4da94ec447d64593dde9ae2eccf1"
+  },
+  "rust_tests": {
+    "account_tests": {
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "elapsed_seconds": 6.49
+    },
+    "transaction_pool_tests": {
+      "passed": 47,
+      "failed": 0,
+      "ignored": 1,
+      "elapsed_seconds": 10.67,
+      "ignored_case": "account_update_with_different_network_id_using_proof_is_rejected: existing fixture gap"
+    }
+  },
+  "ledger_test_binary": {
+    "executable_sha256": "7ce331af3054b155f46f27638db1425aa24d92821d829aaa5d38063988ccf821",
+    "account_source_sha256": "ac6ee7daf921c1a4dcd5d78aeda1244760579f287518e921fa3ff269cced5f88",
+    "pool_tests_exit": 0,
+    "pool_elapsed_seconds": 10.817669746931642
+  }
+}

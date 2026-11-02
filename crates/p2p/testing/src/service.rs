@@ -16,7 +16,7 @@ use crate::event::{RustNodeEvent, RustNodeEventStore};
 pub struct ClusterService {
     pub rng: StdRng,
     pub event_sender: mpsc::UnboundedSender<P2pEvent>,
-    pub cmd_sender: mpsc::TrackedUnboundedSender<mina_p2p::service_impl::webrtc::Cmd>,
+    pub cmd_sender: mina_p2p::webrtc::queue::Sender<mina_p2p::service_impl::webrtc::Cmd>,
     mio: MioService,
     peers: std::collections::BTreeMap<mina_p2p::PeerId, mina_p2p::service_impl::webrtc::PeerState>,
     time: Instant,
@@ -29,7 +29,7 @@ impl ClusterService {
         node_idx: usize,
         secret_key: SecretKey,
         event_sender: mpsc::UnboundedSender<P2pEvent>,
-        cmd_sender: mpsc::TrackedUnboundedSender<mina_p2p::service_impl::webrtc::Cmd>,
+        cmd_sender: mina_p2p::webrtc::queue::Sender<mina_p2p::service_impl::webrtc::Cmd>,
         time: Instant,
     ) -> Self {
         let mio = {
@@ -94,7 +94,7 @@ impl P2pServiceWebrtc for ClusterService {
         &self.event_sender
     }
 
-    fn cmd_sender(&self) -> &mpsc::TrackedUnboundedSender<mina_p2p::service_impl::webrtc::Cmd> {
+    fn cmd_sender(&self) -> &mina_p2p::webrtc::queue::Sender<mina_p2p::service_impl::webrtc::Cmd> {
         &self.cmd_sender
     }
 

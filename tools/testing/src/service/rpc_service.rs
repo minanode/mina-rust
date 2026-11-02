@@ -29,6 +29,10 @@ impl RpcService for super::NodeTestingService {
         mina_node::rpc::RpcProofMemoryGetResponse
     );
     to_real!(
+        respond_reporting_snapshot_get,
+        mina_node::rpc::RpcReportingSnapshotGetResponse
+    );
+    to_real!(
         respond_sync_stats_get,
         mina_node::rpc::RpcSyncStatsGetResponse
     );
@@ -138,6 +142,18 @@ impl RpcService for super::NodeTestingService {
         mina_node::rpc::RpcTransitionFrontierUserCommandsResponse,
     );
     to_real!(respond_best_chain, mina_node::rpc::RpcBestChainResponse,);
+    to_real!(
+        respond_best_chain_headers,
+        mina_node::rpc::RpcBestChainHeadersGetResponse,
+    );
+    to_real!(
+        respond_best_chain_block,
+        mina_node::rpc::RpcBestChainBlockGetResponse,
+    );
+    to_real!(
+        respond_sync_progress,
+        mina_node::rpc::RpcSyncProgressGetResponse,
+    );
     to_real!(
         respond_consensus_constants,
         mina_node::rpc::RpcConsensusConstantsGetResponse,

@@ -140,6 +140,96 @@ fn render(
             ));
         }};
     }
+    let queues = mina_node::p2p::webrtc::queue::metrics();
+    metric!(
+        "mina_webrtc_queue_drops_total",
+        "counter",
+        "WebRTC work refused by queue limits.",
+        queues.drops
+    );
+    metric!(
+        "mina_webrtc_overload_disconnects_total",
+        "counter",
+        "WebRTC connections cancelled for overload.",
+        queues.teardowns
+    );
+    metric!(
+        "mina_webrtc_queue_accounted_bytes",
+        "gauge",
+        "Wire bytes plus per-item allowance retained by WebRTC work.",
+        queues.bytes
+    );
+    metric!(
+        "mina_webrtc_queue_peak_accounted_bytes",
+        "gauge",
+        "Peak accounted bytes retained by WebRTC work.",
+        queues.peak_bytes
+    );
+    out.push_str("# HELP mina_webrtc_queue_peak_items Maximum items retained by one WebRTC queue.\n# TYPE mina_webrtc_queue_peak_items gauge\n");
+    for (kind, peak) in ["admission", "command", "internal", "event", "ready"]
+        .iter()
+        .zip(queues.peak_items)
+    {
+        out.push_str(&format!(
+            "mina_webrtc_queue_peak_items{{queue=\"{kind}\"}} {peak}\n"
+        ));
+    }
+    metric!(
+        "mina_webrtc_signaling_response_rejections_total",
+        "counter",
+        "HTTP signaling responses refused before JSON decoding.",
+        queues.signaling_response_rejections
+    );
+    let raw = mina_node::p2p::webrtc::queue::raw_packet_metrics();
+    metric!(
+        "mina_webrtc_raw_queue_bytes",
+        "gauge",
+        "Raw dispatch payload bytes plus per-packet allowance.",
+        raw.bytes
+    );
+    metric!(
+        "mina_webrtc_raw_queue_peak_bytes",
+        "gauge",
+        "Peak aggregate raw dispatch accounted bytes.",
+        raw.peak_bytes
+    );
+    metric!(
+        "mina_webrtc_raw_overload_disconnects_total",
+        "counter",
+        "Transport connections failed for raw dispatch overload.",
+        raw.teardowns
+    );
+    metric!(
+        "mina_webrtc_raw_global_sheds_total",
+        "counter",
+        "Largest buffered associations shed to reclaim aggregate raw dispatch budget.",
+        raw.global_sheds
+    );
+    for (name, kind, help, values) in [
+        (
+            "mina_webrtc_raw_queue_drops_total",
+            "counter",
+            "Packets refused by raw dispatch limits.",
+            raw.drops,
+        ),
+        (
+            "mina_webrtc_raw_queue_peak_items",
+            "gauge",
+            "Maximum packets in one raw dispatch queue.",
+            raw.peak_items,
+        ),
+        (
+            "mina_webrtc_raw_queue_peak_accounted_bytes",
+            "gauge",
+            "Maximum accounted bytes in one raw dispatch queue.",
+            raw.peak_queue_bytes,
+        ),
+    ] {
+        out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} {kind}\n"));
+        for (queue, value) in ["dtls_wire", "dtls_data", "sctp_output"].iter().zip(values) {
+            out.push_str(&format!("{name}{{queue=\"{queue}\"}} {value}\n"));
+        }
+    }
     out.push_str("# HELP mina_sync_status Current synchronization phase (one active phase).\n# TYPE mina_sync_status gauge\n");
     // The phase the node reports (F-dash3): before a peer is heard from,
     // `Connecting` or `Listening`, as OCaml's sync status.

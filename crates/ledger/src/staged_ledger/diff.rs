@@ -9,7 +9,6 @@ use crate::{
         },
     },
     split_at_vec,
-    verifier::VerifierError,
 };
 
 use super::{pre_diff_info::PreDiffError, staged_ledger::StagedLedger};
@@ -145,9 +144,9 @@ impl Diff {
     /// <https://github.com/MinaProtocol/mina/blob/05c2f73d0f6e4f1341286843814ce02dcb3919e0/src/lib/staged_ledger_diff/diff.ml#L333>
     pub fn validate_commands<F>(self, check: F) -> Result<with_valid_signatures::Diff, PreDiffError>
     where
-        F: Fn(Vec<WithStatus<UserCommand>>) -> Result<Vec<valid::UserCommand>, VerifierError>,
+        F: Fn(Vec<WithStatus<UserCommand>>) -> Result<Vec<valid::UserCommand>, PreDiffError>,
     {
-        let validate = |cmds: Vec<WithStatus<UserCommand>>| -> Result<Vec<WithStatus<valid::UserCommand>>, VerifierError> {
+        let validate = |cmds: Vec<WithStatus<UserCommand>>| -> Result<Vec<WithStatus<valid::UserCommand>>, PreDiffError> {
             // The verifier consumes the commands. Keep only their statuses;
             // cloning zkApp commands here holds a second full diff during apply.
             let statuses: Vec<_> = cmds.iter().map(|c| c.status.clone()).collect();

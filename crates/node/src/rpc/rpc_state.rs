@@ -97,20 +97,21 @@ impl RpcState {
     ) -> impl Iterator<
         Item = (
             RpcId,
+            &super::RpcScanStateSummaryGetQuery,
             &v2::MinaBaseStagedLedgerHashStableV1,
             &RpcRequestStatus,
         ),
     > {
-        self.requests
-            .iter()
-            .filter(|(_, req)| matches!(req.req, RpcRequest::ScanStateSummaryGet(_)))
-            .filter_map(|(id, req)| {
-                let block = match &req.data {
-                    RpcRequestExtraData::FullBlockOpt(block) => block.as_ref()?,
-                    _ => return None,
-                };
-                Some((*id, block.staged_ledger_hashes(), &req.status))
-            })
+        self.requests.iter().filter_map(|(id, req)| {
+            let RpcRequest::ScanStateSummaryGet(query) = &req.req else {
+                return None;
+            };
+            let block = match &req.data {
+                RpcRequestExtraData::FullBlockOpt(block) => block.as_ref()?,
+                _ => return None,
+            };
+            Some((*id, query, block.staged_ledger_hashes(), &req.status))
+        })
     }
 
     pub fn accounts_request_rpc_ids(

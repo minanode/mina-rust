@@ -4,7 +4,7 @@ use juniper::EmptySubscription;
 use serde_json::{json, Value};
 
 fn schema() -> Schema {
-    Schema::new(Query, Mutation, EmptySubscription::new())
+    Schema::new_with_scalar_value(Query, Mutation, EmptySubscription::new())
 }
 fn request(query: &str) -> GraphQLBatchRequest {
     GraphQLBatchRequest::Single(GraphQLRequest::new(query.to_owned(), None, None))

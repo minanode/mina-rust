@@ -1,0 +1,315 @@
+{
+  "source": "https://github.com/MinaProtocol/mina/tree/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql",
+  "types": {
+    "LedgerSyncProgress": {
+      "description": "How far a ledger sync has progressed",
+      "fields": [
+        {
+          "name": "targets",
+          "type": "Int!",
+          "description": "How many times the sync has been given a new root to reach"
+        },
+        {
+          "name": "targetSetAt",
+          "type": "Time",
+          "description": "When the current target was set"
+        },
+        {
+          "name": "pendingChildHashes",
+          "type": "Int!",
+          "description": "How many inner nodes the sync is waiting for the children of"
+        },
+        {
+          "name": "pendingContents",
+          "type": "Int!",
+          "description": "How many account subtrees the sync is waiting for the accounts of"
+        },
+        {
+          "name": "synced",
+          "type": "Boolean!",
+          "description": "Whether the ledger has reached the current target"
+        },
+        {
+          "name": "answersAccepted",
+          "type": "Int!",
+          "description": "How many answers from peers have added to the ledger or confirmed part of it"
+        },
+        {
+          "name": "answersIgnored",
+          "type": "Int!",
+          "description": "How many answers have arrived for queries the sync no longer needed, such as those for an earlier target"
+        },
+        {
+          "name": "answersRejected",
+          "type": "Int!",
+          "description": "How many answers have been invalid, and their queries asked again"
+        },
+        {
+          "name": "lastAcceptedAnswerAt",
+          "type": "Time",
+          "description": "When an answer was last accepted"
+        },
+        {
+          "name": "numAccounts",
+          "type": "Int",
+          "description": "How many accounts the current target holds, once a peer has said"
+        },
+        {
+          "name": "accountsSettled",
+          "type": "Int!",
+          "description": "How many of the current target's accounts the ledger is known to hold, whether received or already present. A sync whose ledger already matched its target can finish before any are counted, so a synced ledger should be read as complete."
+        },
+        {
+          "name": "accountsReceived",
+          "type": "Int!",
+          "description": "How many accounts peers have sent, over all targets"
+        }
+      ]
+    },
+    "LedgerSync": {
+      "description": "The most recent sync of a ledger from peers",
+      "fields": [
+        {
+          "name": "ledger",
+          "type": "SyncedLedger!",
+          "description": null
+        },
+        {
+          "name": "target",
+          "type": "LedgerHash",
+          "description": "The root the sync is reaching"
+        },
+        {
+          "name": "active",
+          "type": "Boolean!",
+          "description": "Whether the sync is still running"
+        },
+        {
+          "name": "progress",
+          "type": "LedgerSyncProgress!",
+          "description": "For a sync that has ended, its progress when it ended"
+        }
+      ]
+    },
+    "BootstrapStatus": {
+      "description": "What a node is doing to reach the network's chain",
+      "fields": [
+        {
+          "name": "phase",
+          "type": "BootstrapPhase!",
+          "description": null
+        },
+        {
+          "name": "phaseStartedAt",
+          "type": "Time!",
+          "description": null
+        },
+        {
+          "name": "bootstrapStartedAt",
+          "type": "Time",
+          "description": "When the current or most recent bootstrap started"
+        },
+        {
+          "name": "bootstrapAttempts",
+          "type": "Int!",
+          "description": "How many attempts the current or most recent bootstrap has started"
+        },
+        {
+          "name": "lastAttemptFailure",
+          "type": "String",
+          "description": "Why that bootstrap's last failed attempt failed"
+        },
+        {
+          "name": "ledgerSyncs",
+          "type": "[LedgerSync!]!",
+          "description": "The most recent sync of each ledger"
+        }
+      ]
+    },
+    "TransactionPoolStatus": {
+      "description": "Occupancy of the transaction pool. When the pool is full, admitting a new command evicts the command with the lowest fee per weight unit, together with every later-nonce command from the same fee payer",
+      "fields": [
+        {
+          "name": "size",
+          "type": "Int!",
+          "description": "Number of commands currently in the pool"
+        },
+        {
+          "name": "maxSize",
+          "type": "Int!",
+          "description": "Number of commands the pool holds before it starts evicting commands"
+        },
+        {
+          "name": "minimumFeePerWeightUnit",
+          "type": "String",
+          "description": "The lowest fee per weight unit of any command in the pool, in nanomina, as a decimal integer or a fraction 'n/d'. Null if the pool is empty. Once the pool is full, a new command must pay strictly more than this to be admitted. Payments and stake delegations have weight 1"
+        }
+      ]
+    },
+    "ScanStateTree": {
+      "description": "Free space and outstanding snark work in one tree of the scan state",
+      "fields": [
+        {
+          "name": "availableSpace",
+          "type": "Int!",
+          "description": "Number of transaction slots still free in this tree"
+        },
+        {
+          "name": "baseJobsTodo",
+          "type": "Int!",
+          "description": "Number of base jobs in this tree that are yet to be done"
+        },
+        {
+          "name": "mergeJobsTodo",
+          "type": "Int!",
+          "description": "Number of merge jobs in this tree that are yet to be done"
+        }
+      ]
+    },
+    "ScanState": {
+      "description": "Status of the scan state as of a block",
+      "fields": [
+        {
+          "name": "stateHash",
+          "type": "StateHash!",
+          "description": "State hash of the block whose scan state this is"
+        },
+        {
+          "name": "trees",
+          "type": "[ScanStateTree!]!",
+          "description": "Status of each tree in the scan state, oldest first"
+        }
+      ]
+    },
+    "BootstrapPhase": {
+      "description": "The step a node is in on its way to reaching the network's chain",
+      "enumValues": [
+        {
+          "name": "STARTING",
+          "description": "Initialisation has not begun"
+        },
+        {
+          "name": "WAITING_FOR_GENESIS",
+          "description": "The chain has not started yet"
+        },
+        {
+          "name": "WAITING_FOR_PEERS",
+          "description": "Connecting to enough peers to begin"
+        },
+        {
+          "name": "FETCHING_BEST_TIP",
+          "description": "Asking peers for their best tip, while loading the transition frontier from disk"
+        },
+        {
+          "name": "SYNCING_ROOT_LEDGER",
+          "description": "Bootstrap: syncing the root's snarked ledger"
+        },
+        {
+          "name": "DOWNLOADING_SCAN_STATE",
+          "description": "Bootstrap: downloading the root's scan state and pending coinbases"
+        },
+        {
+          "name": "BUILDING_STAGED_LEDGER",
+          "description": "Bootstrap: building the root's staged ledger, which checks the scan state against the snarked ledger"
+        },
+        {
+          "name": "SYNCING_EPOCH_LEDGERS",
+          "description": "Syncing the staking and next epoch ledgers"
+        },
+        {
+          "name": "LOADING_FRONTIER",
+          "description": "Bootstrap: loading a transition frontier at the new root"
+        },
+        {
+          "name": "PARTICIPATING",
+          "description": "The transition frontier is running"
+        }
+      ]
+    },
+    "SyncedLedger": {
+      "description": "A ledger that a node syncs from its peers",
+      "enumValues": [
+        {
+          "name": "ROOT_SNARKED",
+          "description": "The snarked ledger at the root of the transition frontier"
+        },
+        {
+          "name": "STAKING_EPOCH",
+          "description": "The staking epoch ledger"
+        },
+        {
+          "name": "NEXT_EPOCH",
+          "description": "The next epoch ledger"
+        }
+      ]
+    },
+    "Query": {
+      "fields": [
+        {
+          "name": "transactionPoolStatus",
+          "description": "Occupancy of this daemon's transaction pool, and the fee a new command must beat once the pool is full. Cheap enough to poll before each submission, as a back-pressure signal",
+          "type": "TransactionPoolStatus!",
+          "args": []
+        },
+        {
+          "name": "bootstrapStatus",
+          "description": "What the node is doing to reach the network's chain: its step of initialisation or bootstrap, and its ledger syncs",
+          "type": "BootstrapStatus!",
+          "args": []
+        },
+        {
+          "name": "scanState",
+          "description": "Free space and outstanding snark work in each tree of the scan state as of the given block, or of the best tip if no block is given. Returns an error if the block is not in the transition frontier or if the system is bootstrapping.",
+          "type": "ScanState!",
+          "args": [
+            {
+              "name": "stateHash",
+              "description": "The state hash of the desired block",
+              "type": "String",
+              "defaultValue": null
+            }
+          ]
+        }
+      ]
+    },
+    "Mutation": {
+      "fields": [
+        {
+          "name": "archiveVersionedPrecomputedBlock",
+          "description": "Send a precomputed block of any version the archive reads to the archive, which reads it by the rules of its own version. The block is forwarded as given.",
+          "type": "Applied!",
+          "args": [
+            {
+              "name": "block",
+              "description": "Block encoded in precomputed block format, with its version",
+              "type": "VersionedPrecomputedBlock!",
+              "defaultValue": null
+            }
+          ]
+        }
+      ]
+    },
+    "Applied": {
+      "description": null,
+      "fields": [
+        {
+          "name": "applied",
+          "type": "Boolean!",
+          "description": null
+        }
+      ]
+    },
+    "VersionedPrecomputedBlock": {
+      "description": "Block encoded in precomputed block format, of any version the archive reads"
+    },
+    "StateHash": {
+      "description": "Base58Check-encoded state hash"
+    },
+    "LedgerHash": {
+      "description": "Base58Check-encoded ledger hash"
+    },
+    "Time": {
+      "description": null
+    }
+  }
+}

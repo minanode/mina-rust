@@ -17,7 +17,10 @@ use mina_p2p_messages::v2::{
 use mina_signer::CompressedPubKey;
 use once_cell::sync::Lazy;
 use poly_commitment::{ipa::SRS, SRS as _};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+};
 
 #[derive(Debug, Clone)]
 pub struct Verifier;
@@ -61,14 +64,87 @@ pub fn get_srs<F: FieldWitness>() -> Arc<SRS<F::OtherCurve>> {
 }
 
 /// Returns the SRS on the other curve (Mutex-wrapped version for prover).
+/// Each thread has its own, made at its first proof.
+///
+/// A panic in a proof that holds the lock poisons it, and the `unwrap` of
+/// every later proof on that thread then panicked too: one failed devnet
+/// job made the SNARK worker fail every job after it until a restart. A
+/// poisoned SRS is not reused, even though no proof changes it but for its
+/// cache of Lagrange bases, which a panic leaves without the basis being
+/// added: this thread's SRS is made again, as for its first proof, so a
+/// panic costs one job. [`prover_srs_rebuilds`] counts the rebuilds.
 ///
 /// TODO: Use directly from proof-systems (<https://github.com/o1-labs/mina-rust/issues/1749>)
 pub fn get_srs_mut<F: FieldWitness>() -> Arc<Mutex<SRS<F::OtherCurve>>> {
-    cache! {
-        Arc<Mutex<SRS<F::OtherCurve>>>,
-        {
-            let srs = SRS::<F::OtherCurve>::create(<F as proofs::field::FieldWitness>::Scalar::SRS_DEPTH);
-            Arc::new(Mutex::new(srs))
+    use std::{
+        any::{Any, TypeId},
+        cell::RefCell,
+        mem::ManuallyDrop,
+    };
+
+    // As `cache!`, but an entry can be replaced. One static for every `F`,
+    // keyed by its type id.
+    thread_local! {
+        static CACHE: ManuallyDrop<RefCell<Vec<(TypeId, Box<dyn Any>)>>> =
+            const { ManuallyDrop::new(RefCell::new(Vec::new())) };
+    }
+
+    let type_id = TypeId::of::<F>();
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(index) = cache.iter().position(|(id, _)| *id == type_id) {
+            let srs = cache[index]
+                .1
+                .downcast_ref::<Arc<Mutex<SRS<F::OtherCurve>>>>()
+                .expect("cached by its field's type id");
+            if !srs.is_poisoned() {
+                return srs.clone();
+            }
+            // Dropped before its replacement is made: never two at once.
+            cache.swap_remove(index);
+            let rebuilds = PROVER_SRS_REBUILDS.fetch_add(1, Ordering::Relaxed) + 1;
+            mina_core::warn!(
+                mina_core::log::system_time();
+                kind = "ProverSrsRebuilt",
+                summary = "a panic poisoned this thread's prover SRS: it is made again",
+                thread = std::thread::current().name().unwrap_or("<unnamed>").to_owned(),
+                rebuilds = rebuilds,
+            );
+        }
+        let srs = Arc::new(Mutex::new(SRS::<F::OtherCurve>::create(
+            <F as proofs::field::FieldWitness>::Scalar::SRS_DEPTH,
+        )));
+        cache.push((type_id, Box::new(srs.clone())));
+        srs
+    })
+}
+
+static PROVER_SRS_REBUILDS: AtomicU64 = AtomicU64::new(0);
+
+/// How many times a prover SRS was made again after a panic poisoned it
+/// ([`get_srs_mut`]), in this process.
+pub fn prover_srs_rebuilds() -> u64 {
+    PROVER_SRS_REBUILDS.load(Ordering::Relaxed)
+}
+
+/// Test-only hooks for proving tests, here and in the node crates (the
+/// `test-hooks` feature, which only their dev-dependencies enable).
+#[cfg(any(test, feature = "test-hooks"))]
+pub mod test_hooks {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static PANIC_HOLDING_SRS: AtomicBool = AtomicBool::new(false);
+
+    /// The next step proof, on any thread, panics while it holds its
+    /// thread's prover SRS lock ([`super::get_srs_mut`]), as the devnet
+    /// zkApp panic did.
+    pub fn panic_next_proof_holding_srs() {
+        PANIC_HOLDING_SRS.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn srs_locked() {
+        if PANIC_HOLDING_SRS.swap(false, Ordering::SeqCst) {
+            panic!("test hook: the proof panicked holding the prover SRS lock");
         }
     }
 }
@@ -255,5 +331,49 @@ mod srs_tests {
         assert!(Arc::ptr_eq(&other, &get_srs::<Fq>()));
         assert_ne!(here.g.len(), 0);
         assert_ne!(other.g.len(), 0);
+    }
+
+    /// A panic holding a thread's prover SRS lock costs that one use: the
+    /// next one on the thread gets a new SRS, equal to the first, with its
+    /// own Lagrange bases, and the other field's SRS is kept.
+    #[test]
+    fn a_poisoned_prover_srs_is_made_again() {
+        use ark_poly::EvaluationDomain as _;
+
+        std::thread::spawn(|| {
+            let first = get_srs_mut::<Fq>();
+            let other = get_srs_mut::<Fp>();
+            assert!(Arc::ptr_eq(&first, &get_srs_mut::<Fq>()));
+            let domain = ark_poly::Radix2EvaluationDomain::new(1 << 4).unwrap();
+            let basis = first.lock().unwrap().get_lagrange_basis(domain).clone();
+            let rebuilds = prover_srs_rebuilds();
+
+            let panicked = std::panic::catch_unwind(|| {
+                let srs = get_srs_mut::<Fq>();
+                let _locked = srs.lock().unwrap();
+                panic!("a failed proof");
+            });
+            assert!(panicked.is_err());
+            assert!(first.is_poisoned());
+
+            let second = get_srs_mut::<Fq>();
+            assert!(!Arc::ptr_eq(&first, &second));
+            assert!(!second.is_poisoned());
+            assert_eq!(prover_srs_rebuilds(), rebuilds + 1);
+            {
+                let (first, second) = (
+                    first.lock().unwrap_or_else(|p| p.into_inner()),
+                    second.lock().unwrap(),
+                );
+                assert_eq!(first.g, second.g);
+                assert_eq!(first.h, second.h);
+                assert!(!second.lagrange_bases().contains_key(&domain.size()));
+                assert_eq!(*second.get_lagrange_basis(domain), basis);
+            }
+            assert!(Arc::ptr_eq(&second, &get_srs_mut::<Fq>()));
+            assert!(Arc::ptr_eq(&other, &get_srs_mut::<Fp>()));
+        })
+        .join()
+        .unwrap();
     }
 }

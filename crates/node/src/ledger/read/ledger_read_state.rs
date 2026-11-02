@@ -60,8 +60,13 @@ impl LedgerReadState {
         self.total_cost < MAX_TOTAL_COST
     }
 
+    /// Whether `request` may start now. The account read for our SNARK
+    /// worker's proof starts over the limit: it is not peer input, there is
+    /// one per proof, and a busy refusal would lose the proof
+    /// (SNARK-POOL-OWN-WORK).
     pub fn can_admit(&self, request: &LedgerReadRequest) -> bool {
-        self.is_total_cost_under_limit() && request.cost() != usize::MAX
+        (self.is_total_cost_under_limit() || request.is_own_snark_work())
+            && request.cost() != usize::MAX
     }
 
     pub fn next_req_id(&self) -> LedgerReadId {

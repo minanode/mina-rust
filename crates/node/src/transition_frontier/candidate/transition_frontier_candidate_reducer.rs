@@ -178,6 +178,17 @@ impl TransitionFrontierCandidatesState {
                     .transition_frontier
                     .previous_root_snarked_ledger_hash();
 
+                if matches!(
+                    state.transition_frontier.sync,
+                    crate::transition_frontier::sync::TransitionFrontierSyncState::Idle
+                ) {
+                    dispatcher.push(TransitionFrontierSyncAction::Init {
+                        best_tip: best_tip.clone(),
+                        root_block,
+                        blocks_inbetween,
+                    });
+                    return;
+                }
                 dispatcher.push(TransitionFrontierSyncAction::BestTipUpdate {
                     previous_root_snarked_ledger_hash,
                     best_tip: best_tip.clone(),

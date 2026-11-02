@@ -369,6 +369,7 @@ async fn public_listener_only_serves_graphql_status_and_probes() {
                 let mut uri = path
                     .replace("{job_id}", &job_id)
                     .replace("{block}", "1")
+                    .replace("{id}", "1")
                     .replace("{offer}", "invalid")
                     .replace("{kind}", "staged-ledger")
                     .replace("{public_key}", LIGHT_TEST_KEY);
@@ -405,8 +406,10 @@ async fn public_listener_only_serves_graphql_status_and_probes() {
                 if public_graphql && !allowed {
                     assert_eq!(status, 404, "{method} {path}");
                     assert_eq!(after, before, "private route reached RPC: {method} {path}");
-                } else if path == "/build_env" {
+                } else if path == "/build_env" || path == "/reporting/status" {
+                    // Answered locally, without the node.
                     assert_eq!(status, 200);
+                    assert_eq!(after, before, "{method} {path}");
                 } else if path.starts_with("/report") {
                     // This node has no work directory, so no report; the
                     // guard let the operator's request through.
@@ -515,6 +518,7 @@ async fn public_listener_only_serves_graphql_status_and_probes() {
 fn fixture_status() -> mina_node::rpc::RpcNodeStatus {
     use mina_node::rpc::*;
     RpcNodeStatus {
+        bootstrap: Default::default(),
         next_block_production: Some(RpcNextBlockProduction {
             generated_from_consensus_at: RpcConsensusSlot::new(4, 4, 7140, 0, 90_000).unwrap(),
             next_won_slot: RpcConsensusSlot::new(7, 7, 7140, 0, 90_000),
@@ -523,6 +527,7 @@ fn fixture_status() -> mina_node::rpc::RpcNodeStatus {
         uptime_secs: 1,
         chain_id: Some("ab".repeat(32)),
         transition_frontier: RpcNodeStatusTransitionFrontier {
+            ledger_recovery: None,
             root: None,
             best_tip: Some(RpcNodeStatusTransitionFrontierBlockSummary {
                 hash: mina_p2p_messages::v2::StateHash::zero(),
@@ -2614,4 +2619,20 @@ async fn the_dashboard_at_a_lan_address_needs_no_flag() {
     }
     server.abort();
     node.abort();
+}
+
+/// R43e.2: the reporters' status is answered locally, on the private router
+/// only, with a slot per reporter (`null` when not running).
+#[tokio::test]
+async fn reporting_status_is_local_and_private() {
+    let (base, count) = serve(false).await;
+    let response = reqwest::get(format!("{base}/reporting/status"))
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body: Value = response.json().await.unwrap();
+    for reporter in ["uptime", "node_status", "node_error"] {
+        assert!(body.get(reporter).is_some(), "{body}");
+    }
+    assert_eq!(count.load(Ordering::SeqCst), 0);
 }

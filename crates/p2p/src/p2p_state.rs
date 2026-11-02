@@ -203,18 +203,19 @@ impl P2pState {
         P2pDialBackoffConfig::new(&self.config.timeouts, &self.config.limits)
     }
 
-    /// Whether the dial backoff allows dialling `opts` at `now`: always for
-    /// WebRTC peers, and for libp2p peers unless the peer id or the address
+    /// Whether policy and dial backoff allow dialling `opts` at `now`.
+    /// Allowed WebRTC peers have no backoff; libp2p peers wait if their identity or address
     /// is backing off, the peer id is stale at that address, or a redial
     /// would go over the cap ([`P2pDialBackoff`]).
     pub fn may_dial(&self, opts: &P2pConnectionOutgoingInitOpts, now: Timestamp) -> bool {
-        !opts.is_libp2p()
-            || self.dial_backoff.allows(
-                opts.peer_id(),
-                opts.libp2p_socket_addr(),
-                now,
-                &self.dial_backoff_config(),
-            )
+        self.config.allows_dial(opts)
+            && (!opts.is_libp2p()
+                || self.dial_backoff.allows(
+                    opts.peer_id(),
+                    opts.libp2p_socket_addr(),
+                    now,
+                    &self.dial_backoff_config(),
+                ))
     }
 
     /// Whether `peer_id` is one of our seeds, the initial peers.
@@ -346,7 +347,9 @@ impl P2pState {
             return addresses
                 .iter()
                 .filter(|entry| {
-                    entry.retry_at <= now && (!respect_backoff || self.may_dial(&entry.opts, now))
+                    self.config.allows_dial(&entry.opts)
+                        && entry.retry_at <= now
+                        && (!respect_backoff || self.may_dial(&entry.opts, now))
                 })
                 .max_by_key(|entry| {
                     (
@@ -363,9 +366,9 @@ impl P2pState {
                 })
                 .map(|entry| &entry.opts);
         }
-        peer.dial_opts
-            .as_ref()
-            .filter(|opts| !respect_backoff || self.may_dial(opts, now))
+        peer.dial_opts.as_ref().filter(|opts| {
+            self.config.allows_dial(opts) && (!respect_backoff || self.may_dial(opts, now))
+        })
     }
 
     pub fn dial_address_known(
@@ -1268,6 +1271,7 @@ mod dial_backoff_tests {
             timeouts: Default::default(),
             limits: Default::default(),
             peer_discovery: false,
+            seed_only: false,
             meshsub: P2pMeshsubConfig::default(),
             catchup_rpc: Default::default(),
         };

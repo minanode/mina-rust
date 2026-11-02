@@ -48,7 +48,9 @@ impl TransitionFrontierSyncAction {
                 // snarked ledger will not need to be synced but staged ledger parts are still
                 // required
 
-                if genesis_ledger_hash != staking_epoch_ledger_hash {
+                if store.state().transition_frontier.ledger_recovery_pending()
+                    || genesis_ledger_hash != staking_epoch_ledger_hash
+                {
                     store.dispatch(TransitionFrontierSyncAction::LedgerStakingPending);
                 } else if genesis_ledger_hash != next_epoch_ledger_hash {
                     store.dispatch(TransitionFrontierSyncAction::LedgerNextEpochPending);

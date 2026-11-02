@@ -30,7 +30,7 @@ use crate::PeerId;
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_networking/rpcs.ml#L1173>
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/rate_limiter.ml#L9-L10>
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/rate_limiter.ml#L127-L150>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/gossip_net/libp2p.ml#L159-L165>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/gossip_net/libp2p.ml#L159-L165>
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct P2pBestTipRequestBudget {
     by_peer: BTreeMap<PeerId, VecDeque<Timestamp>>,

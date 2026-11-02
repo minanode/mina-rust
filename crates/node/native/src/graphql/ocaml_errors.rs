@@ -8,7 +8,7 @@
 //! extension ([`ARGUMENT_ERROR`]) and the HTTP handler turns the response
 //! into OCaml's.
 
-use juniper::{graphql_value, FieldError};
+use crate::graphql::api::{graphql_value, FieldError};
 
 /// The extension that marks an argument error for the HTTP handler.
 pub(crate) const ARGUMENT_ERROR: &str = "ocamlArgumentError";

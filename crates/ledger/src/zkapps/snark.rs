@@ -1287,7 +1287,7 @@ fn verification_key_perm_fallback_to_signature_with_older_version(
     )
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/permissions.ml#L310-L318>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_base/permissions.ml#L310-L318>
 fn access_perm_fallback_to_signature_with_older_version(
     auth: &AuthRequired,
     w: &mut Witness<Fp>,

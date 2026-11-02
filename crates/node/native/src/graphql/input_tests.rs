@@ -1,7 +1,9 @@
 //! Input boundaries exercised through the actual GraphQL conversions.
 use super::*;
-use crate::input_limits::{self as caps, tests::*};
-use juniper::FromInputValue;
+use crate::{
+    graphql::api::FromInputValue,
+    input_limits::{self as caps, tests::*},
+};
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
 
@@ -42,7 +44,7 @@ fn zkapp_fixture() -> Value {
 }
 
 fn convert(value: Value) -> Result<MinaBaseUserCommandStableV2, ConversionError> {
-    let input: juniper::InputValue = serde_json::from_value(value).unwrap();
+    let input: crate::graphql::api::InputValue = serde_json::from_value(value).unwrap();
     zkapp::InputGraphQLZkappCommand::from_input_value(&input)
         .unwrap()
         .try_into()
@@ -224,7 +226,7 @@ fn nested_zkapp_inputs_accept_maximum_and_reject_one_over() {
             let mut value = zkapp_fixture();
             *value.pointer_mut(path).unwrap() = "z".repeat(len).into();
             // Coercion copies strings; measure just conversion/decoding.
-            let input: juniper::InputValue = serde_json::from_value(value).unwrap();
+            let input: crate::graphql::api::InputValue = serde_json::from_value(value).unwrap();
             let input = zkapp::InputGraphQLZkappCommand::from_input_value(&input).unwrap();
             let start = Instant::now();
             let result: Result<MinaBaseUserCommandStableV2, _> = input.try_into();
@@ -253,7 +255,11 @@ async fn root_graphql_inputs_reject_before_rpc() {
     use mina_node_common::rpc::{NodeRpcRequest, RpcSender};
     let (tx, mut rx) = mpsc::channel::<NodeRpcRequest>(1);
     let context = Context::new(RpcSender::new(tx));
-    let schema = juniper::RootNode::new(Query, Mutation, juniper::EmptySubscription::new());
+    let schema = crate::graphql::api::RootNode::new_with_scalar_value(
+        Query,
+        Mutation,
+        crate::graphql::api::EmptySubscription::new(),
+    );
     for (query, cap) in [
         ("query($v:ID!){transactionStatus(payment:$v)}", caps::SIGNED_COMMAND),
         ("query($v:ID!){transactionStatus(zkappTransaction:$v)}", caps::OPAQUE_BASE64),
@@ -270,7 +276,7 @@ async fn root_graphql_inputs_reject_before_rpc() {
     ] {
         for len in [cap + 1, 65_000.max(cap + 1)] {
             let variables = serde_json::from_value(json!({"v":"z".repeat(len)})).unwrap();
-            let response = juniper::http::GraphQLRequest::new(query.into(), None, Some(variables)).execute(&schema, &context).await;
+            let response = crate::graphql::api::http::GraphQLRequest::new(query.into(), None, Some(variables)).execute(&schema, &context).await;
             let json = serde_json::to_value(response).unwrap();
             let errors = json["errors"].to_string();
             // Or OCaml's words for an argument that does not decode, which

@@ -493,7 +493,8 @@ pub struct Node {
     pub run_snarker: Option<AccountPublicKey>,
 
     /// The fee asked for each SNARK work bundle, in MINA (for example
-    /// `0.1`), as OCaml's `--snark-worker-fee`.
+    /// `0.1`), as OCaml's `--snark-worker-fee`. Uptime proofs use this fee
+    /// too, even when the ordinary SNARK worker is off.
     ///
     /// If the worker's key has no account yet, OCaml nodes only accept work
     /// whose fee is at least the account creation fee (1 MINA).
@@ -503,7 +504,6 @@ pub struct Node {
         visible_alias = "snark-worker-fee",
         hide_env_values = true,
         default_value = DEFAULT_SNARKER_FEE,
-        requires = "snarker",
         value_name = "MINA",
         help_heading = "SNARK work",
         value_parser = SnarkerValueParser(parse_snarker_fee)
@@ -732,6 +732,12 @@ pub struct Node {
     #[arg(long, help_heading = "Advanced")]
     pub no_peers_discovery: bool,
 
+    /// Allow peers to discover each other and exchange WebRTC offers through
+    /// this node. Exposes connecting peers' addresses to each other; leave off
+    /// on public browser relays. Direct HTTP signaling is always available.
+    #[arg(long, help_heading = "WebRTC")]
+    pub webrtc_signaling_relay: bool,
+
     // Development only: hidden from the help, still accepted.
     /// Record the node's initial state and input actions to
     /// `<work dir>/recorder`, for `mina replay`. For development.
@@ -790,7 +796,123 @@ pub struct Node {
     /// `MINA_AWS_BUCKET_NAME`.
     #[arg(long, env = "MINA_ARCHIVE_AWS_STORAGE", hide = true)]
     pub archive_aws_storage: bool,
+
+    // Reporting.
+    /// Send signed uptime submissions to this URL, as OCaml's
+    /// `--uptime-url`: from the next slot boundary, every five slots, the best
+    /// tip, with up to eight delivery attempts. Before signing, the best-tip
+    /// report proves a suitable transaction job and includes its SNARK work.
+    /// Without a suitable job it reports without work; a proving failure skips
+    /// the report. A block this node produces within four slots gets a separate
+    /// report without work.
+    /// Needs `--uptime-submitter-key` or `--uptime-submitter-pubkey`. Off by
+    /// default.
+    #[arg(
+        long,
+        env = "MINA_UPTIME_URL",
+        value_parser = crate::commands::secret_value::report_url(),
+        value_name = "URL",
+        help_heading = "Reporting"
+    )]
+    pub uptime_url: Option<Url>,
+
+    /// Encrypted secret key file of the account that signs uptime
+    /// submissions; need not be the block producer's. Its password is read
+    /// from the `UPTIME_PRIVKEY_PASS` environment variable, which must be set
+    /// (it may be empty), as OCaml requires.
+    #[arg(
+        long,
+        env = "MINA_UPTIME_SUBMITTER_KEY",
+        requires = "uptime_url",
+        conflicts_with = "uptime_submitter_pubkey",
+        value_name = "FILE",
+        value_parser = crate::commands::secret_value::submitter_key_file(),
+        help_heading = "Reporting"
+    )]
+    pub uptime_submitter_key: Option<PathBuf>,
+
+    /// Public key of the account that signs uptime submissions, whose key
+    /// file is tracked in `<work dir>/wallets/store`, as OCaml tracks wallets
+    /// in `<config dir>/wallets/store`. Its password is read from
+    /// `UPTIME_PRIVKEY_PASS`.
+    #[arg(
+        long,
+        env = "MINA_UPTIME_SUBMITTER_PUBKEY",
+        requires = "uptime_url",
+        value_name = "PUBLIC_KEY",
+        value_parser = crate::commands::secret_value::submitter_public_key(),
+        help_heading = "Reporting"
+    )]
+    pub uptime_submitter_pubkey: Option<AccountPublicKey>,
+
+    /// Include the first 8 characters of this build's commit in uptime
+    /// submissions. Off by default.
+    #[arg(
+        long,
+        env = "MINA_UPTIME_SEND_NODE_COMMIT_SHA",
+        requires = "uptime_url",
+        help_heading = "Reporting"
+    )]
+    pub uptime_send_node_commit_sha: bool,
+
+    /// Don't send uptime submissions: write each request body, exactly as it
+    /// would be POSTed to `--uptime-url`, to a file in this directory
+    /// (created if missing), to compare with OCaml's. Not in OCaml.
+    #[arg(
+        long,
+        env = "MINA_UPTIME_DRY_RUN_DIR",
+        requires = "uptime_url",
+        value_name = "DIR",
+        help_heading = "Reporting"
+    )]
+    pub uptime_dry_run_dir: Option<PathBuf>,
+
+    /// Send the unsigned node status report to this URL five slots after
+    /// start, then every five slots, once each. Off by default.
+    #[arg(
+        long,
+        value_parser = crate::commands::secret_value::report_url(),
+        value_name = "URL",
+        help_heading = "Reporting"
+    )]
+    pub node_status_url: Option<Url>,
+
+    /// Send the simplified node status (OCaml's default). `false` asks for
+    /// OCaml's full version 2 report, which this node doesn't offer: it
+    /// doesn't measure libp2p bandwidth or CPU, per-RPC and gossip counters
+    /// or received-block queues.
+    #[arg(
+        long,
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        help_heading = "Reporting"
+    )]
+    pub simplified_node_stats: bool,
+
+    /// Send node error reports to this URL: one for the first panic, before
+    /// the process ends, and one each time transactions fail to apply to a
+    /// block this node produces. Sent once, never retried; a report over
+    /// 10,000 bytes is not sent. Off by default.
+    #[arg(
+        long,
+        value_parser = crate::commands::secret_value::report_url(),
+        value_name = "URL",
+        help_heading = "Reporting"
+    )]
+    pub node_error_url: Option<Url>,
+
+    /// Contact details included in node error reports (shorter than 200
+    /// bytes).
+    #[arg(
+        long,
+        value_parser = crate::commands::secret_value::contact_info(),
+        help_heading = "Reporting"
+    )]
+    pub contact_info: Option<String>,
 }
+
+/// The submitter key's password, as OCaml's `UPTIME_PRIVKEY_PASS`.
+const UPTIME_PRIVKEY_PASS: &str = "UPTIME_PRIVKEY_PASS";
 
 impl Node {
     /// What the HTTP server allows and serves, from the flags.
@@ -866,6 +988,8 @@ impl Node {
         );
         // Before any flag is moved out of `self`.
         let http_server_options = self.http_server_options()?;
+        // Fail on reporting options before anything starts.
+        let reporting = self.reporting_config()?;
         let (http_listener, webrtc_signal_listener) = bind_http_listeners(
             self.http_addr,
             self.port,
@@ -1032,6 +1156,12 @@ impl Node {
         });
         let mut genesis_ledgers_deferred = None;
 
+        let genesis_input = self
+            .genesis_config
+            .as_ref()
+            .or(self.config.as_ref())
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "embedded network genesis".into());
         // Load configuration
         let (daemon_conf, genesis_conf) = match (self.config, self.genesis_config) {
             (_, Some(path)) => (
@@ -1061,10 +1191,12 @@ impl Node {
                 // syscall (696 s for the 736 MB mainnet config, R31).
                 let reader = BufReader::with_capacity(
                     1 << 20,
-                    File::open(config).context("config file {config:?}")?,
+                    File::open(&config)
+                        .with_context(|| format!("genesis config file {}", config.display()))?,
                 );
                 let config: mina_node::daemon_json::DaemonJson =
-                    serde_json::from_reader(reader).context("config file {config:?}")?;
+                    mina_node::daemon_json::from_ocaml_json_reader(reader)
+                        .with_context(|| format!("genesis config file {}", config.display()))?;
                 (
                     config
                         .daemon
@@ -1081,10 +1213,15 @@ impl Node {
 
         // Apply runtime constants before any builder API can start a service
         // or construct a prover using the compiled network defaults.
-        genesis_conf.initialize_runtime()?;
+        genesis_conf
+            .initialize_runtime()
+            .with_context(|| format!("genesis input {genesis_input}"))?;
         // A fork other than the release's has its own blockchain circuits,
         // verification key and chain-id digest: load them, or refuse to run.
-        if let Some(fork) = genesis_conf.prepare_runtime_fork()? {
+        if let Some(fork) = genesis_conf
+            .prepare_runtime_fork()
+            .with_context(|| format!("genesis input {genesis_input}"))?
+        {
             mina_node::core::info!(mina_node::core::log::system_time();
                 kind = "RuntimeForkCircuits",
                 summary = "using the runtime fork's blockchain circuits",
@@ -1187,6 +1324,8 @@ impl Node {
         node_builder.p2p_max_peers(self.max_peers);
         node_builder.p2p_webrtc_config(webrtc_config);
         self.seed.then(|| node_builder.p2p_seed_node());
+        self.webrtc_signaling_relay
+            .then(|| node_builder.p2p_signaling_relay());
         self.no_peers_discovery
             .then(|| node_builder.p2p_no_discovery());
 
@@ -1370,6 +1509,7 @@ impl Node {
             .worker_control(http_server_options.worker_control)
             .snark_worker_files(work_dir.clone().into())
             .block_production_history(work_dir.clone().into());
+        node_builder.reporting(reporting);
 
         // Build and run the node
         mina_core::set_work_dir(work_dir.clone().into());
@@ -1466,7 +1606,9 @@ impl Node {
                 other => unreachable!("--record {other}: clap accepts only the strategies above"),
             });
 
-        let mut node = node_builder.build().context("node build failed!")?;
+        let mut node = node_builder
+            .build()
+            .with_context(|| format!("node build failed for genesis input {genesis_input}"))?;
 
         // Start event loop
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1475,9 +1617,173 @@ impl Node {
             .build()
             .unwrap();
 
-        runtime.block_on(node.run_forever());
+        runtime
+            .block_on(node.run_forever())
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("genesis input {genesis_input}"))?;
 
         Ok(())
+    }
+}
+
+impl Node {
+    /// The reporters' settings, checked as OCaml checks them: uptime needs
+    /// exactly one submitter key, and each URL is independent. Errors name
+    /// options, never filenames, key material, passwords or URLs.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/73134bfd3a43c3f4d8ee564b3d04a0c6ed2e0b3c/src/app/cli/src/cli_entrypoint/mina_cli_entrypoint.ml#L1399-L1454>
+    fn reporting_config(&self) -> anyhow::Result<mina_node_native::reporting::ReportingConfig> {
+        self.reporting_config_with(std::env::var_os(UPTIME_PRIVKEY_PASS))
+    }
+
+    /// As [`Self::reporting_config`], with `UPTIME_PRIVKEY_PASS`'s value.
+    fn reporting_config_with(
+        &self,
+        uptime_privkey_pass: Option<std::ffi::OsString>,
+    ) -> anyhow::Result<mina_node_native::reporting::ReportingConfig> {
+        use mina_node_native::reporting::{
+            NodeErrorConfig, NodeStatusConfig, ReportingConfig, UptimeConfig,
+        };
+
+        let uptime = match &self.uptime_url {
+            None => None,
+            Some(url) => {
+                let path = match (&self.uptime_submitter_key, &self.uptime_submitter_pubkey) {
+                    (Some(path), None) => path.clone(),
+                    (None, Some(public_key)) => {
+                        let work_dir = shellexpand::full(&self.work_dir)
+                            .context("expanding --work-dir")?
+                            .into_owned();
+                        tracked_wallet_file(std::path::Path::new(&work_dir), public_key)
+                    }
+                    _ => anyhow::bail!(
+                        "--uptime-url needs exactly one of --uptime-submitter-key FILE and --uptime-submitter-pubkey PUBLICKEY"
+                    ),
+                };
+                let password = uptime_privkey_password(uptime_privkey_pass)?;
+                let submitter =
+                    mina_node::account::AccountSecretKey::from_encrypted_file(&path, &password)
+                        .map_err(|error| {
+                            anyhow::anyhow!(
+                                "failed to decrypt the uptime submitter key file: {}",
+                                key_file_error(&error)
+                            )
+                        })?;
+                if let Some(public_key) = &self.uptime_submitter_pubkey {
+                    anyhow::ensure!(
+                        &submitter.public_key() == public_key,
+                        "the tracked wallet of --uptime-submitter-pubkey holds another account's key"
+                    );
+                }
+                Some(UptimeConfig {
+                    snark_work_fee: mina_p2p_messages::v2::CurrencyFeeStableV1(
+                        self.snarker_fee.into(),
+                    ),
+                    url: url.clone(),
+                    submitter,
+                    send_commit_sha: self.uptime_send_node_commit_sha,
+                    dry_run_dir: match &self.uptime_dry_run_dir {
+                        None => None,
+                        Some(dir) => {
+                            std::fs::create_dir_all(dir).map_err(|error| {
+                                anyhow::anyhow!(
+                                    "--uptime-dry-run-dir: cannot create the directory: {}",
+                                    error.kind()
+                                )
+                            })?;
+                            Some(dir.clone())
+                        }
+                    },
+                })
+            }
+        };
+        let node_status = match &self.node_status_url {
+            Some(_) if !self.simplified_node_stats => anyhow::bail!(
+                "--simplified-node-stats false: the full node status report (version 2) isn't supported; this node doesn't measure libp2p bandwidth or CPU, per-RPC and gossip counters or received-block queues"
+            ),
+            Some(url) => Some(NodeStatusConfig { url: url.clone() }),
+            None => None,
+        };
+        let node_error = self.node_error_url.as_ref().map(|url| NodeErrorConfig {
+            url: url.clone(),
+            contact_info: self.contact_info.clone(),
+        });
+        Ok(ReportingConfig {
+            uptime,
+            node_status,
+            node_error,
+        })
+    }
+}
+
+/// The uptime submitter key's password: `UPTIME_PRIVKEY_PASS`, which must
+/// be set, as OCaml reads it without prompting. Empty is a password.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/secrets/keypair_common.ml#L32-L62>
+fn uptime_privkey_password(value: Option<std::ffi::OsString>) -> anyhow::Result<String> {
+    let Some(value) = value else {
+        anyhow::bail!(
+            "No password was specified in environment variable {UPTIME_PRIVKEY_PASS}: set it to the uptime submitter key's password (it may be empty)"
+        );
+    };
+    value
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("{UPTIME_PRIVKEY_PASS} is not valid UTF-8"))
+}
+
+/// The key file OCaml's `Wallets.get_tracked_keypair` reads for
+/// `public_key`: in `<dir>/wallets/store`, the file a `<name>.pub` file names
+/// when its first line is the key, else the file named after the key. OCaml
+/// takes the first `.pub` match in directory order; here the first by name.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/secrets/wallets.ml#L15-L88>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/secrets/wallets.ml#L208-L211>
+fn tracked_wallet_file(dir: &std::path::Path, public_key: &AccountPublicKey) -> PathBuf {
+    let store = dir.join("wallets").join("store");
+    let mut names = std::fs::read_dir(&store)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+        .iter()
+        .filter_map(|name| Some((name.strip_suffix(".pub")?, name)))
+        .find(|(_, pub_file)| {
+            std::fs::read_to_string(store.join(pub_file)).is_ok_and(|text| {
+                text.lines()
+                    .next()
+                    .and_then(|line| line.parse::<AccountPublicKey>().ok())
+                    .as_ref()
+                    == Some(public_key)
+            })
+        })
+        .map_or_else(
+            || store.join(public_key.to_string()),
+            |(key_file, _)| store.join(key_file),
+        )
+}
+
+/// Why a key file didn't open, without its content or name.
+fn key_file_error(error: &mina_node::core::encrypted_key::EncryptionError) -> String {
+    use mina_node::core::encrypted_key::EncryptionError;
+    match error {
+        EncryptionError::Io(error) => match error.kind() {
+            std::io::ErrorKind::NotFound => "no such file".to_owned(),
+            std::io::ErrorKind::PermissionDenied => "permission denied".to_owned(),
+            // The 0600 check's message names only the mode.
+            _ if error
+                .to_string()
+                .starts_with("key file permissions are too open") =>
+            {
+                error.to_string()
+            }
+            _ => "cannot read key file".to_owned(),
+        },
+        EncryptionError::SecretBox(_) => "wrong password or damaged file".to_owned(),
+        EncryptionError::SerdeJson(_) => "not an encrypted key file".to_owned(),
+        _ => "not a valid encrypted key file".to_owned(),
     }
 }
 
@@ -2106,8 +2412,12 @@ mod tests {
         corrupted.replace_range(10..11, "x");
         assert!(parse(&["--run-snarker", &corrupted]).is_err());
 
-        // A fee alone, or a nanomina-style fee without the worker, is refused.
-        assert!(parse(&["--snarker-fee", "0.1"]).is_err());
+        // OCaml retains the fee even with its ordinary worker off: uptime
+        // uses the same setting with its own submitter.
+        assert_eq!(
+            parse(&["--snark-worker-fee", "0.001"]).unwrap().snarker_fee,
+            1_000_000
+        );
     }
 
     /// P5.4: the frontier store is on unless turned off, and its own flags
@@ -2480,5 +2790,155 @@ mod tests {
             .to_string();
         assert!(help.contains("MINA_LOCAL_PRECOMPUTED_STORAGE_PATH"));
         assert!(!help.contains("MINA_ARCHIVE_LOCAL_STORAGE_PATH"));
+    }
+
+    /// A key made in the test, written as OCaml writes one: 0600, in a 0700
+    /// directory.
+    fn write_key(path: &std::path::Path, password: &str) -> mina_node::account::AccountSecretKey {
+        let key = mina_node::account::AccountSecretKey::rand();
+        key.to_encrypted_file(path, password).unwrap();
+        key
+    }
+
+    fn uptime_node(dir: &std::path::Path, selector: &[&str]) -> Node {
+        let dir = dir.to_str().unwrap();
+        let mut args = vec![
+            "--work-dir",
+            dir,
+            "--uptime-url",
+            "http://127.0.0.1:9/v1/submit",
+        ];
+        args.extend(selector);
+        parse(&args).unwrap()
+    }
+
+    fn uptime_error(node: &Node, password: Option<&str>) -> String {
+        match node.reporting_config_with(password.map(Into::into)) {
+            Ok(_) => panic!("accepted"),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    /// The uptime key's password is `UPTIME_PRIVKEY_PASS`, which must be set,
+    /// as OCaml reads it without prompting; empty is a password. The
+    /// producer's `MINA_PRIVKEY_PASS` is never used for it.
+    #[test]
+    fn uptime_submitter_key_needs_uptime_privkey_pass() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("uptime-key");
+        let key = write_key(&file, "");
+        let node = uptime_node(
+            dir.path(),
+            &["--uptime-submitter-key", file.to_str().unwrap()],
+        );
+        assert_eq!(
+            uptime_error(&node, None),
+            "No password was specified in environment variable UPTIME_PRIVKEY_PASS: set it to the uptime submitter key's password (it may be empty)"
+        );
+        let config = node.reporting_config_with(Some("".into())).unwrap();
+        assert_eq!(
+            config.uptime.unwrap().submitter.public_key(),
+            key.public_key()
+        );
+        assert!(config.node_status.is_none() && config.node_error.is_none());
+        assert_eq!(
+            uptime_error(&node, Some("not the password")),
+            "failed to decrypt the uptime submitter key file: wrong password or damaged file"
+        );
+    }
+
+    /// `--uptime-submitter-pubkey` reads the key's tracked wallet, as OCaml's
+    /// `Wallets.get_tracked_keypair`: the file a `.pub` file names, else the
+    /// file named after the key, in `<work dir>/wallets/store`.
+    #[test]
+    fn uptime_submitter_pubkey_reads_the_tracked_wallet() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = dir.path().join("wallets").join("store");
+        std::fs::create_dir_all(&store).unwrap();
+
+        let missing = mina_node::account::AccountSecretKey::rand().public_key();
+        let node = uptime_node(
+            dir.path(),
+            &["--uptime-submitter-pubkey", &missing.to_string()],
+        );
+        assert_eq!(
+            uptime_error(&node, Some("")),
+            "failed to decrypt the uptime submitter key file: no such file"
+        );
+
+        // Named after the key.
+        let named = write_key(&store.join(missing.to_string()), "pw");
+        let node = uptime_node(
+            dir.path(),
+            &["--uptime-submitter-pubkey", &missing.to_string()],
+        );
+        assert_eq!(
+            uptime_error(&node, Some("pw")),
+            "the tracked wallet of --uptime-submitter-pubkey holds another account's key"
+        );
+        let public = named.public_key().to_string();
+        std::fs::rename(store.join(missing.to_string()), store.join(&public)).unwrap();
+        let node = uptime_node(dir.path(), &["--uptime-submitter-pubkey", &public]);
+        let config = node.reporting_config_with(Some("pw".into())).unwrap();
+        assert_eq!(
+            config.uptime.unwrap().submitter.public_key(),
+            named.public_key()
+        );
+
+        // Named by a `.pub` file, which wins over the key's name.
+        let other = write_key(&store.join("imported"), "pw");
+        std::fs::write(store.join("imported.pub"), format!("{public}\n")).unwrap();
+        let config = node.reporting_config_with(Some("pw".into()));
+        assert_eq!(
+            config.err().unwrap().to_string(),
+            "the tracked wallet of --uptime-submitter-pubkey holds another account's key"
+        );
+        std::fs::write(
+            store.join("imported.pub"),
+            format!("{}\n", other.public_key()),
+        )
+        .unwrap();
+        let node = uptime_node(
+            dir.path(),
+            &["--uptime-submitter-pubkey", &other.public_key().to_string()],
+        );
+        let config = node.reporting_config_with(Some("pw".into())).unwrap();
+        assert_eq!(
+            config.uptime.unwrap().submitter.public_key(),
+            other.public_key()
+        );
+    }
+
+    /// `--uptime-dry-run-dir` makes its directory and is passed on; it needs
+    /// the URL, as the other uptime options do.
+    #[test]
+    fn uptime_dry_run_dir_is_created_and_needs_the_url() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("uptime-key");
+        write_key(&file, "");
+        let out = dir.path().join("dry").join("run");
+        let node = uptime_node(
+            dir.path(),
+            &[
+                "--uptime-submitter-key",
+                file.to_str().unwrap(),
+                "--uptime-dry-run-dir",
+                out.to_str().unwrap(),
+            ],
+        );
+        let config = node.reporting_config_with(Some("".into())).unwrap();
+        assert_eq!(
+            config.uptime.unwrap().dry_run_dir.as_deref(),
+            Some(out.as_path())
+        );
+        assert!(out.is_dir());
+        assert!(parse(&["--uptime-dry-run-dir", out.to_str().unwrap()]).is_err());
+    }
+
+    /// No URL, no reporter: nothing is read, not even a set password.
+    #[test]
+    fn reporting_is_off_without_urls() {
+        let config = parse(&[]).unwrap().reporting_config_with(None).unwrap();
+        assert!(!config.is_enabled());
     }
 }

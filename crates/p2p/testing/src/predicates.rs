@@ -149,7 +149,8 @@ pub fn default_errors(event: &ClusterEvent) -> bool {
             RustNodeEvent::ListenerError { .. } => true,
             RustNodeEvent::PeerConnectionError { .. } => true,
             RustNodeEvent::PeerDisconnected { .. } => true,
-            RustNodeEvent::P2p { event: e } => match e {
+            RustNodeEvent::P2p { event: e } => match e.unwrapped() {
+                mina_p2p::P2pEvent::WithPermit { .. } => false,
                 mina_p2p::P2pEvent::Connection(_) => false,
                 mina_p2p::P2pEvent::Channel(e) => matches!(
                     e,

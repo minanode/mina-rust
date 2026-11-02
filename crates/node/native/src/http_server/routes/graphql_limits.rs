@@ -7,9 +7,9 @@
 //! and validated twice, so the token limit is also the CPU limit.
 use std::collections::HashMap;
 
-use juniper::{
+use crate::graphql::api::{
     http::{GraphQLBatchRequest, GraphQLRequest},
-    parser::{parse_document_source, Lexer, Token},
+    parser::{Lexer, Token},
     Definition, Selection,
 };
 
@@ -158,7 +158,7 @@ fn check_query(
             _ => {}
         }
     }
-    let document = parse_document_source(&request.query, &schema.schema)
+    let document = super::graphql_ocaml::parse_archive_document(&request.query, schema)
         .map_err(|e| format!("Invalid GraphQL query: {e}"))?;
     let mut fragments = HashMap::new();
     for definition in &document {

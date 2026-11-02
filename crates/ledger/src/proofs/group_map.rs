@@ -347,4 +347,44 @@ mod tests {
         is_square_agrees_with_legendre::<Fp>();
         is_square_agrees_with_legendre::<Fq>();
     }
+
+    fn bw19_agrees_with_kimchi<F: FieldWitness>() {
+        use kimchi::groupmap::{get_y, BWParameters, GroupMap};
+
+        let params = bw19::Params::<F>::create();
+        let kimchi = BWParameters::<F::Parameters>::setup();
+        let ts = [
+            F::zero(),
+            F::one(),
+            F::from(2u64),
+            F::from(123_456_789u64),
+            -F::one(),
+        ];
+        for t in ts {
+            let mut w = Witness::<F>::empty();
+            let (x1, x2, x3) = bw19::potential_xs(t, &params, &mut w);
+            let xs = kimchi.batch_to_group_x(vec![t])[0];
+            assert_eq!([x1, x2, x3], xs, "t = {t}");
+            if xs.iter().any(|x| get_y::<F::Parameters>(*x).is_some()) {
+                let point = bw19_wrap(t, &params, &mut Witness::empty());
+                assert_eq!((point.x, point.y), kimchi.to_group(t), "t = {t}");
+            }
+        }
+
+        // `t^2`, `alpha_inv`, then `alpha = 1 / alpha_inv`: 0 for t = 0.
+        let mut w = Witness::<F>::empty();
+        bw19::potential_xs(F::zero(), &params, &mut w);
+        assert_eq!(w.aux()[..3], [F::zero(); 3]);
+    }
+
+    /// The BW19 map's one division is by `alpha_inv = (t^2 + f(u)) * t^2`,
+    /// which is 0 for t = 0. Kimchi's map, which the verifier uses, and
+    /// OCaml's checked `inv` take its inverse as 0 there (OCaml's constraint
+    /// then fails); ours panicked. The candidates and the point now match
+    /// kimchi's for t = 0 as for other values.
+    #[test]
+    fn bw19_matches_kimchi_including_zero() {
+        bw19_agrees_with_kimchi::<Fp>();
+        bw19_agrees_with_kimchi::<Fq>();
+    }
 }

@@ -364,9 +364,9 @@ fn read_constraints_data<F: FieldWitness>(
 }
 
 /// For tests that need the Mesa mainnet circuit blobs: sets the global
-/// network config to mainnet, and checks that `MINA_CIRCUIT_BLOBS_BASE_DIR`
-/// holds the blobs, so that a missing blob fails here, loudly, instead of
-/// sending the prover to download a release that doesn't exist.
+/// network config to mainnet. With `embedded-circuits` the binary supplies
+/// the files. Otherwise `MINA_CIRCUIT_BLOBS_BASE_DIR` must hold the blobs;
+/// the loader checks their pinned SHA-256s before the prover uses them.
 #[cfg(test)]
 pub(crate) fn init_mainnet_with_mesa_blobs() -> &'static CircuitsConfig {
     init_with_mesa_blobs("mainnet")
@@ -404,7 +404,7 @@ fn init_with_mesa_blobs(network: &str) -> &'static CircuitsConfig {
     );
     let config = config.circuits_config;
     #[cfg(feature = "embedded-circuits")]
-    if network == "devnet" {
+    if matches!(network, "devnet" | "mainnet") {
         return config;
     }
     let base = std::env::var("MINA_CIRCUIT_BLOBS_BASE_DIR").expect(&how);

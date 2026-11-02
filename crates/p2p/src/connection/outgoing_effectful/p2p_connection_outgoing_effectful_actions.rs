@@ -47,8 +47,12 @@ pub enum P2pConnectionOutgoingEffectfulAction {
 }
 
 impl redux::EnablingCondition<P2pState> for P2pConnectionOutgoingEffectfulAction {
-    fn is_enabled(&self, _: &P2pState, _: redux::Timestamp) -> bool {
-        true
+    fn is_enabled(&self, state: &P2pState, _: redux::Timestamp) -> bool {
+        match self {
+            Self::Init { opts, .. } => state.config.allows_dial(opts),
+            Self::RandomInit { peers } => peers.iter().all(|opts| state.config.allows_dial(opts)),
+            _ => true,
+        }
     }
 }
 

@@ -25,6 +25,21 @@ pub enum P2pEvent {
     Connection(P2pConnectionEvent),
     Channel(P2pChannelEvent),
     MioEvent(MioEvent),
+    /// Live WebRTC events retain their queue budget through node processing.
+    WithPermit {
+        event: Box<P2pEvent>,
+        #[serde(skip)]
+        permit: Option<std::sync::Arc<crate::webrtc::queue::Reservation>>,
+    },
+}
+
+impl P2pEvent {
+    pub fn unwrapped(&self) -> &Self {
+        match self {
+            Self::WithPermit { event, .. } => event.unwrapped(),
+            _ => self,
+        }
+    }
 }
 
 /// The mio service reports events.
@@ -92,6 +107,7 @@ impl fmt::Display for P2pEvent {
             Self::Connection(v) => v.fmt(f),
             Self::Channel(v) => v.fmt(f),
             Self::MioEvent(v) => v.fmt(f),
+            Self::WithPermit { event, .. } => event.fmt(f),
         }
     }
 }

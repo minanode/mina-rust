@@ -40,12 +40,12 @@ use super::*;
 /// The version OCaml writes next to `data`: `Precomputed_block.Stable.V4`,
 /// with versioned JSON.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_block/precomputed_block.ml#L70-L96>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_block/precomputed_block.ml#L70-L96>
 pub const PRECOMPUTED_BLOCK_VERSION: u32 = 4;
 
 /// The block proof, as base64 (URL-safe alphabet) of its bin_prot.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_block/precomputed_block.ml#L5-L43>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_block/precomputed_block.ml#L5-L43>
 #[derive(Clone, Debug, PartialEq, BinProtRead, BinProtWrite)]
 pub struct PrecomputedBlockProof(pub MinaBaseProofStableV2);
 
@@ -87,7 +87,7 @@ impl From<MinaBaseProofStableV2> for PrecomputedBlockProof {
     }
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_block/precomputed_block.ml#L45-L66>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_block/precomputed_block.ml#L45-L66>
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, BinProtRead, BinProtWrite)]
 pub struct PrecomputedBlock {
     /// When the node wrote the block, not the block's own timestamp.
@@ -190,7 +190,7 @@ impl PrecomputedBlockData {
 /// JSON are base58check with the ledger hash version byte. The bin_prot is
 /// that of the header's state hash and state body hashes.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_block/precomputed_block.ml#L57-L58>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_block/precomputed_block.ml#L57-L58>
 pub mod delta_chain_proof_json {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 

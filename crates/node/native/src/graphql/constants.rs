@@ -1,4 +1,4 @@
-use juniper::GraphQLObject;
+use crate::graphql::api::GraphQLObject;
 use mina_core::{
     consensus::{ConsensusConstants, ConsensusTime},
     constants::ConstraintConstants,
@@ -17,7 +17,7 @@ use super::{Context, ConversionError, Error, SyncStatus};
 /// The connected peers, as `getPeers` and `daemonStatus.peers` list them.
 pub(crate) async fn fetch_connected_peers(
     context: &Context,
-) -> juniper::FieldResult<Vec<GraphQLRpcPeerInfo>> {
+) -> crate::graphql::api::FieldResult<Vec<GraphQLRpcPeerInfo>> {
     let peers: Vec<RpcPeerInfo> = context
         .rpc_sender
         .oneshot_request(RpcRequest::PeersGet)
@@ -31,18 +31,18 @@ pub(crate) async fn fetch_connected_peers(
         .collect())
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L314-L341>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L316-L343>
 #[derive(Clone, Debug, Copy)]
 pub(crate) struct GraphQLDaemonStatus;
 
-#[juniper::graphql_object(context = Context, name = "DaemonStatus")]
+#[crate::graphql::api::graphql_object(scalar = crate::graphql::scalars::MinaScalarValue, context = Context, name = "DaemonStatus")]
 impl GraphQLDaemonStatus {
-    async fn sync_status(&self, context: &Context) -> juniper::FieldResult<SyncStatus> {
+    async fn sync_status(&self, context: &Context) -> crate::graphql::api::FieldResult<SyncStatus> {
         super::fetch_sync_status(context).await
     }
 
     /// Seconds since node state initialization, as `/status` reports.
-    async fn uptime_secs(&self, context: &Context) -> juniper::FieldResult<i32> {
+    async fn uptime_secs(&self, context: &Context) -> crate::graphql::api::FieldResult<i32> {
         let status = context
             .get_or_fetch_status()
             .await
@@ -58,7 +58,7 @@ impl GraphQLDaemonStatus {
 
     /// OCaml's non-null status metrics, read from the same node-state snapshot
     /// as the operator endpoint.
-    async fn metrics(&self, context: &Context) -> juniper::FieldResult<GraphQLMetrics> {
+    async fn metrics(&self, context: &Context) -> crate::graphql::api::FieldResult<GraphQLMetrics> {
         let snapshot: RpcMetricsGetResponse = context
             .rpc_sender
             .oneshot_request(RpcRequest::MetricsGet)
@@ -85,7 +85,7 @@ impl GraphQLDaemonStatus {
     async fn consensus_configuration(
         &self,
         context: &Context,
-    ) -> juniper::FieldResult<GraphQLConsensusConfiguration> {
+    ) -> crate::graphql::api::FieldResult<GraphQLConsensusConfiguration> {
         let consensus_constants: ConsensusConstants = context
             .rpc_sender
             .oneshot_request(RpcRequest::ConsensusConstantsGet)
@@ -96,14 +96,17 @@ impl GraphQLDaemonStatus {
         )?)
     }
 
-    async fn peers(&self, context: &Context) -> juniper::FieldResult<Vec<GraphQLRpcPeerInfo>> {
+    async fn peers(
+        &self,
+        context: &Context,
+    ) -> crate::graphql::api::FieldResult<Vec<GraphQLRpcPeerInfo>> {
         fetch_connected_peers(context).await
     }
 
     async fn consensus_time_now(
         &self,
         context: &Context,
-    ) -> juniper::FieldResult<GraphQLConsensusTime> {
+    ) -> crate::graphql::api::FieldResult<GraphQLConsensusTime> {
         let consensus_time: RpcConsensusTimeGetResponse = context
             .rpc_sender
             .oneshot_request(RpcRequest::ConsensusTimeGet(ConsensusTimeQuery::Now))
@@ -112,9 +115,9 @@ impl GraphQLDaemonStatus {
 
         match consensus_time {
             Some(consensus_time) => Ok(GraphQLConsensusTime::from(consensus_time)),
-            None => Err(juniper::FieldError::new(
+            None => Err(crate::graphql::api::FieldError::new(
                 "No consensus time found",
-                juniper::Value::Null,
+                crate::graphql::api::Value::Null,
             )),
         }
     }
@@ -122,7 +125,7 @@ impl GraphQLDaemonStatus {
     async fn consensus_time_best_tip(
         &self,
         context: &Context,
-    ) -> juniper::FieldResult<GraphQLConsensusTime> {
+    ) -> crate::graphql::api::FieldResult<GraphQLConsensusTime> {
         let consensus_time_res: RpcConsensusTimeGetResponse = context
             .rpc_sender
             .oneshot_request(RpcRequest::ConsensusTimeGet(ConsensusTimeQuery::BestTip))
@@ -131,18 +134,24 @@ impl GraphQLDaemonStatus {
 
         match consensus_time_res {
             Some(consensus_time) => Ok(GraphQLConsensusTime::from(consensus_time)),
-            None => Err(juniper::FieldError::new(
+            None => Err(crate::graphql::api::FieldError::new(
                 "No consensus time found",
-                juniper::Value::Null,
+                crate::graphql::api::Value::Null,
             )),
         }
     }
 
-    async fn consensus_mechanism(&self, _context: &Context) -> juniper::FieldResult<String> {
+    async fn consensus_mechanism(
+        &self,
+        _context: &Context,
+    ) -> crate::graphql::api::FieldResult<String> {
         Ok("proof_of_stake".to_string())
     }
 
-    async fn blockchain_length(&self, context: &Context) -> juniper::FieldResult<Option<i32>> {
+    async fn blockchain_length(
+        &self,
+        context: &Context,
+    ) -> crate::graphql::api::FieldResult<Option<i32>> {
         let status = context.get_or_fetch_status().await;
 
         Ok(status.and_then(|status| {
@@ -153,36 +162,48 @@ impl GraphQLDaemonStatus {
         }))
     }
 
-    async fn chain_id(&self, context: &Context) -> juniper::FieldResult<Option<String>> {
+    async fn chain_id(
+        &self,
+        context: &Context,
+    ) -> crate::graphql::api::FieldResult<Option<String>> {
         let status = context.get_or_fetch_status().await;
 
         Ok(status.and_then(|status| status.chain_id))
     }
 
-    async fn commit_id(&self, _context: &Context) -> juniper::FieldResult<String> {
+    async fn commit_id(&self, _context: &Context) -> crate::graphql::api::FieldResult<String> {
         Ok(BuildEnv::get().git.commit_hash.to_string())
     }
 
     async fn global_slot_since_genesis_best_tip(
         &self,
         context: &Context,
-    ) -> juniper::FieldResult<Option<i32>> {
+    ) -> crate::graphql::api::FieldResult<Option<i32>> {
         let best_tip = context.get_or_fetch_best_tip().await;
         Ok(best_tip.and_then(|best_tip| best_tip.global_slot_since_genesis().try_into().ok()))
     }
 
-    async fn ledger_merkle_root(&self, context: &Context) -> juniper::FieldResult<Option<String>> {
+    async fn ledger_merkle_root(
+        &self,
+        context: &Context,
+    ) -> crate::graphql::api::FieldResult<Option<String>> {
         let best_tip = context.get_or_fetch_best_tip().await;
 
         Ok(best_tip.map(|best_tip| best_tip.merkle_root_hash().to_string()))
     }
 
-    async fn state_hash(&self, context: &Context) -> juniper::FieldResult<Option<String>> {
+    async fn state_hash(
+        &self,
+        context: &Context,
+    ) -> crate::graphql::api::FieldResult<Option<String>> {
         let best_tip = context.get_or_fetch_best_tip().await;
         Ok(best_tip.map(|best_tip| best_tip.hash().to_string()))
     }
 
-    async fn num_accounts(&self, context: &Context) -> juniper::FieldResult<Option<i32>> {
+    async fn num_accounts(
+        &self,
+        context: &Context,
+    ) -> crate::graphql::api::FieldResult<Option<i32>> {
         let best_tip = context.get_or_fetch_best_tip().await;
 
         match best_tip {
@@ -199,7 +220,7 @@ impl GraphQLDaemonStatus {
     async fn highest_unvalidated_block_length_received(
         &self,
         context: &Context,
-    ) -> juniper::FieldResult<Option<i32>> {
+    ) -> crate::graphql::api::FieldResult<Option<i32>> {
         let status = context.get_or_fetch_status().await;
         Ok(status.and_then(|status| {
             status
@@ -230,7 +251,7 @@ impl GraphQLDaemonStatus {
     async fn highest_block_length_received(
         &self,
         context: &Context,
-    ) -> juniper::FieldResult<Option<i32>> {
+    ) -> crate::graphql::api::FieldResult<Option<i32>> {
         let status = context.get_or_fetch_status().await;
         Ok(status.and_then(|status| {
             status
@@ -243,7 +264,7 @@ impl GraphQLDaemonStatus {
     async fn addrs_and_ports(
         &self,
         context: &Context,
-    ) -> juniper::FieldResult<GraphQLAddrsAndPorts> {
+    ) -> crate::graphql::api::FieldResult<GraphQLAddrsAndPorts> {
         let status = context
             .get_or_fetch_status()
             .await
@@ -251,7 +272,10 @@ impl GraphQLDaemonStatus {
         Ok(GraphQLAddrsAndPorts::from(&status.network_info))
     }
 
-    async fn block_production_keys(&self, context: &Context) -> juniper::FieldResult<Vec<String>> {
+    async fn block_production_keys(
+        &self,
+        context: &Context,
+    ) -> crate::graphql::api::FieldResult<Vec<String>> {
         let status = context.get_or_fetch_status().await;
         Ok(status.map_or(vec![], |status| {
             status
@@ -260,7 +284,10 @@ impl GraphQLDaemonStatus {
         }))
     }
 
-    async fn coinbase_receiver(&self, context: &Context) -> juniper::FieldResult<Option<String>> {
+    async fn coinbase_receiver(
+        &self,
+        context: &Context,
+    ) -> crate::graphql::api::FieldResult<Option<String>> {
         let status = context.get_or_fetch_status().await;
         Ok(status.and_then(|status| status.coinbase_receiver.map(|key| key.to_string())))
     }
@@ -281,8 +308,9 @@ impl GraphQLDaemonStatus {
     }
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L145-L206>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L147-L208>
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "BlockProducerTimings")]
 pub struct GraphQLBlockProducerTimings {
     /// Next block production time
@@ -296,8 +324,9 @@ pub struct GraphQLBlockProducerTimings {
 
 /// Consensus time and the corresponding global slot since genesis
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L129-L143>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L131-L145>
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "ConsensusTimeGlobalSlot")]
 pub struct GraphQLConsensusTimeGlobalSlot {
     /// Time in terms of slot number in an epoch, start and end time of the
@@ -342,8 +371,9 @@ impl From<&RpcConsensusSlot> for GraphQLConsensusTime {
     }
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L301-L311>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L303-L313>
 #[derive(GraphQLObject, Clone, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "Metrics")]
 pub struct GraphQLMetrics {
     pub block_production_delay: Vec<i32>,
@@ -358,6 +388,7 @@ pub struct GraphQLMetrics {
 }
 
 #[derive(GraphQLObject, Clone, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "AddrsAndPorts")]
 pub struct GraphQLAddrsAndPorts {
     pub bind_ip: String,
@@ -395,8 +426,9 @@ impl From<&RpcNodeStatusNetworkInfo> for GraphQLAddrsAndPorts {
 /// A connected peer: OCaml's `Peer` fields (`peerId`, `host`, `libp2pPort`)
 /// and this node's own.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L286-L291>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L288-L293>
 #[derive(GraphQLObject, Clone, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "Peer")]
 pub struct GraphQLRpcPeerInfo {
     pub peer_id: String,
@@ -461,6 +493,7 @@ impl From<&RpcPeerInfo> for GraphQLRpcPeerInfo {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLGenesisConstants {
     pub genesis_timestamp: String,
     pub coinbase: String,
@@ -502,8 +535,9 @@ pub(crate) fn genesis_timestamp_to_string(ms: u64) -> Result<String, ConversionE
 /// Durations are in milliseconds. OCaml writes `genesisStateTimestamp` with
 /// `Core.Time.to_string` in the daemon's local time zone; use UTC consistently.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L277-L284>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L279-L286>
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "ConsensusConfiguration")]
 pub struct GraphQLConsensusConfiguration {
     pub delta: i32,
@@ -515,7 +549,7 @@ pub struct GraphQLConsensusConfiguration {
     pub genesis_state_timestamp: String,
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L115-L128>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L115-L128>
 impl TryFrom<ConsensusConstants> for GraphQLConsensusConfiguration {
     type Error = ConversionError;
 
@@ -537,7 +571,7 @@ impl TryFrom<ConsensusConstants> for GraphQLConsensusConfiguration {
 /// `Core.Time.to_string` for a daemon in UTC: a space separator and six
 /// fractional digits, with `Z` for the UTC offset.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L277-L284>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L279-L286>
 pub(crate) fn consensus_state_timestamp_to_string(ms: u64) -> Result<String, ConversionError> {
     let format = time::macros::format_description!(
         "[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:6]Z"
@@ -549,6 +583,7 @@ pub(crate) fn consensus_state_timestamp_to_string(ms: u64) -> Result<String, Con
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLConsensusTime {
     pub start_time: String,
     pub end_time: String,

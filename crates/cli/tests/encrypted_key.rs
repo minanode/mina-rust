@@ -426,3 +426,31 @@ fn non_utf8_secrets_fail_without_echo() {
         }
     }
 }
+
+#[test]
+fn malformed_libp2p_plaintext_returns_errors() {
+    use mina_core::EncryptedSecretKey;
+    struct TestKey;
+    impl EncryptedSecretKey for TestKey {
+        const PW_DIFF: (u32, u32) = (8192, 1);
+    }
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("synthetic-p2p");
+    for plaintext in [
+        b"".as_slice(),
+        b"\xff",
+        b"one-part",
+        b"AA==,public,peer",
+        b"not-base64,public,peer",
+    ] {
+        let encrypted = TestKey::try_encrypt_raw(plaintext, "test").unwrap();
+        std::fs::write(&file, serde_json::to_vec(&encrypted).unwrap()).unwrap();
+        // 0600, so that the plaintext, not the file's mode, is refused.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert!(mina_node::p2p::identity::SecretKey::from_encrypted_file(&file, "test").is_err());
+    }
+}

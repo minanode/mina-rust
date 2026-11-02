@@ -1,0 +1,64 @@
+# Private CA; only loopback listeners. See the local test section of MINAWEB.md.
+{
+    admin off
+    local_certs
+    skip_install_trust
+    default_bind 127.0.0.1
+    http_port 4277
+    https_port 4278
+    servers {
+        protocols h1 h2
+    }
+}
+minaweb.test:4274 {
+    root * {$RELEASE_DIR}/browser
+    header {
+        Cross-Origin-Opener-Policy same-origin
+        Cross-Origin-Embedder-Policy require-corp
+        Cross-Origin-Resource-Policy same-origin
+        X-Content-Type-Options nosniff
+        Cache-Control no-cache
+    }
+    handle /webnode-devnet/ice-servers.json {
+        header Cache-Control no-store
+        redir https://relay.minaweb.test/ice-servers.json 302
+    }
+    handle {
+        try_files {path} /index.html
+        file_server
+    }
+}
+assets.minaweb.test:4275 {
+    @binary path *.postcard *.bin
+    header @binary Content-Type application/octet-stream
+    header {
+        Access-Control-Allow-Origin https://minaweb.test
+        Cross-Origin-Resource-Policy cross-origin
+        Cache-Control "public, max-age=31536000, immutable"
+    }
+    handle_path /{$RELEASE_PREFIX}/* {
+        root * {$RELEASE_DIR}/upload
+        file_server
+    }
+}
+relay.minaweb.test:4276 {
+    @signal path /mina/webrtc/signal /mina/webrtc/signal/*
+    handle @signal {
+        reverse_proxy 127.0.0.1:4272
+    }
+    @health path /healthz /readyz
+    handle @health {
+        reverse_proxy 127.0.0.1:4271
+    }
+    handle /ice-servers.json {
+        # STUN-free loopback test. Production uses the credential service.
+        header Content-Type application/json
+        header Access-Control-Allow-Origin https://minaweb.test
+        header Cross-Origin-Resource-Policy cross-origin
+        header Cache-Control no-store
+        respond "[]" 200
+    }
+    handle {
+        respond 404
+    }
+}

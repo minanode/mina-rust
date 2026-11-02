@@ -5,8 +5,8 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use crate::graphql::api::{FieldError, GraphQLInputObject, GraphQLObject};
 use dataloader::non_cached::Loader;
-use juniper::{FieldError, GraphQLInputObject, GraphQLObject};
 use ledger::AccountId;
 use mina_node::rpc::{
     LightLedgerKind, LightMerklePathElement, RpcLightAccount, RpcLightAccountEntry,
@@ -94,8 +94,9 @@ pub(crate) async fn light_accounts(
 /// One element of a Merkle path: `left` set means the path node is a left
 /// child and `left` is the hash of its sibling, `right` the reverse.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L208-L223>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L210-L225>
 #[derive(GraphQLObject, Debug, Clone)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "MerklePathElement")]
 pub struct GraphQLMerklePathElement {
     pub left: Option<FieldElemScalar>,
@@ -119,8 +120,9 @@ impl From<&LightMerklePathElement> for GraphQLMerklePathElement {
 
 /// An account with a public key and a token id
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L2582-L2595>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L2884-L2897>
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "AccountInput")]
 pub struct AccountInput {
     /// Public key of the account
@@ -131,8 +133,9 @@ pub struct AccountInput {
 
 /// An account, as binprot in base64, with its path in a snarked ledger.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L857-L880>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L1159-L1182>
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "EncodedAccount")]
 pub struct GraphQLEncodedAccount {
     /// Base64 encoded account as binable wire type
@@ -162,12 +165,12 @@ impl Context {
 /// request limit. Fails as a whole, with OCaml's messages, if a ledger or an
 /// account is missing.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L2422-L2500>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/mina_graphql.ml#L2817-L2895>
 pub(crate) async fn encoded_snarked_ledger_account_membership(
     context: &Context,
     account_infos: Vec<AccountInput>,
     state_hash: String,
-) -> juniper::FieldResult<Vec<GraphQLEncodedAccount>> {
+) -> crate::graphql::api::FieldResult<Vec<GraphQLEncodedAccount>> {
     if account_infos.len() > MAX_MEMBERSHIP_ACCOUNTS {
         return Err(FieldError::from(format!(
             "at most {MAX_MEMBERSHIP_ACCOUNTS} accountInfos per request"

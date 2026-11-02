@@ -13,6 +13,16 @@ default procedure gives each daemon its own shared node lock. An explicit
 coordinator allocation for P4.6c permits the fully isolated pair without node
 locks, with a 45-minute cap; see the allocated-run procedure below.
 
+For a qualification lane with independently assigned HTTP and libp2p ranges,
+`node.py` accepts `--rust-http-port`, `--rust-libp2p-port`, `--ocaml-http-port`
+and `--ocaml-libp2p-port`. The OCaml client uses the next libp2p port. All five
+ports must be valid and distinct. Use `--ocaml` for a pinned reference wrapper
+such as OCaml 4.0.4. For two producers, allocate stake to the generated
+`producer` and `small` accounts, then pass
+`--ocaml-producer --ocaml-producer-key small`. Rust can produce and sell work
+together with `--rust-snark-worker-fee FEE --rust-producer-with-worker`. The
+namespace, distinct chain identity and full-proof preflights still apply.
+
 Reserve both shared node slots before generating the future timestamp. OCaml
 exits if it finds no peer within a minute after its transition router starts;
 older producer revisions also have a late-genesis startup limitation (fixed by

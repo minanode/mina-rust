@@ -314,9 +314,6 @@ impl<F: FieldWitness> PlonkDomain<F> for LimitedDomain<F> {
     fn shifts(&self) -> &[F; PERMUTS] {
         self.shifts.shifts()
     }
-    fn log2_size(&self) -> u64 {
-        unimplemented!() // Unused during proof verification
-    }
 }
 
 // TODO: `domain_log2` and `srs_length_log2` might be the same here ? Remove one or the other
@@ -434,7 +431,15 @@ pub fn make_scalars_env<F: FieldWitness, const NLIMB: usize>(
                         (false, -2) => omega_to_zk_plus_1,
                         (false, -3) | (true, 0) => omega_to_zk,
                         (true, -1) => omega_to_zk_minus_1_clone,
-                        _ => todo!(),
+                        // Unreachable: the rows come from kimchi's
+                        // linearization, fixed by the kimchi revision, never
+                        // from a proof, and it asks for (false, 0) and
+                        // (true, -1) only (`linearization_lagrange_rows_are_handled`).
+                        // OCaml fails on any other row too.
+                        // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/plonk_checks/plonk_checks.ml#L310-L329>
+                        (zk_rows, offset) => {
+                            unreachable!("unnormalized_lagrange_basis({zk_rows}, {offset})")
+                        }
                     };
                     crate::proofs::field::field::div_by_inv(zeta_to_n_minus_1, zeta - w_to_i, w)
                 });
@@ -780,6 +785,16 @@ pub fn verify_block(
     verifier_index: &VerifierIndex<Fq>,
     srs: &SRS<Vesta>,
 ) -> bool {
+    verified_or_false("block proof", || {
+        verify_block_contained(header, verifier_index, srs)
+    })
+}
+
+fn verify_block_contained(
+    header: &MinaBlockHeaderStableV2,
+    verifier_index: &VerifierIndex<Fq>,
+    srs: &SRS<Vesta>,
+) -> bool {
     let MinaBlockHeaderStableV2 {
         protocol_state,
         protocol_state_proof,
@@ -824,6 +839,16 @@ const BLOCKS_PER_BATCH: usize = 32;
 /// verifies. A frontier store restore (I5d1) checks every block it replays
 /// with it, as a peer's block is checked before it is followed.
 pub fn verify_blocks(
+    headers: &[&MinaBlockHeaderStableV2],
+    verifier_index: &VerifierIndex<Fq>,
+    srs: &SRS<Vesta>,
+) -> bool {
+    verified_or_false("block proofs", || {
+        verify_blocks_contained(headers, verifier_index, srs)
+    })
+}
+
+fn verify_blocks_contained(
     headers: &[&MinaBlockHeaderStableV2],
     verifier_index: &VerifierIndex<Fq>,
     srs: &SRS<Vesta>,
@@ -906,6 +931,16 @@ pub fn verify_transaction<'a>(
     verifier_index: &VerifierIndex<Fq>,
     srs: &SRS<Vesta>,
 ) -> bool {
+    verified_or_false("transaction proof", || {
+        verify_transaction_contained(proofs, verifier_index, srs)
+    })
+}
+
+fn verify_transaction_contained<'a>(
+    proofs: impl IntoIterator<Item = (&'a Statement<SokDigest>, &'a TransactionSnarkProofStableV2)>,
+    verifier_index: &VerifierIndex<Fq>,
+    srs: &SRS<Vesta>,
+) -> bool {
     use rayon::prelude::*;
 
     let vk = VK {
@@ -956,6 +991,17 @@ pub fn verify_zkapp(
     sideloaded_proof: &PicklesProofProofsVerified2ReprStableV2,
     srs: &SRS<Vesta>,
 ) -> bool {
+    verified_or_false("zkApp proof", || {
+        verify_zkapp_contained(verification_key, zkapp_statement, sideloaded_proof, srs)
+    })
+}
+
+fn verify_zkapp_contained(
+    verification_key: &VerificationKey,
+    zkapp_statement: &ZkappStatement,
+    sideloaded_proof: &PicklesProofProofsVerified2ReprStableV2,
+    srs: &SRS<Vesta>,
+) -> bool {
     let verifier_index = make_zkapp_verifier_index(verification_key);
     // <https://github.com/MinaProtocol/mina/blob/4e0b324912017c3ff576704ee397ade3d9bda412/src/lib/pickles/pickles.ml#LL260C1-L274C18>
     let vk = VK {
@@ -977,6 +1023,37 @@ pub fn verify_zkapp(
     }
 
     ok
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Panics contained by [`verified_or_false`] on this thread, for tests
+    /// to require none. Rayon re-raises a worker's panic in the caller.
+    pub(crate) static CONTAINED_PANICS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// Runs a verification and fails it if it panics: a malformed proof fails
+/// verification instead of panicking, as in OCaml's verifier. Malformed
+/// inputs are rejected earlier as invalid; this is the backstop.
+pub(crate) fn verified_or_false(what: &str, verify: impl FnOnce() -> bool) -> bool {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(verify)) {
+        Ok(verified) => verified,
+        Err(payload) => {
+            #[cfg(test)]
+            CONTAINED_PANICS.with(|n| n.set(n.get() + 1));
+            let message = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            mina_core::error!(
+                message = format!("{what} verifier panicked; the proof fails verification"),
+                error = message
+            );
+            false
+        }
+    }
 }
 
 fn verify_impl<AppState>(

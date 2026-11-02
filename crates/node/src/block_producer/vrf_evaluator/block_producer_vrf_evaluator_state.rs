@@ -6,9 +6,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::{account::AccountPublicKey, block_producer::BlockProducerWonSlot};
 
-use super::{DelegatorTable, VrfEvaluatorInput, VrfWonSlotWithHash};
+use super::{DelegatorTable, EpochFingerprint, VrfEvaluatorInput, VrfWonSlotWithHash};
 
 pub const SLOTS_PER_EPOCH: u32 = 7140;
+
+/// How long to wait before asking again for a staking ledger that was not
+/// available, when no best tip update asks first.
+pub const UNAVAILABLE_LEDGER_RETRY: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Completed evaluations kept, by epoch: enough for a reorg back across an
+/// epoch boundary.
+const COMPLETED_EPOCHS_KEPT: usize = 4;
 /// Vrf evaluator sub-state
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BlockProducerVrfEvaluatorState {
@@ -21,6 +29,26 @@ pub struct BlockProducerVrfEvaluatorState {
     last_evaluated_epoch: Option<u32>,
     pending_evaluation: Option<PendingEvaluation>,
     epoch_context: EpochContext,
+    /// The epoch data each completed evaluation used. An epoch counts as
+    /// evaluated only for exactly this data: a tip selecting other data for
+    /// it starts the evaluation again.
+    #[serde(default)]
+    completed_epochs: BTreeMap<u32, EpochFingerprint>,
+    /// The evaluation being set up or run, from its selection until it
+    /// finishes or is interrupted.
+    #[serde(default)]
+    target: Option<EpochFingerprint>,
+    /// Increases with each selected evaluation and each interruption. VRF
+    /// responses carry the generation of their request.
+    #[serde(default)]
+    generation: u64,
+    /// The clock's epoch at the last readiness check.
+    #[serde(default)]
+    checked_clock_epoch: Option<u32>,
+    /// Since when the selected staking ledger has been unavailable, to ask
+    /// again for it.
+    #[serde(default)]
+    ledger_unavailable_since: Option<redux::Timestamp>,
 }
 
 impl BlockProducerVrfEvaluatorState {
@@ -34,6 +62,21 @@ impl BlockProducerVrfEvaluatorState {
             last_evaluated_epoch: Default::default(),
             pending_evaluation: Default::default(),
             epoch_context: EpochContext::Waiting,
+            completed_epochs: Default::default(),
+            target: None,
+            generation: 0,
+            checked_clock_epoch: None,
+            ledger_unavailable_since: None,
+        }
+    }
+
+    /// A fresh evaluator after a ledger recovery. Its generation continues
+    /// from the replaced one, so a VRF response still in flight is rejected.
+    pub fn reset(&self, now: redux::Timestamp) -> Self {
+        Self {
+            genesis_timestamp: self.genesis_timestamp,
+            generation: self.generation.saturating_add(1),
+            ..Self::new(now)
         }
     }
 
@@ -46,9 +89,12 @@ impl BlockProducerVrfEvaluatorState {
     /// Returns:
     /// - `SlotPositionInEpoch`: An enum indicating the slot's position (Beginning, End, or Within).
     pub fn evaluate_epoch_bounds(global_slot: &u32) -> SlotPositionInEpoch {
-        if global_slot.is_multiple_of(SLOTS_PER_EPOCH) {
+        // OCaml Global_slot.slot uses remainder, including at UInt32.max_int.
+        // src/lib/consensus/global_slot.ml (4.0.4).
+        let slot = global_slot % SLOTS_PER_EPOCH;
+        if slot == 0 {
             SlotPositionInEpoch::Beginning
-        } else if (global_slot.checked_add(1).expect("overflow")).is_multiple_of(SLOTS_PER_EPOCH) {
+        } else if slot == SLOTS_PER_EPOCH - 1 {
             SlotPositionInEpoch::End
         } else {
             SlotPositionInEpoch::Within
@@ -69,17 +115,33 @@ impl BlockProducerVrfEvaluatorState {
     ///
     /// Returns:
     /// - `Option<BlockProducerWonSlot>`: The next won slot, if any, as a `BlockProducerWonSlot` or `None` if there are no more slots won in the future.
+    /// A win evaluated with epoch data other than the data the best tip
+    /// selects for its epoch is skipped: no block extending the best tip can
+    /// use it.
     pub fn next_won_slot(
         &self,
         cur_global_slot: u32,
         best_tip: &ArcBlockWithHash,
     ) -> Option<BlockProducerWonSlot> {
+        self.won_slots_from(cur_global_slot, best_tip).next()
+    }
+
+    /// The wins [`Self::next_won_slot`] would choose from, in slot order.
+    pub fn won_slots_from<'a>(
+        &'a self,
+        cur_global_slot: u32,
+        best_tip: &'a ArcBlockWithHash,
+    ) -> impl Iterator<Item = BlockProducerWonSlot> + 'a {
+        // A block on the best tip, or on its parent for a win of the tip's
+        // slot, takes the same staking data for the win's epoch.
         self.won_slots
             .range(cur_global_slot..)
             .map(|(_, won_slot)| {
                 BlockProducerWonSlot::from_vrf_won_slot(won_slot, best_tip.genesis_timestamp())
             })
-            .find(|won_slot| won_slot >= best_tip)
+            .filter(|won_slot| {
+                won_slot >= best_tip && won_slot.epoch_data_matches(best_tip.consensus_state())
+            })
     }
 
     /// Retrieves the current epoch context.
@@ -102,31 +164,61 @@ impl BlockProducerVrfEvaluatorState {
             staking_epoch_data,
             next_epoch_data,
             ..
-        } = self.status.clone()
+        } = &self.status
         {
-            // handle edge cases when the genesis injection triggers a best tip update
-            // do not start evaluating if the true current epoch is greater than the best tip epoch
-            if let Some(current_epoch) = current_epoch {
-                if current_epoch > best_tip_epoch {
-                    self.epoch_context = EpochContext::Waiting;
-                    return;
-                }
-            } else {
-                self.epoch_context = EpochContext::Waiting;
-                return;
-            }
+            self.epoch_context = self.select_epoch_context(
+                *current_epoch,
+                *best_tip_epoch,
+                *root_block_epoch,
+                *is_next_epoch_seed_finalized,
+                (**staking_epoch_data).clone().into(),
+                (**next_epoch_data).clone().into(),
+            );
+        }
+    }
 
-            if !self.is_epoch_evaluated(best_tip_epoch) {
-                self.epoch_context = EpochContext::Current((*staking_epoch_data).into())
-            } else if !self.is_epoch_evaluated(best_tip_epoch.checked_add(1).expect("overflow")) {
-                if root_block_epoch == best_tip_epoch && is_next_epoch_seed_finalized {
-                    self.epoch_context = EpochContext::Next((*next_epoch_data).into())
-                } else {
-                    self.epoch_context = EpochContext::Waiting
-                }
+    /// The epoch to evaluate, with the data the best tip selects for it.
+    ///
+    /// Like OCaml, a clock in the epoch after the best tip's evaluates that
+    /// epoch at once with the tip's next epoch data, and a clock further
+    /// ahead has no data until a later tip arrives (OCaml exits). Within the
+    /// tip's epoch, its staking data evaluates the epoch, and the next epoch
+    /// is evaluated ahead only once its seed is final and the root has
+    /// reached the tip's epoch. Any epoch already evaluated with exactly the
+    /// selected data is not evaluated again; other data is.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L2919-L3020>
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/block_producer/block_producer.ml#L1072-L1093>
+    fn select_epoch_context(
+        &self,
+        current_epoch: Option<u32>,
+        best_tip_epoch: u32,
+        root_block_epoch: u32,
+        is_next_epoch_seed_finalized: bool,
+        staking: EpochData,
+        next: EpochData,
+    ) -> EpochContext {
+        let Some(current_epoch) = current_epoch else {
+            return EpochContext::Waiting;
+        };
+        let next_epoch = best_tip_epoch.checked_add(1);
+        let next_pending = |epoch: u32| !self.is_evaluated(&EpochFingerprint::new(epoch, &next));
+        if current_epoch > best_tip_epoch {
+            return if next_epoch == Some(current_epoch) && next_pending(current_epoch) {
+                EpochContext::Next(next)
             } else {
-                self.epoch_context = EpochContext::Waiting
-            }
+                EpochContext::Waiting
+            };
+        }
+        if !self.is_evaluated(&EpochFingerprint::new(best_tip_epoch, &staking)) {
+            EpochContext::Current(staking)
+        } else if next_epoch.is_some_and(next_pending)
+            && root_block_epoch == best_tip_epoch
+            && is_next_epoch_seed_finalized
+        {
+            EpochContext::Next(next)
+        } else {
+            EpochContext::Waiting
         }
     }
 
@@ -142,19 +234,110 @@ impl BlockProducerVrfEvaluatorState {
         )
     }
 
-    /// Determines if a given epoch number has already been evaluated.
-    ///
-    /// Arguments:
-    /// - `epoch_number`: The epoch number as a 32-bit unsigned integer to check.
-    ///
-    /// Returns:
-    /// - `bool`: `true` if the epoch has already been evaluated, otherwise `false`.
-    pub fn is_epoch_evaluated(&self, epoch_number: u32) -> bool {
-        if let Some(last_evaluated_epoch) = self.last_evaluated_epoch {
-            last_evaluated_epoch >= epoch_number
-        } else {
-            false
+    /// Whether an evaluation of `epoch_data`'s epoch has completed with
+    /// exactly this data.
+    pub fn is_evaluated(&self, epoch_data: &EpochFingerprint) -> bool {
+        self.completed_epochs.get(&epoch_data.epoch) == Some(epoch_data)
+    }
+
+    /// The epoch data of `epoch`'s completed evaluation, if any.
+    pub fn completed_epoch(&self, epoch: u32) -> Option<&EpochFingerprint> {
+        self.completed_epochs.get(&epoch)
+    }
+
+    /// Records an evaluation completed with `epoch_data`.
+    pub fn mark_epoch_evaluated(&mut self, epoch_data: EpochFingerprint) {
+        let epoch = epoch_data.epoch;
+        self.completed_epochs.insert(epoch, epoch_data);
+        while self.completed_epochs.len() > COMPLETED_EPOCHS_KEPT {
+            self.completed_epochs.pop_first();
         }
+        self.last_evaluated_epoch = Some(self.last_evaluated_epoch.map_or(epoch, |e| e.max(epoch)));
+    }
+
+    /// The evaluation being set up or run.
+    pub fn target(&self) -> Option<&EpochFingerprint> {
+        self.target.as_ref()
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Whether the evaluation being set up or run can no longer produce a
+    /// block: a block extending `best_tip` would use other data for its
+    /// epoch, or the clock has passed it.
+    pub fn target_is_stale(
+        &self,
+        best_tip: &mina_p2p_messages::v2::ConsensusProofOfStakeDataConsensusStateValueStableV2,
+        current_epoch: Option<u32>,
+    ) -> bool {
+        self.target.as_ref().is_some_and(|target| {
+            EpochFingerprint::select(best_tip, target.epoch).as_ref() != Some(target)
+                || current_epoch.is_some_and(|epoch| epoch > target.epoch)
+        })
+    }
+
+    /// Whether a readiness check is due without a best tip update: the clock
+    /// entered another epoch, the clock passed the evaluated epoch, or a
+    /// missing staking ledger is to be asked for again.
+    pub fn recheck_due(&self, current_epoch: u32, now: redux::Timestamp) -> bool {
+        self.is_initialized()
+            && (self.checked_clock_epoch != Some(current_epoch)
+                || self
+                    .target
+                    .as_ref()
+                    .is_some_and(|t| t.epoch < current_epoch)
+                || self.ledger_unavailable_since.is_some_and(|since| {
+                    let retry = UNAVAILABLE_LEDGER_RETRY.as_nanos() as u64;
+                    now >= since.checked_add(retry).unwrap_or(since)
+                }))
+    }
+
+    pub fn set_checked_clock_epoch(&mut self, current_epoch: Option<u32>) {
+        self.checked_clock_epoch = current_epoch;
+    }
+
+    /// Whether the last selected staking ledger was unavailable.
+    pub fn is_ledger_unavailable(&self) -> bool {
+        self.ledger_unavailable_since.is_some()
+    }
+
+    /// Selects `target` for evaluation: a new generation, and no completed
+    /// evaluation or win of its epoch made with other data remains.
+    pub fn select_target(&mut self, target: EpochFingerprint) {
+        if self.completed_epochs.get(&target.epoch) != Some(&target) {
+            self.completed_epochs.remove(&target.epoch);
+        }
+        let stale = self
+            .won_slots
+            .iter()
+            .filter(|(slot, won)| {
+                *slot / SLOTS_PER_EPOCH == target.epoch && won.epoch_data.as_ref() != Some(&target)
+            })
+            .map(|(slot, _)| *slot)
+            .collect::<Vec<_>>();
+        for slot in stale {
+            self.won_slots.remove(&slot);
+        }
+        self.target = Some(target);
+        self.generation = self.generation.saturating_add(1);
+        self.ledger_unavailable_since = None;
+    }
+
+    /// Ends the evaluation being set up or run; in-flight responses are
+    /// rejected from now on.
+    pub fn clear_target(&mut self) {
+        self.target = None;
+        self.pending_evaluation = None;
+        self.generation = self.generation.saturating_add(1);
+    }
+
+    /// The selected staking ledger is unavailable: nothing is evaluated
+    /// until it is asked for again.
+    pub fn set_ledger_unavailable(&mut self, now: redux::Timestamp) {
+        self.clear_target();
+        self.ledger_unavailable_since = Some(now);
     }
 
     /// Retrieves the number of the last evaluated epoch, if any.
@@ -284,10 +467,6 @@ impl BlockProducerVrfEvaluatorState {
 
     pub fn initialize_evaluator(&mut self, _epoch: u32, _last_height: u32) {}
 
-    pub fn set_last_evaluated_epoch(&mut self, epoch_number: u32) {
-        self.last_evaluated_epoch = Some(epoch_number);
-    }
-
     pub fn initial_slot(&self) -> Option<u32> {
         if let BlockProducerVrfEvaluatorStatus::InitialSlotSelection { initial_slot, .. } =
             self.status
@@ -328,16 +507,16 @@ impl BlockProducerVrfEvaluatorState {
 
     pub fn construct_vrf_input(&self) -> Option<VrfEvaluatorInput> {
         if let Some(pending_evaluation) = self.current_evaluation() {
-            Some(VrfEvaluatorInput::new(
-                pending_evaluation.epoch_data.seed,
-                pending_evaluation.epoch_data.delegator_table,
-                pending_evaluation
-                    .latest_evaluated_slot
-                    .checked_add(1)
-                    .expect("overflow"),
-                pending_evaluation.epoch_data.total_currency,
-                pending_evaluation.epoch_data.ledger,
-            ))
+            Some(
+                VrfEvaluatorInput::new(
+                    pending_evaluation.epoch_data.seed,
+                    pending_evaluation.epoch_data.delegator_table,
+                    pending_evaluation.latest_evaluated_slot.checked_add(1)?,
+                    pending_evaluation.epoch_data.total_currency,
+                    pending_evaluation.epoch_data.ledger,
+                )
+                .with_generation(pending_evaluation.generation),
+            )
         } else {
             None
         }
@@ -416,6 +595,15 @@ pub struct PendingEvaluation {
     pub epoch_number: u32,
     pub epoch_data: EpochData,
     pub latest_evaluated_slot: u32,
+    /// The evaluator's generation when this evaluation began.
+    #[serde(default)]
+    pub generation: u64,
+}
+
+impl PendingEvaluation {
+    pub fn fingerprint(&self) -> EpochFingerprint {
+        EpochFingerprint::new(self.epoch_number, &self.epoch_data)
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -435,7 +623,7 @@ pub enum BlockProducerVrfEvaluatorStatus {
 
         best_tip_slot: u32,
         best_tip_global_slot: u32,
-        next_epoch_first_slot: u32,
+        next_epoch_first_slot: Option<u32>,
         staking_epoch_data: EpochData,
         producer: AccountPublicKey,
     },
@@ -447,7 +635,7 @@ pub enum BlockProducerVrfEvaluatorStatus {
         best_tip_epoch: u32,
         best_tip_slot: u32,
         best_tip_global_slot: u32,
-        next_epoch_first_slot: u32,
+        next_epoch_first_slot: Option<u32>,
         staking_epoch_data: EpochData,
         producer: AccountPublicKey,
     },
@@ -459,7 +647,7 @@ pub enum BlockProducerVrfEvaluatorStatus {
         best_tip_epoch: u32,
         best_tip_slot: u32,
         best_tip_global_slot: u32,
-        next_epoch_first_slot: u32,
+        next_epoch_first_slot: Option<u32>,
         staking_epoch_data: EpochData,
         producer: AccountPublicKey,
     },
@@ -522,12 +710,28 @@ pub enum BlockProducerVrfEvaluatorStatus {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum InterruptReason {
     BestTipWithHigherEpoch,
+    EpochDataStale,
+    /// The best tip selects other data for the evaluated epoch, or the
+    /// clock has passed it.
+    EpochDataChanged,
+    /// The staking ledger with the selected hash is not available.
+    StakingLedgerUnavailable,
 }
 
 impl std::fmt::Display for InterruptReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::BestTipWithHigherEpoch => write!(f, "Received best tip with higher epoch"),
+            Self::EpochDataStale => {
+                write!(f, "Epoch data changed or expired before slot selection")
+            }
+            Self::EpochDataChanged => {
+                write!(
+                    f,
+                    "Best tip selects other epoch data, or the epoch has passed"
+                )
+            }
+            Self::StakingLedgerUnavailable => write!(f, "Staking ledger not available yet"),
         }
     }
 }
@@ -602,7 +806,7 @@ impl EpochContext {
 // TODO(adonagy): rework the tests so they track the situation with the genesis best tip update
 #[cfg(test)]
 mod test {
-    use std::{collections::BTreeMap, str::FromStr, sync::Mutex};
+    use std::{str::FromStr, sync::Mutex};
 
     use lazy_static::lazy_static;
     use ledger::AccountIndex;
@@ -622,7 +826,7 @@ mod test {
 
     use crate::block_producer::vrf_evaluator::{
         BlockProducerVrfEvaluatorState, BlockProducerVrfEvaluatorStatus, EpochContext,
-        SlotPositionInEpoch, VrfWonSlotWithHash,
+        EpochFingerprint, SlotPositionInEpoch, VrfWonSlotWithHash,
     };
 
     lazy_static! {
@@ -652,126 +856,48 @@ mod test {
                 epoch_length: UnsignedExtendedUInt32StableV1(Number(7140))
             }
         };
-        static ref GENESIS_EPOCH_FIRST_SLOT: Mutex<BlockProducerVrfEvaluatorState> = {
-            let state = BlockProducerVrfEvaluatorState {
-                status: BlockProducerVrfEvaluatorStatus::ReadinessCheck {
-                    time: redux::Timestamp::global_now(),
-                    current_epoch: Some(0), // TODO(adonagy)
-                    root_block_epoch: 0,
-                    best_tip_epoch: 0,
-                    is_current_epoch_evaluated: false,
-                    is_next_epoch_evaluated: false,
-                    is_next_epoch_seed_finalized: false,
-                    last_evaluated_epoch: None,
-                    staking_epoch_data: Box::new(DUMMY_STAKING_EPOCH_DATA.to_owned()),
-                    next_epoch_data: Box::new(DUMMY_NEXT_EPOCH_DATA.to_owned()),
-                },
-                won_slots: BTreeMap::new(),
-                total_won_slots: 0,
-                latest_evaluated_slot: 0,
-                genesis_timestamp: redux::Timestamp::global_now(),
-                last_evaluated_epoch: None,
-                pending_evaluation: None,
-                epoch_context: EpochContext::Current(DUMMY_STAKING_EPOCH_DATA.to_owned().into()),
-            };
-            Mutex::new(state)
+        static ref GENESIS_EPOCH_FIRST_SLOT: Mutex<BlockProducerVrfEvaluatorState> =
+            Mutex::new(readiness(0, 0, 0, false, &[]));
+        static ref GENESIS_EPOCH_CURRENT_EPOCH_EVALUATED: Mutex<BlockProducerVrfEvaluatorState> =
+            Mutex::new(readiness(0, 0, 0, true, &[0]));
+        static ref GENESIS_EPOCH_NEXT_EPOCH_EVALUATED: Mutex<BlockProducerVrfEvaluatorState> =
+            Mutex::new(readiness(0, 0, 0, true, &[0, 1]));
+        static ref SECOND_EPOCH_STARTUP: Mutex<BlockProducerVrfEvaluatorState> =
+            Mutex::new(readiness(2, 2, 2, false, &[]));
+        static ref SECOND_EPOCH_CURRENT_EPOCH_EVALUATED_WAIT_FOR_NEXT: Mutex<BlockProducerVrfEvaluatorState> =
+            Mutex::new(readiness(2, 1, 2, false, &[2]));
+    }
+
+    /// A readiness check with the dummy epoch data, the clock in
+    /// `current_epoch`, and `completed` epochs evaluated with the data the
+    /// tip selects for them.
+    fn readiness(
+        current_epoch: u32,
+        root_block_epoch: u32,
+        best_tip_epoch: u32,
+        is_next_epoch_seed_finalized: bool,
+        completed: &[u32],
+    ) -> BlockProducerVrfEvaluatorState {
+        let mut state = BlockProducerVrfEvaluatorState::new(redux::Timestamp::global_now());
+        for epoch in completed {
+            state.mark_epoch_evaluated(EpochFingerprint::new(
+                *epoch,
+                &DUMMY_STAKING_EPOCH_DATA.to_owned().into(),
+            ));
+        }
+        state.status = BlockProducerVrfEvaluatorStatus::ReadinessCheck {
+            time: redux::Timestamp::global_now(),
+            current_epoch: Some(current_epoch),
+            root_block_epoch,
+            best_tip_epoch,
+            is_current_epoch_evaluated: completed.contains(&best_tip_epoch),
+            is_next_epoch_evaluated: completed.contains(&(best_tip_epoch + 1)),
+            is_next_epoch_seed_finalized,
+            last_evaluated_epoch: state.last_evaluated_epoch(),
+            staking_epoch_data: Box::new(DUMMY_STAKING_EPOCH_DATA.to_owned()),
+            next_epoch_data: Box::new(DUMMY_NEXT_EPOCH_DATA.to_owned()),
         };
-        static ref GENESIS_EPOCH_CURRENT_EPOCH_EVALUATED: Mutex<BlockProducerVrfEvaluatorState> = {
-            let state = BlockProducerVrfEvaluatorState {
-                status: BlockProducerVrfEvaluatorStatus::ReadinessCheck {
-                    time: redux::Timestamp::global_now(),
-                    current_epoch: Some(0), // TODO(adonagy)
-                    root_block_epoch: 0,
-                    best_tip_epoch: 0,
-                    is_current_epoch_evaluated: true,
-                    is_next_epoch_evaluated: false,
-                    is_next_epoch_seed_finalized: true,
-                    last_evaluated_epoch: Some(0),
-                    staking_epoch_data: Box::new(DUMMY_STAKING_EPOCH_DATA.to_owned()),
-                    next_epoch_data: Box::new(DUMMY_NEXT_EPOCH_DATA.to_owned()),
-                },
-                won_slots: BTreeMap::new(),
-                total_won_slots: 0,
-                latest_evaluated_slot: 7139,
-                genesis_timestamp: redux::Timestamp::global_now(),
-                last_evaluated_epoch: Some(0),
-                pending_evaluation: None,
-                epoch_context: EpochContext::Current(DUMMY_STAKING_EPOCH_DATA.to_owned().into()),
-            };
-            Mutex::new(state)
-        };
-        static ref GENESIS_EPOCH_NEXT_EPOCH_EVALUATED: Mutex<BlockProducerVrfEvaluatorState> = {
-            let state = BlockProducerVrfEvaluatorState {
-                status: BlockProducerVrfEvaluatorStatus::ReadinessCheck {
-                    time: redux::Timestamp::global_now(),
-                    current_epoch: Some(0), // TODO(adonagy)
-                    root_block_epoch: 0,
-                    best_tip_epoch: 0,
-                    is_current_epoch_evaluated: true,
-                    is_next_epoch_evaluated: true,
-                    is_next_epoch_seed_finalized: true,
-                    last_evaluated_epoch: Some(1),
-                    staking_epoch_data: Box::new(DUMMY_STAKING_EPOCH_DATA.to_owned()),
-                    next_epoch_data: Box::new(DUMMY_NEXT_EPOCH_DATA.to_owned()),
-                },
-                won_slots: BTreeMap::new(),
-                total_won_slots: 0,
-                latest_evaluated_slot: 14279,
-                genesis_timestamp: redux::Timestamp::global_now(),
-                last_evaluated_epoch: Some(1),
-                pending_evaluation: None,
-                epoch_context: EpochContext::Current(DUMMY_STAKING_EPOCH_DATA.to_owned().into()),
-            };
-            Mutex::new(state)
-        };
-        static ref SECOND_EPOCH_STARTUP: Mutex<BlockProducerVrfEvaluatorState> = {
-            let state = BlockProducerVrfEvaluatorState {
-                status: BlockProducerVrfEvaluatorStatus::ReadinessCheck {
-                    time: redux::Timestamp::global_now(),
-                    current_epoch: Some(2), // TODO(adonagy)
-                    root_block_epoch: 2,
-                    best_tip_epoch: 2,
-                    is_current_epoch_evaluated: false,
-                    is_next_epoch_evaluated: false,
-                    is_next_epoch_seed_finalized: false,
-                    last_evaluated_epoch: None,
-                    staking_epoch_data: Box::new(DUMMY_STAKING_EPOCH_DATA.to_owned()),
-                    next_epoch_data: Box::new(DUMMY_NEXT_EPOCH_DATA.to_owned()),
-                },
-                won_slots: BTreeMap::new(),
-                total_won_slots: 0,
-                latest_evaluated_slot: 0,
-                genesis_timestamp: redux::Timestamp::global_now(),
-                last_evaluated_epoch: None,
-                pending_evaluation: None,
-                epoch_context: EpochContext::Current(DUMMY_STAKING_EPOCH_DATA.to_owned().into()),
-            };
-            Mutex::new(state)
-        };
-        static ref SECOND_EPOCH_CURRENT_EPOCH_EVALUATED_WAIT_FOR_NEXT: Mutex<BlockProducerVrfEvaluatorState> = {
-            let state = BlockProducerVrfEvaluatorState {
-                status: BlockProducerVrfEvaluatorStatus::ReadinessCheck {
-                    time: redux::Timestamp::global_now(),
-                    current_epoch: Some(2), // TODO(adonagy)
-                    root_block_epoch: 1,
-                    best_tip_epoch: 2,
-                    is_current_epoch_evaluated: true,
-                    is_next_epoch_evaluated: false,
-                    last_evaluated_epoch: Some(2),
-                    is_next_epoch_seed_finalized: false,
-                    staking_epoch_data: Box::new(DUMMY_STAKING_EPOCH_DATA.to_owned()),
-                    next_epoch_data: Box::new(DUMMY_NEXT_EPOCH_DATA.to_owned()),
-                },
-                won_slots: BTreeMap::new(),
-                total_won_slots: 0,
-                latest_evaluated_slot: 21419,
-                genesis_timestamp: redux::Timestamp::global_now(),
-                last_evaluated_epoch: Some(2),
-                pending_evaluation: None,
-                epoch_context: EpochContext::Current(DUMMY_STAKING_EPOCH_DATA.to_owned().into()),
-            };
-            Mutex::new(state)
-        };
+        state
     }
 
     #[test]
@@ -892,6 +1018,47 @@ mod test {
         ));
     }
 
+    /// OCaml selects the tip's next epoch data for a clock in the following
+    /// epoch, and has none for a clock further ahead (select_epoch_data,
+    /// proof_of_stake.ml:2451-2466). Neither the root nor the seed gate of
+    /// precomputation applies: the epoch has started.
+    #[test]
+    fn clock_ahead_of_the_tip_selects_next_epoch_data_or_waits() {
+        for (root, finalized) in [(0, false), (1, false), (2, true)] {
+            let mut state = readiness(3, root, 2, finalized, &[2]);
+            state.set_epoch_context();
+            assert!(matches!(state.epoch_context(), EpochContext::Next(_)));
+            let mut state = readiness(3, root, 2, finalized, &[]);
+            state.set_epoch_context();
+            assert!(
+                matches!(state.epoch_context(), EpochContext::Next(_)),
+                "the tip's own epoch has passed"
+            );
+            let mut state = readiness(4, root, 2, finalized, &[]);
+            state.set_epoch_context();
+            assert!(matches!(state.epoch_context(), EpochContext::Waiting));
+        }
+        // Already evaluated with exactly that data: wait.
+        let mut state = readiness(3, 0, 2, false, &[3]);
+        state.set_epoch_context();
+        assert!(matches!(state.epoch_context(), EpochContext::Waiting));
+    }
+
+    /// A completed epoch counts only for the data it was evaluated with.
+    #[test]
+    fn a_completed_epoch_with_other_data_is_evaluated_again() {
+        let mut state = readiness(2, 2, 2, false, &[]);
+        let mut other: super::EpochData = DUMMY_STAKING_EPOCH_DATA.to_owned().into();
+        other.total_currency += 1;
+        state.mark_epoch_evaluated(EpochFingerprint::new(2, &other));
+        state.set_epoch_context();
+        assert!(matches!(state.epoch_context(), EpochContext::Current(_)));
+        let mut state = readiness(3, 0, 2, false, &[2]);
+        state.mark_epoch_evaluated(EpochFingerprint::new(3, &other));
+        state.set_epoch_context();
+        assert!(matches!(state.epoch_context(), EpochContext::Next(_)));
+    }
+
     #[test]
     fn test_evaluate_epoch_bounds() {
         const GENESIS_EPOCH_BEGINNING: u32 = 0;
@@ -940,10 +1107,13 @@ mod test {
                 account_index: AccountIndex(0),
                 value_with_threshold: None,
             };
-            (
-                slot,
-                VrfWonSlotWithHash::new(dummy_won_slot, dummy_ledger_hash.clone()),
-            )
+            let epoch_data = EpochFingerprint {
+                epoch: slot / super::SLOTS_PER_EPOCH,
+                ledger: dummy_ledger_hash.clone(),
+                seed: EpochSeed::zero(),
+                total_currency: 0,
+            };
+            (slot, VrfWonSlotWithHash::new(dummy_won_slot, epoch_data))
         })
     }
 

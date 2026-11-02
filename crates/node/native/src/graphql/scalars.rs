@@ -6,21 +6,21 @@
 //! passed to, so an argument typed `String` rejects them. These scalars carry
 //! the same strings, and still accept inline string literals.
 
-use juniper::{
+use crate::graphql::api::{
     GraphQLScalar, ParseError, ParseScalarResult, ParseScalarValue, Scalar, ScalarToken,
     ScalarValue,
 };
 
 /// Base58Check-encoded public key.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L2479-L2494>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L2781-L2796>
 #[derive(Clone, Debug, GraphQLScalar)]
 #[graphql(name = "PublicKey", transparent)]
 pub struct PublicKeyScalar(pub String);
 
 /// Base58Check-encoded token id.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L2505-L2520>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L2807-L2822>
 #[derive(Clone, Debug, GraphQLScalar)]
 #[graphql(name = "TokenId", transparent)]
 pub struct TokenIdScalar(pub String);
@@ -44,7 +44,7 @@ pub struct TokenIdScalar(pub String);
 /// literal in a query is refused, as OCaml refuses it, but a JSON variable
 /// written as `3.0` can't be told from `3` and is taken.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L2734-L2797>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L3050-L3113>
 fn coerce_unsigned<S: ScalarValue>(v: &Scalar<S>, name: &str, bits: u32) -> Result<String, String> {
     let max: u64 = if bits == 64 {
         u64::MAX
@@ -161,19 +161,19 @@ output_string_scalar!(FieldElemScalar, "FieldElem");
 
 /// OCaml exposes the whole UInt32 nonce as GraphQL Int (a 63-bit OCaml int).
 /// Keep Juniper's standard Int input coercion, but avoid wrapping large output
-/// nonces to negative i32 values. Every UInt32 is exactly representable in f64;
-/// DefaultScalarValue uses that numeric variant above i32::MAX.
+/// nonces to negative i32 values. The server stores wider output integers
+/// separately so JSON preserves their integer spelling.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L1863-L1868>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L2165-L2170>
 #[derive(Clone, Debug, GraphQLScalar)]
-#[graphql(name = "Int", parse_token(i32))]
+#[graphql(name = "Int", parse_token(i32), scalar = MinaScalarValue)]
 pub struct CommandNonceScalar(pub i64);
 
 impl CommandNonceScalar {
-    fn to_output<S: ScalarValue>(&self) -> S {
+    fn to_output(&self) -> MinaScalarValue {
         match i32::try_from(self.0) {
-            Ok(nonce) => S::from(nonce),
-            Err(_) => S::from(self.0 as f64),
+            Ok(nonce) => MinaScalarValue::Int(nonce),
+            Err(_) => MinaScalarValue::Long(self.0),
         }
     }
 
@@ -183,4 +183,84 @@ impl CommandNonceScalar {
             .map(|n| Self(i64::from(n)))
             .ok_or_else(|| "Expected an Int".to_owned())
     }
+}
+
+/// Preserve OCaml's wide output Int without widening GraphQL Int inputs.
+/// Deserialization deliberately delegates to Juniper's standard scalar, so
+/// a large input number still fails standard Int coercion. Long is output-only.
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    serde::Serialize,
+    juniper::ScalarValue,
+    derive_more::Display,
+    derive_more::From,
+)]
+#[serde(untagged)]
+pub enum MinaScalarValue {
+    #[value(to_int, to_float)]
+    Int(i32),
+    #[value(to_float = long_to_float)]
+    Long(i64),
+    #[value(to_float)]
+    Float(f64),
+    #[value(as_str, to_string)]
+    String(String),
+    #[value(to_bool)]
+    Boolean(bool),
+}
+
+impl TryFrom<MinaScalarValue> for String {
+    type Error = MinaScalarValue;
+    fn try_from(value: MinaScalarValue) -> Result<Self, Self::Error> {
+        match value {
+            MinaScalarValue::String(s) => Ok(s),
+            other => Err(other),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for MinaScalarValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(
+            match <juniper::DefaultScalarValue as serde::Deserialize>::deserialize(deserializer)? {
+                juniper::DefaultScalarValue::Int(v) => Self::Int(v),
+                juniper::DefaultScalarValue::Float(v) => Self::Float(v),
+                juniper::DefaultScalarValue::String(v) => Self::String(v),
+                juniper::DefaultScalarValue::Boolean(v) => Self::Boolean(v),
+            },
+        )
+    }
+}
+
+#[cfg(test)]
+mod wide_int_tests {
+    use super::*;
+    use juniper::FromInputValue;
+
+    #[test]
+    fn wide_output_ints_keep_integer_json_and_standard_input_validation() {
+        for n in [0, i64::from(i32::MAX), 2_147_483_648, i64::from(u32::MAX)] {
+            let output = CommandNonceScalar(n).to_output();
+            assert_eq!(serde_json::to_string(&output).unwrap(), n.to_string());
+        }
+        for json in ["2147483648", "4294967295", "3.0", "\"3\""] {
+            let input: juniper::InputValue<MinaScalarValue> = serde_json::from_str(json).unwrap();
+            assert!(
+                CommandNonceScalar::from_input_value(&input).is_err(),
+                "{json}"
+            );
+        }
+        let input: juniper::InputValue<MinaScalarValue> =
+            serde_json::from_str("2147483647").unwrap();
+        assert_eq!(
+            CommandNonceScalar::from_input_value(&input).unwrap().0,
+            i64::from(i32::MAX)
+        );
+    }
+}
+
+fn long_to_float(value: &i64) -> f64 {
+    *value as f64
 }

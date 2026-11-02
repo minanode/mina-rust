@@ -2,7 +2,11 @@
 use std::{ffi::OsStr, marker::PhantomData, str::FromStr};
 
 use clap::{builder::TypedValueParser, error::ErrorKind};
-use mina_node::{account::AccountSecretKey, p2p::identity::SecretKey};
+use mina_node::{
+    account::{AccountPublicKey, AccountSecretKey},
+    p2p::identity::SecretKey,
+};
+use reqwest::Url;
 
 #[derive(Clone)]
 struct SecretValueParser<T> {
@@ -153,5 +157,129 @@ mod tests {
             let error = password_from_value(Some(value)).unwrap_err().to_string();
             assert_eq!(error, "invalid password");
         }
+    }
+}
+
+/// A reporting URL (`--uptime-url`, `--node-status-url`, `--node-error-url`):
+/// HTTP or HTTPS. It may carry a token, so errors never show it.
+pub(super) fn report_url() -> impl TypedValueParser<Value = Url> {
+    ReportUrlParser
+}
+
+#[derive(Clone)]
+struct ReportUrlParser;
+
+impl TypedValueParser for ReportUrlParser {
+    type Value = Url;
+
+    fn parse_ref(
+        &self,
+        _cmd: &clap::Command,
+        arg: Option<&clap::Arg>,
+        value: &OsStr,
+    ) -> Result<Url, clap::Error> {
+        let name = arg.map_or_else(
+            || "URL".to_owned(),
+            |arg| format!("--{}", arg.get_id()).replace('_', "-"),
+        );
+        let url: Url = value
+            .to_str()
+            .and_then(|value| value.parse().ok())
+            .ok_or_else(|| {
+                clap::Error::raw(
+                    ErrorKind::ValueValidation,
+                    format!("{name}: not a valid URL"),
+                )
+            })?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            return Err(clap::Error::raw(
+                ErrorKind::ValueValidation,
+                format!("{name}: an http:// or https:// URL is needed"),
+            ));
+        }
+        Ok(url)
+    }
+}
+
+/// `--contact-info`: shorter than 200 bytes, as OCaml requires. Errors don't
+/// repeat it.
+pub(super) fn contact_info() -> impl TypedValueParser<Value = String> {
+    ContactInfoParser
+}
+
+#[derive(Clone)]
+struct ContactInfoParser;
+
+impl TypedValueParser for ContactInfoParser {
+    type Value = String;
+
+    fn parse_ref(
+        &self,
+        _cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &OsStr,
+    ) -> Result<String, clap::Error> {
+        let value = value.to_str().ok_or_else(|| {
+            clap::Error::raw(
+                ErrorKind::ValueValidation,
+                "--contact-info: not valid UTF-8",
+            )
+        })?;
+        if value.len() >= mina_node_native::reporting::node_error::MAX_CONTACT_INFO_BYTES {
+            return Err(clap::Error::raw(
+                ErrorKind::ValueValidation,
+                "--contact-info: must be shorter than 200 bytes",
+            ));
+        }
+        Ok(value.to_owned())
+    }
+}
+
+/// An operator may paste a private key into a public-key or filename flag.
+/// Raw clap errors keep the rejected value out of diagnostics and usage.
+pub(super) fn submitter_public_key() -> impl TypedValueParser<Value = AccountPublicKey> {
+    parser::<AccountPublicKey>("invalid uptime submitter public key: expected B62...")
+}
+
+pub(super) fn submitter_key_file() -> impl TypedValueParser<Value = std::path::PathBuf> {
+    SubmitterKeyFileParser
+}
+
+#[derive(Clone)]
+struct SubmitterKeyFileParser;
+
+impl TypedValueParser for SubmitterKeyFileParser {
+    type Value = std::path::PathBuf;
+
+    fn parse_ref(
+        &self,
+        _cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        let value = value.to_str().ok_or_else(|| {
+            clap::Error::raw(
+                ErrorKind::ValueValidation,
+                "invalid uptime submitter key filename",
+            )
+        })?;
+        // Refuse key-shaped spans before clap can include a filename in
+        // a missing-option/conflict diagnostic. Never parse them as keys.
+        let looks_like_key = value.match_indices("EK").any(|(start, _)| {
+            value[start..]
+                .bytes()
+                .take_while(|b| {
+                    b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".contains(b)
+                })
+                .count()
+                >= 48
+        });
+        if looks_like_key {
+            return Err(clap::Error::raw(
+                ErrorKind::ValueValidation,
+                "expected an encrypted uptime key filename; private keys cannot be supplied here",
+            ));
+        }
+        Ok(value.into())
     }
 }

@@ -46,7 +46,7 @@ pub fn health_check() -> RpcHealthCheckResponse {
 /// better block, once its proof is verified, makes the node catch up, and
 /// not ready; an unverified claim does not.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_graphql_client/client.ml#L1036-L1064>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_graphql_client/client.ml#L1062-L1090>
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/app/mina_healthcheck/lib/mina_healthcheck_lib.ml#L80-L93>
 pub fn readiness_check(
     phase: SyncPhase,

@@ -1,0 +1,126 @@
+{
+  "state_hash": "3NKDkwpDMVmodrw8egvRUPiwq6BoHSTMdN2AWqv1BAPsFLoKQBWX",
+  "height": 581351,
+  "global_slot_since_genesis": 926825,
+  "staged_ledger_ledger_hash": "jxc5CcvFXAVZuzC2VcgpViDVVELVBtGvaSxBURBWQdBPJwHjohH",
+  "block_decoded_bytes": 84932,
+  "block_roundtrip_exact": true,
+  "created_at": "2026-10-28T19:40:43Z",
+  "submitter": "B62qoXiHy6LQ1o4gifPapefqEZjF4QBKoJAj9JCvZLPRGM3y2zbTRFp",
+  "snark_work": {
+    "decoded_bytes": 11240,
+    "ledger_proof_bytes": 11227,
+    "proof_time_seconds": 13.21396255493164,
+    "fee": "0.001",
+    "sok_message": {
+      "fee": "0.001",
+      "prover": "B62qoXiHy6LQ1o4gifPapefqEZjF4QBKoJAj9JCvZLPRGM3y2zbTRFp"
+    },
+    "sok_message_bin_prot_hex": "fd40420f009771b109674f7d569af29ae23584aa7bc579636196842fa7c72ca4d3cb48f73601",
+    "proof_sok_digest_hex": "b971b06144c49e3bfcf1f93a88c03c3a9d1ccfe4520abee60fae6c9dc3ddf7b4",
+    "expected_sok_digest_hex": "b971b06144c49e3bfcf1f93a88c03c3a9d1ccfe4520abee60fae6c9dc3ddf7b4",
+    "sok_matches": true,
+    "sok_is_default": false,
+    "statement": {
+      "source": {
+        "first_pass_ledger": "jwn9ztpdHWLbQ5dFBj6yKaiUX9qT1i2yYLrYcsjF458BF5tApvm",
+        "second_pass_ledger": "jxc5CcvFXAVZuzC2VcgpViDVVELVBtGvaSxBURBWQdBPJwHjohH",
+        "pending_coinbase_stack": {
+          "data": "4QPcDHMdM6dPjQom7V7pwXFokoAkyVshLXLX29x2q2EJe5GB6D5s",
+          "state": {
+            "init": "4Yysbv7nEgGNy6GZM46byWCSd1TxYjdWMtY7T2jsz6kNxxmEY7uz",
+            "curr": "4Yy1JqcYFULVhQrjCAWi7uP9RquNghgShnFEXncHYZadA1LDfhqq"
+          }
+        },
+        "local_state": {
+          "stack_frame": "0x0641662E94D68EC970D0AFC059D02729BBF4A2CD88C548CCD9FB1E26E570C66C",
+          "call_stack": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "transaction_commitment": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "full_transaction_commitment": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "excess": {
+            "magnitude": "0",
+            "sgn": [
+              "Pos"
+            ]
+          },
+          "supply_increase": {
+            "magnitude": "0",
+            "sgn": [
+              "Pos"
+            ]
+          },
+          "ledger": "jw6bz2wud1N6itRUHZ5ypo3267stk4UgzkiuWtAMPRZo9g4Udyd",
+          "success": true,
+          "account_update_index": "0",
+          "failure_status_tbl": [],
+          "will_succeed": true
+        }
+      },
+      "target": {
+        "first_pass_ledger": "jxEoVV1fVKjpUMV9aYAbqA5RwpmDYbgMw5Wf4arLPJFYyTfB4Co",
+        "second_pass_ledger": "jxc5CcvFXAVZuzC2VcgpViDVVELVBtGvaSxBURBWQdBPJwHjohH",
+        "pending_coinbase_stack": {
+          "data": "4QPcDHMdM6dPjQom7V7pwXFokoAkyVshLXLX29x2q2EJe5GB6D5s",
+          "state": {
+            "init": "4Yysbv7nEgGNy6GZM46byWCSd1TxYjdWMtY7T2jsz6kNxxmEY7uz",
+            "curr": "4Yy5ddYxMGW2dqZeW8c8XDBQ8JsNvtL4HfeyhaEcQTVHnz6ovHar"
+          }
+        },
+        "local_state": {
+          "stack_frame": "0x0641662E94D68EC970D0AFC059D02729BBF4A2CD88C548CCD9FB1E26E570C66C",
+          "call_stack": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "transaction_commitment": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "full_transaction_commitment": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "excess": {
+            "magnitude": "0",
+            "sgn": [
+              "Pos"
+            ]
+          },
+          "supply_increase": {
+            "magnitude": "0",
+            "sgn": [
+              "Pos"
+            ]
+          },
+          "ledger": "jw6bz2wud1N6itRUHZ5ypo3267stk4UgzkiuWtAMPRZo9g4Udyd",
+          "success": true,
+          "account_update_index": "0",
+          "failure_status_tbl": [],
+          "will_succeed": true
+        }
+      },
+      "connecting_ledger_left": "jxc5CcvFXAVZuzC2VcgpViDVVELVBtGvaSxBURBWQdBPJwHjohH",
+      "connecting_ledger_right": "jxc5CcvFXAVZuzC2VcgpViDVVELVBtGvaSxBURBWQdBPJwHjohH",
+      "supply_increase": {
+        "magnitude": "0",
+        "sgn": [
+          "Pos"
+        ]
+      },
+      "fee_excess": [
+        {
+          "token": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+          "amount": {
+            "magnitude": "0.01",
+            "sgn": [
+              "Pos"
+            ]
+          }
+        },
+        {
+          "token": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+          "amount": {
+            "magnitude": "0",
+            "sgn": [
+              "Pos"
+            ]
+          }
+        }
+      ],
+      "sok_digest": null
+    },
+    "target_matches_block": true,
+    "roundtrip_exact": true
+  }
+}

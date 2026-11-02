@@ -289,6 +289,53 @@ fn prove_single(
     }))
 }
 
+/// A Transition selected for uptime must end at the submitted block's ledger.
+/// The delegation verifier does not enforce this relationship.
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/uptime_service/uptime_service.ml#L299-L308>
+pub fn uptime_target_matches(single: &SingleSpec, target: &v2::LedgerHash) -> bool {
+    matches!(single, SingleSpec::Transition(statement, _)
+        if &statement.0.target.second_pass_ledger == target)
+}
+
+/// Prove uptime work, which differs from ordinary work for zkApps: only
+/// the first segment ending at `target` is proved, with its original SOK.
+/// Runtime excludes circuit loading and (for zkApps) segment extraction.
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/uptime_service/uptime_snark_worker.ml#L11-L112>
+pub fn prove_uptime(
+    single: &SingleSpec,
+    target: &v2::LedgerHash,
+    message: &SokMessage,
+    provers: &WorkProvers,
+) -> anyhow::Result<(v2::LedgerProofProdStableV2, f64)> {
+    anyhow::ensure!(
+        uptime_target_matches(single, target),
+        "uptime job target differs from block ledger"
+    );
+    if let SingleSpec::Transition(statement, witness) = single {
+        if is_zkapp_command(single) {
+            return super::zkapp::generate_uptime_zkapp_proof(
+                &statement.0,
+                witness,
+                target,
+                provers.zkapp()?,
+            );
+        }
+    }
+    let started = uptime_wall_time();
+    let proof = prove_single(single, message, provers)?;
+    Ok((proof, (uptime_wall_time() - started).abs()))
+}
+
+/// OCaml measures the absolute difference of two wall-clock float times,
+/// not monotonic time; `Time.Span` stores that difference as float seconds.
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/snark_worker/prod.ml#L125-L135>
+pub(super) fn uptime_wall_time() -> f64 {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(time) => time.as_secs_f64(),
+        Err(error) => -error.duration().as_secs_f64(),
+    }
+}
+
 /// A zkApp command's segments, proved and merged into one proof for the
 /// job's statement. A witness that fails one of a circuit's assertions is
 /// an error (P5.1), and the segments after it are not proved.
@@ -370,6 +417,9 @@ mod tests {
     const MAINNET_PAYMENT: &[u8] = include_bytes!("data/mesa_mainnet_payment_base_job.bin");
     const MAINNET_MERGE_OF_BASES: &[u8] =
         include_bytes!("data/mesa_mainnet_merge_of_bases_job.bin");
+    const MAINNET_MERGE_OF_MERGES: &[u8] =
+        include_bytes!("data/mesa_mainnet_merge_of_merges_job.bin");
+    const MAINNET_COINBASE: &[u8] = include_bytes!("data/mesa_mainnet_coinbase_base_job.bin");
     const DEVNET_MERGE_LEFT: &[u8] =
         include_bytes!("data/mesa_devnet_merge_of_bases_left_base_job.bin");
     const DEVNET_MERGE_RIGHT: &[u8] =
@@ -771,7 +821,47 @@ mod tests {
     fn worker_proves_a_mesa_mainnet_merge() {
         let _turn = PROVING.lock().unwrap_or_else(|p| p.into_inner());
         init_mainnet_with_mesa_blobs();
-        prove_check_and_gossip(WorkSpec::One(merge_spec(MAINNET_MERGE_OF_BASES)));
+        let work = prove_check_and_gossip(WorkSpec::One(merge_spec(MAINNET_MERGE_OF_BASES)));
+        // The first child of the next-level merge is OCaml's proof of this
+        // same merge job, bought in block 548368 (P4.4's captured scan state).
+        let (_, ocaml, _) = MergeFixture::binprot_read(&mut MAINNET_MERGE_OF_MERGES).unwrap();
+        check_ocaml_counterpart(&work, &ocaml);
+    }
+
+    /// The first Mesa mainnet coinbase, with OCaml's proof of the same job
+    /// retained as the right child of the first merge (block 548252).
+    #[test]
+    #[ignore = "run with --features embedded-circuits, or provide pinned Mesa mainnet blobs"]
+    fn worker_proves_a_mesa_mainnet_coinbase_with_ocaml_counterpart() {
+        let _turn = PROVING.lock().unwrap_or_else(|p| p.into_inner());
+        init_mainnet_with_mesa_blobs();
+        let work = prove_check_and_gossip(WorkSpec::One(base_spec(MAINNET_COINBASE)));
+        let (_, _, ocaml) = MergeFixture::binprot_read(&mut MAINNET_MERGE_OF_BASES).unwrap();
+        check_ocaml_counterpart(&work, &ocaml);
+    }
+
+    fn check_ocaml_counterpart(work: &Snark, ocaml: &v2::LedgerProofProdStableV2) {
+        use crate::{
+            proofs::verification::verify_transaction,
+            scan_state::scan_state::transaction_snark::SokDigest,
+        };
+
+        let statement = Statement::<SokDigest>::try_from(&ocaml.0.statement).unwrap();
+        assert!(verify_transaction(
+            [(&statement, &*ocaml.0.proof.get().unwrap())],
+            &TransactionVerifier::make(),
+            &get_srs::<mina_curves::pasta::Fp>(),
+        ));
+        // Fees and provers may differ; the complete job statement must not.
+        // Proof bytes differ because proof creation uses fresh randomness.
+        let job = statement.without_digest();
+        assert_eq!(
+            work.statement(),
+            v2::TransactionSnarkWorkStatementStableV2::One(
+                v2::MinaStateSnarkedLedgerStateStableV2((&job).into())
+            )
+        );
+        eprintln!("Rust and OCaml proofs both verify for the same full job statement");
     }
 
     /// Devnet, as the gates run: the two base jobs under the devnet merge job,

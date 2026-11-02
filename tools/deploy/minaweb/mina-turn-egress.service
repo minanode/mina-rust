@@ -1,0 +1,14 @@
+[Unit]
+Description=Restrict coturn allocation egress to Mina WebRTC UDP ports
+After=ufw.service
+Before=coturn.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /opt/mina-relay/current/turn-egress.py
+ExecReload=/usr/bin/python3 /opt/mina-relay/current/turn-egress.py
+# Leave the fail-closed rules installed when stopped.
+
+[Install]
+WantedBy=multi-user.target

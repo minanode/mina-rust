@@ -80,6 +80,24 @@ impl StagedLedgerAuxAndPendingCoinbasesValid {
     /// How many pieces a peer streams them in, as
     /// `calc_total_pieces_to_transfer` counts the wire parts: three, and one
     /// per scan state tree.
+    /// Whether `needed_blocks` are exactly the protocol states the scan
+    /// state's transactions need. The staged ledger hash doesn't cover them,
+    /// so the hash check alone can't tell that some are missing. OCaml
+    /// refuses a peer's parts unless there is one state for each, and no
+    /// others.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L1506-L1533>
+    pub fn has_required_protocol_states(&self) -> bool {
+        let received = self
+            .needed_blocks
+            .iter()
+            .map(|state| state.try_hash()?.to_field())
+            .collect::<Result<Vec<Fp>, InvalidBigInt>>();
+        received.is_ok_and(|received| {
+            holds_exactly(&self.scan_state.required_state_hashes(), &received)
+        })
+    }
+
     pub fn total_pieces_to_transfer(&self) -> u64 {
         3 + self.scan_state.scan_state.trees.len() as u64
     }
@@ -119,6 +137,15 @@ impl<'de> Deserialize<'de> for StagedLedgerAuxAndPendingCoinbasesValid {
     }
 }
 
+/// Whether `received` has one entry for each of `required` and no others:
+/// as many as are required, and each of them.
+fn holds_exactly(required: &std::collections::HashSet<Fp>, received: &[Fp]) -> bool {
+    received.len() == required.len() && {
+        let received: std::collections::BTreeSet<&Fp> = received.iter().collect();
+        required.iter().all(|hash| received.contains(hash))
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum StagedLedgerAuxAndPendingCoinbasesValidated {
     Valid(Arc<StagedLedgerAuxAndPendingCoinbasesValid>),
@@ -131,7 +158,9 @@ impl StagedLedgerAuxAndPendingCoinbasesValidated {
         expected_hash: &MinaBaseStagedLedgerHashStableV1,
     ) -> Self {
         match StagedLedgerAuxAndPendingCoinbasesValid::convert(parts) {
-            Ok((valid, hash)) if &hash == expected_hash => Self::Valid(Arc::new(valid)),
+            Ok((valid, hash)) if &hash == expected_hash && valid.has_required_protocol_states() => {
+                Self::Valid(Arc::new(valid))
+            }
             _ => Self::Invalid(parts.clone()),
         }
     }
@@ -219,6 +248,42 @@ mod tests {
         let (_, other_hash) = parts();
         assert!(
             !StagedLedgerAuxAndPendingCoinbasesValidated::validate(&wire, &other_hash).is_valid()
+        );
+    }
+
+    /// Exactly the required states, in any order, and nothing else: OCaml
+    /// counts them, then looks each required one up.
+    #[test]
+    fn needed_states_must_be_exactly_the_required_ones() {
+        let [a, b, c] = [1u64, 2, 3].map(Fp::from);
+        let required = std::collections::HashSet::from([a, b]);
+        assert!(holds_exactly(&required, &[b, a]));
+        assert!(!holds_exactly(&required, &[a]), "one missing");
+        assert!(!holds_exactly(&required, &[a, b, c]), "one extra");
+        assert!(!holds_exactly(&required, &[a, a]), "one twice, one missing");
+        assert!(!holds_exactly(&required, &[a, c]), "one replaced");
+        assert!(holds_exactly(&Default::default(), &[]));
+    }
+
+    /// Parts that make the expected hash but bring a state their scan state
+    /// doesn't need are invalid, as OCaml refuses them.
+    #[test]
+    fn parts_with_unneeded_states_are_invalid() {
+        use mina_p2p_messages::rpc_kernel::PayloadBinprotReader;
+        let (wire, hash) = parts();
+        let bytes =
+            include_bytes!("../../../../../../p2p-messages/tests/files/mesa/get_best_tip_v3.bin");
+        let block = mina_p2p_messages::rpc::GetBestTipV2::response_payload(&mut bytes.as_slice())
+            .unwrap()
+            .unwrap()
+            .data;
+        let mut extra = (*wire).clone();
+        extra
+            .needed_blocks
+            .push_back(block.header.protocol_state.clone());
+        assert!(
+            !StagedLedgerAuxAndPendingCoinbasesValidated::validate(&Arc::new(extra), &hash)
+                .is_valid()
         );
     }
 }

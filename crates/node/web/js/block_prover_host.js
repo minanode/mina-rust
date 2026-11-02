@@ -27,6 +27,128 @@ const RETIRE_GRACE_MS = 1000;
 
 const hosts = new Map();
 
+const BRIDGE_START_TIMEOUT_MS = 60 * 1000;
+const STARTUP_TIMEOUT_MS = BRIDGE_START_TIMEOUT_MS + LOAD_TIMEOUT_MS + SETUP_TIMEOUT_MS + KEY_TIMEOUT_MS;
+
+// This guard is armed before wasm_thread can create the bridge worker. The
+// host timers cannot cover a worker that never delivers its first command.
+export class BridgeStartup {
+  constructor(target = globalThis) {
+    this.target = target;
+    this.workers = new Set();
+    this.listeners = new Map();
+    this.error = null;
+    this.done = false;
+    this.failure = new Promise((resolve, reject) => {
+      this.resolve = resolve;
+      this.reject = reject;
+    });
+    this.failure.catch(() => {});
+    this.bridgeTimer = target.setTimeout(
+      () => this.fail("prover bridge initialization timed out"), BRIDGE_START_TIMEOUT_MS,
+    );
+    this.startupTimer = target.setTimeout(
+      () => this.fail("prover startup timed out"), STARTUP_TIMEOUT_MS,
+    );
+    const guard = this;
+    this.NativeWorker = target.Worker;
+    this.Worker = class extends this.NativeWorker {
+      constructor(url, options) {
+        const bridge = String(options?.name ?? "").split("\n").at(-1) === "mina_block_prover";
+        try {
+          // Preserve wasm_thread's non-enumerable module-support options.
+          super(url, options);
+        } catch (error) {
+          if (bridge) guard.fail("prover bridge worker creation failed: " + String(error?.message ?? error));
+          throw error;
+        }
+        if (!bridge) return;
+        guard.workers.add(this);
+        if (guard.error) {
+          this.terminate();
+          guard.restore();
+          return;
+        }
+        const error = event => {
+          event.preventDefault();
+          // wasm_thread forwards rejected WASM initialization promises as
+          // worker error events, retaining the original rejection reason.
+          guard.fail("prover bridge worker initialization failed: " + (event.message || "worker error"));
+        };
+        const messageError = () => guard.fail("prover bridge worker message error");
+        this.addEventListener("error", error);
+        this.addEventListener("messageerror", messageError);
+        guard.listeners.set(this, { error, messageError });
+      }
+    };
+    target.Worker = this.Worker;
+  }
+
+  command() {
+    this.target.clearTimeout(this.bridgeTimer);
+  }
+
+  restore() {
+    if (this.target.Worker === this.Worker) this.target.Worker = this.NativeWorker;
+  }
+
+  fail(reason) {
+    if (this.error || this.done) return;
+    this.error = new Error(reason);
+    this.target.clearTimeout(this.bridgeTimer);
+    this.target.clearTimeout(this.startupTimer);
+    for (const worker of this.workers) worker.terminate();
+    this.reject(this.error);
+  }
+
+  finish(success) {
+    success = success && !this.error;
+    this.done = true;
+    this.target.clearTimeout(this.bridgeTimer);
+    this.target.clearTimeout(this.startupTimer);
+    for (const [worker, { error, messageError }] of this.listeners) {
+      worker.removeEventListener("error", error);
+      worker.removeEventListener("messageerror", messageError);
+    }
+    if (!success) {
+      this.error ??= new Error("prover startup aborted");
+      for (const worker of this.workers) worker.terminate();
+    }
+    // A delayed spawn request still belongs to this failed startup. Keep
+    // its narrow constructor fence until it arrives, then terminate it.
+    if (success || this.workers.size) this.restore();
+    this.resolve();
+    return success;
+  }
+}
+
+let bridgeStartup = null;
+
+export function beginBridgeStartup() {
+  if (bridgeStartup) throw new Error("prover startup already failed or is pending; reload the page");
+  bridgeStartup = new BridgeStartup();
+}
+
+export function bridgeStartupFailure() {
+  if (!bridgeStartup) return Promise.reject(new Error("prover startup watchdog is not armed"));
+  return bridgeStartup.failure;
+}
+
+export async function finishBridgeStartup(success) {
+  const guard = bridgeStartup;
+  if (!guard) return;
+  if (guard.finish(success)) {
+    bridgeStartup = null;
+    return;
+  }
+  const reason = guard.error.message;
+  await Promise.all([...hosts.values()].map(host => host.retire(reason)));
+  // An error can race the Rust readiness channel. It must still win.
+  if (success) throw guard.error;
+}
+
+
+
 function fatalError(message) {
   const error = new Error(message);
   error.fatal = true;
@@ -428,10 +550,14 @@ export function startBlockProverHost(
   onFailure,
 ) {
   try {
+    // Commands already queued by the bridge must not recreate a host after
+    // startup failure while the old frames are being retired.
+    if (bridgeStartup?.error) throw bridgeStartup.error;
     if (!globalThis.crossOriginIsolated)
       throw fatalError("the block prover needs a cross-origin isolated page");
     const host = new Host(glueUrl, generation, onFailure, pinnedWasm());
     hosts.set(generation, host);
+    bridgeStartup?.command();
     globalThis.__minaBlockProverHosts = hosts;
     observe({ type: "host-started", generation, threads, block, work });
     return host.start(network, threads, key, block, work).then(

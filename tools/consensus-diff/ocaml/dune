@@ -1,0 +1,4 @@
+(executable
+ (name consensus_diff)
+ (libraries core_kernel consensus yojson)
+ (preprocess (pps ppx_jane)))

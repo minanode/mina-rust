@@ -73,6 +73,7 @@ pub mod service;
 pub use service::Service;
 
 pub mod account;
+pub mod bootstrap_status;
 
 pub mod recorder;
 pub mod stats;
@@ -87,6 +88,7 @@ pub mod external_snark_worker_effectful;
 pub mod ledger;
 pub mod ledger_effectful;
 pub mod logger;
+pub mod node_error_events;
 pub mod p2p;
 pub mod persist;
 pub mod proof_memory;

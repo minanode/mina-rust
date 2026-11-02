@@ -976,3 +976,123 @@ fn honest_senders_on_every_stream_stay_within_the_connection_window() {
     // connection, not each transfer's speed.
     assert!(peak > ids.len() * INITIAL_WINDOW_SIZE as usize, "{peak}");
 }
+
+#[test]
+fn identify_guards_refuse_duplicate_new_wrong_peer_and_post_close_data() {
+    use mina_p2p::network::identify::stream::P2pNetworkIdentifyStreamState as S;
+    let mut s = state(&[]);
+    let addr = connection(&mut s);
+    let peer_id = peer(1);
+    let stream_id = 3;
+    let new = P2pNetworkIdentifyStreamAction::New {
+        addr,
+        peer_id,
+        stream_id,
+        incoming: false,
+    };
+    assert!(new.is_enabled(&s.0, at(0)));
+    apply(&mut s, new.clone(), 0);
+    assert!(!new.is_enabled(&s.0, at(0)));
+    assert!(!P2pNetworkIdentifyStreamAction::SendIdentify {
+        addr,
+        peer_id,
+        stream_id,
+        addresses: vec![]
+    }
+    .is_enabled(&s.0, at(0)));
+    let data = P2pNetworkIdentifyStreamAction::IncomingData {
+        addr,
+        peer_id,
+        stream_id,
+        data: vec![2, 0].into(),
+    };
+    assert!(data.is_enabled(&s.0, at(0)));
+    let wrong_addr = mina_p2p::ConnectionAddr {
+        incoming: !addr.incoming,
+        ..addr
+    };
+    assert!(!P2pNetworkIdentifyStreamAction::IncomingData {
+        addr: wrong_addr,
+        peer_id,
+        stream_id,
+        data: vec![0].into()
+    }
+    .is_enabled(&s.0, at(0)));
+    let close = P2pNetworkIdentifyStreamAction::RemoteClose {
+        addr,
+        peer_id,
+        stream_id,
+    };
+    apply(&mut s, close.clone(), 1);
+    assert!(matches!(
+        s.0.network
+            .scheduler
+            .identify_state
+            .find_identify_stream_state(&peer_id, &stream_id),
+        Some(S::Closing)
+    ));
+    assert!(!close.is_enabled(&s.0, at(1)));
+    assert!(!data.is_enabled(&s.0, at(1)));
+    let prune = P2pNetworkIdentifyStreamAction::Prune {
+        addr,
+        peer_id,
+        stream_id,
+    };
+    assert!(prune.is_enabled(&s.0, at(1)));
+    apply(&mut s, prune.clone(), 1);
+    assert!(!prune.is_enabled(&s.0, at(1)));
+}
+
+#[test]
+fn kademlia_timeout_requires_its_partial_frame_and_deadline() {
+    use mina_p2p::stream::{P2pNetworkKadIncomingStreamState as I, P2pNetworkKadStreamState as S};
+    let mut s = state(&[]);
+    let addr = connection(&mut s);
+    let peer_id = peer(1);
+    let stream_id = 5;
+    let new = P2pNetworkKademliaStreamAction::New {
+        addr,
+        peer_id,
+        stream_id,
+        incoming: true,
+    };
+    assert!(new.is_enabled(&s.0, at(0)));
+    apply(&mut s, new.clone(), 0);
+    assert!(!new.is_enabled(&s.0, at(0)));
+    let timeout = P2pNetworkKademliaStreamAction::Timeout {
+        addr,
+        peer_id,
+        stream_id,
+    };
+    assert!(!timeout.is_enabled(&s.0, at(100)));
+    *s.0.network
+        .scheduler
+        .discovery_state
+        .as_mut()
+        .unwrap()
+        .find_kad_stream_state_mut(&peer_id, &stream_id)
+        .unwrap() = S::Incoming(I::PartialRequestReceived {
+        len: 1024,
+        data: vec![0],
+        since: at(0),
+        addr,
+    });
+    assert!(!timeout.is_enabled(&s.0, at(29)));
+    assert!(timeout.is_enabled(&s.0, at(30)));
+    assert!(!P2pNetworkKademliaStreamAction::WaitIncoming {
+        addr,
+        peer_id,
+        stream_id
+    }
+    .is_enabled(&s.0, at(30)));
+    let wrong_addr = mina_p2p::ConnectionAddr {
+        incoming: !addr.incoming,
+        ..addr
+    };
+    assert!(!P2pNetworkKademliaStreamAction::Timeout {
+        addr: wrong_addr,
+        peer_id,
+        stream_id
+    }
+    .is_enabled(&s.0, at(30)));
+}

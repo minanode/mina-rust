@@ -9,10 +9,17 @@ import * as React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { Block, Account } from "./chain";
+import type {
+  BestChainHeaders,
+  BlockDetail,
+  LedgerAccount,
+  SyncProgress,
+} from "./chainview";
 import { createNodeClient, type NodeClient, type RawRoute } from "./client";
 import { isUnreachable } from "./errors";
 import type { PendingTransaction } from "./mempool";
 import type { ProducerStats } from "./producer";
+import type { LedgerSync, SyncBlocks } from "./progress";
 import type { CrashNotice } from "./report";
 import type { RestoreSummary } from "./restore";
 import {
@@ -23,6 +30,7 @@ import {
   type PeerCounts,
 } from "./status";
 import { STATUS_POLL_MS, syncView, type SyncView } from "./sync";
+import type { Verification } from "./verification";
 import type { IncludedWork, WorkerControl } from "./worker";
 
 export interface Polled<T> {
@@ -201,6 +209,9 @@ export function useSyncView(now: number): SyncView {
   const s = status.data;
   return syncView(
     {
+      ledgerRecoveryError: s?.ledgerRecovery?.active
+        ? s.ledgerRecovery.error
+        : null,
       phase: s ? s.phase : null,
       bestTipHeight: s?.bestTip?.height ?? null,
       bestTipTimestampMs: s?.bestTip?.timestampMs ?? null,
@@ -233,6 +244,38 @@ export const useSyncRestore = (
   intervalMs = 15_000,
 ): Polled<RestoreSummary | null> =>
   useClientPoll("stats/sync", (c, s) => c.syncRestore(s), intervalMs);
+
+export const useLedgerSync = (
+  intervalMs = 2_000,
+  options?: { paused?: boolean },
+): Polled<LedgerSync> =>
+  useClientPoll(
+    "state/message-progress",
+    (c, s) => c.ledgerSync(s),
+    intervalMs,
+    options,
+  );
+
+export const useSyncBlocks = (
+  intervalMs = 2_000,
+  options?: { paused?: boolean },
+): Polled<SyncBlocks | null> =>
+  useClientPoll(
+    "stats/sync/blocks",
+    (c, s) => c.syncBlocks(s),
+    intervalMs,
+    options,
+  );
+
+export const useVerification = (
+  limit?: number,
+  intervalMs = 10_000,
+): Polled<Verification> =>
+  useClientPoll(
+    `stats/verification:${limit ?? ""}`,
+    (c, s) => c.verification(limit, s),
+    intervalMs,
+  );
 
 export const useWorkerControl = (intervalMs = 5_000): Polled<WorkerControl> =>
   useClientPoll("snarker/control", (c, s) => c.workerControl(s), intervalMs);
@@ -303,3 +346,54 @@ export const useCrashNotice = (
   intervalMs = 60_000,
 ): Polled<CrashNotice | null> =>
   useClientPoll("report/crash", (c, s) => c.crashNotice(s), intervalMs);
+
+export const useBestChainHeaders = (
+  query: { limit?: number; maxHeight?: number } = {},
+  intervalMs = 10_000,
+): Polled<BestChainHeaders> =>
+  useClientPoll(
+    `best-chain/headers:${query.limit ?? ""}:${query.maxHeight ?? ""}`,
+    (c, s) => c.bestChainHeaders(query, s),
+    intervalMs,
+  );
+
+/** A best-chain block doesn't change: asked again only after a failure,
+ * or every 60 s while the frontier hasn't got it. */
+export const useChainBlock = (id: string | null): Polled<BlockDetail | null> =>
+  useClientPoll(
+    id === null ? null : `best-chain/block:${id}`,
+    (c, s) => c.chainBlock(id!, s),
+    60_000,
+  );
+
+export const useSyncProgress = (
+  intervalMs = 1_000,
+  options?: { paused?: boolean },
+): Polled<SyncProgress> =>
+  useClientPoll(
+    "stats/sync/progress",
+    (c, s) => c.syncProgress(s),
+    intervalMs,
+    options,
+  );
+
+/** These blocks' receipts; `hashes` is the key, so pass a stable string. */
+export const useVerificationOf = (
+  hashes: string[],
+  intervalMs = 10_000,
+): Polled<Verification> =>
+  useClientPoll(
+    hashes.length === 0 ? null : `stats/verification:of:${hashes.join(",")}`,
+    (c, s) => c.verificationOf(hashes, s),
+    intervalMs,
+  );
+
+export const useLedgerAccounts = (
+  publicKey: string | null,
+  intervalMs = 30_000,
+): Polled<LedgerAccount[] | null> =>
+  useClientPoll(
+    publicKey === null ? null : `accounts:${publicKey}`,
+    (c, s) => c.ledgerAccounts(publicKey!, s),
+    intervalMs,
+  );

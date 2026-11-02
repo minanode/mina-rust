@@ -263,7 +263,8 @@ fn sign(
 
 /// `SendDelegationInput` and `SignatureInput` for the signed command.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L3055-L3083>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L3371-L3399>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L3115-L3144>
 fn graphql_variables(command: &SignedCommand, memo: &str) -> (Value, Value) {
     let common = &command.payload.common;
     let Body::StakeDelegation(StakeDelegationPayload::SetDelegate { new_delegate }) =

@@ -100,7 +100,7 @@ impl redux::EnablingCondition<P2pState> for P2pConnectionOutgoingAction {
             // A dial the RPC asked for (`rpc_id`) is the operator's, and is
             // not held back by the backoff.
             P2pConnectionOutgoingAction::Init { opts, rpc_id, .. } => {
-                !state.already_has_min_peers() &&
+                state.config.allows_dial(opts) && !state.already_has_min_peers() &&
                 &state.my_id() != opts.peer_id() &&
                 state
                     .peers
@@ -111,7 +111,7 @@ impl redux::EnablingCondition<P2pState> for P2pConnectionOutgoingAction {
             // Libp2p peers are redialled only while we have fewer than the
             // target, counting dials in flight (I18b).
             P2pConnectionOutgoingAction::Reconnect { opts, rpc_id } => {
-                !state.already_has_min_peers()
+                state.config.allows_dial(opts) && !state.already_has_min_peers()
                     && state.peers.get(opts.peer_id()).is_some_and( |peer| {
                         peer.can_reconnect(time, &state.config.timeouts)
                     })

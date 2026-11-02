@@ -308,19 +308,8 @@ impl TransitionFrontierSyncLedgerSnarkedState {
                     );
                 }
             }
-            TransitionFrontierSyncLedgerSnarkedAction::NumAccountsAccepted {
-                num_accounts,
-                contents_hash,
-                ..
-            } => {
-                let dispatcher = state_context.into_dispatcher();
-                dispatcher.push(
-                    TransitionFrontierSyncLedgerSnarkedAction::NumAccountsSuccess {
-                        num_accounts: *num_accounts,
-                        contents_hash: contents_hash.clone(),
-                    },
-                );
-            }
+            // The effect clears the verified empty suffix before continuing.
+            TransitionFrontierSyncLedgerSnarkedAction::NumAccountsAccepted { .. } => {}
             TransitionFrontierSyncLedgerSnarkedAction::NumAccountsRejected { sender, .. } => {
                 if let Self::NumAccountsPending {
                     pending_num_accounts,

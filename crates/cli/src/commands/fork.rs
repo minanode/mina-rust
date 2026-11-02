@@ -74,7 +74,7 @@ pub struct Export {
     /// Directory to create. It must not exist; it gets `fork_config.json`
     /// (every account inline, OCaml's GraphQL `fork_config` layout),
     /// `daemon.json` and `daemon-migrated.json` (ledgers by stable and by
-    /// OCaml 4.0.2's migrated root), `manifest.json` and, last, an empty
+    /// OCaml 4.0.4's migrated root), `manifest.json` and, last, an empty
     /// `activated`.
     #[arg(long, value_name = "DIR")]
     pub out: PathBuf,
@@ -274,7 +274,7 @@ fn verify_fork_config(
     manifest: &HardForkManifest,
 ) -> Result<(Value, Option<HashMismatch>)> {
     let file = File::open(path)?;
-    let config: daemon_json::DaemonJson = serde_json::from_reader(BufReader::new(file))
+    let config: daemon_json::DaemonJson = daemon_json::from_ocaml_json_reader(BufReader::new(file))
         .with_context(|| format!("{} is not a runtime config", path.display()))?;
     let epochs = config.epoch_data.context("no epoch_data")?;
     let ledgers = [

@@ -26,6 +26,10 @@ use super::{OnConnectionStateChangeHdlrFn, RTCChannelConfig, RTCConfig};
 extern "C" {
     #[wasm_bindgen(js_name = schedulePeriodicWebrtcCleanup)]
     fn schedule_periodic_webrtc_cleanup();
+    #[wasm_bindgen(catch, js_name = createWebrtcConnection)]
+    fn create_webrtc_connection(config: &RtcConfiguration) -> Result<RtcPeerConnection>;
+    #[wasm_bindgen(catch, js_name = updateWebrtcIceServers)]
+    pub fn update_webrtc_ice_servers(servers: &JsValue) -> Result<()>;
 }
 
 pub type Result<T> = std::result::Result<T, JsValue>;
@@ -69,7 +73,7 @@ impl RTCConnection {
     pub async fn create(_: &Api, config: RTCConfig) -> Result<Self> {
         INIT.call_once(schedule_periodic_webrtc_cleanup);
 
-        RtcPeerConnection::new_with_configuration(&config.into()).map(|v| Self(v.into(), true))
+        create_webrtc_connection(&config.into()).map(|v| Self(v.into(), true))
     }
 
     pub fn is_main(&self) -> bool {

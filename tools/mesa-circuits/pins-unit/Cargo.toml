@@ -1,0 +1,15 @@
+[package]
+name = "web-pins-unit"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+hex = "=0.4.3"
+sha2 = "=0.10.9"
+
+[dev-dependencies]
+wasm-bindgen-test = "=0.3.56"
+ruzstd = "=0.8.3"

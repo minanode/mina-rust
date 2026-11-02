@@ -86,7 +86,11 @@ impl SecretKey {
             .decode(secret_key_base64.as_bytes())
             .map_err(|e| EncryptionError::Other(e.to_string()))?;
 
-        let key_bytes = key_bytes[4..36]
+        let key_bytes = key_bytes
+            .get(4..36)
+            .ok_or(EncryptionError::InvalidFormat(
+                "invalid libp2p secret key length",
+            ))?
             .try_into()
             .map_err(|_| EncryptionError::Other("Invalid secret key length".to_string()))?;
         Ok(Self::from_bytes(key_bytes))

@@ -7,9 +7,9 @@ use crate::{
         RpcHardForkExportResponse, RpcLedgerAccountDelegatorsGetResponse, RpcLedgerExportResponse,
         RpcLedgerStatusGetResponse, RpcLightAccountResponse, RpcLightBestTipResponse, RpcPeerInfo,
         RpcPooledUserCommandsResponse, RpcPooledZkappCommandsResponse,
-        RpcScanStateSummaryScanStateJob, RpcSnarkPoolCompletedJobsResponse,
-        RpcSnarkPoolPendingJobsGetResponse, RpcSnarkerConfig, RpcTransactionInjectFailure,
-        RpcTransactionInjectRejected, RpcTransactionInjectSuccess, SyncStatsQuery,
+        RpcSnarkPoolCompletedJobsResponse, RpcSnarkPoolPendingJobsGetResponse, RpcSnarkerConfig,
+        RpcTransactionInjectFailure, RpcTransactionInjectRejected, RpcTransactionInjectSuccess,
+        SyncStatsQuery,
     },
 };
 use ledger::{
@@ -36,6 +36,9 @@ pub enum RpcEffectfulAction {
         rpc_id: RpcId,
     },
     HeartbeatGet {
+        rpc_id: RpcId,
+    },
+    ReportingSnapshotGet {
         rpc_id: RpcId,
     },
     ActionStatsGet {
@@ -87,7 +90,7 @@ pub enum RpcEffectfulAction {
     },
     ScanStateSummaryGetSuccess {
         rpc_id: RpcId,
-        scan_state: Result<Vec<Vec<RpcScanStateSummaryScanStateJob>>, String>,
+        scan_state: Result<crate::rpc::RpcScanStateSummaryData, String>,
     },
     SnarkPoolAvailableJobsGet {
         rpc_id: RpcId,
@@ -220,6 +223,21 @@ pub enum RpcEffectfulAction {
     LightBestTip {
         rpc_id: RpcId,
         response: RpcLightBestTipResponse,
+    },
+    #[action_event(level = trace)]
+    BestChainHeadersGet {
+        rpc_id: RpcId,
+        response: crate::rpc::RpcBestChainHeadersGetResponse,
+    },
+    #[action_event(level = trace)]
+    BestChainBlockGet {
+        rpc_id: RpcId,
+        response: crate::rpc::RpcBestChainBlockGetResponse,
+    },
+    #[action_event(level = trace)]
+    SyncProgressGet {
+        rpc_id: RpcId,
+        response: crate::rpc::RpcSyncProgressGetResponse,
     },
     #[action_event(level = trace)]
     LightAccountSuccess {

@@ -1,4 +1,4 @@
-use juniper::{graphql_object, GraphQLObject};
+use crate::graphql::api::GraphQLObject;
 use ledger::scan_state::scan_state::{AvailableJobMessage, ParallelScanAvailableJob};
 use mina_node::snark_pool::JobState;
 use mina_p2p_messages::v2::{
@@ -9,6 +9,7 @@ use mina_p2p_messages::v2::{
 use super::{account::GraphQLAccount, Context, ConversionError, GraphQLPublicKey};
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(description = "A Mina block")]
 pub struct GraphQLPendingSnarkWork {
     /// Work bundle with one or two snark work
@@ -16,6 +17,7 @@ pub struct GraphQLPendingSnarkWork {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLWorkDescription {
     /// Base58Check-encoded hash of the source first-pass ledger
     pub source_first_pass_ledger_hash: String,
@@ -40,6 +42,7 @@ pub struct GraphQLWorkDescription {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLFeeExcesses {
     pub fee_token_left: String,
     pub fee_excess_left: GraphQLFeeExcess,
@@ -48,12 +51,14 @@ pub struct GraphQLFeeExcesses {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLFeeExcess {
     pub fee_magnitude: String,
     pub sign: String,
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLSupplyChange {
     pub amount_magnitude: String,
     pub sign: String,
@@ -160,7 +165,7 @@ pub(crate) struct GraphQLSnarkWorker {
     pub fee: String,
 }
 
-#[graphql_object(context = Context)]
+#[crate::graphql::api::graphql_object(scalar = crate::graphql::scalars::MinaScalarValue, context = Context)]
 #[graphql(description = "A snark worker")]
 impl GraphQLSnarkWorker {
     pub fn key(&self) -> String {

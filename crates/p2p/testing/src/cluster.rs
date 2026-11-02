@@ -366,6 +366,7 @@ impl Cluster {
             external_addrs: vec![],
             enabled_channels: mina_p2p::channels::ChannelId::for_libp2p().collect(),
             peer_discovery: config.discovery,
+            seed_only: false,
             timeouts: config.timeouts,
             limits: config.limits,
             meshsub: P2pMeshsubConfig::default(),
@@ -380,7 +381,12 @@ impl Cluster {
         let node_idx = self.rust_nodes.len();
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
         let (config, secret_key) = self.rust_node_config(config)?;
-        let (cmd_sender, _cmd_receiver) = mpsc::unbounded_channel();
+        let (cmd_sender, _cmd_receiver) = mina_p2p::webrtc::queue::channel(
+            mina_p2p::webrtc::queue::Kind::Admission,
+            1,
+            1024,
+            Default::default(),
+        );
 
         let service = ClusterService::new(
             node_idx,

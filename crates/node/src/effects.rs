@@ -76,6 +76,13 @@ pub fn effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta) {
             }
 
             store.dispatch(TransactionPoolAction::P2pSendAll);
+            if store
+                .state()
+                .transaction_pool
+                .account_read_retry_due(meta.time())
+            {
+                store.dispatch(TransactionPoolAction::ProcessAccountReads);
+            }
             store.dispatch(TransactionPoolCandidateAction::FetchAll);
             store.dispatch(TransactionPoolCandidateAction::VerifyNext);
 
@@ -96,6 +103,7 @@ pub fn effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta) {
             store.dispatch(ExternalSnarkWorkerAction::StartTimeout { now: meta.time() });
             store.dispatch(ExternalSnarkWorkerAction::WorkTimeout { now: meta.time() });
 
+            store.dispatch(BlockProducerAction::EvaluationRecheck);
             store.dispatch(BlockProducerAction::WonSlotDiscard {
                 reason: BlockProducerWonSlotDiscardReason::WonSlotExpired,
             });
@@ -185,8 +193,8 @@ pub fn effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta) {
 /// peer/IP request budget. A libp2p best-tip channel does not push updates.
 /// OCaml downloads and verifies best tips during initialization; the periodic
 /// refresh here is a local recovery policy for quiet fresh-peer chains.
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_networking/mina_networking.ml#L232-L256>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transition_router/transition_router.ml#L186-L266>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_networking/mina_networking.ml#L232-L256>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transition_router/transition_router.ml#L189-L269>
 fn p2p_request_best_tips_of_new_peers<S: Service>(store: &mut Store<S>) {
     let requests = bootstrap_best_tip_requests(store.state());
 

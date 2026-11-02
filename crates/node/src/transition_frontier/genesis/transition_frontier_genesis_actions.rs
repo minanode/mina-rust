@@ -16,6 +16,11 @@ pub type TransitionFrontierGenesisActionWithMetaRef<'a> =
 pub enum TransitionFrontierGenesisAction {
     LedgerLoadInit,
     LedgerLoadPending,
+    #[from(ignore)]
+    #[action_event(level = error, fields(error))]
+    LedgerLoadError {
+        error: String,
+    },
     LedgerLoadSuccess {
         data: Box<GenesisConfigLoaded>,
     },
@@ -49,7 +54,8 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierGenesisAction 
             TransitionFrontierGenesisAction::LedgerLoadPending => {
                 matches!(genesis_state, TransitionFrontierGenesisState::Idle)
             }
-            TransitionFrontierGenesisAction::LedgerLoadSuccess { .. } => {
+            TransitionFrontierGenesisAction::LedgerLoadSuccess { .. }
+            | TransitionFrontierGenesisAction::LedgerLoadError { .. } => {
                 matches!(
                     genesis_state,
                     TransitionFrontierGenesisState::LedgerLoadPending { .. }

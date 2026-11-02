@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build both unpublished Mesa devnet archives from this checkout.
+# Build both unpublished beta archives from this checkout.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$repo"
@@ -153,7 +153,14 @@ PY
   "$repo/tools/regression/check-jemalloc-defaults.sh" "$stage/mina"
   "$repo/tools/release/stage-licenses.sh" "$stage"
   cat >"$stage/README.txt" <<EOF
-Mina Rust ${version} (${label}) - experimental Mesa devnet only.
+Mina Rust ${version} (${label}) - experimental beta.
+Native devnet node, block production and SNARK worker; mainnet node and
+SNARK worker with embedded Mesa circuits and offline proof validation.
+Mainnet public work sales and purchases have not been qualified for this release.
+Mainnet block production is not supported.
+Uptime reports are checked locally against OCaml. The service accepted two
+mainnet signed-command reports from an earlier build. This candidate's live
+service acceptance, zkApp acceptance and delegation credit remain unqualified.
 The archive and mina --version both report ${crate_version}.
 Quick start: https://minanode.org/docs/quickstart/
 The default devnet genesis config is embedded; no separate genesis file is needed.

@@ -178,8 +178,74 @@ fn bp_num_delegators(i: usize) -> usize {
         .min(32)
 }
 
+/// Preconditions of `ConsensusConstants::create`, checked only at the genesis
+/// input boundary. Live block/consensus processing keeps its existing rules.
+fn validate_startup_constants(constants: &ProtocolConstants) -> Result<(), GenesisConfigError> {
+    let invalid = |field, reason| GenesisConfigError::InvalidConstant { field, reason };
+    let epoch = constants.slots_per_epoch.as_u32();
+    if epoch < 3 {
+        return Err(invalid("slots_per_epoch", "must be at least 3"));
+    }
+    if constants.slots_per_sub_window.as_u32() == 0 {
+        return Err(invalid("slots_per_sub_window", "must be nonzero"));
+    }
+    if constants.grace_period_slots.as_u32() >= epoch / 3 {
+        return Err(invalid(
+            "grace_period_slots",
+            "must be less than slots_per_epoch / 3",
+        ));
+    }
+    let constraints = constraint_constants();
+    let windows = u32::try_from(constraints.sub_windows_per_window)
+        .ok()
+        .filter(|n| *n != 0)
+        .ok_or_else(|| invalid("proof.sub_windows_per_window", "must fit a nonzero u32"))?;
+    let window = constants
+        .slots_per_sub_window
+        .as_u32()
+        .checked_mul(windows)
+        .ok_or_else(|| invalid("slots_per_sub_window", "slots_per_window overflows u32"))?;
+    constants
+        .grace_period_slots
+        .as_u32()
+        .checked_add(window)
+        .ok_or_else(|| invalid("grace_period_slots", "grace_period_end overflows u32"))?;
+    let delta = constants
+        .delta
+        .as_u32()
+        .checked_add(1)
+        .ok_or_else(|| invalid("delta", "delta + 1 overflows u32"))?;
+    let duration = constraints.block_window_duration_ms;
+    u64::from(epoch)
+        .checked_mul(duration)
+        .ok_or_else(|| invalid("slots_per_epoch", "epoch duration overflows u64"))?;
+    u64::from(delta)
+        .checked_mul(duration)
+        .ok_or_else(|| invalid("delta", "delta duration overflows u64"))?;
+    const MILLIS_PER_YEAR: u64 = 365 * 24 * 60 * 60 * 1000;
+    let slots_per_year = MILLIS_PER_YEAR
+        .checked_div(duration)
+        .ok_or_else(|| invalid("proof.block_window_duration_ms", "must be nonzero"))?;
+    let checkpoints = mina_core::constants::CHECKPOINTS_PER_YEAR;
+    if slots_per_year < checkpoints
+        || slots_per_year > u64::from(u32::MAX)
+        || slots_per_year % checkpoints != 0
+    {
+        return Err(invalid(
+            "proof.block_window_duration_ms",
+            "must yield a u32 number of yearly slots divisible by the checkpoint count",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum GenesisConfigError {
+    #[error("invalid genesis constant {field}: {reason}")]
+    InvalidConstant {
+        field: &'static str,
+        reason: &'static str,
+    },
     #[error("invalid runtime configuration: {0}")]
     Runtime(String),
     #[error("{0}: inline accounts are required; hash-only daemon ledgers/tarballs are unsupported; use fork_config.json or a compact genesis config")]
@@ -212,6 +278,20 @@ pub(crate) fn buffered(path: impl AsRef<std::path::Path>) -> std::io::Result<Buf
 }
 
 impl GenesisConfig {
+    /// Identify the input without logging account data or embedded bytes.
+    pub fn input_description(&self) -> String {
+        match self {
+            Self::DaemonJsonFile(path) => format!("genesis file {}", path.display()),
+            Self::DaemonJson(_) => "daemon JSON genesis".into(),
+            Self::Prebuilt(_) => "prebuilt genesis bytes".into(),
+            Self::AccountsBinProt { .. } => "genesis account bin_prot bytes".into(),
+            Self::WithoutLedgers(_) => "compact genesis config".into(),
+            Self::Counts { .. } | Self::BalancesDelegateTable { .. } => {
+                "generated genesis accounts".into()
+            }
+        }
+    }
+
     /// Native startup checks the configured zero-currency genesis against
     /// the OCaml trace before installing a runtime fork's verifier/digests.
     pub fn prepare_runtime_fork(
@@ -254,9 +334,9 @@ impl GenesisConfig {
     pub fn runtime_config(&self) -> Result<GenesisRuntimeConfig, GenesisConfigError> {
         Ok(match self {
             Self::DaemonJson(config) => GenesisRuntimeConfig::from_daemon(config),
-            Self::DaemonJsonFile(path) => {
-                GenesisRuntimeConfig::from_daemon(&serde_json::from_reader(buffered(path)?)?)
-            }
+            Self::DaemonJsonFile(path) => GenesisRuntimeConfig::from_daemon(
+                &daemon_json::from_ocaml_json_reader(buffered(path)?)?,
+            ),
             Self::WithoutLedgers(loaded) => (*loaded.runtime_config).clone(),
             Self::Prebuilt(bytes) => prebuilt_payload(bytes)?.0,
             _ => GenesisRuntimeConfig::default(),
@@ -280,30 +360,31 @@ impl GenesisConfig {
         }
     }
 
-    // This is a stub for the moment until PR #420 is merged, which implements this for
-    // real. In case of conflict, delete this stub and put the real implementation here.
+    /// Read and validate startup constants before constructing consensus state.
     pub fn protocol_constants(&self) -> Result<ProtocolConstants, GenesisConfigError> {
-        match self {
+        let constants = match self {
             Self::Counts { constants, .. }
             | Self::BalancesDelegateTable { constants, .. }
-            | Self::AccountsBinProt { constants, .. } => Ok(constants.clone()),
+            | Self::AccountsBinProt { constants, .. } => constants.clone(),
             // Skip only the small runtime header, never load the ledgers.
-            Self::Prebuilt(bytes) => Ok(ProtocolConstants::binprot_read(
-                &mut prebuilt_payload(bytes)?.1,
-            )?),
-            Self::WithoutLedgers(loaded) => Ok(loaded.constants.clone()),
-            Self::DaemonJson(config) => Ok(config
+            Self::Prebuilt(bytes) => {
+                ProtocolConstants::binprot_read(&mut prebuilt_payload(bytes)?.1)?
+            }
+            Self::WithoutLedgers(loaded) => loaded.constants.clone(),
+            Self::DaemonJson(config) => config
                 .genesis
                 .as_ref()
                 .map(|g: &daemon_json::Genesis| g.protocol_constants())
                 .unwrap_or(Self::default_constants(
                     DEFAULT_GENESIS_TIMESTAMP_MILLISECONDS,
-                ))),
-            Self::DaemonJsonFile(path) => {
-                Self::DaemonJson(Box::new(serde_json::from_reader(buffered(path)?)?))
-                    .protocol_constants()
-            }
-        }
+                )),
+            Self::DaemonJsonFile(path) => Self::DaemonJson(Box::new(
+                daemon_json::from_ocaml_json_reader(buffered(path)?)?,
+            ))
+            .protocol_constants()?,
+        };
+        validate_startup_constants(&constants)?;
+        Ok(constants)
     }
 
     pub fn override_genesis_state_timestamp(&mut self, timestamp: v2::BlockTimeTimeStableV1) {
@@ -451,14 +532,7 @@ impl GenesisConfig {
                     Self::build_or_load_ledger(ledger.ledger_name(), accounts.into_iter())?;
 
                 masks.push(mask.clone());
-                if let Some(expected_hash) = config.ledger.as_ref().and_then(|l| l.hash.as_ref()) {
-                    if expected_hash != &genesis_ledger_hash.to_string() {
-                        return Err(GenesisConfigError::LedgerHashMismatch {
-                            expected: expected_hash.parse().unwrap(),
-                            computed: genesis_ledger_hash.clone(),
-                        });
-                    }
-                }
+                check_declared_hash(ledger.hash.as_deref(), &genesis_ledger_hash)?;
 
                 let staking_epoch_ledger_hash;
                 let staking_epoch_total_currency;
@@ -487,7 +561,12 @@ impl GenesisConfig {
                     check_declared_hash(data.staking.hash.as_deref(), &hash)?;
                     staking_epoch_ledger_hash = hash;
                     staking_epoch_total_currency = total_currency;
-                    staking_epoch_seed = v2::EpochSeed::from_str(&data.staking.seed).unwrap();
+                    staking_epoch_seed =
+                        v2::EpochSeed::from_str(&data.staking.seed).map_err(|error| {
+                            GenesisConfigError::Runtime(format!(
+                                "invalid epoch_data.staking.seed: {error}"
+                            ))
+                        })?;
                     genesis_producer_stake_proof =
                         create_genesis_producer_stake_proof(&staking_ledger_mask);
                     masks.push(staking_ledger_mask);
@@ -520,7 +599,11 @@ impl GenesisConfig {
                         next_epoch_ledger_hash = hash;
                         next_epoch_total_currency = total_currency;
                     }
-                    next_epoch_seed = v2::EpochSeed::from_str(&next.seed).unwrap();
+                    next_epoch_seed = v2::EpochSeed::from_str(&next.seed).map_err(|error| {
+                        GenesisConfigError::Runtime(format!(
+                            "invalid epoch_data.next.seed: {error}"
+                        ))
+                    })?;
                 } else {
                     staking_epoch_ledger_hash = genesis_ledger_hash.clone();
                     staking_epoch_total_currency = total_currency.clone();
@@ -547,7 +630,7 @@ impl GenesisConfig {
                 (masks, result)
             }
             Self::DaemonJsonFile(path) => {
-                let c = serde_json::from_reader(buffered(path)?)?;
+                let c = daemon_json::from_ocaml_json_reader(buffered(path)?)?;
                 Self::DaemonJson(c).load()?
             }
             Self::WithoutLedgers(loaded) => (Vec::new(), (**loaded).clone()),
@@ -620,7 +703,7 @@ impl GenesisConfig {
                 mina_core::info!(
                     mina_core::log::system_time();
                     kind = "ledger loaded",
-                    message = "built from config and cached",
+                    message = "built from config",
                     ledger_hash = hash.to_string(),
                 );
                 Ok((mask, total_currency, hash))
@@ -631,7 +714,7 @@ impl GenesisConfig {
     fn build_ledger_from_balances_delegator_table(
         block_producers: impl IntoIterator<Item = (u64, impl IntoIterator<Item = u64>)>,
         non_stakers: &NonStakers,
-    ) -> Result<(ledger::Mask, v2::CurrencyAmountStableV1), InvalidBigInt> {
+    ) -> Result<(ledger::Mask, v2::CurrencyAmountStableV1), GenesisConfigError> {
         let mut counter = 0;
         let mut total_balance = 0;
 
@@ -702,7 +785,7 @@ impl GenesisConfig {
 
     fn build_ledger_from_accounts(
         accounts: impl IntoIterator<Item = Result<ledger::Account, InvalidBigInt>>,
-    ) -> Result<(ledger::Mask, v2::CurrencyAmountStableV1), InvalidBigInt> {
+    ) -> Result<(ledger::Mask, v2::CurrencyAmountStableV1), GenesisConfigError> {
         let db =
             ledger::Database::create_with_token_owners(constraint_constants().ledger_depth as u8);
         let mask = ledger::Mask::new_root(db);
@@ -718,10 +801,17 @@ impl GenesisConfig {
                 if account.token_id.is_default() {
                     total_currency = total_currency
                         .checked_add(account.balance.as_u64())
-                        .expect("overflow");
+                        .ok_or_else(|| {
+                            GenesisConfigError::Runtime("genesis total currency overflow".into())
+                        })?;
                 }
-                mask.get_or_create_account(account_id, account).unwrap();
-                Ok((mask, total_currency))
+                mask.get_or_create_account(account_id, account)
+                    .map_err(|error| {
+                        GenesisConfigError::Runtime(format!(
+                            "genesis account insertion failed: {error:?}"
+                        ))
+                    })?;
+                Ok::<_, GenesisConfigError>((mask, total_currency))
             },
         )?;
 
@@ -731,7 +821,7 @@ impl GenesisConfig {
     fn build_ledger_from_accounts_and_hashes(
         accounts: impl IntoIterator<Item = Result<ledger::Account, InvalidBigInt>>,
         hashes: Vec<(u64, Fp)>,
-    ) -> Result<(ledger::Mask, v2::CurrencyAmountStableV1), InvalidBigInt> {
+    ) -> Result<(ledger::Mask, v2::CurrencyAmountStableV1), GenesisConfigError> {
         let (mask, total_currency) = Self::build_ledger_from_accounts(accounts)?;
 
         // Must happen after the accounts have been set to avoid
@@ -775,14 +865,19 @@ struct LedgerAccountsWithHash {
 
 impl LedgerAccountsWithHash {
     fn cache(&self) -> Result<(), std::io::Error> {
-        let cache_dir = mina_cache_path("ledgers").unwrap();
+        // Browser hosts and isolated startup environments need no disk cache.
+        let Some(cache_dir) = mina_cache_path("ledgers") else {
+            return Ok(());
+        };
         let cache_file = cache_dir.join(format!("{}.bin", self.ledger_hash));
         ensure_path_exists(cache_dir)?;
         write_ledger_cache(&cache_file, |file| self.binprot_write(file))
     }
 
     fn load(ledger_name: String) -> Result<Option<Self>, binprot::Error> {
-        let cache_filename = mina_cache_path(format!("ledgers/{}.bin", ledger_name)).unwrap();
+        let Some(cache_filename) = mina_cache_path(format!("ledgers/{}.bin", ledger_name)) else {
+            return Ok(None);
+        };
         if cache_filename.is_file() {
             let mut file = buffered(cache_filename)?;
             LedgerAccountsWithHash::binprot_read(&mut file).map(Some)
@@ -1321,6 +1416,36 @@ mod tests {
         // constants; the accounts and expected roots are OCaml's rehearsal.
         config.proof = None;
         config
+    }
+
+    /// A genesis file whose ledger holds token symbols and zkApp URIs that
+    /// are not UTF-8, written as OCaml writes them, loads with the root OCaml
+    /// computes for those accounts (the declared hash is checked).
+    #[test]
+    fn daemon_json_file_keeps_non_utf8_bytes() {
+        let mut config: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../tests/files/fork-export/fork/rust/fork_config.json"
+        ))
+        .unwrap();
+        config.as_object_mut().unwrap().remove("proof");
+        config["ledger"]["accounts"] = "ACCOUNTS".into();
+        config["ledger"]["hash"] = daemon_json::OCAML_NON_UTF8_SAMPLE_HASH.into();
+        let text = serde_json::to_vec(&config).unwrap();
+        let at = text.windows(10).position(|w| w == b"\"ACCOUNTS\"").unwrap();
+        let accounts =
+            include_bytes!("../../daemon_json/testdata/ocaml-ledger-export-non-utf8.json");
+        let text = [&text[..at], accounts, &text[at + 10..]].concat();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, text).unwrap();
+
+        let config = GenesisConfig::DaemonJsonFile(path);
+        config.runtime_config().unwrap();
+        let (_, loaded) = config.load().unwrap();
+        assert_eq!(
+            loaded.genesis_ledger_hash.to_string(),
+            daemon_json::OCAML_NON_UTF8_SAMPLE_HASH
+        );
     }
 
     #[test]

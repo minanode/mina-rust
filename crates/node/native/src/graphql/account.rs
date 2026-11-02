@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
+use crate::graphql::api::{FieldResult, GraphQLInputObject, GraphQLObject};
 use dataloader::non_cached::Loader;
-use juniper::{graphql_object, FieldResult, GraphQLInputObject, GraphQLObject};
 use ledger::{
     scan_state::currency::{Balance, Magnitude, Slot},
     Account, AccountId, FpExt, Timing,
@@ -153,7 +153,7 @@ impl GraphQLAccount {
                 | RpcLightError::LedgerUnavailable { .. }
                 | RpcLightError::BlockNotInBestChain(_),
             ) => Ok(None),
-            Err(error) => Err(juniper::FieldError::from(error.to_string())),
+            Err(error) => Err(crate::graphql::api::FieldError::from(error.to_string())),
         }
     }
 
@@ -177,7 +177,7 @@ impl GraphQLAccount {
     }
 }
 
-#[graphql_object(context = Context, name = "Account")]
+#[crate::graphql::api::graphql_object(scalar = crate::graphql::scalars::MinaScalarValue, context = Context, name = "Account")]
 #[graphql(description = "A Mina account")]
 impl GraphQLAccount {
     fn public_key(&self) -> &str {
@@ -475,12 +475,14 @@ impl GraphQLAccount {
 }
 
 #[derive(GraphQLObject, Debug, Clone)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLDelegateAccount {
     pub public_key: String,
 }
 
 /// Slots are strings, as OCaml's `Globalslot` and `GlobalSlotSpan` scalars.
 #[derive(GraphQLObject, Debug, Clone)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "AccountTiming")]
 pub struct GraphQLTiming {
     // pub is_timed: bool,
@@ -492,6 +494,7 @@ pub struct GraphQLTiming {
 }
 
 #[derive(GraphQLInputObject, Debug, Clone)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct InputGraphQLTiming {
     // pub is_timed: bool,
     pub initial_minimum_balance: String,
@@ -514,6 +517,7 @@ impl From<MinaBaseAccountUpdateUpdateTimingInfoStableV1> for GraphQLTiming {
 }
 
 #[derive(GraphQLObject, Debug, Clone)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLPermissions {
     pub edit_state: String,
     pub access: String,
@@ -531,12 +535,14 @@ pub struct GraphQLPermissions {
 }
 
 #[derive(GraphQLObject, Debug, Clone)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLSetVerificationKey {
     pub auth: String,
     pub txn_version: String,
 }
 
 #[derive(GraphQLObject, Debug, Clone)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLBalance {
     pub total: String,
     pub block_height: String,
@@ -561,6 +567,7 @@ pub struct GraphQLBalance {
 /// `hash`) and the account update's `VerificationKeyWithHash` (`data`,
 /// `hash`).
 #[derive(GraphQLObject, Debug, Clone)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLVerificationKey {
     // pub max_proofs_verified: String,
     // pub actual_wrap_domain_size: String,

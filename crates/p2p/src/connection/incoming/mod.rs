@@ -33,6 +33,11 @@ impl P2pState {
         peer_id: PeerId,
         offer: &webrtc::Offer,
     ) -> Result<(), RejectionReason> {
+        // Seed-only browser nodes have no inbound connection capacity.
+        if self.config.seed_only {
+            return Err(RejectionReason::PeerCapacityFull);
+        }
+
         if self.chain_id != offer.chain_id {
             return Err(RejectionReason::ChainIdMismatch);
         }

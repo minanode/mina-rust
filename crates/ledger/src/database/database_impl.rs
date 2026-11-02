@@ -155,6 +155,74 @@ impl DatabaseImpl<V2> {
         }
     }
 
+    /// Remove displaced occupants and the unused tail before a subtree write.
+    /// Return the removed leaf indexes so a mask can use its normal removal
+    /// notifications, then write the replacements through its own setters.
+    pub(crate) fn remove_displaced_accounts(
+        &mut self,
+        addr: &Address,
+        accounts: &[Box<Account>],
+    ) -> Result<Vec<AccountIndex>, ()> {
+        if addr.length() > self.depth as usize {
+            return Err(());
+        }
+
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/merkle_ledger/database.ml#L625-L692>
+        let capacity = 1u64 << (self.depth as usize - addr.length());
+        if accounts.len() as u64 > capacity {
+            return Err(());
+        }
+        let first = addr
+            .iter_children(self.depth as usize)
+            .next()
+            .ok_or(())?
+            .to_index()
+            .0;
+        let end = (first + capacity).min(self.num_slots());
+        // Evict by location, not by identifier: a losing fork can hold a
+        // stale copy of an account now indexed at a different location.
+        // Remove all displaced occupants before indexing their replacements.
+        let mut removed = Vec::new();
+        for index in first..end {
+            let Some(old) = self.slot(index) else {
+                continue;
+            };
+            let id = old.id();
+            if accounts
+                .get((index - first) as usize)
+                .is_some_and(|new| new.id() == id)
+            {
+                continue;
+            }
+            if self
+                .location_of(&id)
+                .is_some_and(|a| a.to_index().0 == index)
+            {
+                self.unindex_id(&id);
+                if !id.token_id.is_default() {
+                    if let Some(owners) = self.token_owners.as_mut() {
+                        owners.remove(&id.derive_token_id());
+                    }
+                }
+            }
+            self.put_slot(index, None);
+            self.naccounts -= 1;
+            self.hashes_matrix.invalidate_hashes(AccountIndex(index));
+            removed.push(AccountIndex(index));
+        }
+
+        // A shortened subtree can include the last account, possibly after
+        // holes left by other out-of-order sync responses.
+        while let Some(last) = self.last_location.as_ref() {
+            if self.slot(last.to_index().0).is_some() {
+                break;
+            }
+            self.last_location = last.prev();
+        }
+
+        Ok(removed)
+    }
+
     pub(crate) fn set_uuid(&mut self, uuid: crate::base::Uuid) {
         self.uuid = uuid;
     }
@@ -1098,9 +1166,7 @@ impl BaseLedger for DatabaseImpl<V2> {
         addr: Address,
         accounts: &[Box<Account>],
     ) -> Result<(), ()> {
-        if addr.length() > self.depth as usize {
-            return Err(());
-        }
+        self.remove_displaced_accounts(&addr, accounts)?;
 
         for (child_addr, account) in addr.iter_children(self.depth as usize).zip(accounts) {
             self.set(child_addr, account.clone());

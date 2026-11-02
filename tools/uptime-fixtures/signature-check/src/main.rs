@@ -36,12 +36,11 @@ fn main() {
     let mut count = 0;
     for entry in fs::read_dir(root).unwrap() {
         let path = entry.unwrap().path();
-        if !path.is_dir() || !path.join("THROWAWAY-TEST-KEY.json").exists() {
+        if !path.is_dir() || !path.join("uptime-1.json").exists() {
             continue;
         }
         let request = read_json(&path.join("uptime-1.json"));
         let manifest = read_json(&path.join("manifest.json"));
-        let key = read_json(&path.join("THROWAWAY-TEST-KEY.json"));
         let data = fs::read(path.join("uptime-data.json")).unwrap();
         let digest = UptimeDigest(Blake2b::<U32>::digest(&data).to_vec());
         let network = if manifest["network"] == "mainnet" {
@@ -55,11 +54,6 @@ fn main() {
             NetworkId::MAINNET
         };
         let pk = PubKey::from_address(request["submitter"].as_str().unwrap()).unwrap();
-        let kp = Keypair::try_from(
-            SecKey::from_base58(key["private_key_base58"].as_str().unwrap()).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(kp.public, pk, "throwaway key must match OCaml submitter");
         let expected = Signature::new(
             manifest["signature_field_decimal"]
                 .as_str()
@@ -74,7 +68,17 @@ fn main() {
         );
         let mut signer = mina_signer::create_legacy::<UptimeDigest>(network);
         assert!(signer.verify(&expected, &pk, &digest));
-        assert_eq!(signer.sign(&kp, &digest, NonceMode::Legacy), expected);
+        // Public-chain captures deliberately retain no private signing key.
+        let key_path = path.join("THROWAWAY-TEST-KEY.json");
+        if key_path.exists() {
+            let key = read_json(&key_path);
+            let kp = Keypair::try_from(
+                SecKey::from_base58(key["private_key_base58"].as_str().unwrap()).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(kp.public, pk, "throwaway key must match OCaml submitter");
+            assert_eq!(signer.sign(&kp, &digest, NonceMode::Legacy), expected);
+        }
         assert!(!mina_signer::create_legacy::<UptimeDigest>(other_network)
             .verify(&expected, &pk, &digest));
         let mut changed = digest.clone();
@@ -87,7 +91,7 @@ fn main() {
             .collect::<String>();
         assert!(!signer.verify(&expected, &pk, &UptimeDigest(hex_digest.into_bytes())));
         println!(
-            "{}: verify, deterministic sign, wrong network, tamper, hex rejection passed",
+            "{}: verify, wrong network, tamper, hex rejection passed (sign if key present)",
             path.display()
         );
         count += 1;

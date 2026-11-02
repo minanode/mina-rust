@@ -31,13 +31,18 @@ pub mod webrtc {
     use super::TaskSpawner;
 
     pub struct P2pServiceCtx {
-        pub cmd_sender: mpsc::UnboundedSender<Cmd>,
+        pub cmd_sender: crate::webrtc::queue::Sender<Cmd>,
         pub peers: BTreeMap<PeerId, PeerState>,
     }
 
     pub type PeerState = ();
 
     pub enum Cmd {}
+    impl crate::webrtc::queue::Weight for Cmd {
+        fn weight(&self) -> usize {
+            match *self {}
+        }
+    }
 
     #[allow(unused_variables)]
     pub trait P2pServiceWebrtc: redux::Service {
@@ -50,7 +55,7 @@ pub mod webrtc {
 
         fn event_sender(&self) -> &mpsc::UnboundedSender<Self::Event>;
 
-        fn cmd_sender(&self) -> &mpsc::TrackedUnboundedSender<Cmd>;
+        fn cmd_sender(&self) -> &crate::webrtc::queue::Sender<Cmd>;
 
         fn peers(&mut self) -> &mut BTreeMap<PeerId, PeerState>;
 
@@ -60,7 +65,12 @@ pub mod webrtc {
             _rng_seed: [u8; 32],
             _config: webrtc::WebrtcConfig,
         ) -> P2pServiceCtx {
-            let (cmd_sender, _) = mpsc::unbounded_channel();
+            let (cmd_sender, _) = crate::webrtc::queue::channel(
+                crate::webrtc::queue::Kind::Admission,
+                1,
+                1024,
+                Default::default(),
+            );
             P2pServiceCtx {
                 cmd_sender,
                 peers: Default::default(),

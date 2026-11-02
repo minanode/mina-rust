@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::Context;
 use mina_node::{
-    daemon_json::DaemonJson,
+    daemon_json::{self, DaemonJson},
     transition_frontier::genesis::{GenesisConfig, GenesisRuntimeConfig, PrebuiltGenesisConfig},
 };
 use mina_p2p_messages::v2;
@@ -73,7 +73,7 @@ fn main() -> anyhow::Result<()> {
 
     if tarball_urls {
         let input = input.expect("structopt requires --input");
-        let config = serde_json::from_slice::<DaemonJson>(&fs::read(input)?)?;
+        let config = daemon_json::from_ocaml_json_slice::<DaemonJson>(&fs::read(input)?)?;
         for ledger in TarballLedgers::of(&config)?.0 {
             println!(
                 "{} {} {}/{} {}",
@@ -92,7 +92,7 @@ fn main() -> anyhow::Result<()> {
         PrebuiltGenesisConfig::read(File::open(prebuilt)?)?
     } else if let Some(genesis_dump) = genesis_dump {
         let input = input.expect("structopt requires --input");
-        let config = serde_json::from_slice::<DaemonJson>(&fs::read(input)?)?;
+        let config = daemon_json::from_ocaml_json_slice::<DaemonJson>(&fs::read(input)?)?;
         let staking_dump = staking_dump.expect("structopt requires --staking-dump");
         let next_dump = next_dump.expect("structopt requires --next-dump");
         from_dumps(&config, [&genesis_dump, &staking_dump, &next_dump])?
@@ -104,7 +104,7 @@ fn main() -> anyhow::Result<()> {
         } else {
             anyhow::bail!("must provide either `--input`, `--url` or `--prebuilt`");
         };
-        let daemon_json = serde_json::from_slice::<DaemonJson>(&data)?;
+        let daemon_json = daemon_json::from_ocaml_json_slice::<DaemonJson>(&data)?;
         PrebuiltGenesisConfig::try_from(daemon_json)?
     };
 

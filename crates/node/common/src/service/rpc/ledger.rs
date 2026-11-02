@@ -52,6 +52,23 @@ impl LedgerSelected {
 }
 
 impl LedgerAccounts {
+    /// The accounts for a public key in the best tip's ledger, any token,
+    /// summarised; empty if the ledger has none. `None` if the node gave no
+    /// answer.
+    pub async fn _get(&self, public_key: &str) -> Result<Option<Vec<RpcAccountSummary>>, String> {
+        let key: mina_node::account::AccountPublicKey = public_key
+            .trim()
+            .parse()
+            .map_err(|_| "not a public key".to_owned())?;
+        let accounts: Option<RpcLedgerAccountsResponse> = self
+            .sender
+            .oneshot_request(RpcRequest::LedgerAccountsGet(
+                AccountQuery::SinglePublicKey(key),
+            ))
+            .await;
+        Ok(accounts.map(|accounts| accounts.iter().map(RpcAccountSummary::from).collect()))
+    }
+
     async fn _all(&self) -> Option<RpcLedgerSlimAccountsResponse> {
         self.sender
             .oneshot_request(RpcRequest::LedgerAccountsGet(AccountQuery::All))
@@ -69,6 +86,12 @@ impl LedgerAccounts {
 #[cfg(target_family = "wasm")]
 #[cfg_attr(target_family = "wasm", wasm_bindgen)]
 impl LedgerAccounts {
+    /// MINAWEB: one key's accounts at the best tip, summarised.
+    pub async fn get(&self, public_key: String) -> Result<JsValue, JsValue> {
+        let res = self._get(&public_key).await?;
+        Ok(JsValue::from_serde(&res).unwrap_or_default())
+    }
+
     pub async fn all(&self) -> JsValue {
         JsValue::from_serde(&self._all().await).unwrap_or_default()
     }

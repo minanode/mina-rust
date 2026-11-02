@@ -28,7 +28,8 @@
 
 use std::{sync::Arc, time::Duration};
 
-use mina_core::channels::{mpsc, oneshot};
+use crate::webrtc::queue::{self, Failure, Kind};
+use mina_core::channels::{oneshot, Aborted};
 use tokio::sync::watch;
 
 use crate::{channels::ChannelId, webrtc::ConnectionAuthEncrypted};
@@ -64,18 +65,38 @@ fn bit(id: u16) -> u32 {
     1u32.checked_shl(u32::from(id)).unwrap_or(0)
 }
 
-/// Channel 0's messages, kept from the moment its handler is registered.
-pub(super) struct Ch0Listener(mpsc::UnboundedReceiver<Vec<u8>>);
+/// Channel 0 retains one authentication and a ready bitset, never raw frames.
+pub(super) struct Ch0Listener {
+    auth: oneshot::Receiver<ConnectionAuthEncrypted>,
+    peer_ready: watch::Receiver<u32>,
+}
 
 impl Ch0Listener {
-    pub(super) fn listen(main_channel: &RTCChannel) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
+    pub(super) fn listen(main_channel: &RTCChannel, failure: Arc<Failure>) -> Self {
+        let (auth_tx, auth) = oneshot::channel();
+        let (ready_tx, peer_ready) = watch::channel(0u32);
+        let mut auth_tx = Some(auth_tx);
+        let mut received = 0usize;
         main_channel.on_message(move |data| {
-            let _ = tx.send(data.to_vec());
-            #[cfg(not(all(not(target_arch = "wasm32"), feature = "p2p-webrtc-cpp")))]
+            // A normal peer sends at most two authentications and eight ready
+            // messages. Stop a control-channel flood before copying any bytes.
+            received = received.saturating_add(1);
+            if !failure.is_failed() {
+                if received > 32 {
+                    failure.fail();
+                } else if let Some(id) = parse_ready(data).filter(|id| (1..=8).contains(id)) {
+                    ready_tx.send_modify(|ready| *ready |= bit(id));
+                } else if let Ok(auth) = ConnectionAuthEncrypted::try_from(data) {
+                    if let Some(tx) = auth_tx.take() {
+                        let _ = tx.send(auth);
+                    }
+                } else {
+                    failure.fail();
+                }
+            }
             std::future::ready(())
         });
-        Self(rx)
+        Self { auth, peer_ready }
     }
 }
 
@@ -83,18 +104,23 @@ enum Ch0Cmd {
     ResendAuth,
     Ready(ChannelId),
 }
+impl queue::Weight for Ch0Cmd {
+    fn weight(&self) -> usize {
+        8
+    }
+}
 
 /// The peer's ready messages, and a way to send ours, for `peer_loop`.
 #[derive(Clone)]
 pub(super) struct Ready {
-    cmd: mpsc::UnboundedSender<Ch0Cmd>,
+    cmd: queue::Sender<Ch0Cmd>,
     peer_ready: watch::Receiver<u32>,
 }
 
 impl Ready {
     /// Tell the peer our channel `id` is listening.
     pub(super) fn announce(&self, id: ChannelId) {
-        let _ = self.cmd.send(Ch0Cmd::Ready(id));
+        let _ = self.cmd.tracked_send(Ch0Cmd::Ready(id));
     }
 
     /// Wait until the peer's channel `id` is listening, or [`FALLBACK`].
@@ -116,29 +142,14 @@ pub(super) fn start(
     main_channel: RTCChannel,
     listener: Ch0Listener,
     auth: ConnectionAuthEncrypted,
+    aborted: Aborted,
+    failure: Arc<Failure>,
 ) -> (oneshot::Receiver<ConnectionAuthEncrypted>, Ready) {
-    let (auth_tx, auth_rx) = oneshot::channel();
-    let (ready_tx, peer_ready) = watch::channel(0u32);
-    let (cmd, mut cmd_rx) = mpsc::unbounded_channel::<Ch0Cmd>();
-
-    // Reader: the first message of the authentication's size is the peer's
-    // authentication; ready messages set the peer's channel bits.
-    let mut listener = listener;
-    spawn_local(async move {
-        let mut auth_tx = Some(auth_tx);
-        while let Some(data) = listener.0.recv().await {
-            if let Some(id) = parse_ready(&data) {
-                ready_tx.send_modify(|ready| *ready |= bit(id));
-            } else if let Some(tx) = auth_tx.take() {
-                match ConnectionAuthEncrypted::try_from(data.as_slice()) {
-                    Ok(auth) => {
-                        let _ = tx.send(auth);
-                    }
-                    Err(_) => auth_tx = Some(tx),
-                }
-            }
-        }
-    });
+    let Ch0Listener {
+        auth: auth_rx,
+        peer_ready,
+    } = listener;
+    let (cmd, mut cmd_rx) = queue::channel::<Ch0Cmd>(Kind::Ready, 16, 8192, failure.clone());
 
     // Sender: everything on channel 0 goes through here, in order.
     let auth = bytes::Bytes::copy_from_slice(auth.as_ref());
@@ -148,25 +159,37 @@ pub(super) fn start(
         peer_ready: peer_ready.clone(),
     };
     let main_channel = Arc::new(main_channel);
+    let send_aborted = aborted.clone();
+    let send_failure = failure.clone();
     spawn_local(async move {
-        let _ = main_channel.send(&auth).await;
-        let mut resent = false;
-        while let Some(cmd) = cmd_rx.recv().await {
-            let peer_has_ready_events = *peer_ready.borrow() != 0;
-            if !resent && !peer_has_ready_events {
-                // Before any ready message, and at AUTH_RESEND at the latest.
-                let _ = main_channel.send(&auth).await;
+        let send = async move {
+            let _ = main_channel.send(&auth).await;
+            let mut resent = false;
+            while let Some(queue::Entry(cmd, _permit)) = cmd_rx.recv().await {
+                let peer_has_ready_events = *peer_ready.borrow() != 0;
+                if !resent && !peer_has_ready_events {
+                    // Before any ready message, and at AUTH_RESEND at the latest.
+                    let _ = main_channel.send(&auth).await;
+                }
+                resent = true;
+                if let Ch0Cmd::Ready(id) = cmd {
+                    let msg = bytes::Bytes::copy_from_slice(&ready_msg(id));
+                    let _ = main_channel.send(&msg).await;
+                }
             }
-            resent = true;
-            if let Ch0Cmd::Ready(id) = cmd {
-                let msg = bytes::Bytes::copy_from_slice(&ready_msg(id));
-                let _ = main_channel.send(&msg).await;
-            }
+        };
+        tokio::select! {
+            _ = send => {},
+            _ = send_aborted.wait() => {},
+            _ = send_failure.wait() => {},
         }
     });
     spawn_local(async move {
-        sleep(AUTH_RESEND).await;
-        let _ = resend_cmd.send(Ch0Cmd::ResendAuth);
+        tokio::select! {
+            _ = sleep(AUTH_RESEND) => { let _ = resend_cmd.tracked_send(Ch0Cmd::ResendAuth); },
+            _ = aborted.wait() => {},
+            _ = failure.wait() => {},
+        }
     });
 
     (auth_rx, ready)
@@ -283,7 +306,10 @@ mod protocol_tests {
             .await
             .unwrap(),
         );
-        let (la, lb) = (Ch0Listener::listen(&a0), Ch0Listener::listen(&b0));
+        let (la, lb) = (
+            Ch0Listener::listen(&a0, Arc::default()),
+            Ch0Listener::listen(&b0, Arc::default()),
+        );
         let (oa, ob) = (opened(&a0), opened(&b0));
         let offer = a.offer_create().await.unwrap();
         a.local_desc_set(offer).await.unwrap();
@@ -314,9 +340,10 @@ mod protocol_tests {
     async fn both_sides_authenticate_and_announced_channels_are_ready_at_once() {
         tokio::task::LocalSet::new()
             .run_until(async {
+                let aborter = mina_core::channels::Aborter::default();
                 let ((a, a0, la), (b, b0, lb)) = pair().await;
-                let (a_auth, a_ready) = start(a0, la, auth(1));
-                let (b_auth, b_ready) = start(b0, lb, auth(2));
+                let (a_auth, a_ready) = start(a0, la, auth(1), aborter.aborted(), Arc::default());
+                let (b_auth, b_ready) = start(b0, lb, auth(2), aborter.aborted(), Arc::default());
                 let got_by_a = tokio::time::timeout(Duration::from_secs(5), a_auth).await;
                 let got_by_b = tokio::time::timeout(Duration::from_secs(5), b_auth).await;
                 assert_eq!(got_by_a.unwrap().unwrap().as_ref(), auth(2).as_ref());
@@ -338,11 +365,12 @@ mod protocol_tests {
     async fn a_channel_the_peer_never_announces_falls_back_to_the_old_delay() {
         tokio::task::LocalSet::new()
             .run_until(async {
+                let aborter = mina_core::channels::Aborter::default();
                 let ((_a, a0, la), (_b, b0, lb)) = pair().await;
-                let (_a_auth, a_ready) = start(a0, la, auth(1));
+                let (_a_auth, a_ready) = start(a0, la, auth(1), aborter.aborted(), Arc::default());
                 // A peer without ready events: it authenticates, announces
                 // nothing.
-                let (_b_auth, _b_ready) = start(b0, lb, auth(2));
+                let (_b_auth, _b_ready) = start(b0, lb, auth(2), aborter.aborted(), Arc::default());
                 let t0 = Instant::now();
                 assert!(!a_ready.wait(ChannelId::SnarkPropagation).await);
                 let waited = t0.elapsed();

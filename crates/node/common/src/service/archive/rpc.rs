@@ -70,6 +70,10 @@ impl BinProtWrite for RawBinprot<'_> {
 }
 
 fn encode_to_rpc<T: BinProtWrite>(data: T) -> io::Result<Vec<u8>> {
+    // OCaml 4.0.4 still feeds live breadcrumbs through Send_archive_diff v0.
+    // Send_versioned_precomputed_block is a separate historical JSON import
+    // RPC with an Or_error response, not a replacement for this unit response.
+    // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_lib/archive_client.ml#L5-L24>
     type Method = mina_p2p_messages::rpc::SendArchiveDiffUnversioned;
     let mut v = vec![0; 8];
 

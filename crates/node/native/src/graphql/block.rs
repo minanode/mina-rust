@@ -4,8 +4,11 @@
 
 use std::sync::Arc;
 
-use crate::graphql::{account::GraphQLAccount, zkapp::GraphQLZkapp};
-use juniper::{graphql_object, FieldResult, GraphQLObject};
+use crate::graphql::{
+    account::GraphQLAccount,
+    api::{FieldResult, GraphQLObject},
+    zkapp::GraphQLZkapp,
+};
 use ledger::scan_state::{
     currency::{Amount, Magnitude},
     transaction_logic::{Transaction, TransactionFailure},
@@ -41,7 +44,7 @@ pub(crate) fn compressed(
     CompressedPubKey::try_from(public_key).map_err(|_| ConversionError::InvalidBigInt)
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L2135-L2191>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L2437-L2493>
 #[derive(Debug)]
 pub(crate) struct GraphQLBlock {
     proof: Arc<MinaBaseProofStableV2>,
@@ -55,7 +58,7 @@ pub(crate) struct GraphQLBlock {
     snark_jobs: Vec<GraphQLSnarkJob>,
 }
 
-#[graphql_object(context = Context, name = "Block")]
+#[crate::graphql::api::graphql_object(scalar = crate::graphql::scalars::MinaScalarValue, context = Context, name = "Block")]
 #[graphql(description = "A Mina block")]
 impl GraphQLBlock {
     /// Public key of account that produced this block
@@ -107,7 +110,7 @@ impl GraphQLBlock {
     }
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L2122-L2133>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L2424-L2435>
 pub(crate) struct GraphQLProtocolStateProof(Arc<MinaBaseProofStableV2>);
 
 /// A proof in base64, as precomputed blocks write it.
@@ -118,7 +121,7 @@ pub(crate) fn proof_to_base64(proof: &MinaBaseProofStableV2) -> Result<String, C
     }
 }
 
-#[graphql_object(context = Context, name = "protocolStateProof")]
+#[crate::graphql::api::graphql_object(scalar = crate::graphql::scalars::MinaScalarValue, context = Context, name = "protocolStateProof")]
 impl GraphQLProtocolStateProof {
     /// Base-64 encoded proof
     fn base64(&self) -> FieldResult<String> {
@@ -133,8 +136,9 @@ impl GraphQLProtocolStateProof {
 
 /// Completed snark work.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L498-L513>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L728-L743>
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "CompletedWork")]
 pub struct GraphQLSnarkJob {
     /// Amount the prover is paid for the snark work
@@ -185,8 +189,9 @@ impl FeeTransferType {
     }
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L425-L446>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L655-L676>
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "FeeTransfer")]
 pub struct GraphQLFeeTransfer {
     /// Public key of fee transfer recipient
@@ -212,7 +217,7 @@ impl GraphQLFeeTransfer {
 
 /// Different types of transactions in a block.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L2058-L2119>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L2360-L2421>
 #[derive(Debug)]
 pub(crate) struct GraphQLTransactions {
     user_commands: Vec<GraphQLUserCommands>,
@@ -222,7 +227,7 @@ pub(crate) struct GraphQLTransactions {
     coinbase_receiver: Option<CompressedPubKey>,
 }
 
-#[graphql_object(context = Context, name = "Transactions")]
+#[crate::graphql::api::graphql_object(scalar = crate::graphql::scalars::MinaScalarValue, context = Context, name = "Transactions")]
 #[graphql(description = "Different types of transactions in a block")]
 impl GraphQLTransactions {
     /// List of user commands (payments and stake delegations) included in
@@ -448,6 +453,7 @@ impl GraphQLBlock {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "ProtocolState")]
 pub struct GraphQLProtocolState {
     /// Base58Check-encoded hash of the previous state
@@ -458,8 +464,9 @@ pub struct GraphQLProtocolState {
     pub consensus_state: GraphQLConsensusState,
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L920-L1018>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L1222-L1320>
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "BlockchainState")]
 pub struct GraphQLBlockchainState {
     /// Base58Check-encoded hash of the snarked ledger
@@ -523,6 +530,7 @@ impl GraphQLBlockchainState {
 
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/graphql_lib/consensus/graphql_scalars.ml#L121-L203>
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "ConsensusState")]
 pub struct GraphQLConsensusState {
     /// Length of the blockchain at this block
@@ -556,6 +564,7 @@ pub struct GraphQLConsensusState {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 pub struct GraphQLEpochData {
     pub ledger: GraphQLLedger,
     pub seed: String,
@@ -565,6 +574,7 @@ pub struct GraphQLEpochData {
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "epochLedger")]
 pub struct GraphQLLedger {
     pub hash: String,
@@ -653,7 +663,7 @@ impl From<&ConsensusProofOfStakeDataConsensusStateValueStableV2> for GraphQLCons
 
 /// The kind of user command.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L1757-L1762>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L2059-L2064>
 #[derive(Clone, Copy, Debug)]
 #[allow(non_camel_case_types)]
 pub enum GraphQLUserCommandsKind {
@@ -665,7 +675,7 @@ pub enum GraphQLUserCommandsKind {
 /// interface, which its `UserCommandPayment` and `UserCommandDelegation`
 /// share.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L1850-L2005>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L2152-L2307>
 #[derive(Debug)]
 pub(crate) struct UserCommandData {
     id: String,
@@ -681,8 +691,8 @@ pub(crate) struct UserCommandData {
     failure_reason: Option<String>,
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L1771-L1843>
-#[juniper::graphql_interface(
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L2073-L2145>
+#[crate::graphql::api::graphql_interface(scalar = crate::graphql::scalars::MinaScalarValue,
     name = "UserCommand", context = Context,
     for = [UserCommandPayment, UserCommandDelegation], enum = GraphQLUserCommands
 )]
@@ -723,7 +733,7 @@ pub(crate) struct UserCommandDelegation(UserCommandData);
 // resolvers together also keeps send, block and pool responses in agreement.
 macro_rules! user_command_object {
     ($ty:ident, $($extra:item),* $(,)?) => {
-        #[graphql_object(context = Context, impl = GraphQLUserCommands)]
+        #[crate::graphql::api::graphql_object(scalar = crate::graphql::scalars::MinaScalarValue, context = Context, impl = GraphQLUserCommands)]
         impl $ty {
             fn id(&self) -> TransactionIdScalar {
                 TransactionIdScalar(self.0.id.clone())

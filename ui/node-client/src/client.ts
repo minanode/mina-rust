@@ -1,7 +1,9 @@
 /**
- * A typed client for a Mina Rust node's HTTP API and GraphQL. Every request
- * goes to `baseUrl` (empty: the page's own origin, as the dashboard the node
- * serves uses it; or any node, such as `http://192.0.2.44:3600`).
+ * A typed client for a Mina Rust node's HTTP API and GraphQL. Requests go
+ * through a transport: HTTP to `baseUrl` by default (empty: the page's own
+ * origin, as the dashboard the node serves uses it; or any node, such as
+ * `http://192.0.2.44:3600`), or calls into a web node running in the page
+ * (`createWebNodeTransport` in `./webnode`).
  */
 
 import {
@@ -15,7 +17,17 @@ import {
   type Account,
   type Block,
 } from "./chain";
-import { errorKind, errorMessage, NodeError } from "./errors";
+import {
+  parseBestChainHeaders,
+  parseBlockDetail,
+  parseLedgerAccounts,
+  parseSyncProgress,
+  type BestChainHeaders,
+  type BlockDetail,
+  type LedgerAccount,
+  type SyncProgress,
+} from "./chainview";
+import { NodeError } from "./errors";
 import { obj, str } from "./json";
 import { parseTransactionPool, type PendingTransaction } from "./mempool";
 import { parseProducerStats, type ProducerStats } from "./producer";
@@ -27,7 +39,14 @@ import {
   type Report,
   type ReportOptions,
 } from "./report";
+import {
+  parseLedgerSync,
+  parseSyncBlocks,
+  type LedgerSync,
+  type SyncBlocks,
+} from "./progress";
 import { parseSyncRestore, type RestoreSummary } from "./restore";
+import { httpTransport, type NodeTransport } from "./transport";
 import {
   parseBuildInfo,
   parsePeers,
@@ -36,6 +55,12 @@ import {
   type NodeStatus,
   type Peer,
 } from "./status";
+import {
+  parseVerification,
+  VERIFICATION_MAX_PAGE,
+  VERIFICATION_PAGE,
+  type Verification,
+} from "./verification";
 import {
   parseIncluded,
   parseWorkerControl,
@@ -53,6 +78,9 @@ export interface NodeClientOptions {
   fetch?: typeof fetch;
   /** Give up on an answer after this long. Default 15 s. */
   timeoutMs?: number;
+  /** How to reach the node, instead of HTTP to `baseUrl`: a web node in
+   * this page, for one. The options above are then unused. */
+  transport?: NodeTransport;
 }
 
 /** Read-only GET routes a UI may show raw: no `/state`, nothing that
@@ -91,6 +119,36 @@ export interface NodeClient {
   /** The restore of this run, from `GET /stats/sync?limit=1`; null after a
    * bootstrap. */
   syncRestore(signal?: AbortSignal): Promise<RestoreSummary | null>;
+  /** The ledgers a bootstrap fetches, from `GET /state/message-progress`. */
+  ledgerSync(signal?: AbortSignal): Promise<LedgerSync>;
+  /** The blocks of the newest sync, from `GET /stats/sync?limit=1`. */
+  syncBlocks(signal?: AbortSignal): Promise<SyncBlocks | null>;
+  /** `GET /stats/verification`: the checks of the blocks this node
+   * received, newest first, and its counters since start. */
+  verification(
+    page?: number | { limit?: number; offset?: number },
+    signal?: AbortSignal,
+  ): Promise<Verification>;
+  /** `GET /stats/verification?hashes=`: these blocks' receipts, at most
+   * 128; a block without one isn't in the answer. */
+  verificationOf(hashes: string[], signal?: AbortSignal): Promise<Verification>;
+  /** `GET /best-chain/headers`: the best chain's headers, newest first. */
+  bestChainHeaders(
+    query?: { limit?: number; maxHeight?: number },
+    signal?: AbortSignal,
+  ): Promise<BestChainHeaders>;
+  /** `GET /best-chain/block/{id}`, by height or state hash; null if the
+   * node's frontier hasn't got it. */
+  chainBlock(id: string, signal?: AbortSignal): Promise<BlockDetail | null>;
+  /** `GET /stats/sync/progress`: the sync, ledger by ledger and block by
+   * block. */
+  syncProgress(signal?: AbortSignal): Promise<SyncProgress>;
+  /** `GET /accounts/{publicKey}` (a web node): the key's accounts at the
+   * best tip; empty if the ledger has none, null without a ledger. */
+  ledgerAccounts(
+    publicKey: string,
+    signal?: AbortSignal,
+  ): Promise<LedgerAccount[] | null>;
   /** `GET /stats/block_producer`; null without a producer. */
   producerStats(signal?: AbortSignal): Promise<ProducerStats | null>;
   /** `GET /snarker/control`. */
@@ -123,94 +181,25 @@ export interface NodeClient {
   account(publicKey: string, signal?: AbortSignal): Promise<Account | null>;
 }
 
-const DEFAULT_TIMEOUT_MS = 15_000;
-
 export function createNodeClient(options: NodeClientOptions = {}): NodeClient {
-  const baseUrl = (options.baseUrl ?? "").replace(/\/+$/, "");
-  const doFetch =
-    options.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const url = (path: string) =>
-    `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
-
-  async function request(
-    path: string,
-    init: RequestInit & { signal?: AbortSignal },
-  ) {
-    const signals = [AbortSignal.timeout(timeoutMs)];
-    if (init.signal) signals.push(init.signal);
-    // No answer, or the answer broke off: the node is offline, unless the
-    // caller gave up.
-    const offline = (error: unknown, what: string) => {
-      if (init.signal?.aborted) return error;
-      return new NodeError(
-        "offline",
-        error instanceof DOMException && error.name === "TimeoutError"
-          ? `The node didn't answer in ${Math.round(timeoutMs / 1000)} s.`
-          : what,
-      );
-    };
-    let response: Response;
-    try {
-      response = await doFetch(url(path), {
-        ...init,
-        signal: AbortSignal.any(signals),
-      });
-    } catch (error) {
-      throw offline(error, "The node isn't answering.");
-    }
-    let body: string;
-    try {
-      body = await response.text();
-    } catch (error) {
-      throw offline(error, "The node stopped answering mid-reply.");
-    }
-    if (!response.ok) {
-      const fallback =
-        response.status === 404
-          ? `This node doesn't serve ${path.split("?")[0]}.`
-          : `The node answered HTTP ${response.status}.`;
-      throw new NodeError(
-        errorKind(response.status),
-        errorMessage(body) ?? fallback,
-        response.status,
-      );
-    }
-    return body;
-  }
-
-  function parseBody<T>(body: string, parse: (raw: unknown) => T): T {
-    let raw: unknown;
-    try {
-      raw = body.trim() ? JSON.parse(body) : null;
-    } catch {
-      throw new NodeError("invalid", "The node's answer isn't JSON.");
-    }
-    return parse(raw);
-  }
+  const transport = options.transport ?? httpTransport(options);
 
   const client: NodeClient = {
-    baseUrl,
-    url,
+    baseUrl: transport.baseUrl,
+    url: path => transport.url(path),
     async getJson(path, parse, signal) {
-      const body = await request(path, {
-        headers: { Accept: "application/json" },
-        signal,
-      });
-      return parseBody(body, parse);
+      return parse(await transport.request({ method: "GET", path, signal }));
     },
     async postJson(path, payload, parse, headers = {}, signal) {
-      const body = await request(path, {
-        method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-          ...headers,
-        },
-        body: JSON.stringify(payload),
-        signal,
-      });
-      return parseBody(body, parse);
+      return parse(
+        await transport.request({
+          method: "POST",
+          path,
+          payload,
+          headers,
+          signal,
+        }),
+      );
     },
     graphql(query, variables, parse, signal) {
       return client.postJson(
@@ -241,6 +230,56 @@ export function createNodeClient(options: NodeClientOptions = {}): NodeClient {
     buildInfo: signal => client.getJson("/build_env", parseBuildInfo, signal),
     syncRestore: signal =>
       client.getJson("/stats/sync?limit=1", parseSyncRestore, signal),
+    ledgerSync: signal =>
+      client.getJson("/state/message-progress", parseLedgerSync, signal),
+    syncBlocks: signal =>
+      client.getJson("/stats/sync?limit=1", parseSyncBlocks, signal),
+    verification(page = VERIFICATION_PAGE, signal) {
+      const { limit = VERIFICATION_PAGE, offset = 0 } =
+        typeof page === "number" ? { limit: page } : page;
+      const count = (n: number) => Math.max(0, Math.floor(n));
+      return client.getJson(
+        `/stats/verification?limit=${count(limit)}${offset ? `&offset=${count(offset)}` : ""}`,
+        parseVerification,
+        signal,
+      );
+    },
+    verificationOf: (hashes, signal) =>
+      client.getJson(
+        `/stats/verification?hashes=${hashes
+          .slice(0, VERIFICATION_MAX_PAGE)
+          .map(encodeURIComponent)
+          .join(",")}`,
+        parseVerification,
+        signal,
+      ),
+    bestChainHeaders({ limit, maxHeight } = {}, signal) {
+      const params = new URLSearchParams();
+      if (limit !== undefined)
+        params.set("limit", String(Math.max(0, Math.floor(limit))));
+      if (maxHeight !== undefined)
+        params.set("max_height", String(Math.max(0, Math.floor(maxHeight))));
+      const query = params.toString();
+      return client.getJson(
+        `/best-chain/headers${query ? `?${query}` : ""}`,
+        parseBestChainHeaders,
+        signal,
+      );
+    },
+    chainBlock: (id, signal) =>
+      client.getJson(
+        `/best-chain/block/${encodeURIComponent(id.trim())}`,
+        parseBlockDetail,
+        signal,
+      ),
+    syncProgress: signal =>
+      client.getJson("/stats/sync/progress", parseSyncProgress, signal),
+    ledgerAccounts: (publicKey, signal) =>
+      client.getJson(
+        `/accounts/${encodeURIComponent(publicKey.trim())}`,
+        parseLedgerAccounts,
+        signal,
+      ),
     producerStats: signal =>
       client.getJson("/stats/block_producer", parseProducerStats, signal),
     workerControl: signal =>

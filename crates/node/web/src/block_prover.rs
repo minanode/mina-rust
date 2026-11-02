@@ -55,6 +55,13 @@ use wasm_bindgen_futures::{spawn_local, JsFuture};
 
 #[wasm_bindgen(module = "/js/block_prover_host.js")]
 extern "C" {
+    #[wasm_bindgen(catch, js_name = beginBridgeStartup)]
+    fn begin_bridge_startup() -> Result<(), JsValue>;
+    #[wasm_bindgen(js_name = bridgeStartupFailure)]
+    fn bridge_startup_failure() -> js_sys::Promise;
+    #[wasm_bindgen(js_name = finishBridgeStartup)]
+    fn finish_bridge_startup(success: bool) -> js_sys::Promise;
+
     /// `key` is the encoded producer key for a host that proves blocks, or
     /// null for one that only proves SNARK work.
     #[wasm_bindgen(js_name = startBlockProverHost)]
@@ -108,7 +115,14 @@ pub(crate) fn start(
     producer: Option<(AccountSecretKey, BlockProofChecker)>,
     work: bool,
     network: String,
-) {
+) -> Result<mina_node::core::channels::oneshot::Receiver<Result<(), String>>, String> {
+    // The acknowledgement orders the watchdog before wasm_thread's spawn
+    // request. An initialization failure can precede Command::Start.
+    thread::run_async_fn_in_main_thread_blocking(|| async {
+        begin_bridge_startup().map_err(|error| js_error_text(&error))
+    })
+    .ok_or_else(|| "prover startup supervisor stopped before initialization".to_owned())??;
+    let (startup_tx, startup_rx) = mina_node::core::channels::oneshot::channel();
     // A block producer's bridge refuses the SNARK worker: don't load its
     // circuits.
     let work = work && producer.is_none();
@@ -124,8 +138,11 @@ pub(crate) fn start(
         service.block_producer_init_isolated(key);
     }
     thread::start_task_in_main_thread(async move {
-        spawn_local(transport(command_rx, input, prover_key, work, network));
+        spawn_local(transport(
+            command_rx, input, prover_key, work, network, startup_tx,
+        ));
     });
+    Ok(startup_rx)
 }
 
 /// A copy in a standalone (not shared, so transferable) JS buffer.
@@ -166,13 +183,65 @@ fn prover_threads() -> u32 {
     cores.saturating_sub(1).clamp(1, 8) as u32
 }
 
+struct AbortOnDrop(futures::future::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 async fn transport(
+    commands: mpsc::UnboundedReceiver<Command>,
+    input: BridgeInputSender,
+    prover_key: Option<Vec<u8>>,
+    work: bool,
+    network: String,
+    startup: mina_node::core::channels::oneshot::Sender<Result<(), String>>,
+) {
+    use futures::future::{select, AbortHandle, Abortable, Either};
+
+    let failure = JsFuture::from(bridge_startup_failure());
+    let (ready_tx, ready_rx) = mina_node::core::channels::oneshot::channel();
+    let (abort, registration) = AbortHandle::new_pair();
+    spawn_local(async move {
+        let _ = Abortable::new(
+            transport_loop(commands, input, prover_key, work, network, ready_tx),
+            registration,
+        )
+        .await;
+    });
+    let mut result = match select(ready_rx, failure).await {
+        Either::Left((result, _)) => {
+            result.unwrap_or_else(|_| Err("prover transport stopped during startup".to_owned()))
+        }
+        Either::Right((result, _)) => Err(result
+            .err()
+            .map(|error| js_error_text(&error))
+            .unwrap_or_else(|| "prover startup supervisor stopped before readiness".to_owned())),
+    };
+    // Retire frames while their Rust callbacks still exist, then cancel the
+    // transport and its tick loop. No node RPC is exposed on this path.
+    if let Err(error) = JsFuture::from(finish_bridge_startup(result.is_ok())).await {
+        if result.is_ok() {
+            result = Err(js_error_text(&error));
+        }
+    }
+    if result.is_err() {
+        abort.abort();
+    }
+    let _ = startup.send(result);
+}
+
+async fn transport_loop(
     mut commands: mpsc::UnboundedReceiver<Command>,
     input: BridgeInputSender,
     prover_key: Option<Vec<u8>>,
     work: bool,
     network: String,
+    startup: mina_node::core::channels::oneshot::Sender<Result<(), String>>,
 ) {
+    let mut startup = Some(startup);
     let glue_url = thread::get_wasm_bindgen_shim_script_path();
     let threads = prover_threads();
     let configured_ms = |name: &str, fallback: u64| {
@@ -195,13 +264,21 @@ async fn transport(
         });
     });
     let tick_input = input.clone();
+    let (tick_abort, tick_registration) = futures::future::AbortHandle::new_pair();
+    let _tick_guard = AbortOnDrop(tick_abort);
     spawn_local(async move {
-        loop {
-            gloo_timers::future::TimeoutFuture::new(1_000).await;
-            if tick_input.send(BridgeInput::Tick).is_err() {
-                return;
-            }
-        }
+        let _ = futures::future::Abortable::new(
+            async move {
+                loop {
+                    gloo_timers::future::TimeoutFuture::new(1_000).await;
+                    if tick_input.send(BridgeInput::Tick).is_err() {
+                        return;
+                    }
+                }
+            },
+            tick_registration,
+        )
+        .await;
     });
     while let Some(command) = commands.recv().await {
         match command {
@@ -220,18 +297,33 @@ async fn transport(
                     on_failure.as_ref().unchecked_ref(),
                 );
                 let input = input.clone();
+                // The first host's own setup result gates `run`, so every
+                // circuit check finishes before the page leaves startup.
+                let startup = startup.take();
                 spawn_local(async move {
-                    let message = match JsFuture::from(promise).await {
-                        Ok(report) => BridgeInput::HostReady {
-                            generation,
-                            report: report.as_string().unwrap_or_default(),
-                        },
-                        Err(error) => BridgeInput::HostFailed {
-                            generation,
-                            reason: js_error_text(&error),
-                        },
+                    let (message, result) = match JsFuture::from(promise).await {
+                        Ok(report) => (
+                            BridgeInput::HostReady {
+                                generation,
+                                report: report.as_string().unwrap_or_default(),
+                            },
+                            Ok(()),
+                        ),
+                        Err(error) => {
+                            let reason = js_error_text(&error);
+                            (
+                                BridgeInput::HostFailed {
+                                    generation,
+                                    reason: reason.clone(),
+                                },
+                                Err(reason),
+                            )
+                        }
                     };
                     let _ = input.send(message);
+                    if let Some(startup) = startup {
+                        let _ = startup.send(result);
+                    }
                 });
             }
             Command::Prove {

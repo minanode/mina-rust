@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GraphQL**: add OCaml 4.0.4 pool, bootstrap and scan-state status queries,
+  with source-derived schema tests and private-only access. The versioned
+  precomputed archive mutation reports the upstream unconfigured-archive error
+  (PR #229).
+
+- **Consensus**: add a pinned compiled OCaml 4.0.3 differential harness for
+  VRF, epoch data, delegation tables and fork choice (PR #213).
+
+- **Web node**: package a verified, self-contained devnet web archive with a
+  loopback server, an exact runtime relay override, and dependency notices
+  checked against the WASM and bundled JavaScript closure (PR #206).
+
+- **Uptime**: prove selected transaction work on a dedicated worker and attach
+  OCaml 4.0.3-compatible SNARK work to uptime reports, including its terminal
+  zkApp segment behavior (PR #191).
+- **SNARK worker**: embed pinned Mesa prover files and verify offline base,
+  merge and zkApp jobs (PR #185).
 - **Documentation**: add interactive OpenAPI documentation (Swagger UI, Stoplight
   Elements, Scalar) to the website, with `cargo xtask` for static spec generation
   ([#2119](https://github.com/o1-labs/mina-rust/pull/2119))
@@ -16,6 +33,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([#2119](https://github.com/o1-labs/mina-rust/pull/2119))
 
 ### Changed
+
+- **Block producer**: evaluate the clock's epoch at once when the tip is still
+  in the previous epoch, as OCaml 4.0.4 does. Bind evaluations, completed epochs
+  and wins to their epoch data, restart on any change, reject responses from
+  older evaluations, check the parent before production, wait for a complete
+  exact-hash staking ledger instead of evaluating an empty table, and move the
+  VRF cache to format 3. Add multi-step producer traces to the compiled-OCaml
+  differential (PR #242).
+- **OCaml compatibility**: qualify archive delivery against pinned 4.0.4 fresh
+  and upgraded schemas, document operator migration and history scope, and fix
+  fork-export roots to preserve transaction version 4 (PR #228).
+- **OCaml compatibility**: reconcile changed 4.0.4 references, fix default
+  permission version stability, and update the compiled consensus oracle while
+  preserving known epoch-start deferrals (PR #226).
+- **OCaml compatibility**: audit 4.0.4 reference pins, update unchanged sources
+  and per-pin validation, and report release drift separately while preserving
+  fixture provenance (PR #222).
+- **Consensus**: validate incoming protocol states using the shared producer
+  builder, matching OCaml 4.0.4 and preserving producer timestamps (PR #223).
+
+- **Uptime**: preserve OCaml's zero SOK for terminal zkApp segments and record
+  only statement-evidenced exceptions in the local gate; retain pre-sync guards
+  (PR #224).
+- **P2P**: bound raw DTLS/SCTP dispatch and native HTTP signaling responses,
+  disconnect local queue offenders and shed the largest association under
+  aggregate pressure with private metrics. Keep small healthy sessions alive
+  and move message sizing outside queue admission locks (PR #216).
+
+- **P2P**: bound WebRTC service queues with overload teardown and private metrics;
+  settle failed channel opens and reject invalid Identify and Kademlia ordering.
+  Preserve event-driven readiness and legacy-peer fallback timers. Apply
+  backpressure to full send queues, allow maximum announcement batches and count
+  admission rejections once.
+
+- **Web node**: restrict browsers to page-supplied seed relays and make native
+  peer-to-peer WebRTC signaling relay opt-in, preserving direct HTTP signaling
+  (PR #173).
 
 - **Frontend**: remove Sentry error tracking dependencies and services
   ([#2130](https://github.com/o1-labs/mina-rust/pull/2130))
@@ -35,6 +89,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([#2092](https://github.com/o1-labs/mina-rust/pull/2092))
 - **Node**: migrate HTTP server from warp to axum
   ([#2119](https://github.com/o1-labs/mina-rust/pull/2119))
+
+### Fixed
+
+- **Ledger export**: keep token symbols and zkApp URIs that are not UTF-8 byte
+  for byte in `mina ledger export` and `mina fork export`, as OCaml writes
+  them, instead of replacing them with U+FFFD. Runtime-config readers accept
+  OCaml's raw bytes (PR #246).
+- **P2P**: reject malformed peer input at decoding and validation (PR #239).
+- **SNARK pool**: a new best tip no longer drops stored work when the pool
+  holds more works than the ledger reads' capacity. The pool reads each
+  prover's account once, as OCaml does, keeps works whose read fails and reads
+  them again, and never refuses the local worker's read as busy. A job whose
+  proof is refused stays scheduled, as in OCaml; releasing it was considered
+  and dropped. Each own proof's outcome is logged (PR #241).
+- **GraphQL**: `authorizationKind.verificationKeyHash` of signed and
+  unauthorised account updates is the dummy verification key hash, as OCaml
+  returns, instead of null (PR #241).
+- **Ledger**: reject malformed sparse ledgers, check scan state invariants and
+  return an error when creating an existing account, as OCaml does. Add ledger
+  conformance tests (PR #237).
+
+- **SNARK worker**: prove zkApp account updates whose proofs come from circuits
+  with 2^16-row step domains, which panicked the worker on devnet. Make
+  in-circuit division total, as OCaml's is, so a zero divisor fails the proof
+  instead of panicking (PR #230).
+
+- **GraphQL**: `scanState` reads only the scan tree counters from the ledger
+  service, as OCaml does, instead of building, hashing and discarding every
+  scan job (PR #233).
+- **Verification**: malformed proof data is rejected during verification
+  (PR #232).
+- **Proving**: a panic in one proof no longer fails every later job on its
+  thread. A poisoned prover SRS is made again, and the SNARK worker, uptime
+  prover and native block prover fail only the job that panicked; the block
+  prover thread no longer dies, which stopped block production (PR #231).
+- **SNARK worker**: refuse a previous proof with a step domain over 2^16 or an
+  evaluation of other than one chunk with an error instead of a panic, remove
+  unreachable prover panics, and add custom-gate zkApp jobs (xor, rot, foreign
+  field multiplication, lookup gate) and three real 2^16-row devnet jobs to the
+  prover corpus (PR #234).
+
+- **Ledger sync**: match OCaml 4.0.4 by clearing verified empty subtrees,
+  replacing reused subtree contents and indexes, and rejecting excess account
+  responses. Preserve source ledgers, notify attached masks of subtree writes
+  and removals, and suppress empty snark-pool broadcasts (PR #227).
+
+- **Uptime**: allow the local release gate to select its network consistently
+  for the node, runtime config, proof verifier and HTTP signature decoder
+  (PR #217).
+
+- **Testing**: allow the private Mesa harness to use assigned port ranges,
+  a pinned reference daemon and separate producer keys while Rust also sells
+  SNARK work (PR #217).
+
+- **Uptime**: skip genesis and bootstrap placeholders during startup and frontier
+  restore, while allowing reports during catch-up from an available frontier
+  (PR #219).
+
+- **RPC and GraphQL**: answer account lookups before sync, reject malformed
+  transaction encodings and public keys, correct query descriptions, and keep
+  wide command nonces as JSON integers (PR #210).
+- **Development Tools**: pin OCaml reference checks to Mina 4.0.3 and reuse
+  inherited build slots for nested release commands, serializing concurrent
+  descendants (PR #211).
+- **Web node**: renew expiring TURN credentials without restarting working
+  connections, validate relay addresses, make web archives reproducible, and
+  enforce launch-preflight and failure-screen regression checks. Reject invalid
+  ICE renewals while retaining the last good configuration and retrying
+  (PR #214).
+- **Web node**: share exact MINA account summaries across key, send and account
+  screens; cover sender-specific nonces and earliest stake activation; fail the
+  key-leak gate on worker, message and storage findings, including late nested
+  worker registrations and every fetch header form; answer role chain reads
+  before the first tip
+  (PR #215).
+
+
+- **Block producer**: handle terminal-epoch startup and finish VRF evaluation
+  without overflow at the maximum protocol slot. Keep early next-epoch
+  evaluation disabled pending generation and ledger-completeness guards;
+  ignore legacy VRF cache progress that may contain false losses (PR #213).
+
+- **Memory**: encode staged-ledger replies from shared parts into an exactly
+  sized buffer, avoiding the reply deep clone and nested serialization buffer
+  (PR #207).
+
+- **Block producer**: include the first evaluated slot in remaining-slot
+  statistics and correct the OCaml 4.0.3 catch-up references (PR #203).
+
+- **Block producer**: revalidate delayed VRF epoch data after sleep or catch-up,
+  preserve current and future won slots, and ignore obsolete table responses
+  (PR #200).
+
+- **Uptime**: retry circuit loading and retain local production events across
+  forks with OCaml first-event subscription semantics. Add a verified dry-run
+  release gate and operator documentation (PR #194).
+
+- **Transaction pool**: read ledger accounts asynchronously with bounded requests,
+  ordered results and tip-change cancellation; retry failed frontier updates
+  without delaying producer transaction selection (PR #198).
+
+- **Node**: recover by resynchronizing after local staged-ledger mismatches or
+  failed root commits, pause block production during recovery, and expose the
+  failure in node status and dashboard health (PR #190).
+- **Startup**: return clear errors for missing or malformed genesis inputs,
+  including consensus constants, on native and web nodes instead of panicking
+  (PR #190).
+
+- **Web node**: require canonical OCaml prover hashes in same-origin and
+  external asset builds. Bound prover bridge initialization and show integrity,
+  worker initialization and timeout failures during role startup (PR #195).
 
 ### Dependencies
 

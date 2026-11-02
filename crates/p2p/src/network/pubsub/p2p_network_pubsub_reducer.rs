@@ -869,7 +869,7 @@ impl P2pNetworkPubsubState {
     /// that doesn't decode is skipped. An invalid length, or one over
     /// `MAX_RPC_SIZE`, drops what is buffered, as the stream can't be framed
     /// from there.
-    fn take_complete_rpcs(buffer: &mut Vec<u8>, data: &[u8]) -> Vec<pb::Rpc> {
+    pub(crate) fn take_complete_rpcs(buffer: &mut Vec<u8>, data: &[u8]) -> Vec<pb::Rpc> {
         let buffered = !buffer.is_empty();
         if buffered {
             buffer.extend_from_slice(data);

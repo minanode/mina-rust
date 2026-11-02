@@ -101,6 +101,10 @@ pub struct RTCChannel {
 pub enum RTCSignalingError {
     #[error("http request failed: {0}")]
     Http(reqwest::Error),
+    #[error("signaling response exceeds {MAX_SIGNAL_RESPONSE_BYTES} bytes")]
+    ResponseTooLarge,
+    #[error("invalid signaling response: {0}")]
+    Json(serde_json::Error),
 }
 
 impl RTCConnection {
@@ -260,6 +264,7 @@ impl RTCChannel {
                     if handlers.pending_bytes > MAX_PENDING_BYTES {
                         handlers.pending.clear();
                         handlers.pending_bytes = 0;
+                        crate::webrtc::queue::record_backend_overflow();
                         drop(handlers);
                         self.pc.close();
                     }
@@ -349,9 +354,37 @@ pub async fn webrtc_signal_send(
     url: &str,
     offer: Offer,
 ) -> std::result::Result<P2pConnectionResponse, RTCSignalingError> {
-    let client = reqwest::Client::new();
-    let res = client.post(url).json(&offer).send().await?.json().await?;
-    Ok(res)
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    decode_signal_response(client.post(url).json(&offer).send().await?).await
+}
+
+// Room for the server's 64 KiB SDP policy even with six-byte JSON escaping,
+// plus the identity/chain envelope. Check the wire body before deserialization.
+const MAX_SIGNAL_RESPONSE_BYTES: usize = 512 * 1024;
+
+async fn decode_signal_response(
+    mut response: reqwest::Response,
+) -> std::result::Result<P2pConnectionResponse, RTCSignalingError> {
+    let reject = || {
+        crate::webrtc::queue::record_signaling_response_rejection();
+        RTCSignalingError::ResponseTooLarge
+    };
+    if response
+        .content_length()
+        .is_some_and(|len| len > MAX_SIGNAL_RESPONSE_BYTES as u64)
+    {
+        return Err(reject());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if chunk.len() > MAX_SIGNAL_RESPONSE_BYTES - body.len() {
+            return Err(reject());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(serde_json::from_slice(&body)?)
 }
 
 impl Clone for RTCConnection {
@@ -392,6 +425,79 @@ impl TryFrom<Answer> for SessionDescription {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn response_fixture(
+        wire: Vec<u8>,
+    ) -> std::result::Result<P2pConnectionResponse, RTCSignalingError> {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request).await;
+            // Rejection can close the socket before the rest of the body is sent.
+            let _ = stream.write_all(&wire).await;
+        });
+        let response = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap()
+            .get(format!("http://{addr}"))
+            .send()
+            .await
+            .unwrap();
+        let result = decode_signal_response(response).await;
+        server.await.unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn signaling_response_is_bounded_before_json() {
+        // Reject the declared size even when the peer never supplies the body.
+        let wire = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+            MAX_SIGNAL_RESPONSE_BYTES + 1
+        );
+        assert!(matches!(
+            response_fixture(wire.into_bytes()).await,
+            Err(RTCSignalingError::ResponseTooLarge)
+        ));
+        // With no length header, count every chunk before growing the JSON buffer.
+        for chunked in [false, true] {
+            let body = vec![b'x'; MAX_SIGNAL_RESPONSE_BYTES + 1];
+            let mut wire = if chunked {
+                format!(
+                    "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n",
+                    body.len()
+                )
+                .into_bytes()
+            } else {
+                b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec()
+            };
+            wire.extend_from_slice(&body);
+            if chunked {
+                wire.extend_from_slice(b"\r\n0\r\n\r\n");
+            }
+            assert!(matches!(
+                response_fixture(wire).await,
+                Err(RTCSignalingError::ResponseTooLarge)
+            ));
+        }
+        // Valid JSON at the exact wire cap remains accepted (including whitespace).
+        let mut body = serde_json::to_vec(&P2pConnectionResponse::InternalError).unwrap();
+        body.resize(MAX_SIGNAL_RESPONSE_BYTES, b' ');
+        let mut wire =
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
+        wire.extend(body);
+        assert!(matches!(
+            response_fixture(wire).await,
+            Ok(P2pConnectionResponse::InternalError)
+        ));
+    }
 
     #[tokio::test]
     async fn empty_early_messages_count_against_the_cap() {

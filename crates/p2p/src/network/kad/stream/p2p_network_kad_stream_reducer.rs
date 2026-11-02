@@ -594,8 +594,7 @@ impl P2pNetworkKadOutgoingStreamState {
                     stream_id,
                 },
             ) if *expect_close => {
-                *state =
-                    P2pNetworkKadOutgoingStreamState::RequestBytesAreReady { bytes: Vec::new() };
+                *state = P2pNetworkKadOutgoingStreamState::Closing;
 
                 let dispatcher = state_context.into_dispatcher();
                 dispatcher.push(P2pNetworkYamuxAction::OutgoingData {
@@ -1041,5 +1040,64 @@ mod d3f_tests {
             .read_message_by_len::<Message>(payload, len)
             .unwrap();
         assert!(decoded.closerPeers.len() < 20);
+    }
+
+    /// Mutated Kademlia requests and replies, framed and read as the stream
+    /// reads them: each is accepted or refused.
+    #[test]
+    fn mutated_messages_are_accepted_or_refused() {
+        let peer_id: crate::PeerId = "12D3KooWFbsukJEB9eNivRuv9oDDW1quzgPxkSKC6zj1NhH85z1t"
+            .parse::<libp2p_identity::PeerId>()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let entry = P2pNetworkKadEntry::new(
+            peer_id,
+            vec![
+                "/ip4/203.0.113.7/tcp/8302".parse().unwrap(),
+                "/dns4/seed.example.org/tcp/10003".parse().unwrap(),
+            ],
+        )
+        .unwrap();
+        let reply = serialize_response_bounded(
+            P2pNetworkKademliaRpcReply::FindNode {
+                closer_peers: vec![entry.clone(), entry],
+            },
+            Limit::Some(1 << 22),
+        )
+        .unwrap();
+        let key = libp2p_identity::PeerId::try_from(peer_id)
+            .unwrap()
+            .to_bytes();
+        let request = quick_protobuf::serialize_into_vec(&Message {
+            type_pb: MessageType::FIND_NODE,
+            key: Cow::Owned(key),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let limit = P2pLimits::default().kademlia_request();
+        let budget = mina_peer_input_fuzz::Budget::from_env();
+        mina_peer_input_fuzz::fuzz("kademlia", &[request, reply], &budget, |bytes| {
+            let Ok((len, payload)) = framed_payload(bytes, limit) else {
+                return false;
+            };
+            if len > payload.len() {
+                return false;
+            }
+            let mut incoming = P2pNetworkKadIncomingStreamState::WaitingForRequest {
+                expect_close: false,
+            };
+            let _ = incoming.handle_incoming_request(len, payload);
+            let mut outgoing = P2pNetworkKadOutgoingStreamState::WaitingForReply;
+            let _ = outgoing.handle_incoming_response(len, payload);
+            matches!(
+                incoming,
+                P2pNetworkKadIncomingStreamState::RequestIsReady { .. }
+            ) || matches!(
+                outgoing,
+                P2pNetworkKadOutgoingStreamState::ResponseIsReady { .. }
+            )
+        });
     }
 }

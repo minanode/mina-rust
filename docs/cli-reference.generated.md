@@ -271,7 +271,7 @@ Alias: `--run-snark-worker`. Environment: `MINA_RUN_SNARKER`.
 
 #### `--snarker-fee <MINA>`
 
-The fee asked for each SNARK work bundle, in MINA (for example `0.1`), as OCaml's `--snark-worker-fee`.
+The fee asked for each SNARK work bundle, in MINA (for example `0.1`), as OCaml's `--snark-worker-fee`. Uptime proofs use this fee too, even when the ordinary SNARK worker is off.
 
 If the worker's key has no account yet, OCaml nodes only accept work whose fee is at least the account creation fee (1 MINA).
 
@@ -345,6 +345,10 @@ For a cloud host whose interface has a private address. Repeat it, or separate a
 
 Environment: `MINA_WEBRTC_NAT_IP`.
 
+#### `--webrtc-signaling-relay`
+
+Allow peers to discover each other and exchange WebRTC offers through this node. Exposes connecting peers' addresses to each other; leave off on public browser relays. Direct HTTP signaling is always available.
+
 ### Logging
 
 #### `-v, --verbosity <LEVEL>`
@@ -400,6 +404,61 @@ Environment: `MINA_GENESIS_CONFIG`.
 Turn off peer discovery: no Kademlia, and no asking peers for more peers.
 
 The node still dials its initial peers. Those are the network's default peers unless peers are given with `--peers`, `--peer-list-file` or `--peer-list-url`, or `--seed` is set.
+
+### Reporting
+
+#### `--uptime-url <URL>`
+
+Send signed uptime submissions to this URL, as OCaml's `--uptime-url`: from the next slot boundary, every five slots, the best tip, with up to eight delivery attempts. Before signing, the best-tip report proves a suitable transaction job and includes its SNARK work. Without a suitable job it reports without work; a proving failure skips the report. A block this node produces within four slots gets a separate report without work. Needs `--uptime-submitter-key` or `--uptime-submitter-pubkey`. Off by default.
+
+Environment: `MINA_UPTIME_URL`.
+
+#### `--uptime-submitter-key <FILE>`
+
+Encrypted secret key file of the account that signs uptime submissions; need not be the block producer's. Its password is read from the `UPTIME_PRIVKEY_PASS` environment variable, which must be set (it may be empty), as OCaml requires.
+
+Environment: `MINA_UPTIME_SUBMITTER_KEY`.
+
+#### `--uptime-submitter-pubkey <PUBLIC_KEY>`
+
+Public key of the account that signs uptime submissions, whose key file is tracked in `<work dir>/wallets/store`, as OCaml tracks wallets in `<config dir>/wallets/store`. Its password is read from `UPTIME_PRIVKEY_PASS`
+
+Environment: `MINA_UPTIME_SUBMITTER_PUBKEY`.
+
+#### `--uptime-send-node-commit-sha`
+
+Include the first 8 characters of this build's commit in uptime submissions. Off by default.
+
+Environment: `MINA_UPTIME_SEND_NODE_COMMIT_SHA`.
+
+#### `--uptime-dry-run-dir <DIR>`
+
+Don't send uptime submissions: write each request body, exactly as it would be POSTed to `--uptime-url`, to a file in this directory (created if missing), to compare with OCaml's. Not in OCaml.
+
+Environment: `MINA_UPTIME_DRY_RUN_DIR`.
+
+#### `--node-status-url <URL>`
+
+Send the unsigned node status report to this URL five slots after start, then every five slots, once each. Off by default.
+
+#### `--simplified-node-stats <SIMPLIFIED_NODE_STATS>`
+
+Send the simplified node status (OCaml's default). `false` asks for OCaml's full version 2 report, which this node doesn't offer: it doesn't measure libp2p bandwidth or CPU, per-RPC and gossip counters or received-block queues.
+
+Default: `true`.
+
+Values:
+
+- `true`
+- `false`
+
+#### `--node-error-url <URL>`
+
+Send node error reports to this URL: one for the first panic, before the process ends, and one each time transactions fail to apply to a block this node produces. Sent once, never retried; a report over 10,000 bytes is not sent. Off by default.
+
+#### `--contact-info <CONTACT_INFO>`
+
+Contact details included in node error reports (shorter than 200 bytes).
 
 ## mina node status
 
@@ -898,7 +957,7 @@ Default: `http://localhost:3000`. Environment: `MINA_NODE_URL`.
 
 #### `--out <DIR>`
 
-Directory to create. It must not exist; it gets `fork_config.json` (every account inline, OCaml's GraphQL `fork_config` layout), `daemon.json` and `daemon-migrated.json` (ledgers by stable and by OCaml 4.0.2's migrated root), `manifest.json` and, last, an empty `activated`
+Directory to create. It must not exist; it gets `fork_config.json` (every account inline, OCaml's GraphQL `fork_config` layout), `daemon.json` and `daemon-migrated.json` (ledgers by stable and by OCaml 4.0.4's migrated root), `manifest.json` and, last, an empty `activated`
 
 Required.
 

@@ -11,6 +11,11 @@ pub enum TransitionFrontierGenesisState {
     LedgerLoadPending {
         time: redux::Timestamp,
     },
+    /// Terminal: no networking or ledger-dependent work can start.
+    LedgerLoadError {
+        time: redux::Timestamp,
+        error: String,
+    },
     LedgerLoadSuccess {
         time: redux::Timestamp,
         data: GenesisConfigLoaded,

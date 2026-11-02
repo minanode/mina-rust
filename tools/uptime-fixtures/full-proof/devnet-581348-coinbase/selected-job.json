@@ -1,0 +1,1389 @@
+[
+  "Transition",
+  {
+    "source": {
+      "first_pass_ledger": "jxACL7QdUKSWgThPq7h9z6UGYYqbKqd1FiP7oEVHE46e9WTxcYf",
+      "second_pass_ledger": "jxiTxWUGZL8eqPvDx98xsKrKfrb2cDWimrw1UXVPQ9aLbeVXXAN",
+      "pending_coinbase_stack": {
+        "data": "4QQ7S4HwGFPkcKUv1d64CLAreGM7xQHpnRz5zBdyXUCjf4TLtDuv",
+        "state": {
+          "init": "4Yysbv7nEgGNy6GZM46byWCSd1TxYjdWMtY7T2jsz6kNxxmEY7uz",
+          "curr": "4Yyc57uFQHu9AbUCisnjVgjY1PYphHrZE5aHZMjpHsjtuAHwCgdg"
+        }
+      },
+      "local_state": {
+        "stack_frame": "0x0641662E94D68EC970D0AFC059D02729BBF4A2CD88C548CCD9FB1E26E570C66C",
+        "call_stack": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "transaction_commitment": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "full_transaction_commitment": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "excess": {
+          "magnitude": "0",
+          "sgn": [
+            "Pos"
+          ]
+        },
+        "supply_increase": {
+          "magnitude": "0",
+          "sgn": [
+            "Pos"
+          ]
+        },
+        "ledger": "jw6bz2wud1N6itRUHZ5ypo3267stk4UgzkiuWtAMPRZo9g4Udyd",
+        "success": true,
+        "account_update_index": "0",
+        "failure_status_tbl": [],
+        "will_succeed": true
+      }
+    },
+    "target": {
+      "first_pass_ledger": "jxiTxWUGZL8eqPvDx98xsKrKfrb2cDWimrw1UXVPQ9aLbeVXXAN",
+      "second_pass_ledger": "jxiTxWUGZL8eqPvDx98xsKrKfrb2cDWimrw1UXVPQ9aLbeVXXAN",
+      "pending_coinbase_stack": {
+        "data": "4QPsgwiUt5uZANCTRsDftRZGuRKC3qrjnuQsCSv9RQZK3G77Ery4",
+        "state": {
+          "init": "4Yysbv7nEgGNy6GZM46byWCSd1TxYjdWMtY7T2jsz6kNxxmEY7uz",
+          "curr": "4Yy33ciNiBFW7YM9asnSDmF6ZRfuGybpyW7sGyX1j28Ejr9rbf9J"
+        }
+      },
+      "local_state": {
+        "stack_frame": "0x0641662E94D68EC970D0AFC059D02729BBF4A2CD88C548CCD9FB1E26E570C66C",
+        "call_stack": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "transaction_commitment": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "full_transaction_commitment": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "excess": {
+          "magnitude": "0",
+          "sgn": [
+            "Pos"
+          ]
+        },
+        "supply_increase": {
+          "magnitude": "0",
+          "sgn": [
+            "Pos"
+          ]
+        },
+        "ledger": "jw6bz2wud1N6itRUHZ5ypo3267stk4UgzkiuWtAMPRZo9g4Udyd",
+        "success": true,
+        "account_update_index": "0",
+        "failure_status_tbl": [],
+        "will_succeed": true
+      }
+    },
+    "connecting_ledger_left": "jxiTxWUGZL8eqPvDx98xsKrKfrb2cDWimrw1UXVPQ9aLbeVXXAN",
+    "connecting_ledger_right": "jxiTxWUGZL8eqPvDx98xsKrKfrb2cDWimrw1UXVPQ9aLbeVXXAN",
+    "supply_increase": {
+      "magnitude": "360000000000",
+      "sgn": [
+        "Pos"
+      ]
+    },
+    "fee_excess": [
+      {
+        "token": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "amount": {
+          "magnitude": "0",
+          "sgn": [
+            "Pos"
+          ]
+        }
+      },
+      {
+        "token": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+        "amount": {
+          "magnitude": "0",
+          "sgn": [
+            "Pos"
+          ]
+        }
+      }
+    ],
+    "sok_digest": null
+  },
+  {
+    "transaction": [
+      "Coinbase",
+      {
+        "receiver": "B62qmGudrekyaWbKzw2b4LagLvhUjVup3vUxKf1Yj96ZiiUJKpPZHjG",
+        "amount": "360000000000",
+        "fee_transfer": {
+          "receiver_pk": "B62qoXucNXRjjG1SmWvogDQTeC17GRNsdhvhsBUEcsMy6CAXhWSgmTV",
+          "fee": "0.004"
+        }
+      }
+    ],
+    "first_pass_ledger": {
+      "indexes": [
+        [
+          [
+            "B62qmGudrekyaWbKzw2b4LagLvhUjVup3vUxKf1Yj96ZiiUJKpPZHjG",
+            "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf"
+          ],
+          6202
+        ],
+        [
+          [
+            "B62qoXucNXRjjG1SmWvogDQTeC17GRNsdhvhsBUEcsMy6CAXhWSgmTV",
+            "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf"
+          ],
+          92555
+        ]
+      ],
+      "depth": 35,
+      "tree": [
+        "Node",
+        "jxACL7QdUKSWgThPq7h9z6UGYYqbKqd1FiP7oEVHE46e9WTxcYf",
+        [
+          "Node",
+          "jwBtHaW4G5RpeWt7FEVowEyukWycBSHG1kf4R2aUaSZmE1HtG83",
+          [
+            "Node",
+            "jwkHjGPmuqkX9F2HpGbYNA6gtt5aqy5DZHRHmNbnp7nwRjcYhKu",
+            [
+              "Node",
+              "jxeaTo3S8SvCxjwyRcHm24wnoWVipu7saCMzhwAmQQz2GPtYRap",
+              [
+                "Node",
+                "jwz3KrGCGU3QwEnB6ZyBY9HgnhmrAKADUXyWq2VE5CpJyiHCG7o",
+                [
+                  "Node",
+                  "jxKepDSEHxaoGrxXTWG5aBPW8ZdquuKrVm2rD9SuFX2cQKMwtrk",
+                  [
+                    "Node",
+                    "jwZ9XgFdqHEG6cxAcBF88fcQEcowWq99E1sx1jPCYJtwYK6bAJ6",
+                    [
+                      "Node",
+                      "jwi4pLXMmgDBfRsWKHERzAzabC7JdEGidfB9xNu4F2XYjghh1zh",
+                      [
+                        "Node",
+                        "jx8CaNHDEC1jYAkaEWDCnKkfWsdNaHkpGKhBLuB4nJ6np6axFYk",
+                        [
+                          "Node",
+                          "jwtfu4jSVkAf1oNadGUtThf94JqnGohFsXXZewzdpGuQGZWJKq2",
+                          [
+                            "Node",
+                            "jx5mhDuxjbYACzzjcpiB2TLFriBfnt6Lat2rBJcQCjMLkgPEha4",
+                            [
+                              "Node",
+                              "jxJHiV33FtkCeKFoeZeLfUvmCW9Hz1K6qxFQqCiSqismMgHou7i",
+                              [
+                                "Node",
+                                "jxC1pammpSopKHKoBJqFRjQcwDYfDrGUGohuWK7tKtTDkHqdVNJ",
+                                [
+                                  "Node",
+                                  "jxkb8cheU9NS33Fi2wZDAUJ5oiLec9vxnHmKZC3LQdFjB3J8V3c",
+                                  [
+                                    "Node",
+                                    "jwHf2sv5PCvfDnDBcb4KcyKWzAXaZbPLZztt1jYeq9iQUbSaPxD",
+                                    [
+                                      "Node",
+                                      "jxndvvVBHLujKCAM4HNFd6Xsni3gVFrJAGrJEL3gBBoDTS18zNd",
+                                      [
+                                        "Node",
+                                        "jxpre63DHwJ9KCuc2ghZUBgapxuijeeUiYuXLPRswojNehxEJAz",
+                                        [
+                                          "Node",
+                                          "jwYV9xKmS7XjPD9ZyPDLdFbZx4Xt6wjArsQZGWc7wH2HH8EggHT",
+                                          [
+                                            "Node",
+                                            "jw92UiXwkhggQ6wtgA1F9BnsihwUMuZXhWHtiwhBgBacAUzvcgn",
+                                            [
+                                              "Node",
+                                              "jwxi4CGtcey6EcZH91Vv8VV4vWvm9EMH7WEN76yK1JNRvbas6NP",
+                                              [
+                                                "Node",
+                                                "jx2TakjBa6UDzv31g4C9KEujKd27HK6oeioW9FyUXFhtkktKTrj",
+                                                [
+                                                  "Node",
+                                                  "jxtYapeq72N1Bcz5mmkNkys3qoNueBs6Jg7aSwNoVvvu7g84JyU",
+                                                  [
+                                                    "Node",
+                                                    "jxGydrXfMQReosEmdDEnTsa3ybWVfU6WHXrZG6UXmA9c5oPSe1w",
+                                                    [
+                                                      "Hash",
+                                                      "jxdmG8s9fwp8tmLJfsPjB55uWQTomW7wAK8jtrRe3GdV3FCnLaz"
+                                                    ],
+                                                    [
+                                                      "Node",
+                                                      "jxqAxtnVCuTS8Em2yRCtsaqBagw4wsziQoBPtd5XKMdcvabdurM",
+                                                      [
+                                                        "Hash",
+                                                        "jwzyh3vmNhQrSJrSHybPUyGu5QrswRM5vxtjsqgXo6k3XHLLv4b"
+                                                      ],
+                                                      [
+                                                        "Node",
+                                                        "jxUWHvRdaimwoPVjwTBL7FbiTtrUmgDD9ZYDf2MMqANHnCuYzYC",
+                                                        [
+                                                          "Node",
+                                                          "jwvry4mTarQ6QjYvgS4KWGCwWLACQG9tMLYGrg71nVLyGtY8bq3",
+                                                          [
+                                                            "Node",
+                                                            "jx5ijikqRu494Abvu92T4A9Ly22eLwvwt9SRqPEw6vVSaJgHXDy",
+                                                            [
+                                                              "Node",
+                                                              "jwv1LdDoYQyUxDuv2AobSEizbbnSrL6EJt1eCFq3GkCd38a6BRa",
+                                                              [
+                                                                "Node",
+                                                                "jwYT746SUgeC6SQb3cVAAYVSNTotKeNzzvWdGASfqQnaCJsMkbg",
+                                                                [
+                                                                  "Node",
+                                                                  "jxC1bCsntrv2Rd7xJK6rcKLvPYr5JsbJ5PgHud3cmutHNk3wwYB",
+                                                                  [
+                                                                    "Hash",
+                                                                    "jwFJYkbqwnMHSBjfEyBa3wHr82BPGwDSDXuYftWgQxjf4QPzRNd"
+                                                                  ],
+                                                                  [
+                                                                    "Node",
+                                                                    "jws6saADabmNxW3XHwWWhdEFBJ7jYmBnyqSBP4L9i3jYGwZjDTH",
+                                                                    [
+                                                                      "Hash",
+                                                                      "jxC612nJKrdBTDdr1M3TiRiLRq9eAv79fppf9pFg6YB4e9QUfvG"
+                                                                    ],
+                                                                    [
+                                                                      "Node",
+                                                                      "jxztZpZqnR28nHno847rsibNW7X787KP46BVD2T9grQsfmMKdBZ",
+                                                                      [
+                                                                        "Hash",
+                                                                        "jxUNazpm2ydLWJUQZ1vdtkNDQLcRgZ6NP4VGy86xnRqahofrH7F"
+                                                                      ],
+                                                                      [
+                                                                        "Node",
+                                                                        "jwFYRMdxR7ek9gRT3qVpM9dRjqT5rrEQHQ73vq2f72mvZYUQv4U",
+                                                                        [
+                                                                          "Node",
+                                                                          "jwBhJyXxXQhZ3sjMKoM4jsawEceAEe4C7HBSoPuaRJP8NLDG4yk",
+                                                                          [
+                                                                            "Hash",
+                                                                            "jxRJraJLzxMTTdXdhC4TD1xNx7w7HngXaFsdTsHequgmsemzrBK"
+                                                                          ],
+                                                                          [
+                                                                            "Node",
+                                                                            "jxGawWoD8boKRoKqhFvkrL1ryw3rjFopF97HGzXsa7MCSFEe8SQ",
+                                                                            [
+                                                                              "Account",
+                                                                              {
+                                                                                "public_key": "B62qmGudrekyaWbKzw2b4LagLvhUjVup3vUxKf1Yj96ZiiUJKpPZHjG",
+                                                                                "token_id": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+                                                                                "token_symbol": "",
+                                                                                "balance": "29478350622863953",
+                                                                                "nonce": "0",
+                                                                                "receipt_chain_hash": "2mzbV7WevxLuchs2dAMY4vQBS6XttnCUF8Hvks4XNBQ5qiSGGBQe",
+                                                                                "delegate": "B62qmGudrekyaWbKzw2b4LagLvhUjVup3vUxKf1Yj96ZiiUJKpPZHjG",
+                                                                                "voting_for": "3NK2tkzqqK5spR2sZ7tujjqPksL45M3UUrcA4WhCkeiPtnugyE2x",
+                                                                                "timing": [
+                                                                                  "Untimed"
+                                                                                ],
+                                                                                "permissions": {
+                                                                                  "edit_state": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "access": [
+                                                                                    "None"
+                                                                                  ],
+                                                                                  "send": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "receive": [
+                                                                                    "None"
+                                                                                  ],
+                                                                                  "set_delegate": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_permissions": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_verification_key": [
+                                                                                    [
+                                                                                      "Signature"
+                                                                                    ],
+                                                                                    "2"
+                                                                                  ],
+                                                                                  "set_zkapp_uri": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "edit_action_state": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_token_symbol": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "increment_nonce": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_voting_for": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_timing": [
+                                                                                    "Signature"
+                                                                                  ]
+                                                                                },
+                                                                                "zkapp": null
+                                                                              }
+                                                                            ],
+                                                                            [
+                                                                              "Hash",
+                                                                              "jxvcnieosgt3qKSGLwfdjZB1KdWHxn2uZs4nyFT3bnPm5um6ARs"
+                                                                            ]
+                                                                          ]
+                                                                        ],
+                                                                        [
+                                                                          "Hash",
+                                                                          "jy2ZfWtRneXWTdtAA8Eh82SXqXyxguT7g6kJQgnjNMTDEnC1cwp"
+                                                                        ]
+                                                                      ]
+                                                                    ]
+                                                                  ]
+                                                                ],
+                                                                [
+                                                                  "Hash",
+                                                                  "jxt1xsaqzFoYjZm7sdbWDR68cG4cMmkbmgXGe5ouHh94s1gL7Nz"
+                                                                ]
+                                                              ],
+                                                              [
+                                                                "Hash",
+                                                                "jwKoM9pQV3HV8xoRdFJLkT2cQw3zvboAQPwY7GairUvtvz58nho"
+                                                              ]
+                                                            ],
+                                                            [
+                                                              "Hash",
+                                                              "jwWpJw14ubC9p65CTQdnky1rU3RsCwQV2MxHRXXNawfqgPZrgZP"
+                                                            ]
+                                                          ],
+                                                          [
+                                                            "Hash",
+                                                            "jxWDfNNNpbvRV3KhwExi7DJSZqEgxUDDrL7sDhvp3eXLWDL6PrN"
+                                                          ]
+                                                        ],
+                                                        [
+                                                          "Hash",
+                                                          "jxLMavfFBUZhFQ2wNA35VcGgXY1amZp5EQffssz4kaGUKrJ2Mvq"
+                                                        ]
+                                                      ]
+                                                    ]
+                                                  ],
+                                                  [
+                                                    "Hash",
+                                                    "jy2DBimkJu6npg47Z5d32nTQWhukdcL4K2ETQP98KZaJPtPMy41"
+                                                  ]
+                                                ],
+                                                [
+                                                  "Hash",
+                                                  "jwtUSrFA42MZZtpB6wjciEmtJxFNXp3aum5qPh6ddviEtf15rqy"
+                                                ]
+                                              ],
+                                              [
+                                                "Hash",
+                                                "jxdTHpjGAhbnpBctWVRMhtTTAGGzV2ipPN52PFAq8m2XHYKctmp"
+                                              ]
+                                            ],
+                                            [
+                                              "Node",
+                                              "jwX6aLNBxCxGzxEbdy1xaPPK3Q713JmjCQ8B8BktkceV787C6zb",
+                                              [
+                                                "Node",
+                                                "jwTY59AHpCcKmMLY8osvocaKUrCmmhpmhey2X1ojRaFhtwjnUgF",
+                                                [
+                                                  "Hash",
+                                                  "jxrZjH9VusCR3iqea1zEDcdkk8PbnGFqaof9gfDp3Qi6M2A6Xgv"
+                                                ],
+                                                [
+                                                  "Node",
+                                                  "jwEMUoCn2Dbsmyz2UAaiu93gdtbNYGXuY4ev3EXNdMCbkD7Htxh",
+                                                  [
+                                                    "Hash",
+                                                    "jwwNsrwX7k6UFkumJfw5Kv4r3a5kSEBw1EGB9c2cuPwKSxhLGL1"
+                                                  ],
+                                                  [
+                                                    "Node",
+                                                    "jxGDE2bWBPpVThYhbBJmjuPfUYZuUkebXAnHMqBSxdcH9kvZeuG",
+                                                    [
+                                                      "Node",
+                                                      "jx7mG8tLjY31KJZupvPJ7MmiFXUrAGMKBuDG1Y73UQ48cFwpHMX",
+                                                      [
+                                                        "Hash",
+                                                        "jwWukm8e2di6RpQ4hCXGpqiHvX8ieNAajLzjvsn18Sj9Xe6vgcP"
+                                                      ],
+                                                      [
+                                                        "Node",
+                                                        "jw9dAMCchBiwnCwspcPpswgLwC4V7qo8SvHy3PtNH8yRjf4uXaV",
+                                                        [
+                                                          "Node",
+                                                          "jxZLSLYTzpH7ripzKhHtSTqeAtGKQEGPjzymc7vbEPLibCtsvDx",
+                                                          [
+                                                            "Node",
+                                                            "jwqrFBm7kjnTFDkTQ23H9Lnhs1rZkkeggMLBnskQPv8CCua3njW",
+                                                            [
+                                                              "Hash",
+                                                              "jwYWKFod3yiAEJfwAcqTFTakErDesGg2GFrUMHYhYDsWUf6TUVu"
+                                                            ],
+                                                            [
+                                                              "Node",
+                                                              "jxVA5cWVv3iGasgHaz4gHAbgQqW7PmckdeMqK8xb1SqQvAHv243",
+                                                              [
+                                                                "Hash",
+                                                                "jwtQvC8KpWD31j4n1Hdhp7PiKiccbbvUdZ1H6ow7959QpDDozp8"
+                                                              ],
+                                                              [
+                                                                "Node",
+                                                                "jxqsfGZYUxqCEMoQSW1uErv7miaW9ApbeTC1pPmUpXqKVHMy6tt",
+                                                                [
+                                                                  "Node",
+                                                                  "jxG6Me7rxy5W9B71Hqyk6CykZdBtSstxNeFudXA6JjDWsfA6kQ2",
+                                                                  [
+                                                                    "Node",
+                                                                    "jx3MZsGt8zeCkzsYx8eNWbXnPyvwQUnMJEXGUkj8YUb9GdL7b6t",
+                                                                    [
+                                                                      "Node",
+                                                                      "jwRuLDZviBfLSP1BqQ3VXLdH2bNmgEzUqNMud3gcaJG6yJDnzWC",
+                                                                      [
+                                                                        "Hash",
+                                                                        "jxmfeHxvT2g37AFQNajoiKH8BSnTpCUMMMvZbvwYLuCTRSa4K8u"
+                                                                      ],
+                                                                      [
+                                                                        "Node",
+                                                                        "jxQjBnAhkZpjsQwf1uiuM3GGmaAnCdqHkj5T7vXpQnkQ5nAbYex",
+                                                                        [
+                                                                          "Node",
+                                                                          "jwmPZxdtyxPz41bNGg8gZi6VJFGjrXMcobmN8nv4WCYoco9Fqj8",
+                                                                          [
+                                                                            "Hash",
+                                                                            "jwLeGQqT2biyG1SkvvAZNvWggc9MwNfiAUcRinyd9NXgGmYa6oo"
+                                                                          ],
+                                                                          [
+                                                                            "Node",
+                                                                            "jwGc6CEtM9YwpB7E54N9GAbiDAGzHhKA2AKtSuUKaifu1r3PLdQ",
+                                                                            [
+                                                                              "Hash",
+                                                                              "jwzq6UxvWLoWjYqym6F4ZibKxnV58V2RqKuN6U6cmibi2cnvsa1"
+                                                                            ],
+                                                                            [
+                                                                              "Account",
+                                                                              {
+                                                                                "public_key": "B62qoXucNXRjjG1SmWvogDQTeC17GRNsdhvhsBUEcsMy6CAXhWSgmTV",
+                                                                                "token_id": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+                                                                                "token_symbol": "",
+                                                                                "balance": "33430472000000",
+                                                                                "nonce": "12",
+                                                                                "receipt_chain_hash": "2n1qoTkvtcm4FctZJPHw8E4h844z9sjS6gPcpRQUJxX9GE4kw1ZZ",
+                                                                                "delegate": "B62qoeik6jNZapnxHeYaF4sJMEq6LccCJ6cscm2ZoHNmX5UcQREF7H3",
+                                                                                "voting_for": "3NK2tkzqqK5spR2sZ7tujjqPksL45M3UUrcA4WhCkeiPtnugyE2x",
+                                                                                "timing": [
+                                                                                  "Untimed"
+                                                                                ],
+                                                                                "permissions": {
+                                                                                  "edit_state": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "access": [
+                                                                                    "None"
+                                                                                  ],
+                                                                                  "send": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "receive": [
+                                                                                    "None"
+                                                                                  ],
+                                                                                  "set_delegate": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_permissions": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_verification_key": [
+                                                                                    [
+                                                                                      "Signature"
+                                                                                    ],
+                                                                                    "4"
+                                                                                  ],
+                                                                                  "set_zkapp_uri": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "edit_action_state": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_token_symbol": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "increment_nonce": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_voting_for": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_timing": [
+                                                                                    "Signature"
+                                                                                  ]
+                                                                                },
+                                                                                "zkapp": null
+                                                                              }
+                                                                            ]
+                                                                          ]
+                                                                        ],
+                                                                        [
+                                                                          "Hash",
+                                                                          "jwhQZscjweJHPeFEhrpmkHPdCBh3FEfUJvuRxm7nJrQKWwB9ESv"
+                                                                        ]
+                                                                      ]
+                                                                    ],
+                                                                    [
+                                                                      "Hash",
+                                                                      "jxwPiy9dEtUbvmJuzACjCMqPLuHLCZQMLSFJ4EvH4u5B9cPrnqi"
+                                                                    ]
+                                                                  ],
+                                                                  [
+                                                                    "Hash",
+                                                                    "jxgyc2PxtGjYU1vMrLZZJYf3evYs9Ksg1SeAmRL1oDNEsBgFaAF"
+                                                                  ]
+                                                                ],
+                                                                [
+                                                                  "Hash",
+                                                                  "jxZgLYenGDM2wpmgCjhP7bpuzYzAk4xPFKE2xVkdgs6kxeBg2sR"
+                                                                ]
+                                                              ]
+                                                            ]
+                                                          ],
+                                                          [
+                                                            "Hash",
+                                                            "jwi6njqSAeVKwTf7prGk81RqEKdDk9CJJrLLujBwFMUq22TBqij"
+                                                          ]
+                                                        ],
+                                                        [
+                                                          "Hash",
+                                                          "jxvN5DVDHPQow7qV8qMYu5JViwcLwYaM885xoov9DdSeC6oGMfc"
+                                                        ]
+                                                      ]
+                                                    ],
+                                                    [
+                                                      "Hash",
+                                                      "jwRXq7Fm53mnkQQpajiuCjw4NJBjza8VuKyFuKv8FQ5chrb11Xp"
+                                                    ]
+                                                  ]
+                                                ]
+                                              ],
+                                              [
+                                                "Hash",
+                                                "jxR3NZHpSRMJiKixmyY1g49HiQR8vzoMCa6b6yZeNT4CcsuPba2"
+                                              ]
+                                            ]
+                                          ],
+                                          [
+                                            "Hash",
+                                            "jxWA7TrYQTy3MKmWN3FL1Kvomz8wKeJW39A2YVn8M5MTqELTsn9"
+                                          ]
+                                        ],
+                                        [
+                                          "Hash",
+                                          "jwi3EXHeJrykrgZMZefJzJQHAWYTm499fa1N641zhJWRLCzrnGH"
+                                        ]
+                                      ],
+                                      [
+                                        "Hash",
+                                        "jx882H7M7DZGzLp5N3zq3rUPENMBqmDNuFRNQSMKwgPupSBmPKm"
+                                      ]
+                                    ],
+                                    [
+                                      "Hash",
+                                      "jxXCzCXCL5xWDjAZ9haSVpo5m97MMCqyoY97fk6tdQdDBXDs8Xv"
+                                    ]
+                                  ],
+                                  [
+                                    "Hash",
+                                    "jwKeeQoDG2fP56cZHibMUazgBUmYEkBZ9UmipNxmaV3Loxo4m5u"
+                                  ]
+                                ],
+                                [
+                                  "Hash",
+                                  "jwcvMajY5Fn51sak5nxnxiBoQcVFp7xkLRfxmm6NynUHuPg8vPR"
+                                ]
+                              ],
+                              [
+                                "Hash",
+                                "jxpBPVYweobf9duZqvdavbfJXxPmUBqGGG7FVE5KyGhmoPERPrR"
+                              ]
+                            ],
+                            [
+                              "Hash",
+                              "jwRpVptscMCkYJ9N7EkyUM7CnjmrUaJp5DDMJVRBfdH5Su1Pd8U"
+                            ]
+                          ],
+                          [
+                            "Hash",
+                            "jxA5YLtxVHQusHALgNhTzugM21suZHgnVmGqqCceyXM4wpCWaHA"
+                          ]
+                        ],
+                        [
+                          "Hash",
+                          "jwwkQbEsEKm9PdSFCZiJojZgEajtziBPnYp7b2LM1iqgHYCj9aa"
+                        ]
+                      ],
+                      [
+                        "Hash",
+                        "jwcprDL7doH2jGHxKDjK6ojSx83nd3EEg9koiF46DDtDuCyWoWt"
+                      ]
+                    ],
+                    [
+                      "Hash",
+                      "jwGby2z4ZPEARojYuWUFJfvGPrVEa36G8wZXMkXcyqbj8v6wBTa"
+                    ]
+                  ],
+                  [
+                    "Hash",
+                    "jwbVP3wYKjbKhEeMG2zins9bbH7gqKQqoe27mqmGtg22EfVwrnU"
+                  ]
+                ],
+                [
+                  "Hash",
+                  "jwoE6AE4fhG3mS5wVhF1ePdbgfSBK7T8hPX7i1qduviqixWAgAe"
+                ]
+              ],
+              [
+                "Hash",
+                "jwC7FPa153CvcAkYnFCQipiHhFMYTKsZnMxPX8MMYv7u1ckNVWF"
+              ]
+            ],
+            [
+              "Hash",
+              "jxcCMSk18hwgBQAmEnfJPjBuZFVPgZkritNz4YT5J3Trs1Vmqry"
+            ]
+          ],
+          [
+            "Hash",
+            "jwBpfy1niqjMQ7WQDAR8ueDdpnNR2HZVd6rrCSHJtf2X6Eu8kf2"
+          ]
+        ],
+        [
+          "Hash",
+          "jxvVMS2AqGs9y57TvC446Mp5xMmComhzkGSsGHpQ6cqu7Ripeox"
+        ]
+      ]
+    },
+    "second_pass_ledger": {
+      "indexes": [
+        [
+          [
+            "B62qmGudrekyaWbKzw2b4LagLvhUjVup3vUxKf1Yj96ZiiUJKpPZHjG",
+            "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf"
+          ],
+          6202
+        ],
+        [
+          [
+            "B62qoXucNXRjjG1SmWvogDQTeC17GRNsdhvhsBUEcsMy6CAXhWSgmTV",
+            "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf"
+          ],
+          92555
+        ]
+      ],
+      "depth": 35,
+      "tree": [
+        "Node",
+        "jxiTxWUGZL8eqPvDx98xsKrKfrb2cDWimrw1UXVPQ9aLbeVXXAN",
+        [
+          "Node",
+          "jwpKjH4E4MHo4rhKFjaRYyBfs8XBtaZZ2azzDNXBdovNvNHxrwZ",
+          [
+            "Node",
+            "jxYhJJwaipdvK3wbcdAvRNiKddiGK2XjjaCX6jH2iMEUpf1MvSc",
+            [
+              "Node",
+              "jxydrsje9rmFwdzgcFbSHvhYt3bZNSDimfQop2K7wuiKPv4WjwJ",
+              [
+                "Node",
+                "jxuaW3ByYFmRnnk6yN5LMSyPjcy92Cen723YmUBLrH8yoRdKghL",
+                [
+                  "Node",
+                  "jx7jQ3rXoi9guvvnSS8KAo5SzYbooSgwEmW3T9zwtRELHTGNQvE",
+                  [
+                    "Node",
+                    "jxmoENjBEWJ1wMGgmheyWwwCaH54qcNCSpJvZKFcm9Jax4A5w31",
+                    [
+                      "Node",
+                      "jwhDpUMKSeHUSqJrJdEBD3TLjGQWonErX3NhmKxqtUwK7DAQjTA",
+                      [
+                        "Node",
+                        "jwZBkND1EVNc4gddkJtscNFdpiCmb62WfRgUyLkuYdTbjgjodmS",
+                        [
+                          "Node",
+                          "jx1B836eXdTBDxUVbHEueVeLDJv54Zf8E6tBca8s3SEraHre7jt",
+                          [
+                            "Node",
+                            "jxXbj3skXSx7VfSrnV27eY49R6mutko68SHqy4KTBnJGNmNoWdo",
+                            [
+                              "Node",
+                              "jxwB7RtuJ8nH7wtuuvAFZWLaXAubLpehF8upMUYsQ2qeC1cvTzA",
+                              [
+                                "Node",
+                                "jxEgtnHXG6VMZs5jEuJxUd6zjyKnrFQgkEEqguSn81GoGh3UCJJ",
+                                [
+                                  "Node",
+                                  "jxHHkMPEuQ6LqX3BbM4rpy3MjyXhBoXq8esXvoQ19cFhS81Yqn1",
+                                  [
+                                    "Node",
+                                    "jxFTyM6nwEfa2s1aUCnR1KHUGuKND1AXBKgpSkzXQYLsub3rGnx",
+                                    [
+                                      "Node",
+                                      "jxNuphd9nBswpvDBcBcKFZhMAeVnVdBdibyZoxAFZ7oSvqhpPGY",
+                                      [
+                                        "Node",
+                                        "jwtddB7pymZTmEVwRKvLkMfiYG1YrgKME7Dtc6LRstSyQtcgxt7",
+                                        [
+                                          "Node",
+                                          "jw8L7gvVzvJcgvtMmNqEB2zoeogFE1aEJRDmW7AzxtXBFK14uFo",
+                                          [
+                                            "Node",
+                                            "jxX21q7czMFfhi4Sxz7gH5EWCFYeswBpxAzg4vvkGKAWXe3NPQS",
+                                            [
+                                              "Node",
+                                              "jxRuXbbD5PxiJxoaBPM4sRYpJZX6MaJVLkaSm9Lp1pVH57jWRF2",
+                                              [
+                                                "Node",
+                                                "jwSUQexfL5FFPDRe1VYXUH6QFHkpehNv8ZT9Aq6g5LHckdD8SQ7",
+                                                [
+                                                  "Node",
+                                                  "jx4VxX7KVXLeQNTgL4eCcuroCLtFoZbJucAhBgrXXJ2esdmsDas",
+                                                  [
+                                                    "Node",
+                                                    "jx8WeMmw2SKyXjN5LWy7Rw2FSXd8Pwqh8zm9LX1vLnWnNxFKeky",
+                                                    [
+                                                      "Hash",
+                                                      "jxdmG8s9fwp8tmLJfsPjB55uWQTomW7wAK8jtrRe3GdV3FCnLaz"
+                                                    ],
+                                                    [
+                                                      "Node",
+                                                      "jwxwvYsceG1MzwS8wCqZ7uPo1FSpQ2KFnAJP4KF4hujEd6ff4u6",
+                                                      [
+                                                        "Hash",
+                                                        "jwzyh3vmNhQrSJrSHybPUyGu5QrswRM5vxtjsqgXo6k3XHLLv4b"
+                                                      ],
+                                                      [
+                                                        "Node",
+                                                        "jxaxNy6jNRE6D6V2CdoRGZJXDTxs24BXG86sc7o34xvyhFNKjpN",
+                                                        [
+                                                          "Node",
+                                                          "jxU15R9HKm2oDCi7rJrP27qKL3aXRLrULgGDfkkQrn9n1xGsGGC",
+                                                          [
+                                                            "Node",
+                                                            "jxgfpRZuHBepMR8EFEkqXBs7aevmtVfg8Y52SS6h3mcwBRXErvY",
+                                                            [
+                                                              "Node",
+                                                              "jxy1gRYz7Dgu3z6PPBjGjG3VM97BrPzwmhbVEYEDbdW6ewPc2Gx",
+                                                              [
+                                                                "Node",
+                                                                "jwKTxVcsCYZY5sDNuNXeHCJdYWEFYUyz3uPz4JqC2zWuJQwgW2h",
+                                                                [
+                                                                  "Node",
+                                                                  "jwMABbQWFJ5FbfDNLdKvpnDoHX4LrH71JjbgHwhG1q9Up9LxMWM",
+                                                                  [
+                                                                    "Hash",
+                                                                    "jwFJYkbqwnMHSBjfEyBa3wHr82BPGwDSDXuYftWgQxjf4QPzRNd"
+                                                                  ],
+                                                                  [
+                                                                    "Node",
+                                                                    "jxopJ13C2p82KkMjLeZ2XyKc3zejnttoSDs8vUN4XfCWoFC7SWW",
+                                                                    [
+                                                                      "Hash",
+                                                                      "jxC612nJKrdBTDdr1M3TiRiLRq9eAv79fppf9pFg6YB4e9QUfvG"
+                                                                    ],
+                                                                    [
+                                                                      "Node",
+                                                                      "jxMaABU1LUVq5KKvuQ9sFTdyfbgT5QyKXWGQXicyugWtigo6ge7",
+                                                                      [
+                                                                        "Hash",
+                                                                        "jxUNazpm2ydLWJUQZ1vdtkNDQLcRgZ6NP4VGy86xnRqahofrH7F"
+                                                                      ],
+                                                                      [
+                                                                        "Node",
+                                                                        "jxcxtkLUp7eCw64kLhBV3uzNt3rWPJnG9Dvgwx1XoGFRSW2gEyj",
+                                                                        [
+                                                                          "Node",
+                                                                          "jwRrkFhvKdNNnFYohN2NN3Te1sU9afxHGAjstsRRFH8So3RuRTb",
+                                                                          [
+                                                                            "Hash",
+                                                                            "jxRJraJLzxMTTdXdhC4TD1xNx7w7HngXaFsdTsHequgmsemzrBK"
+                                                                          ],
+                                                                          [
+                                                                            "Node",
+                                                                            "jwzHi23tHKXktQjwY5xKQPaMCkbNzKF1wVFK9KDd1e4GRL8GF8o",
+                                                                            [
+                                                                              "Account",
+                                                                              {
+                                                                                "public_key": "B62qmGudrekyaWbKzw2b4LagLvhUjVup3vUxKf1Yj96ZiiUJKpPZHjG",
+                                                                                "token_id": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+                                                                                "token_symbol": "",
+                                                                                "balance": "29478710618863953",
+                                                                                "nonce": "0",
+                                                                                "receipt_chain_hash": "2mzbV7WevxLuchs2dAMY4vQBS6XttnCUF8Hvks4XNBQ5qiSGGBQe",
+                                                                                "delegate": "B62qmGudrekyaWbKzw2b4LagLvhUjVup3vUxKf1Yj96ZiiUJKpPZHjG",
+                                                                                "voting_for": "3NK2tkzqqK5spR2sZ7tujjqPksL45M3UUrcA4WhCkeiPtnugyE2x",
+                                                                                "timing": [
+                                                                                  "Untimed"
+                                                                                ],
+                                                                                "permissions": {
+                                                                                  "edit_state": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "access": [
+                                                                                    "None"
+                                                                                  ],
+                                                                                  "send": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "receive": [
+                                                                                    "None"
+                                                                                  ],
+                                                                                  "set_delegate": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_permissions": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_verification_key": [
+                                                                                    [
+                                                                                      "Signature"
+                                                                                    ],
+                                                                                    "2"
+                                                                                  ],
+                                                                                  "set_zkapp_uri": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "edit_action_state": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_token_symbol": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "increment_nonce": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_voting_for": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_timing": [
+                                                                                    "Signature"
+                                                                                  ]
+                                                                                },
+                                                                                "zkapp": null
+                                                                              }
+                                                                            ],
+                                                                            [
+                                                                              "Hash",
+                                                                              "jxvcnieosgt3qKSGLwfdjZB1KdWHxn2uZs4nyFT3bnPm5um6ARs"
+                                                                            ]
+                                                                          ]
+                                                                        ],
+                                                                        [
+                                                                          "Hash",
+                                                                          "jy2ZfWtRneXWTdtAA8Eh82SXqXyxguT7g6kJQgnjNMTDEnC1cwp"
+                                                                        ]
+                                                                      ]
+                                                                    ]
+                                                                  ]
+                                                                ],
+                                                                [
+                                                                  "Hash",
+                                                                  "jxt1xsaqzFoYjZm7sdbWDR68cG4cMmkbmgXGe5ouHh94s1gL7Nz"
+                                                                ]
+                                                              ],
+                                                              [
+                                                                "Hash",
+                                                                "jwKoM9pQV3HV8xoRdFJLkT2cQw3zvboAQPwY7GairUvtvz58nho"
+                                                              ]
+                                                            ],
+                                                            [
+                                                              "Hash",
+                                                              "jwWpJw14ubC9p65CTQdnky1rU3RsCwQV2MxHRXXNawfqgPZrgZP"
+                                                            ]
+                                                          ],
+                                                          [
+                                                            "Hash",
+                                                            "jxWDfNNNpbvRV3KhwExi7DJSZqEgxUDDrL7sDhvp3eXLWDL6PrN"
+                                                          ]
+                                                        ],
+                                                        [
+                                                          "Hash",
+                                                          "jxLMavfFBUZhFQ2wNA35VcGgXY1amZp5EQffssz4kaGUKrJ2Mvq"
+                                                        ]
+                                                      ]
+                                                    ]
+                                                  ],
+                                                  [
+                                                    "Hash",
+                                                    "jy2DBimkJu6npg47Z5d32nTQWhukdcL4K2ETQP98KZaJPtPMy41"
+                                                  ]
+                                                ],
+                                                [
+                                                  "Hash",
+                                                  "jwtUSrFA42MZZtpB6wjciEmtJxFNXp3aum5qPh6ddviEtf15rqy"
+                                                ]
+                                              ],
+                                              [
+                                                "Hash",
+                                                "jxdTHpjGAhbnpBctWVRMhtTTAGGzV2ipPN52PFAq8m2XHYKctmp"
+                                              ]
+                                            ],
+                                            [
+                                              "Node",
+                                              "jwqpmMDrr98swoiubUA4UBdFnqSJa3eNwNhkHuJu7rHUkVXSVtF",
+                                              [
+                                                "Node",
+                                                "jxHodmKC1yJSMRsccSf4HEFzE1JZrAo1A9WBRenyt1kkgJxhiuw",
+                                                [
+                                                  "Hash",
+                                                  "jxrZjH9VusCR3iqea1zEDcdkk8PbnGFqaof9gfDp3Qi6M2A6Xgv"
+                                                ],
+                                                [
+                                                  "Node",
+                                                  "jxKEXuVAS4vfC2uhbsSxWBFMA5nkWnVfoGKtCoJUSMPjACd2JZ7",
+                                                  [
+                                                    "Hash",
+                                                    "jwwNsrwX7k6UFkumJfw5Kv4r3a5kSEBw1EGB9c2cuPwKSxhLGL1"
+                                                  ],
+                                                  [
+                                                    "Node",
+                                                    "jxurh6h3tZ13epscXL84KfT3dQZz6McRobYo4RQ78jubh27xmKm",
+                                                    [
+                                                      "Node",
+                                                      "jwMQ5vTSmXpvqv1LVkXCKB23zhN4iDcPhrAS4yZkfBn3RxDsNPn",
+                                                      [
+                                                        "Hash",
+                                                        "jwWukm8e2di6RpQ4hCXGpqiHvX8ieNAajLzjvsn18Sj9Xe6vgcP"
+                                                      ],
+                                                      [
+                                                        "Node",
+                                                        "jwtrhoRQdDgJnkjy4TvmMfkhMmxidANCyVaT3hQoQ7ZTDXY4Vm4",
+                                                        [
+                                                          "Node",
+                                                          "jxMuT71AxvVQ2dpdpZmhCfDQcBC5WJg4MwAxB4U6uu8dtRNQqQJ",
+                                                          [
+                                                            "Node",
+                                                            "jxZg3RpkrSMGiQZeUzPwUiFoKGhAvx4h97e4fZqtXCgJWkpRAXM",
+                                                            [
+                                                              "Hash",
+                                                              "jwYWKFod3yiAEJfwAcqTFTakErDesGg2GFrUMHYhYDsWUf6TUVu"
+                                                            ],
+                                                            [
+                                                              "Node",
+                                                              "jwyQRB61tGLqChWKDa9pDRTeoDAT2uzUiK8gsPYgjYcB1GYrppt",
+                                                              [
+                                                                "Hash",
+                                                                "jwtQvC8KpWD31j4n1Hdhp7PiKiccbbvUdZ1H6ow7959QpDDozp8"
+                                                              ],
+                                                              [
+                                                                "Node",
+                                                                "jxARTujhUr1sG5akz4yzrhBygutEvEXVG18ydZTzr7ygfnpw5xD",
+                                                                [
+                                                                  "Node",
+                                                                  "jwsHaRjJqKUicvTTFhYZCASpcebRs6uBU5Pq6ELadjmYrdVse5N",
+                                                                  [
+                                                                    "Node",
+                                                                    "jwVuKyByP8rExydjBac1oJPDdHAS1egwkwXpKbtJeVhJWnJbAQB",
+                                                                    [
+                                                                      "Node",
+                                                                      "jxTUkuhtMDdSe1rrQ4o3fitcZE6xhJ7gDUxPgkZkcjUC2yW4jYJ",
+                                                                      [
+                                                                        "Hash",
+                                                                        "jxmfeHxvT2g37AFQNajoiKH8BSnTpCUMMMvZbvwYLuCTRSa4K8u"
+                                                                      ],
+                                                                      [
+                                                                        "Node",
+                                                                        "jwXJg7M4K6grBQMtj4BGbDYQtEJimGJk2yZb8XXrfCLbtstcSET",
+                                                                        [
+                                                                          "Node",
+                                                                          "jxL4sgE1gFZLJjE9dBjR4VC93UMjmirbLrV4V1ZDc7mMmP6UnjJ",
+                                                                          [
+                                                                            "Hash",
+                                                                            "jwLeGQqT2biyG1SkvvAZNvWggc9MwNfiAUcRinyd9NXgGmYa6oo"
+                                                                          ],
+                                                                          [
+                                                                            "Node",
+                                                                            "jwPY555vJPuKNhxzGh5XRkPmZeLPmeZNV2yaTpw6MttHbXvsSBn",
+                                                                            [
+                                                                              "Hash",
+                                                                              "jwzq6UxvWLoWjYqym6F4ZibKxnV58V2RqKuN6U6cmibi2cnvsa1"
+                                                                            ],
+                                                                            [
+                                                                              "Account",
+                                                                              {
+                                                                                "public_key": "B62qoXucNXRjjG1SmWvogDQTeC17GRNsdhvhsBUEcsMy6CAXhWSgmTV",
+                                                                                "token_id": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+                                                                                "token_symbol": "",
+                                                                                "balance": "33430476000000",
+                                                                                "nonce": "12",
+                                                                                "receipt_chain_hash": "2n1qoTkvtcm4FctZJPHw8E4h844z9sjS6gPcpRQUJxX9GE4kw1ZZ",
+                                                                                "delegate": "B62qoeik6jNZapnxHeYaF4sJMEq6LccCJ6cscm2ZoHNmX5UcQREF7H3",
+                                                                                "voting_for": "3NK2tkzqqK5spR2sZ7tujjqPksL45M3UUrcA4WhCkeiPtnugyE2x",
+                                                                                "timing": [
+                                                                                  "Untimed"
+                                                                                ],
+                                                                                "permissions": {
+                                                                                  "edit_state": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "access": [
+                                                                                    "None"
+                                                                                  ],
+                                                                                  "send": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "receive": [
+                                                                                    "None"
+                                                                                  ],
+                                                                                  "set_delegate": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_permissions": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_verification_key": [
+                                                                                    [
+                                                                                      "Signature"
+                                                                                    ],
+                                                                                    "4"
+                                                                                  ],
+                                                                                  "set_zkapp_uri": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "edit_action_state": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_token_symbol": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "increment_nonce": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_voting_for": [
+                                                                                    "Signature"
+                                                                                  ],
+                                                                                  "set_timing": [
+                                                                                    "Signature"
+                                                                                  ]
+                                                                                },
+                                                                                "zkapp": null
+                                                                              }
+                                                                            ]
+                                                                          ]
+                                                                        ],
+                                                                        [
+                                                                          "Hash",
+                                                                          "jwhQZscjweJHPeFEhrpmkHPdCBh3FEfUJvuRxm7nJrQKWwB9ESv"
+                                                                        ]
+                                                                      ]
+                                                                    ],
+                                                                    [
+                                                                      "Hash",
+                                                                      "jxwPiy9dEtUbvmJuzACjCMqPLuHLCZQMLSFJ4EvH4u5B9cPrnqi"
+                                                                    ]
+                                                                  ],
+                                                                  [
+                                                                    "Hash",
+                                                                    "jxgyc2PxtGjYU1vMrLZZJYf3evYs9Ksg1SeAmRL1oDNEsBgFaAF"
+                                                                  ]
+                                                                ],
+                                                                [
+                                                                  "Hash",
+                                                                  "jxZgLYenGDM2wpmgCjhP7bpuzYzAk4xPFKE2xVkdgs6kxeBg2sR"
+                                                                ]
+                                                              ]
+                                                            ]
+                                                          ],
+                                                          [
+                                                            "Hash",
+                                                            "jwi6njqSAeVKwTf7prGk81RqEKdDk9CJJrLLujBwFMUq22TBqij"
+                                                          ]
+                                                        ],
+                                                        [
+                                                          "Hash",
+                                                          "jxvN5DVDHPQow7qV8qMYu5JViwcLwYaM885xoov9DdSeC6oGMfc"
+                                                        ]
+                                                      ]
+                                                    ],
+                                                    [
+                                                      "Hash",
+                                                      "jwRXq7Fm53mnkQQpajiuCjw4NJBjza8VuKyFuKv8FQ5chrb11Xp"
+                                                    ]
+                                                  ]
+                                                ]
+                                              ],
+                                              [
+                                                "Hash",
+                                                "jxR3NZHpSRMJiKixmyY1g49HiQR8vzoMCa6b6yZeNT4CcsuPba2"
+                                              ]
+                                            ]
+                                          ],
+                                          [
+                                            "Hash",
+                                            "jxWA7TrYQTy3MKmWN3FL1Kvomz8wKeJW39A2YVn8M5MTqELTsn9"
+                                          ]
+                                        ],
+                                        [
+                                          "Hash",
+                                          "jwi3EXHeJrykrgZMZefJzJQHAWYTm499fa1N641zhJWRLCzrnGH"
+                                        ]
+                                      ],
+                                      [
+                                        "Hash",
+                                        "jx882H7M7DZGzLp5N3zq3rUPENMBqmDNuFRNQSMKwgPupSBmPKm"
+                                      ]
+                                    ],
+                                    [
+                                      "Hash",
+                                      "jxXCzCXCL5xWDjAZ9haSVpo5m97MMCqyoY97fk6tdQdDBXDs8Xv"
+                                    ]
+                                  ],
+                                  [
+                                    "Hash",
+                                    "jwKeeQoDG2fP56cZHibMUazgBUmYEkBZ9UmipNxmaV3Loxo4m5u"
+                                  ]
+                                ],
+                                [
+                                  "Hash",
+                                  "jwcvMajY5Fn51sak5nxnxiBoQcVFp7xkLRfxmm6NynUHuPg8vPR"
+                                ]
+                              ],
+                              [
+                                "Hash",
+                                "jxpBPVYweobf9duZqvdavbfJXxPmUBqGGG7FVE5KyGhmoPERPrR"
+                              ]
+                            ],
+                            [
+                              "Hash",
+                              "jwRpVptscMCkYJ9N7EkyUM7CnjmrUaJp5DDMJVRBfdH5Su1Pd8U"
+                            ]
+                          ],
+                          [
+                            "Hash",
+                            "jxA5YLtxVHQusHALgNhTzugM21suZHgnVmGqqCceyXM4wpCWaHA"
+                          ]
+                        ],
+                        [
+                          "Hash",
+                          "jwwkQbEsEKm9PdSFCZiJojZgEajtziBPnYp7b2LM1iqgHYCj9aa"
+                        ]
+                      ],
+                      [
+                        "Hash",
+                        "jwcprDL7doH2jGHxKDjK6ojSx83nd3EEg9koiF46DDtDuCyWoWt"
+                      ]
+                    ],
+                    [
+                      "Hash",
+                      "jwGby2z4ZPEARojYuWUFJfvGPrVEa36G8wZXMkXcyqbj8v6wBTa"
+                    ]
+                  ],
+                  [
+                    "Hash",
+                    "jwbVP3wYKjbKhEeMG2zins9bbH7gqKQqoe27mqmGtg22EfVwrnU"
+                  ]
+                ],
+                [
+                  "Hash",
+                  "jwoE6AE4fhG3mS5wVhF1ePdbgfSBK7T8hPX7i1qduviqixWAgAe"
+                ]
+              ],
+              [
+                "Hash",
+                "jwC7FPa153CvcAkYnFCQipiHhFMYTKsZnMxPX8MMYv7u1ckNVWF"
+              ]
+            ],
+            [
+              "Hash",
+              "jxcCMSk18hwgBQAmEnfJPjBuZFVPgZkritNz4YT5J3Trs1Vmqry"
+            ]
+          ],
+          [
+            "Hash",
+            "jwBpfy1niqjMQ7WQDAR8ueDdpnNR2HZVd6rrCSHJtf2X6Eu8kf2"
+          ]
+        ],
+        [
+          "Hash",
+          "jxvVMS2AqGs9y57TvC446Mp5xMmComhzkGSsGHpQ6cqu7Ripeox"
+        ]
+      ]
+    },
+    "protocol_state_body": {
+      "genesis_state_hash": "3NLT7n4LiVo6U4LXr9BjCEp9712fP61uXkRC6hnRnB682A8f4HrJ",
+      "blockchain_state": {
+        "staged_ledger_hash": {
+          "non_snark": {
+            "ledger_hash": "jxACL7QdUKSWgThPq7h9z6UGYYqbKqd1FiP7oEVHE46e9WTxcYf",
+            "aux_hash": "VCnasu2JJJFu1zboBDUMt57HGTKdjiXpLZMiLTzg7MMt6pmXhj",
+            "pending_coinbase_aux": "WDgeLJqoPj59Ljyf7q6moJwNDXCV9SrBW75zJo7NnAFbTEd3k1"
+          },
+          "pending_coinbase_hash": "2n1DKyjXWtBrmDgdA4qys83XojT5AMkvkXmPso5wsuC1hJhkJ5Nh"
+        },
+        "genesis_ledger_hash": "jwrCSCRNpNx3ZBh6D4bUAnZtqPacKXXe6veGC9kQfHrxWqmEbJS",
+        "ledger_proof_statement": {
+          "source": {
+            "first_pass_ledger": "jxRKprVamVBc5Vt6AUQggv7t2zZE4K4eggNjNnaFLK1eaZi8Vg8",
+            "second_pass_ledger": "jwyPN7KryNWfXRL6NXyHVsTNvv3cAv2g42sJU6pQcRb8mdMoEUD",
+            "pending_coinbase_stack": {
+              "data": "4QNrZFBTDQCPfEZqBZsaPYx8qdaNFv1nebUyCUsQW9QUJqyuD3un",
+              "state": {
+                "init": "4YyHZ3cmRfL9JXX15DZaxdd3xJTgAxsh6EiBUqvvujw6svS8BtMs",
+                "curr": "4YyHZ3cmRfL9JXX15DZaxdd3xJTgAxsh6EiBUqvvujw6svS8BtMs"
+              }
+            },
+            "local_state": {
+              "stack_frame": "0x0641662E94D68EC970D0AFC059D02729BBF4A2CD88C548CCD9FB1E26E570C66C",
+              "call_stack": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "transaction_commitment": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "full_transaction_commitment": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "excess": {
+                "magnitude": "0",
+                "sgn": [
+                  "Pos"
+                ]
+              },
+              "supply_increase": {
+                "magnitude": "0",
+                "sgn": [
+                  "Pos"
+                ]
+              },
+              "ledger": "jw6bz2wud1N6itRUHZ5ypo3267stk4UgzkiuWtAMPRZo9g4Udyd",
+              "success": true,
+              "account_update_index": "0",
+              "failure_status_tbl": [],
+              "will_succeed": true
+            }
+          },
+          "target": {
+            "first_pass_ledger": "jxvR5R6MRs62WNxyHXYHnZGvkXTNrugtZHfTwXAnUaJmBKXDDJU",
+            "second_pass_ledger": "jxvR5R6MRs62WNxyHXYHnZGvkXTNrugtZHfTwXAnUaJmBKXDDJU",
+            "pending_coinbase_stack": {
+              "data": "4QNYKSWjdcSUKGok4sSCRxkT7yUTKrx16GLjhvXLtBc3zE8Xrv6U",
+              "state": {
+                "init": "4YyHZ3cmRfL9JXX15DZaxdd3xJTgAxsh6EiBUqvvujw6svS8BtMs",
+                "curr": "4YxmreP139TQLn4JFHLXPtAwGaqVgfq4JyQnE1n6n1jeoXLj91dR"
+              }
+            },
+            "local_state": {
+              "stack_frame": "0x0641662E94D68EC970D0AFC059D02729BBF4A2CD88C548CCD9FB1E26E570C66C",
+              "call_stack": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "transaction_commitment": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "full_transaction_commitment": "0x0000000000000000000000000000000000000000000000000000000000000000",
+              "excess": {
+                "magnitude": "0",
+                "sgn": [
+                  "Pos"
+                ]
+              },
+              "supply_increase": {
+                "magnitude": "0",
+                "sgn": [
+                  "Pos"
+                ]
+              },
+              "ledger": "jw6bz2wud1N6itRUHZ5ypo3267stk4UgzkiuWtAMPRZo9g4Udyd",
+              "success": true,
+              "account_update_index": "0",
+              "failure_status_tbl": [],
+              "will_succeed": true
+            }
+          },
+          "connecting_ledger_left": "jwyPN7KryNWfXRL6NXyHVsTNvv3cAv2g42sJU6pQcRb8mdMoEUD",
+          "connecting_ledger_right": "jxvR5R6MRs62WNxyHXYHnZGvkXTNrugtZHfTwXAnUaJmBKXDDJU",
+          "supply_increase": {
+            "magnitude": "21960000000000",
+            "sgn": [
+              "Pos"
+            ]
+          },
+          "fee_excess": [
+            {
+              "token": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+              "amount": {
+                "magnitude": "0",
+                "sgn": [
+                  "Pos"
+                ]
+              }
+            },
+            {
+              "token": "wSHV2S4qX9jFsLjQo8r1BsMLH2ZRKsZx6EJd1sbozGPieEC4Jf",
+              "amount": {
+                "magnitude": "0",
+                "sgn": [
+                  "Pos"
+                ]
+              }
+            }
+          ],
+          "sok_digest": null
+        },
+        "timestamp": "1793215530000",
+        "body_reference": "b17b12c61fb356a246ba0384c7be74d3dd737e1df6ca85226d3f6ddb8cc9d62e"
+      },
+      "consensus_state": {
+        "blockchain_length": "581347",
+        "epoch_count": "9",
+        "min_window_density": "26",
+        "sub_window_densities": [
+          "5",
+          "4",
+          "4",
+          "5",
+          "4",
+          "2",
+          "4",
+          "2",
+          "4",
+          "5",
+          "1"
+        ],
+        "last_vrf_output": "pzNMKegY074n5dRdy7rGluY0JY3iHbsCGoxnvTMKLQA=",
+        "total_currency": "1601319037000001000",
+        "curr_global_slot_since_hard_fork": {
+          "slot_number": "67257",
+          "slots_per_epoch": "7140"
+        },
+        "global_slot_since_genesis": "926817",
+        "staking_epoch_data": {
+          "ledger": {
+            "hash": "jwGVgywp9Es9EgPR3rH1zaPRzpJM1gUUZztUFw3JS5QuAds627v",
+            "total_currency": "1599467945000001000"
+          },
+          "seed": "2vb2281gYbDmDdaDj2jWGpDZqpjQdzYQa3JdY7tfXWjizXiEHAgr",
+          "start_checkpoint": "3NKp7RSMxHzNajcuxn3kLcvn1Q2dae9NjjJMwuES5KnTvQEyt9Ug",
+          "lock_checkpoint": "3NKtR6uSstehTLFgrxq5kywymLfAx1jfJcpZxfAX6CWgZLPiEGVR",
+          "epoch_length": "3578"
+        },
+        "next_epoch_data": {
+          "ledger": {
+            "hash": "jwqvkVGCsqoE3HFRux78jJTM1dTZfZntYK6yfobQAQSXCLjh8VQ",
+            "total_currency": "1600827287000001000"
+          },
+          "seed": "2vbYLPUtku5mYBWiGw4cYGNrrJZrCtLo2WcGm8f6YRCgmp5GWdJ5",
+          "start_checkpoint": "3NLiNyqDebZQgvocamGBwWdfiUnttnSaWa7o1v38FPmRdhEC9fwU",
+          "lock_checkpoint": "3NL6FtAiLjG8QkFYDJAQqyJWEufPqDpqatNJ6Loz8k3s4noLP5ng",
+          "epoch_length": "1496"
+        },
+        "has_ancestor_in_same_checkpoint_window": true,
+        "block_stake_winner": "B62qmQsEHcsPUs5xdtHKjEmWqqhUPRSF2GNmdguqnNvpEZpKftPC69e",
+        "block_creator": "B62qpfgnUm7zVqi8MJHNB2m37rtgMNDbFNhC2DpMmmVpQt8x6gKv9Ww",
+        "coinbase_receiver": "B62qpfgnUm7zVqi8MJHNB2m37rtgMNDbFNhC2DpMmmVpQt8x6gKv9Ww",
+        "supercharge_coinbase": true
+      },
+      "constants": {
+        "k": "290",
+        "slots_per_epoch": "7140",
+        "slots_per_sub_window": "7",
+        "grace_period_slots": "2160",
+        "delta": "0",
+        "genesis_state_timestamp": "1787162400000"
+      }
+    },
+    "init_stack": {
+      "data": "4QQ7S4HwGFPkcKUv1d64CLAreGM7xQHpnRz5zBdyXUCjf4TLtDuv",
+      "state": {
+        "init": "4Yysbv7nEgGNy6GZM46byWCSd1TxYjdWMtY7T2jsz6kNxxmEY7uz",
+        "curr": "4Yyc57uFQHu9AbUCisnjVgjY1PYphHrZE5aHZMjpHsjtuAHwCgdg"
+      }
+    },
+    "status": [
+      "Applied"
+    ],
+    "block_global_slot": "926819"
+  }
+]

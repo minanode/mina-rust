@@ -1077,6 +1077,17 @@ impl MaskImpl {
         }
     }
 
+    fn invalidate_child_hashes(&mut self, indexes: &[AccountIndex]) {
+        if indexes.is_empty() {
+            return;
+        }
+        self.recurse_on_childs(&mut |child| {
+            for index in indexes {
+                child.invalidate_hashes(*index);
+            }
+        });
+    }
+
     fn recurse_on_childs<F>(&mut self, fun: &mut F)
     where
         F: FnMut(&mut MaskImpl),
@@ -1825,12 +1836,7 @@ impl BaseLedger for MaskImpl {
             .collect();
 
         self.remove_accounts_without_notif(ids);
-
-        self.recurse_on_childs(&mut |child| {
-            for index in &indexes {
-                child.invalidate_hashes(*index);
-            }
-        });
+        self.invalidate_child_hashes(&indexes);
     }
 
     fn detached_signal(&mut self) {
@@ -1874,6 +1880,14 @@ impl BaseLedger for MaskImpl {
 
         if addr.length() > depth {
             return Err(());
+        }
+
+        if let Self::Root { database, .. } = self {
+            let removed = database.with(|db| db.remove_displaced_accounts(&addr, accounts))?;
+            // Use the same descendant invalidation as remove_accounts. Writes
+            // below must still go through set_impl/parent_set_notify; bypassing
+            // those leaves attached masks with new accounts and old roots.
+            self.invalidate_child_hashes(&removed);
         }
 
         for (child_addr, account) in addr.iter_children(depth).zip(accounts) {

@@ -398,7 +398,7 @@ struct Item {
 /// The statement of every proof of every completed work, with whether its sok
 /// digest is the digest of the work's fee and prover.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/8250f62a9bb6450f6c9fdc9a3af72da62c2f5e39/src/lib/staged_ledger/staged_ledger.ml#L736-L775>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/staged_ledger/staged_ledger.ml#L736-L775>
 /// pairs each work's proofs with `Sok_message.create ~fee ~prover`, and
 /// `Transaction_snark.verify` rejects them all if any statement's sok digest
 /// differs from its message's digest.
@@ -568,7 +568,7 @@ pub fn check(
 /// Sort a block by its genesis state hash, then check it if it is of the
 /// chain being checked, and collect its zkApp keys and proofs.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/8250f62a9bb6450f6c9fdc9a3af72da62c2f5e39/src/lib/mina_block/validation.ml#L289-L296>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_block/validation.ml#L289-L296>
 /// rejects a block of another genesis before its proof is looked at.
 pub fn check_json(mut data: Value, keys: &Keys, options: &Options) -> anyhow::Result<Outcome> {
     let mut header = mina_web_verifier::header_from_precomputed_value(&data)?;

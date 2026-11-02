@@ -68,6 +68,7 @@ crypto-bigint = { workspace = true, features = ["rand_core"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 clap = { workspace = true, features = ["derive", "env"] }
 p2p-testing = { path = "testing" }
+mina-peer-input-fuzz = { path = "../../tools/peer-input-fuzz" }
 tracing-subscriber = { workspace = true }
 
 

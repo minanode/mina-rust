@@ -81,6 +81,13 @@ impl BlockProducerEnabled {
         };
 
         match action {
+            BlockProducerAction::LedgerRecoveryAbort => {
+                state.current = BlockProducerCurrentState::Idle { time: meta.time() };
+                state.next_producer_timing = None;
+                state.injected_blocks.clear();
+                state.vrf_evaluator = state.vrf_evaluator.reset(meta.time());
+                state.proof_retried = false;
+            }
             BlockProducerAction::VrfEvaluator(action) => {
                 BlockProducerVrfEvaluatorState::reducer(
                     Substate::from_compatible_substate(state_context),
@@ -97,6 +104,20 @@ impl BlockProducerEnabled {
 
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
                 Self::dispatch_best_tip_update(dispatcher, state, best_tip, meta.time());
+            }
+            BlockProducerAction::EvaluationRecheck => {
+                // Recorded before the check, which may not run while an
+                // evaluation that is still valid continues.
+                let current_epoch = global_state.current_epoch();
+                if let Some(producer) = global_state.block_producer.as_mut() {
+                    producer
+                        .vrf_evaluator
+                        .set_checked_clock_epoch(current_epoch);
+                }
+                let (dispatcher, state) = state_context.into_dispatcher_and_state();
+                if let Some(best_tip) = state.transition_frontier.best_tip() {
+                    Self::dispatch_evaluability_check(dispatcher, state, best_tip);
+                }
             }
             BlockProducerAction::WonSlotSearch => {
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
@@ -149,6 +170,10 @@ impl BlockProducerEnabled {
                 }
             }
             BlockProducerAction::WonSlotProduceInit => {
+                // Pool reconciliation never delays a won slot. Capture the parent
+                // and select the immediately available transactions in this dispatch.
+                // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/block_producer/block_producer.ml#L714-L798>
+                // OCaml: <https://github.com/MinaProtocol/mina/blob/73134bfd3a43c3f4d8ee564b3d04a0c6ed2e0b3c/src/lib/network_pool/transaction_pool.ml#L438>
                 if let Some(won_slot) = state.current.won_slot() {
                     if let Some(chain) = best_chain.last().map(|best_tip| {
                         if best_tip.global_slot() == won_slot.global_slot() {
@@ -168,6 +193,50 @@ impl BlockProducerEnabled {
                             chain,
                         };
                     };
+                }
+
+                // The win's VRF used the epoch data it was evaluated with. A
+                // parent selecting other data (a reorg or a delayed block since
+                // the evaluation) would give the block other staking data.
+                if matches!(
+                    state.current,
+                    BlockProducerCurrentState::WonSlotProduceInit { .. }
+                ) && !state.current.parent_epoch_data_matches()
+                {
+                    let won_slot = state.current.won_slot().cloned();
+                    let parent = state
+                        .current
+                        .parent_chain()
+                        .and_then(|chain| chain.last())
+                        .map(|block| block.hash().clone());
+                    if let Some(won_slot) = won_slot {
+                        mina_core::warn!(meta.time();
+                            kind = "ProducerWinEpochDataChanged",
+                            slot = won_slot.global_slot(),
+                            parent = parent.as_ref().map(ToString::to_string),
+                            message = "Won slot dropped: its parent takes other epoch data");
+                        // Not chosen again for this parent; another parent,
+                        // or the slot evaluated again, may still produce.
+                        state.epoch_data_refused = parent.map(|parent| super::RefusedWin {
+                            global_slot: won_slot.global_slot(),
+                            epoch_data: won_slot.epoch_data.clone(),
+                            parent,
+                        });
+                        state.current = BlockProducerCurrentState::WonSlotDiscarded {
+                            time: meta.time(),
+                            won_slot,
+                            reason: super::BlockProducerWonSlotDiscardReason::EpochDataChanged,
+                        };
+                    }
+                    let (dispatcher, state) = state_context.into_dispatcher_and_state();
+                    dispatcher.push(BlockProducerEffectfulAction::WonSlotDiscard {
+                        reason: super::BlockProducerWonSlotDiscardReason::EpochDataChanged,
+                    });
+                    if let Some(best_tip) = state.transition_frontier.best_tip() {
+                        Self::dispatch_evaluability_check(dispatcher, state, best_tip);
+                    }
+                    dispatcher.push(BlockProducerAction::WonSlotSearch);
+                    return;
                 }
 
                 let dispatcher = state_context.into_dispatcher();
@@ -414,11 +483,18 @@ impl BlockProducerEnabled {
                     ..
                 } = current_state
                 {
+                    let block = block.with_hash_and_proof(block_hash, proof);
+                    // OCaml notifies uptime before inserting the breadcrumb in
+                    // the frontier. Keep the event even if a later fork wins.
+                    // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/block_producer/block_producer.ml#L968-L980>
+                    if let Some(waiter) = &mut state.uptime_produced_block {
+                        waiter.complete(&block, won_slot.slot_time);
+                    }
                     state.current = BlockProducerCurrentState::Produced {
                         time: meta.time(),
                         won_slot,
                         chain,
-                        block: block.with_hash_and_proof(block_hash, proof),
+                        block,
                     };
                 } else {
                     bug_condition!("Invalid state for `BlockProducerAction::BlockProduced` expected: `BlockProducerCurrentState::BlockProveSuccess`, found: {:?}", current_state);
@@ -543,6 +619,11 @@ impl BlockProducerEnabled {
         consensus_constants: &ConsensusConstants,
         time: Timestamp,
     ) {
+        if !self.current.parent_epoch_data_matches() {
+            // Checked when the parent was chosen; the chain is fixed since.
+            bug_condition!("BlockUnprovenBuild with a parent selecting other epoch data");
+            return;
+        }
         let current_state = std::mem::take(&mut self.current);
 
         let BlockProducerCurrentState::StagedLedgerDiffCreateSuccess {
@@ -599,6 +680,29 @@ impl BlockProducerEnabled {
         best_tip: &ArcBlockWithHash,
         time: Timestamp,
     ) {
+        dispatcher.push(BlockProducerVrfEvaluatorAction::InitializeEvaluator {
+            best_tip: best_tip.clone(),
+        });
+        Self::dispatch_evaluability_check(dispatcher, state, best_tip);
+
+        if let Some(reason) = state.block_producer.with(None, |bp| {
+            bp.current.won_slot_should_discard(best_tip, time)
+        }) {
+            dispatcher.push(BlockProducerAction::WonSlotDiscard { reason });
+        } else {
+            dispatcher.push(BlockProducerAction::WonSlotSearch);
+        }
+    }
+
+    /// Interrupts an evaluation the best tip or the clock has made useless,
+    /// then checks which epoch to evaluate. Any change of the selected epoch
+    /// data, from a new tip, a reorg or a delayed block, restarts the
+    /// evaluation, completed or not.
+    fn dispatch_evaluability_check(
+        dispatcher: &mut Dispatcher<Action, State>,
+        state: &State,
+        best_tip: &ArcBlockWithHash,
+    ) {
         let global_slot = best_tip
             .consensus_state()
             .curr_global_slot_since_hard_fork
@@ -616,30 +720,27 @@ impl BlockProducerEnabled {
         let current_epoch = state.current_epoch();
         let current_slot = state.current_slot();
 
-        dispatcher.push(BlockProducerVrfEvaluatorAction::InitializeEvaluator {
-            best_tip: best_tip.clone(),
-        });
-
-        // None if the evaluator is not evaluating
-        let currenty_evaluated_epoch = state
-            .block_producer
-            .vrf_evaluator()
-            .and_then(|vrf_evaluator| vrf_evaluator.currently_evaluated_epoch());
-
-        if let Some(currently_evaluated_epoch) = currenty_evaluated_epoch {
-            // if we receive a block with higher epoch than the current one, interrupt the evaluation
-            if currently_evaluated_epoch < best_tip_epoch {
-                dispatcher.push(BlockProducerVrfEvaluatorAction::InterruptEpochEvaluation {
-                    reason: InterruptReason::BestTipWithHigherEpoch,
-                });
-            }
-        }
-
         let is_next_epoch_seed_finalized = if let Some(current_slot) = current_slot {
             !in_seed_update_range(current_slot, best_tip.constants())
         } else {
             false
         };
+
+        // An evaluation bound to data the best tip no longer selects for its
+        // epoch, or to an epoch the clock has passed, can no longer produce a
+        // block: restart instead of finishing it.
+        if let Some(target) = state.block_producer.vrf_evaluator().and_then(|vrf| {
+            vrf.target_is_stale(best_tip.consensus_state(), current_epoch)
+                .then(|| vrf.target().cloned())
+                .flatten()
+        }) {
+            let reason = if target.epoch < best_tip_epoch {
+                InterruptReason::BestTipWithHigherEpoch
+            } else {
+                InterruptReason::EpochDataChanged
+            };
+            dispatcher.push(BlockProducerVrfEvaluatorAction::InterruptEpochEvaluation { reason });
+        }
 
         dispatcher.push(BlockProducerVrfEvaluatorAction::CheckEpochEvaluability {
             current_epoch,
@@ -652,14 +753,6 @@ impl BlockProducerEnabled {
             staking_epoch_data: Box::new(best_tip.consensus_state().staking_epoch_data.clone()),
             next_epoch_data: Box::new(best_tip.consensus_state().next_epoch_data.clone()),
         });
-
-        if let Some(reason) = state.block_producer.with(None, |bp| {
-            bp.current.won_slot_should_discard(best_tip, time)
-        }) {
-            dispatcher.push(BlockProducerAction::WonSlotDiscard { reason });
-        } else {
-            dispatcher.push(BlockProducerAction::WonSlotSearch);
-        }
     }
 }
 

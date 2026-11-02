@@ -18,8 +18,9 @@ pub fn parse_coinbase_receiver(
 }
 
 /// OCaml's `default_snark_worker_fee` on the mainnet and devnet profiles.
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/node_config/profiled/mainnet.ml#L33>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/node_config/profiled/devnet.ml#L33>
+/// In 4.0.4, devnet inherits the fee via `include Mainnet`.
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/node_config/profiled/mainnet.ml#L33-L33>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/node_config/profiled/devnet.ml#L1-L7>
 pub const DEFAULT_SNARKER_FEE: &str = "0.1";
 
 /// A fee in MINA, as OCaml's `Currency.Fee.of_mina_string_exn` reads it: whole

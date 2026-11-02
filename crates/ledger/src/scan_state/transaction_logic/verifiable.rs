@@ -13,19 +13,21 @@ pub enum UserCommand {
     ZkAppCommand(Box<zkapp_command::verifiable::ZkAppCommand>),
 }
 
-pub fn compressed_to_pubkey(pubkey: &CompressedPubKey) -> mina_signer::PubKey {
+/// The key, or `None` when `x` has no point on the curve.
+pub fn compressed_to_pubkey(pubkey: &CompressedPubKey) -> Option<mina_signer::PubKey> {
     // Taken from https://github.com/o1-labs/proof-systems/blob/e3fc04ce87f8695288de167115dea80050ab33f4/signer/src/pubkey.rs#L95-L106
-    let mut pt =
-        mina_signer::CurvePoint::get_point_from_x_unchecked(pubkey.x, pubkey.is_odd).unwrap();
+    let mut pt = mina_signer::CurvePoint::get_point_from_x_unchecked(pubkey.x, pubkey.is_odd)?;
 
     if pt.y.into_bigint().is_even() == pubkey.is_odd {
         pt.y = pt.y.neg();
     }
 
-    assert!(pt.is_on_curve());
+    if !pt.is_on_curve() {
+        return None;
+    }
 
     // Safe now because we checked point pt is on curve
-    mina_signer::PubKey::from_point_unsafe(pt)
+    Some(mina_signer::PubKey::from_point_unsafe(pt))
 }
 
 /// <https://github.com/MinaProtocol/mina/blob/05c2f73d0f6e4f1341286843814ce02dcb3919e0/src/lib/mina_base/signed_command.ml#L436>
@@ -41,7 +43,10 @@ pub fn check_only_for_signature(
     } = &*cmd;
 
     let payload = TransactionUnionPayload::of_user_command_payload(payload);
-    let pubkey = compressed_to_pubkey(pubkey);
+    // OCaml can't decode a command whose signer doesn't decompress.
+    let Some(pubkey) = compressed_to_pubkey(pubkey) else {
+        return Err(cmd);
+    };
 
     if crate::verifier::common::legacy_verify_signature(signature, &pubkey, &payload) {
         Ok(valid::UserCommand::SignedCommand(cmd))

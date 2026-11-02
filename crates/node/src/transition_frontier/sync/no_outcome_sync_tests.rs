@@ -114,6 +114,124 @@ fn wake(state: &mut crate::State, now: Timestamp, scheduler: impl Into<crate::Ac
         .any(|a| a.kind() == kind));
 }
 
+/// OCaml 4.0.4 ignores answers whose target/request is no longer expected.
+/// RPC IDs identify our attempts even when A -> B -> A reuses the address.
+#[test]
+fn ocaml_404_stale_answers_are_ignored_across_a_b_a_targets() {
+    use crate::{
+        ledger::LedgerAddress,
+        transition_frontier::sync::ledger::snarked::LedgerAddressQueryPending,
+    };
+    let root = block(&template_block(), 100, None, 7);
+    let (mut state, peer) = node(&root);
+    let now = Timestamp::ZERO;
+    let address = LedgerAddress::first(29);
+    for kind in [
+        SyncLedgerTargetKind::StakingEpoch,
+        SyncLedgerTargetKind::NextEpoch,
+        SyncLedgerTargetKind::Root,
+    ] {
+        for (rpc_id, hash) in [
+            (10, ledger_hash(7)),
+            (11, ledger_hash(8)),
+            (12, ledger_hash(7)),
+        ] {
+            let target = SyncLedgerTarget {
+                kind,
+                snarked_ledger_hash: hash.clone(),
+                staged: None,
+            };
+            if rpc_id != 10 {
+                state
+                    .transition_frontier
+                    .sync
+                    .ledger_mut()
+                    .unwrap()
+                    .update_target(now, target.clone());
+                assert!(matches!(
+                    state.transition_frontier.sync.ledger(),
+                    Some(TransitionFrontierSyncLedgerState::Init { .. })
+                ));
+                reduce(&mut state, SnarkedAction::Pending, now);
+                assert!(state
+                    .transition_frontier
+                    .sync
+                    .ledger()
+                    .unwrap()
+                    .snarked()
+                    .unwrap()
+                    .num_accounts_pending()
+                    .unwrap()
+                    .attempts
+                    .is_empty());
+            }
+            set_ledger(
+                &mut state,
+                &root,
+                kind,
+                TransitionFrontierSyncLedgerSnarkedState::MerkleTreeSyncPending {
+                    time: now,
+                    target,
+                    total_accounts_expected: 1,
+                    synced_accounts_count: 0,
+                    synced_hashes_count: 0,
+                    queue: Default::default(),
+                    unavailable_peers: Default::default(),
+                    peer_query_errors: Default::default(),
+                    pending_addresses: [(
+                        address.clone(),
+                        LedgerAddressQueryPending {
+                            time: now,
+                            expected_hash: hash,
+                            attempts: [(peer, LedgerRpc::Pending { time: now, rpc_id })].into(),
+                        },
+                    )]
+                    .into(),
+                }
+                .into(),
+            );
+            let reply = |id| SnarkedAction::PeerQueryAddressSuccess {
+                peer_id: peer,
+                rpc_id: id,
+                response: PeerLedgerQueryResponse::ChildAccounts(vec![]),
+            };
+            let before = serde_json::to_value(&state.transition_frontier.sync).unwrap();
+            for old_id in 9..rpc_id {
+                // Inject through Store::dispatch: disabled actions never reach
+                // the reducer or ledger-write effects, nor penalize the peer.
+                struct Idle(redux::Instant);
+                impl redux::Service for Idle {}
+                impl redux::TimeService for Idle {
+                    fn monotonic_time(&mut self) -> redux::Instant {
+                        self.0
+                    }
+                }
+                let mut store = redux::Store::new(
+                    crate::reducer,
+                    |_, _| panic!("stale answer reached effects"),
+                    Idle(redux::Instant::now()),
+                    redux::SystemTime::UNIX_EPOCH,
+                    state.clone(),
+                );
+                assert!(!store.dispatch(reply(old_id)));
+                assert!(!store.dispatch(SnarkedAction::PeerQueryNumAccountsSuccess {
+                    peer_id: peer,
+                    rpc_id: old_id,
+                    response: PeerLedgerQueryResponse::NumAccounts(1, ledger_hash(7))
+                }));
+                assert_eq!(
+                    serde_json::to_value(&store.state().transition_frontier.sync).unwrap(),
+                    before
+                );
+                assert!(store.state().p2p.get_ready_peer(&peer).is_some());
+            }
+            assert!(reply(rpc_id).is_enabled(&state, now));
+            reduce(&mut state, reply(rpc_id), now);
+            assert!(!reply(rpc_id).is_enabled(&state, now), "duplicate answer");
+        }
+    }
+}
+
 #[test]
 fn num_accounts_without_an_outcome_is_retried_once_stale() {
     let root = block(&template_block(), 100, None, 7);

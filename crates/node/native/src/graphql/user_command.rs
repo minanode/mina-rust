@@ -1,7 +1,7 @@
 use crate::input_limits::{self as limits, bounded};
 use std::str::FromStr;
 
-use juniper::{GraphQLInputObject, GraphQLObject};
+use crate::graphql::api::{GraphQLInputObject, GraphQLObject};
 use ledger::scan_state::{
     currency::{Amount, Fee, Nonce, Slot},
     transaction_logic::{signed_command, Memo},
@@ -19,8 +19,9 @@ use super::{
 /// OCaml's `SendPaymentInput`, with its names and scalars, so that clients'
 /// operations validate.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L2992-L3022>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L3308-L3338>
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "SendPaymentInput")]
 pub struct InputGraphQLPayment {
     pub from: PublicKeyScalar,
@@ -34,8 +35,9 @@ pub struct InputGraphQLPayment {
 
 /// OCaml's `SendDelegationInput`.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L3055-L3083>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L3371-L3399>
 #[derive(GraphQLInputObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "SendDelegationInput")]
 pub struct InputGraphQLDelegation {
     pub from: PublicKeyScalar,
@@ -48,8 +50,9 @@ pub struct InputGraphQLDelegation {
 
 /// OCaml's `SignatureInput`: `field` and `scalar`, or `rawSignature`.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L2799-L2838>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L3115-L3154>
 #[derive(GraphQLInputObject, Debug, Clone)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "SignatureInput")]
 pub struct UserCommandSignature {
     pub field: Option<String>,
@@ -125,14 +128,16 @@ impl UserCommandSignature {
     }
 }
 
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/types.ml#L2339-L2355>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/graphql/mina_graphql/types.ml#L2641-L2657>
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "SendPaymentPayload", context = super::Context)]
 pub(crate) struct GraphQLSendPaymentResponse {
     pub payment: GraphQLUserCommands,
 }
 
 #[derive(GraphQLObject, Debug)]
+#[graphql(scalar = crate::graphql::scalars::MinaScalarValue)]
 #[graphql(name = "SendDelegationPayload", context = super::Context)]
 pub(crate) struct GraphQLSendDelegationResponse {
     pub delegation: GraphQLUserCommands,

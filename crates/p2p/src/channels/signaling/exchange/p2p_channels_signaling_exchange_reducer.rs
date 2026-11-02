@@ -32,6 +32,13 @@ impl P2pChannelsSignalingExchangeState {
     {
         let (action, meta) = action.split();
         let p2p_state = state_context.get_substate_mut()?;
+        if !p2p_state
+            .config
+            .enabled_channels
+            .contains(&ChannelId::SignalingExchange)
+        {
+            return Ok(());
+        }
         let peer_id = *action.peer_id();
         let state = &mut p2p_state
             .get_ready_peer_mut(&peer_id)

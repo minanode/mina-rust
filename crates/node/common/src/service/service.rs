@@ -248,7 +248,7 @@ impl mina_node::service::LedgerService for NodeService {
 impl mina_node::service::TransitionFrontierGenesisService for NodeService {
     fn load_genesis(&mut self, config: Arc<GenesisConfig>) {
         let res = match config.load() {
-            Err(err) => Err(err.to_string()),
+            Err(err) => Err(format!("{}: {err}", config.input_description())),
             Ok((masks, data)) => {
                 let is_archive = self.archive().is_some();
                 masks.into_iter().for_each(|mut mask| {
@@ -296,7 +296,7 @@ impl mina_node::service::TransitionFrontierGenesisService for NodeService {
             let started = std::time::Instant::now();
             let res = config
                 .load()
-                .map_err(|error| error.to_string())
+                .map_err(|error| format!("{}: {error}", config.input_description()))
                 .and_then(|(masks, loaded)| {
                     let GenesisConfig::WithoutLedgers(expected) = &*expected else {
                         return Err("the node's genesis is not one without ledgers".to_owned());

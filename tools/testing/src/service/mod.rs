@@ -2,7 +2,10 @@ mod rpc_service;
 
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::{Arc, Mutex as StdMutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex as StdMutex,
+    },
     time::Duration,
 };
 
@@ -147,6 +150,7 @@ pub struct NodeTestingService {
     pending_events: PendingEvents,
     //pending_events: PendingRequests<PendingEventIdType, Event>,
     dyn_effects: Option<DynEffects>,
+    inject_block_apply_mismatch: AtomicBool,
 
     snarker_sok_digest: Option<ByteString>,
     /// The worker's key and fee, which its results carry (P5.4).
@@ -173,6 +177,7 @@ impl NodeTestingService {
             monotonic_time: Instant::now(),
             pending_events: PendingEvents::new(),
             dyn_effects: None,
+            inject_block_apply_mismatch: AtomicBool::new(false),
             snarker_sok_digest: None,
             snarker: None,
             cluster_invariants_state,
@@ -182,6 +187,14 @@ impl NodeTestingService {
 
     pub fn node_id(&self) -> ClusterNodeId {
         self.id
+    }
+
+    /// Corrupt only the next ledger worker's copy of a block's expected hash.
+    /// The peer and frontier retain the valid block so recovery must fetch
+    /// and apply it again. This hook exists only in the testing service.
+    pub fn inject_next_block_apply_mismatch(&self) {
+        self.inject_block_apply_mismatch
+            .store(true, Ordering::SeqCst);
     }
 
     pub fn rust_to_rust_use_webrtc(&self) -> bool {
@@ -346,6 +359,36 @@ impl P2pCryptoService for NodeTestingService {
 impl mina_node::ledger::LedgerService for NodeTestingService {
     fn ledger_manager(&self) -> &mina_node::ledger::LedgerManager {
         self.real.ledger_manager()
+    }
+
+    fn write_init(&mut self, mut request: mina_node::ledger::write::LedgerWriteRequest) {
+        use mina_node::ledger::write::LedgerWriteRequest;
+        use mina_p2p_messages::bigint::BigInt;
+
+        if let LedgerWriteRequest::BlockApply { block, .. } = &mut request {
+            if self
+                .inject_block_apply_mismatch
+                .swap(false, Ordering::SeqCst)
+            {
+                let hash = &mut Arc::make_mut(&mut block.block)
+                    .header
+                    .protocol_state
+                    .body
+                    .blockchain_state
+                    .staged_ledger_hash
+                    .pending_coinbase_hash;
+                let corrupted = if hash.0 .0 == BigInt::zero() {
+                    BigInt::one()
+                } else {
+                    BigInt::zero()
+                };
+                *hash = mina_p2p_messages::v2::MinaBasePendingCoinbaseHashVersionedStableV1(
+                    mina_p2p_messages::v2::MinaBasePendingCoinbaseHashBuilderStableV1(corrupted),
+                )
+                .into();
+            }
+        }
+        mina_node::ledger::LedgerService::write_init(&mut self.real, request);
     }
 }
 

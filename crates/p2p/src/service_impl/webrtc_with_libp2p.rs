@@ -217,13 +217,18 @@ where
 
 impl P2pServiceCtx {
     pub fn mocked(sec_key: SecretKey) -> Self {
-        use mina_core::channels::mpsc;
         Self {
             sec_key: sec_key.clone(),
             #[cfg(feature = "p2p-libp2p")]
             mio: super::mio::MioService::mocked(sec_key.try_into().expect("valid keypair")),
             webrtc: super::webrtc::P2pServiceCtx {
-                cmd_sender: mpsc::unbounded_channel().0,
+                cmd_sender: crate::webrtc::queue::channel(
+                    crate::webrtc::queue::Kind::Admission,
+                    1,
+                    1024,
+                    Default::default(),
+                )
+                .0,
                 peers: Default::default(),
             },
         }

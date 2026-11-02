@@ -22,8 +22,7 @@ use super::{
     LedgerExportKind, PooledUserCommandsQuery, PooledZkappsCommandsQuery,
     RpcHardForkExportResponse, RpcId, RpcLedgerAccountDelegatorsGetResponse,
     RpcLedgerExportResponse, RpcLedgerStatusGetResponse, RpcLightAccountQuery,
-    RpcLightAccountResponse, RpcScanStateSummaryGetQuery, RpcScanStateSummaryScanStateJob,
-    SyncStatsQuery,
+    RpcLightAccountResponse, RpcScanStateSummaryGetQuery, SyncStatsQuery,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone, ActionEvent)]
@@ -43,6 +42,10 @@ pub enum RpcAction {
     },
     HeartbeatGet {
         rpc_id: RpcId,
+    },
+    ReportingSnapshotGet {
+        rpc_id: RpcId,
+        produced_block_watch: Option<super::RpcReportingProducedBlockWatch>,
     },
 
     // Stats
@@ -128,7 +131,7 @@ pub enum RpcAction {
     },
     ScanStateSummaryGetSuccess {
         rpc_id: RpcId,
-        scan_state: Result<Vec<Vec<RpcScanStateSummaryScanStateJob>>, String>,
+        scan_state: Result<crate::rpc::RpcScanStateSummaryData, String>,
     },
 
     SnarkPoolAvailableJobsGet {
@@ -330,6 +333,20 @@ pub enum RpcAction {
         rpc_id: RpcId,
     },
     #[action_event(level = trace)]
+    BestChainHeadersGet {
+        rpc_id: RpcId,
+        query: super::RpcBestChainHeadersQuery,
+    },
+    #[action_event(level = trace)]
+    BestChainBlockGet {
+        rpc_id: RpcId,
+        query: super::RpcBestChainBlockQuery,
+    },
+    #[action_event(level = trace)]
+    SyncProgressGet {
+        rpc_id: RpcId,
+    },
+    #[action_event(level = trace)]
     LightAccountInit {
         rpc_id: RpcId,
         query: RpcLightAccountQuery,
@@ -374,6 +391,7 @@ impl redux::EnablingCondition<crate::State> for RpcAction {
             RpcAction::MemoryDebugGet { .. } => true,
             RpcAction::MetricsGet { .. } => true,
             RpcAction::HeartbeatGet { .. } => true,
+            RpcAction::ReportingSnapshotGet { .. } => true,
             RpcAction::ActionStatsGet { .. } => true,
             RpcAction::SyncStatsGet { .. } => true,
             RpcAction::BlockProducerStatsGet { .. } => true,
@@ -457,15 +475,15 @@ impl redux::EnablingCondition<crate::State> for RpcAction {
             RpcAction::DiscoveryBoostrapStats { .. } => true,
             RpcAction::TransactionPool { .. } => true,
             RpcAction::ConsensusConstantsGet { .. } => true,
-            RpcAction::BestChain { .. } => state.transition_frontier.best_tip().is_some(),
+            // Return the empty chain before sync too, releasing the caller's
+            // pending responder instead of leaving role reads waiting forever.
+            RpcAction::BestChain { .. } => true,
             RpcAction::TransactionStatusGet { .. } => true,
             RpcAction::TransactionNonceGet { .. } => true,
             RpcAction::PooledUserCommands { .. } => true,
             RpcAction::PooledZkappCommands { .. } => true,
             RpcAction::GenesisBlock { .. } => true,
-            RpcAction::LedgerAccountsGetInit { .. } => {
-                state.transition_frontier.best_tip().is_some()
-            }
+            RpcAction::LedgerAccountsGetInit { .. } => true,
             RpcAction::LedgerAccountsGetPending { rpc_id, .. } => state
                 .rpc
                 .requests
@@ -548,6 +566,9 @@ impl redux::EnablingCondition<crate::State> for RpcAction {
                 .get(rpc_id)
                 .is_some_and(|v| v.status.is_pending()),
             RpcAction::LightBestTipGet { .. } => true,
+            RpcAction::BestChainHeadersGet { .. } => true,
+            RpcAction::BestChainBlockGet { .. } => true,
+            RpcAction::SyncProgressGet { .. } => true,
             // A retry after the ledger read quota was full finds it in Init.
             RpcAction::LightAccountInit { rpc_id, .. } => state
                 .rpc

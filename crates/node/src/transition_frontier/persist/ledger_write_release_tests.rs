@@ -95,7 +95,7 @@ fn completed_commit_releases_payload_and_forwards_result() {
         LedgerWriteAction::Success {
             response: LedgerWriteResponse::Commit {
                 best_tip_hash: tip.hash().clone(),
-                result,
+                result: Ok(result),
             },
         },
     );
@@ -152,7 +152,7 @@ fn completed_commit_releases_payload_and_forwards_result() {
     assert!(!LedgerWriteAction::Success {
         response: LedgerWriteResponse::Commit {
             best_tip_hash: tip.hash().clone(),
-            result: Default::default(),
+            result: Ok(Default::default()),
         },
     }
     .is_enabled(&state, Timestamp::ZERO));
@@ -191,7 +191,9 @@ fn completed_apply_forwards_archive_and_proof_flag_and_errors() {
                 response: LedgerWriteResponse::BlockApply {
                     block_hash: expected_hash.clone(),
                     result: if failed {
-                        Err("apply failed".into())
+                        Err(crate::ledger::write::BlockApplyError::InvalidBlock(
+                            "apply failed".into(),
+                        ))
                     } else {
                         Ok(result)
                     },
@@ -375,7 +377,11 @@ fn completed_diff_forwards_output_without_retaining_it() {
                 vrf_output: Box::new(mina_vrf::genesis_vrf(v2::EpochSeed::zero()).unwrap()),
                 value_with_threshold: None,
             },
-            pred.staking_epoch_ledger_hash().clone(),
+            crate::block_producer::vrf_evaluator::EpochFingerprint::select(
+                pred.consensus_state(),
+                0,
+            )
+            .unwrap(),
         ),
         pred.genesis_timestamp(),
     );
@@ -456,4 +462,239 @@ fn completed_diff_forwards_output_without_retaining_it() {
     assert_eq!(serde_json::to_value(&output).unwrap(), expected);
     drop(output);
     assert!(weak.upgrade().is_none(), "completed state retains the diff");
+}
+
+#[test]
+fn local_ledger_errors_quarantine_frontier_then_resume_only_after_commit() {
+    use crate::{
+        ledger::write::BlockApplyError,
+        transition_frontier::candidate::{
+            TransitionFrontierCandidateState, TransitionFrontierCandidateStatus,
+        },
+    };
+    for commit_failure in [false, true] {
+        let mut state = state(false);
+        state.transition_frontier.persist = TransitionFrontierPersistState::Disabled {
+            reason: "test".into(),
+        };
+        let block = crate::persist::test_fixtures::mainnet_blocks().remove(0);
+        let tip = AppliedBlock {
+            block: block.clone(),
+            just_emitted_a_proof: false,
+        };
+        let request = if commit_failure {
+            LedgerWriteRequest::Commit {
+                root_history: Default::default(),
+                ledgers_to_keep: Default::default(),
+                root_snarked_ledger_updates: Default::default(),
+                needed_protocol_states: Default::default(),
+                new_root: tip.clone(),
+                new_best_tip: tip.clone(),
+            }
+        } else {
+            LedgerWriteRequest::BlockApply {
+                block: block.clone(),
+                pred_block: state.transition_frontier.best_chain[0].clone(),
+                skip_verification: false,
+                restored: false,
+            }
+        };
+        let kind = request.kind();
+        start(&mut state, request);
+        let error = "injected local ledger failure".to_owned();
+        let response = if commit_failure {
+            LedgerWriteResponse::Commit {
+                best_tip_hash: block.hash().clone(),
+                result: Err(error.clone()),
+            }
+        } else {
+            LedgerWriteResponse::BlockApply {
+                block_hash: block.hash().clone(),
+                result: Err(BlockApplyError::LocalState(error.clone())),
+            }
+        };
+        let mut queued = reduce(&mut state, LedgerWriteAction::Success { response });
+        assert_released(&state, kind);
+        let Some(
+            action @ Action::TransitionFrontier(TransitionFrontierAction::LedgerRecovery { .. }),
+        ) = queued.pop()
+        else {
+            panic!("error did not schedule recovery");
+        };
+        let mut store = store_of(state);
+        assert!(store.dispatch(action));
+        let state = store.state();
+        assert!(state.transition_frontier.best_chain.is_empty());
+        assert!(state.transition_frontier.blacklist.is_empty());
+        assert!(state.transition_frontier.ledger_recovery_pending());
+        assert_eq!(
+            state.reported_sync_phase(),
+            crate::transition_frontier::sync::SyncPhase::Bootstrap
+        );
+        assert!(!crate::BlockProducerAction::WonSlotSearch.is_enabled(state, state.time()));
+        assert!(!TransitionFrontierAction::GenesisInject.is_enabled(state, state.time()));
+        assert!(!state
+            .transition_frontier
+            .ledger_recovery_ready(state.time()));
+        assert!(state
+            .transition_frontier
+            .ledger_recovery_ready(state.time() + std::time::Duration::from_secs(30)));
+        // Model the verified peer target and successful rebuilt-ledger commit.
+        // Hashes are from captured OCaml blocks, not expectations from Rust output.
+        let mut state = state.clone();
+        let candidate = TransitionFrontierCandidateState {
+            block: block.clone(),
+            status: TransitionFrontierCandidateStatus::SnarkVerifySuccess {
+                time: Timestamp::ZERO,
+            },
+            chain_proof: Some((vec![], block.clone())),
+            chain_proof_asked: Default::default(),
+        };
+        let mut candidates = serde_json::to_value(&state.transition_frontier.candidates).unwrap();
+        candidates["ordered"] = serde_json::json!([candidate]);
+        state.transition_frontier.candidates = serde_json::from_value(candidates).unwrap();
+        let init = TransitionFrontierSyncAction::Init {
+            best_tip: block.clone(),
+            root_block: block,
+            blocks_inbetween: vec![],
+        };
+        assert!(!init.is_enabled(&state, state.time()));
+        assert!(init.is_enabled(&state, state.time() + std::time::Duration::from_secs(30)));
+        let mut recovering = store_of(state);
+        at(&mut recovering, 31);
+        // The normal timeout tick selects the verified candidate and starts
+        // recovery automatically once the cooldown has elapsed.
+        assert!(matches!(
+            recovering.state().transition_frontier.sync,
+            TransitionFrontierSyncState::Init { .. }
+        ));
+        assert!(recovering.dispatch(TransitionFrontierSyncAction::LedgerStakingPending));
+        assert!(matches!(
+            recovering.state().transition_frontier.sync,
+            TransitionFrontierSyncState::StakingLedgerPending(_)
+        ));
+        assert!(recovering.state().transition_frontier.best_chain.is_empty());
+        let newer = crate::persist::test_fixtures::mainnet_blocks().remove(1);
+        assert!(
+            recovering.dispatch(TransitionFrontierSyncAction::BestTipUpdate {
+                previous_root_snarked_ledger_hash: None,
+                best_tip: newer.clone(),
+                root_block: newer.clone(),
+                blocks_inbetween: vec![],
+                on_success: None,
+            })
+        );
+        assert_eq!(
+            recovering
+                .state()
+                .transition_frontier
+                .sync
+                .best_tip()
+                .unwrap()
+                .hash(),
+            newer.hash()
+        );
+        let tip = AppliedBlock {
+            block: newer,
+            just_emitted_a_proof: false,
+        };
+        let mut state = recovering.state().clone();
+        state.transition_frontier.sync = TransitionFrontierSyncState::CommitPending {
+            time: state.time(),
+            chain: vec![tip.clone()],
+            root_snarked_ledger_updates: Default::default(),
+            needed_protocol_states: Default::default(),
+        };
+        let mut store = store_of(state);
+        assert!(store.dispatch(TransitionFrontierSyncAction::CommitSuccess {
+            result: CommitResult::default()
+        }));
+        assert!(store.state().transition_frontier.ledger_recovery_pending());
+        assert!(store.dispatch(TransitionFrontierAction::Synced {
+            needed_protocol_states: Default::default()
+        }));
+        assert!(!store.state().transition_frontier.ledger_recovery_pending());
+        assert_eq!(
+            store.state().transition_frontier.best_tip().unwrap().hash(),
+            tip.hash()
+        );
+        assert_eq!(
+            store
+                .state()
+                .transition_frontier
+                .ledger_recovery
+                .as_ref()
+                .unwrap()
+                .error,
+            error
+        );
+        let completed = store
+            .state()
+            .transition_frontier
+            .ledger_recovery
+            .as_ref()
+            .unwrap()
+            .recovered_at
+            .unwrap();
+        // A later healthy commit must not move this incident's completion time.
+        let mut state = store.state().clone();
+        state.transition_frontier.sync = TransitionFrontierSyncState::CommitSuccess {
+            time: completed,
+            chain: state.transition_frontier.best_chain.clone(),
+            root_snarked_ledger_updates: Default::default(),
+            needed_protocol_states: Default::default(),
+        };
+        let mut healthy = store_of(state);
+        at(&mut healthy, 60);
+        assert!(healthy.dispatch(TransitionFrontierAction::Synced {
+            needed_protocol_states: Default::default(),
+        }));
+        assert_eq!(
+            healthy
+                .state()
+                .transition_frontier
+                .ledger_recovery
+                .as_ref()
+                .unwrap()
+                .recovered_at,
+            Some(completed)
+        );
+    }
+}
+
+#[test]
+fn genesis_load_failures_are_terminal_and_do_not_initialize_networking() {
+    use crate::transition_frontier::genesis::{
+        GenesisConfig, TransitionFrontierGenesisAction as Genesis, TransitionFrontierGenesisState,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing-genesis.json");
+    let malformed = dir.path().join("malformed-genesis.json");
+    std::fs::write(&malformed, b"{invalid").unwrap();
+    for path in [missing, malformed] {
+        let config = GenesisConfig::DaemonJsonFile(path.clone());
+        let error = format!(
+            "{}: {}",
+            config.input_description(),
+            config.load().unwrap_err()
+        );
+        assert!(error.contains(path.file_name().unwrap().to_str().unwrap()));
+        let mut state = state(false);
+        state.transition_frontier.genesis = TransitionFrontierGenesisState::LedgerLoadPending {
+            time: Timestamp::ZERO,
+        };
+        state.transition_frontier.best_chain.clear();
+        let mut store = store_of(state);
+        assert!(store.dispatch(Genesis::LedgerLoadError {
+            error: error.clone()
+        }));
+        assert_eq!(
+            store.state().transition_frontier.startup_error(),
+            Some(error.as_str())
+        );
+        assert!(store.state().genesis_block().is_none());
+        assert!(!store.dispatch(Genesis::LedgerLoadInit));
+        assert!(!store.dispatch(Genesis::Produce));
+        assert!(!store.dispatch(TransitionFrontierAction::GenesisInject));
+    }
 }

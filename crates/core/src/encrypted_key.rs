@@ -93,6 +93,8 @@ pub enum EncryptionError {
     Base58DecodeError(#[from] bs58::decode::Error),
     #[error(transparent)]
     CipherKeyInvalidLength(#[from] crypto_secretbox::cipher::InvalidLength),
+    #[error("invalid encrypted key file: {0}")]
+    InvalidFormat(&'static str),
     #[error("Password hash missing after hash_password")]
     HashMissing,
     #[error(transparent)]
@@ -239,7 +241,7 @@ pub trait EncryptedSecretKey {
     /// 2. Derives encryption key from password using Argon2i with file's
     ///    parameters
     /// 3. Decrypts the ciphertext using XSalsa20Poly1305 AEAD
-    /// 4. Returns the raw secret key bytes (with prefix byte stripped)
+    /// 4. Returns plaintext for the account or P2P decoder to validate
     ///
     /// # Parameters
     /// - `encrypted`: The encrypted key file structure containing all
@@ -260,6 +262,14 @@ pub trait EncryptedSecretKey {
         encrypted: &EncryptedSecretKeyFile,
         password: &str,
     ) -> Result<Vec<u8>, EncryptionError> {
+        // Check the shared envelope before key derivation or infallible
+        // fixed-size conversions. Account and P2P plaintext formats differ;
+        // their decoders validate their own plaintext lengths below this layer.
+        if encrypted.box_primitive != Self::BOX_PRIMITIVE
+            || encrypted.pw_primitive != Self::PW_PRIMITIVE
+        {
+            return Err(EncryptionError::InvalidFormat("unsupported primitive"));
+        }
         // prepare inputs to cipher
         let password = password.as_bytes();
         let pwsalt = encrypted
@@ -271,6 +281,16 @@ pub trait EncryptedSecretKey {
         let ciphertext = encrypted
             .ciphertext
             .try_decode(Self::ENCRYPTION_DATA_VERSION_BYTE)?;
+
+        let nonce: &[u8; 24] = nonce
+            .as_slice()
+            .try_into()
+            .map_err(|_| EncryptionError::InvalidFormat("invalid nonce length"))?;
+        if ciphertext.len() < 16 {
+            return Err(EncryptionError::InvalidFormat(
+                "ciphertext shorter than authentication tag",
+            ));
+        }
 
         // The argon crate's SaltString can only be built from base64 string,
         // but the OCaml Mina node encodes the salt in base58. So we decode it
@@ -287,9 +307,9 @@ pub trait EncryptedSecretKey {
 
         // decrypt cipher
         let cipher = XSalsa20Poly1305::new_from_slice(password_bytes)?;
-        let decrypted = cipher.decrypt(nonce.as_slice().into(), ciphertext.as_ref())?;
+        let decrypted = cipher.decrypt(nonce.into(), ciphertext.as_ref())?;
 
-        // strip the prefix and create keypair
+        // Plaintext formats differ for account and P2P keys.
         Ok(decrypted)
     }
 
@@ -369,7 +389,69 @@ pub trait EncryptedSecretKey {
 
 #[cfg(test)]
 mod tests {
-    use super::setup_argon;
+    use super::*;
+
+    struct TestKey;
+    impl EncryptedSecretKey for TestKey {
+        const PW_DIFF: (u32, u32) = (8192, 1);
+    }
+
+    fn encrypted() -> EncryptedSecretKeyFile {
+        TestKey::try_encrypt_raw(b"synthetic plaintext", "test password").unwrap()
+    }
+
+    #[test]
+    fn malformed_nonce_lengths_return_errors() {
+        for len in [0, 1, 23, 25, 32] {
+            let mut file = encrypted();
+            file.nonce = Base58String::new(&vec![0; len], 2);
+            assert!(TestKey::try_decrypt(&file, "test password").is_err());
+        }
+    }
+
+    #[test]
+    fn malformed_salt_lengths_return_errors() {
+        for len in [0, 1, 7, 65] {
+            let mut file = encrypted();
+            file.pwsalt = Base58String::new(&vec![0; len], 2);
+            assert!(TestKey::try_decrypt(&file, "test password").is_err());
+        }
+    }
+
+    #[test]
+    fn malformed_ciphertext_lengths_return_errors() {
+        for len in [0, 1, 15, 16, 17, 49] {
+            let mut file = encrypted();
+            file.ciphertext = Base58String::new(&vec![0; len], 2);
+            assert!(TestKey::try_decrypt(&file, "test password").is_err());
+        }
+    }
+
+    #[test]
+    fn malformed_base58_checksum_and_versions_return_errors() {
+        for field in ["nonce", "pwsalt", "ciphertext"] {
+            for bad in [
+                "0-invalid-base58".to_owned(),
+                "111111111".to_owned(),
+                bs58::encode([0; 24]).with_check_version(3).into_string(),
+            ] {
+                let mut json = serde_json::to_value(encrypted()).unwrap();
+                json[field] = bad.into();
+                let file = serde_json::from_value(json).unwrap();
+                assert!(TestKey::try_decrypt(&file, "test password").is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_primitives_return_errors() {
+        for field in ["box_primitive", "pw_primitive"] {
+            let mut json = serde_json::to_value(encrypted()).unwrap();
+            json[field] = "unsupported".into();
+            let file = serde_json::from_value(json).unwrap();
+            assert!(TestKey::try_decrypt(&file, "test password").is_err());
+        }
+    }
 
     /// The cost parameters come from the key file, so they are not trusted
     /// without limit: a file that asks for an unreasonably expensive

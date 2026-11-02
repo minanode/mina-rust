@@ -1,0 +1,29 @@
+{
+  "source_commit": "73134bfd3a43c3f4d8ee564b3d04a0c6ed2e0b3c",
+  "network": "devnet",
+  "proof_level": "full",
+  "slot_ms": 90000,
+  "started_at_unix": 1793215151.1482358,
+  "finished_at_unix": 1793217255.7523243,
+  "exit_code": 130,
+  "stop_reason": "requested_stop",
+  "submitter": "B62qoXiHy6LQ1o4gifPapefqEZjF4QBKoJAj9JCvZLPRGM3y2zbTRFp",
+  "snark_work_fee_mina": "0.001",
+  "binary_sha256": "6ef997002a7322f2297af526b1b817567fe33ce2d8d79c2c78395bf9cc0793d8",
+  "started_at": "2026-10-28T19:19:11.148236+00:00",
+  "finished_at": "2026-10-28T19:54:15.752324+00:00",
+  "first_observed_synced_at": "2026-10-28T19:32:05.118390Z",
+  "captured_uptime_reports": 3,
+  "minimum_sampled_free_disk_bytes": 62006398976,
+  "minimum_sampled_available_memory_bytes": 47565099008,
+  "stop_explanation": "Closed at about 62 GB free disk to retain margin over the 55 GB floor; build output later removed and raw job snapshots compressed",
+  "cleanup": "Daemon graceful exit 130; all tracked descendants gone; receiver and probe stopped; TCP 8800-8805 no longer accepting connections",
+  "coverage": {
+    "coinbase": "captured and verified",
+    "payment": "two captures, verified",
+    "fee_transfer": "candidate observed, not selected in captures",
+    "zkapp": "candidate observed, not selected in captures",
+    "no_suitable_job": "no natural capture; absent-work verifier control is derived",
+    "produced_block": "unreachable without stake; no producer configured"
+  }
+}

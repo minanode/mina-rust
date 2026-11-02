@@ -98,6 +98,7 @@ pub(crate) fn fresh_state() -> State {
             timeouts: P2pTimeouts::default(),
             limits: P2pLimits::default(),
             peer_discovery: false,
+            seed_only: false,
             meshsub: P2pMeshsubConfig::default(),
             catchup_rpc: Default::default(),
         },
@@ -105,6 +106,7 @@ pub(crate) fn fresh_state() -> State {
         archive: None,
         block_producer: None,
         global: GlobalConfig {
+            snark_work_fee: None,
             build: BuildEnv::get().into(),
             snarker: None,
             consensus_constants: consensus_constants.clone(),

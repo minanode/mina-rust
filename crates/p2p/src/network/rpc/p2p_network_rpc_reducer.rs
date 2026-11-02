@@ -692,7 +692,7 @@ fn served_wire_rpc(
 /// OCaml raises Failure; Async RPC returns Uncaught_exn with an exception
 /// sexp, without closing the connection. Encode that sexp explicitly: our
 /// legacy inbound error reader deliberately ignores exception details.
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/gossip_net/libp2p.ml#L159-L165>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/gossip_net/libp2p.ml#L159-L165>
 fn rate_limit_response_data(addr: std::net::SocketAddr, peer: PeerId) -> Data {
     #[derive(binprot_derive::BinProtWrite)]
     enum Sexp {

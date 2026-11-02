@@ -188,7 +188,7 @@ impl StagedLedgerDump {
 /// conversion keeps them: at 563941 the replay's scan state held 2,307 full
 /// merge jobs where a node's dump held 381, and 119 MB where it held 74 MB.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/parallel_scan/parallel_scan.ml#L835-L863>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/parallel_scan/parallel_scan.ml#L842-L870>
 pub fn with_leaner_trees(
     mut scan_state: v2::TransactionSnarkScanStateStableV2,
 ) -> v2::TransactionSnarkScanStateStableV2 {

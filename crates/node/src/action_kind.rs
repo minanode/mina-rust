@@ -141,6 +141,8 @@ pub enum ActionKind {
     BlockProducerBlockProvePending,
     BlockProducerBlockProveSuccess,
     BlockProducerBlockUnprovenBuild,
+    BlockProducerEvaluationRecheck,
+    BlockProducerLedgerRecoveryAbort,
     BlockProducerStagedLedgerDiffCreateInit,
     BlockProducerStagedLedgerDiffCreatePending,
     BlockProducerStagedLedgerDiffCreateSuccess,
@@ -504,6 +506,8 @@ pub enum ActionKind {
     P2pPeerStale,
     RpcActionStatsGet,
     RpcBestChain,
+    RpcBestChainBlockGet,
+    RpcBestChainHeadersGet,
     RpcBlockGet,
     RpcBlockProducerStatsGet,
     RpcConsensusConstantsGet,
@@ -553,6 +557,7 @@ pub enum ActionKind {
     RpcPooledZkappCommands,
     RpcProofMemoryGet,
     RpcReadinessCheck,
+    RpcReportingSnapshotGet,
     RpcScanStateSummaryGetInit,
     RpcScanStateSummaryGetPending,
     RpcScanStateSummaryGetSuccess,
@@ -570,6 +575,7 @@ pub enum ActionKind {
     RpcSnarkerJobSpec,
     RpcSnarkerWorkersGet,
     RpcStatusGet,
+    RpcSyncProgressGet,
     RpcSyncStatsGet,
     RpcTransactionInjectFailure,
     RpcTransactionInjectInit,
@@ -583,6 +589,8 @@ pub enum ActionKind {
     RpcVerificationStatsGet,
     RpcEffectfulActionStatsGet,
     RpcEffectfulBestChain,
+    RpcEffectfulBestChainBlockGet,
+    RpcEffectfulBestChainHeadersGet,
     RpcEffectfulBlockGet,
     RpcEffectfulBlockProducerStatsGet,
     RpcEffectfulConsensusConstantsGet,
@@ -613,6 +621,7 @@ pub enum ActionKind {
     RpcEffectfulPooledZkappCommands,
     RpcEffectfulProofMemoryGet,
     RpcEffectfulReadinessCheck,
+    RpcEffectfulReportingSnapshotGet,
     RpcEffectfulScanStateSummaryGetSuccess,
     RpcEffectfulSnarkPoolAvailableJobsGet,
     RpcEffectfulSnarkPoolCompletedJobsGet,
@@ -627,6 +636,7 @@ pub enum ActionKind {
     RpcEffectfulSnarkerJobSpec,
     RpcEffectfulSnarkerWorkersGet,
     RpcEffectfulStatusGet,
+    RpcEffectfulSyncProgressGet,
     RpcEffectfulSyncStatsGet,
     RpcEffectfulTransactionInjectFailure,
     RpcEffectfulTransactionInjectRejected,
@@ -685,8 +695,7 @@ pub enum ActionKind {
     SnarkWorkVerifyPending,
     SnarkWorkVerifySuccess,
     SnarkWorkVerifyEffectfulInit,
-    TransactionPoolApplyTransitionFrontierDiff,
-    TransactionPoolApplyTransitionFrontierDiffWithAccounts,
+    TransactionPoolAccountsFetched,
     TransactionPoolApplyVerifiedDiff,
     TransactionPoolApplyVerifiedDiffWithAccounts,
     TransactionPoolBestTipChanged,
@@ -695,6 +704,7 @@ pub enum ActionKind {
     TransactionPoolFetchAccountsFailed,
     TransactionPoolP2pSend,
     TransactionPoolP2pSendAll,
+    TransactionPoolProcessAccountReads,
     TransactionPoolRebroadcast,
     TransactionPoolStartVerify,
     TransactionPoolStartVerifyWithAccounts,
@@ -712,12 +722,15 @@ pub enum ActionKind {
     TransactionPoolCandidateVerifyNext,
     TransactionPoolCandidateVerifyPending,
     TransactionPoolCandidateVerifySuccess,
+    TransactionPoolEffectfulCancelReads,
     TransactionPoolEffectfulFetchAccounts,
+    TransactionPoolEffectfulPinLedger,
     TransitionFrontierGenesisInject,
     TransitionFrontierGenesisLedgersLoadError,
     TransitionFrontierGenesisLedgersLoadInit,
     TransitionFrontierGenesisLedgersLoadSuccess,
     TransitionFrontierGenesisProvenInject,
+    TransitionFrontierLedgerRecovery,
     TransitionFrontierSyncFailed,
     TransitionFrontierSynced,
     TransitionFrontierVerificationRecorded,
@@ -733,6 +746,7 @@ pub enum ActionKind {
     TransitionFrontierCandidateP2pBestTipUpdate,
     TransitionFrontierCandidatePrune,
     TransitionFrontierCandidateTransitionFrontierSyncTargetUpdate,
+    TransitionFrontierGenesisLedgerLoadError,
     TransitionFrontierGenesisLedgerLoadInit,
     TransitionFrontierGenesisLedgerLoadPending,
     TransitionFrontierGenesisLedgerLoadSuccess,
@@ -856,7 +870,7 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    pub const COUNT: u16 = 725;
+    pub const COUNT: u16 = 739;
 }
 
 impl std::fmt::Display for ActionKind {
@@ -1015,6 +1029,7 @@ impl ActionKindGet for TransitionFrontierAction {
             Self::VerificationRecorded { .. } => ActionKind::TransitionFrontierVerificationRecorded,
             Self::GenesisProvenInject => ActionKind::TransitionFrontierGenesisProvenInject,
             Self::Synced { .. } => ActionKind::TransitionFrontierSynced,
+            Self::LedgerRecovery { .. } => ActionKind::TransitionFrontierLedgerRecovery,
             Self::SyncFailed { .. } => ActionKind::TransitionFrontierSyncFailed,
             Self::GenesisLedgersLoadInit => ActionKind::TransitionFrontierGenesisLedgersLoadInit,
             Self::GenesisLedgersLoadSuccess => {
@@ -1083,12 +1098,8 @@ impl ActionKindGet for TransactionPoolAction {
             Self::ApplyVerifiedDiffWithAccounts { .. } => {
                 ActionKind::TransactionPoolApplyVerifiedDiffWithAccounts
             }
-            Self::ApplyTransitionFrontierDiff { .. } => {
-                ActionKind::TransactionPoolApplyTransitionFrontierDiff
-            }
-            Self::ApplyTransitionFrontierDiffWithAccounts { .. } => {
-                ActionKind::TransactionPoolApplyTransitionFrontierDiffWithAccounts
-            }
+            Self::AccountsFetched { .. } => ActionKind::TransactionPoolAccountsFetched,
+            Self::ProcessAccountReads => ActionKind::TransactionPoolProcessAccountReads,
             Self::Rebroadcast { .. } => ActionKind::TransactionPoolRebroadcast,
             Self::CollectTransactionsByFee => ActionKind::TransactionPoolCollectTransactionsByFee,
             Self::P2pSendAll => ActionKind::TransactionPoolP2pSendAll,
@@ -1101,6 +1112,8 @@ impl ActionKindGet for TransactionPoolEffectfulAction {
     fn kind(&self) -> ActionKind {
         match self {
             Self::FetchAccounts { .. } => ActionKind::TransactionPoolEffectfulFetchAccounts,
+            Self::PinLedger { .. } => ActionKind::TransactionPoolEffectfulPinLedger,
+            Self::CancelReads { .. } => ActionKind::TransactionPoolEffectfulCancelReads,
         }
     }
 }
@@ -1143,7 +1156,9 @@ impl ActionKindGet for BlockProducerAction {
     fn kind(&self) -> ActionKind {
         match self {
             Self::VrfEvaluator(a) => a.kind(),
+            Self::LedgerRecoveryAbort => ActionKind::BlockProducerLedgerRecoveryAbort,
             Self::BestTipUpdate { .. } => ActionKind::BlockProducerBestTipUpdate,
+            Self::EvaluationRecheck => ActionKind::BlockProducerEvaluationRecheck,
             Self::WonSlotSearch => ActionKind::BlockProducerWonSlotSearch,
             Self::WonSlot { .. } => ActionKind::BlockProducerWonSlot,
             Self::WonSlotDiscard { .. } => ActionKind::BlockProducerWonSlotDiscard,
@@ -1205,6 +1220,7 @@ impl ActionKindGet for RpcAction {
             Self::MemoryDebugGet { .. } => ActionKind::RpcMemoryDebugGet,
             Self::MetricsGet { .. } => ActionKind::RpcMetricsGet,
             Self::HeartbeatGet { .. } => ActionKind::RpcHeartbeatGet,
+            Self::ReportingSnapshotGet { .. } => ActionKind::RpcReportingSnapshotGet,
             Self::ActionStatsGet { .. } => ActionKind::RpcActionStatsGet,
             Self::SyncStatsGet { .. } => ActionKind::RpcSyncStatsGet,
             Self::VerificationStatsGet { .. } => ActionKind::RpcVerificationStatsGet,
@@ -1296,6 +1312,9 @@ impl ActionKindGet for RpcAction {
             Self::PooledZkappCommands { .. } => ActionKind::RpcPooledZkappCommands,
             Self::GenesisBlock { .. } => ActionKind::RpcGenesisBlock,
             Self::LightBestTipGet { .. } => ActionKind::RpcLightBestTipGet,
+            Self::BestChainHeadersGet { .. } => ActionKind::RpcBestChainHeadersGet,
+            Self::BestChainBlockGet { .. } => ActionKind::RpcBestChainBlockGet,
+            Self::SyncProgressGet { .. } => ActionKind::RpcSyncProgressGet,
             Self::LightAccountInit { .. } => ActionKind::RpcLightAccountInit,
             Self::LightAccountPending { .. } => ActionKind::RpcLightAccountPending,
             Self::LightAccountSuccess { .. } => ActionKind::RpcLightAccountSuccess,
@@ -1313,6 +1332,7 @@ impl ActionKindGet for RpcEffectfulAction {
             Self::MemoryDebugGet { .. } => ActionKind::RpcEffectfulMemoryDebugGet,
             Self::MetricsGet { .. } => ActionKind::RpcEffectfulMetricsGet,
             Self::HeartbeatGet { .. } => ActionKind::RpcEffectfulHeartbeatGet,
+            Self::ReportingSnapshotGet { .. } => ActionKind::RpcEffectfulReportingSnapshotGet,
             Self::ActionStatsGet { .. } => ActionKind::RpcEffectfulActionStatsGet,
             Self::SyncStatsGet { .. } => ActionKind::RpcEffectfulSyncStatsGet,
             Self::VerificationStatsGet { .. } => ActionKind::RpcEffectfulVerificationStatsGet,
@@ -1386,6 +1406,9 @@ impl ActionKindGet for RpcEffectfulAction {
             Self::LedgerStatusGetSuccess { .. } => ActionKind::RpcEffectfulLedgerStatusGetSuccess,
             Self::LedgerExportSuccess { .. } => ActionKind::RpcEffectfulLedgerExportSuccess,
             Self::LightBestTip { .. } => ActionKind::RpcEffectfulLightBestTip,
+            Self::BestChainHeadersGet { .. } => ActionKind::RpcEffectfulBestChainHeadersGet,
+            Self::BestChainBlockGet { .. } => ActionKind::RpcEffectfulBestChainBlockGet,
+            Self::SyncProgressGet { .. } => ActionKind::RpcEffectfulSyncProgressGet,
             Self::LightAccountSuccess { .. } => ActionKind::RpcEffectfulLightAccountSuccess,
             Self::HardForkConfigSuccess { .. } => ActionKind::RpcEffectfulHardForkConfigSuccess,
             Self::LedgerAccountDelegatorsGetSuccess { .. } => {
@@ -1647,6 +1670,7 @@ impl ActionKindGet for TransitionFrontierGenesisAction {
         match self {
             Self::LedgerLoadInit => ActionKind::TransitionFrontierGenesisLedgerLoadInit,
             Self::LedgerLoadPending => ActionKind::TransitionFrontierGenesisLedgerLoadPending,
+            Self::LedgerLoadError { .. } => ActionKind::TransitionFrontierGenesisLedgerLoadError,
             Self::LedgerLoadSuccess { .. } => {
                 ActionKind::TransitionFrontierGenesisLedgerLoadSuccess
             }

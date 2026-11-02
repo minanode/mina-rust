@@ -28,7 +28,7 @@ use mina_p2p_messages::{list::List, v2};
 use mina_vrf::output::VrfOutput;
 use serde::{Deserialize, Serialize};
 
-use self::vrf_evaluator::VrfWonSlotWithHash;
+use self::vrf_evaluator::{EpochFingerprint, VrfWonSlotWithHash};
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct BlockProducerWonSlot {
@@ -39,6 +39,10 @@ pub struct BlockProducerWonSlot {
     pub value_with_threshold: Option<(f64, f64)>,
     // Staking ledger which was used during vrf evaluation.
     pub staking_ledger_hash: v2::LedgerHash,
+    /// The epoch data the win was evaluated with. Without it the win is not
+    /// produced.
+    #[serde(default)]
+    pub epoch_data: Option<EpochFingerprint>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -58,6 +62,7 @@ impl BlockProducerWonSlot {
         let VrfWonSlotWithHash {
             won_slot,
             staking_ledger_hash,
+            epoch_data,
         } = won_slot_with_hash;
 
         let slot_time = Self::calculate_slot_time(genesis_timestamp, won_slot.global_slot);
@@ -80,7 +85,28 @@ impl BlockProducerWonSlot {
             vrf_output: won_slot.vrf_output.clone(),
             value_with_threshold: won_slot.value_with_threshold,
             staking_ledger_hash: staking_ledger_hash.clone(),
+            epoch_data: epoch_data.clone(),
         }
+    }
+
+    /// Whether a block for this win extending a block with consensus state
+    /// `parent` uses the epoch data the win was evaluated with: its staking
+    /// data, from the parent by the child transition, is exactly that data.
+    /// A block made otherwise would carry other staking data than the VRF
+    /// evaluation used. The transition, not the evaluation's selection,
+    /// applies: a child two or more epochs after its parent, past an empty
+    /// epoch, still takes the parent's next epoch data.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L1062-L1109>
+    pub fn epoch_data_matches(
+        &self,
+        parent: &v2::ConsensusProofOfStakeDataConsensusStateValueStableV2,
+    ) -> bool {
+        self.epoch_data.as_ref().is_some_and(|epoch_data| {
+            epoch_data.epoch == self.epoch()
+                && EpochFingerprint::for_child(parent, epoch_data.epoch).as_ref()
+                    == Some(epoch_data)
+        })
     }
 
     fn calculate_slot_time(genesis_timestamp: redux::Timestamp, slot: u32) -> redux::Timestamp {
@@ -161,7 +187,7 @@ impl PartialOrd<ArcBlockWithHash> for BlockProducerWonSlot {
 /// How long a slot lasts, in nanoseconds: the block window duration, 90 s on
 /// Mesa (180 s before).
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L155-L166>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L155-L166>
 pub fn slot_duration_ns() -> u64 {
     constraint_constants()
         .block_window_duration_ms
@@ -182,11 +208,12 @@ pub fn to_epoch_and_slot(global_slot: &v2::ConsensusGlobalSlotStableV1) -> (u32,
     (epoch, slot)
 }
 
-pub fn next_epoch_first_slot(global_slot: &v2::ConsensusGlobalSlotStableV1) -> u32 {
+/// None when the following epoch starts beyond the protocol's u32 slot range.
+pub fn next_epoch_first_slot(global_slot: &v2::ConsensusGlobalSlotStableV1) -> Option<u32> {
     let (epoch, _) = to_epoch_and_slot(global_slot);
-    (epoch.saturating_add(1))
+    epoch
+        .checked_add(1)?
         .checked_mul(global_slot.slots_per_epoch.as_u32())
-        .expect("overflow")
 }
 
 impl BlockWithoutProof {
@@ -244,7 +271,13 @@ mod timing_tests {
             account_index: AccountIndex(0),
             value_with_threshold: None,
         };
-        VrfWonSlotWithHash::new(vrf, v2::LedgerHash::zero())
+        let epoch_data = EpochFingerprint {
+            epoch: slot / 7140,
+            ledger: v2::LedgerHash::zero(),
+            seed: v2::EpochSeed::zero(),
+            total_currency: 0,
+        };
+        VrfWonSlotWithHash::new(vrf, epoch_data)
     }
 
     pub(super) fn won_slot(slot: u32) -> BlockProducerWonSlot {

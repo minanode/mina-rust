@@ -1,0 +1,14 @@
+{
+  "ocaml_version": "4.0.4",
+  "ocaml_commit": "c9e2eac5344da621828c1e96c074b8bdce665b51",
+  "daemon_sha256": "019739d4e645b4b309ba7074333e7914e74bacfd6536fdbeda0e79a3d81832cb",
+  "command": "mina ledger hash --ledger-file ACCOUNTS.json",
+  "migration_rule": "Account.Hardfork.empty copies Account.empty; Hardfork account hashing and migrated populated accounts are unchanged. Thus stable and migrated roots coincide.",
+  "empty_ledger_root": "jwkaDMeSMeL94hwJg6EYtSRD6gxB1BHpXnGKnZ1VW6jthKzgcef",
+  "sample_root": "jwUATMQxpP7A3xwoW7uEwS3M83zGi3prDUPSqEMpqUzvssSMaW3",
+  "fork_roots": {
+    "ledger": "jxBQcuCUkfKeFn1W3Jt5HK68YHMr7eY6qDJ8bg6nMcHoYpnjdtd",
+    "staking": "jwk9QANSsLrKqwKVNv4iNuv6ZCRojrxu3M6bnNBV1kVKDVGhB4P",
+    "next": "jwGyeX2GdWiyGBaSQQnZHHj6NCTa9GeWCD3t8KbcLVgFwiVCXL2"
+  }
+}

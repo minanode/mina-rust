@@ -365,8 +365,15 @@ pub fn transition_frontier_effects<S: crate::Service>(
                 store.dispatch(BlockProducerAction::BestTipUpdate { best_tip });
             }
         }
-        TransitionFrontierAction::GenesisLedgersLoadError { error } => {
-            genesis_ledgers_load_failed(&error);
+        // The native/web event loop returns the terminal startup error.
+        TransitionFrontierAction::GenesisLedgersLoadError { .. } => {}
+        TransitionFrontierAction::LedgerRecovery { block_hash, error } => {
+            mina_core::error!(meta.time(); kind = "LedgerRecovery",
+                summary = "local ledger failure; frontier quarantined, resync scheduled",
+                block_hash = block_hash.to_string(), error = error);
+            if store.state().transition_frontier.persist.is_replaying() {
+                store.dispatch(crate::transition_frontier::persist::TransitionFrontierPersistAction::ReplayFailed { error });
+            }
         }
         TransitionFrontierAction::SyncFailed { .. } => {
             // TODO(SEC): disconnect/blacklist peers that caused this.
@@ -443,18 +450,13 @@ fn synced_effects<S: crate::Service>(
 
     let best_tip_hash = best_tip.merkle_root_hash().clone();
     store.dispatch(TransitionFrontierCandidateAction::Prune);
+    store.dispatch(TransactionPoolAction::BestTipChanged {
+        best_tip_hash,
+        diff: chain_diff,
+    });
     store.dispatch(BlockProducerAction::BestTipUpdate {
         best_tip: best_tip.block.clone(),
     });
-    store.dispatch(TransactionPoolAction::BestTipChanged {
-        best_tip_hash: best_tip_hash.clone(),
-    });
-    if let Some(diff) = chain_diff {
-        store.dispatch(TransactionPoolAction::ApplyTransitionFrontierDiff {
-            best_tip_hash,
-            diff,
-        });
-    }
 }
 
 // Handling of the actions related to the synchronization of a target ledger
@@ -631,17 +633,4 @@ fn handle_transition_frontier_sync_ledger_action<S: crate::Service>(
             }
         }
     }
-}
-
-/// The cached full-config path cannot bootstrap without its genesis ledgers.
-/// This also handles failure to spawn the loader thread, via its error event.
-pub(super) fn genesis_ledgers_load_failed(error: &str) -> ! {
-    mina_core::error!(
-        mina_core::log::system_time();
-        kind = "GenesisCache",
-        summary = "deferred genesis ledger load failed; sync, ledger reads and production remain blocked; stopping the node",
-        error = error,
-    );
-    eprintln!("Fatal: deferred genesis ledger load failed: {error}; stopping the node");
-    std::process::exit(1);
 }

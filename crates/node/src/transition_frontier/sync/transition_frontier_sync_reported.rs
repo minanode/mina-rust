@@ -47,9 +47,9 @@ use crate::State;
 /// tips are usually verified by the time the replay commits, so the node
 /// reports `Catchup` until it has caught up.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_lib/mina_lib.ml#L474-L545>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_lib/mina_lib.ml#L2100-L2104>
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transition_router/transition_router.ml#L186-L266>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_lib/mina_lib.ml#L475-L546>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_lib/mina_lib.ml#L2101-L2105>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/transition_router/transition_router.ml#L189-L269>
 pub fn reported_sync_phase<'a>(
     internal: SyncPhase,
     best_chain: &[AppliedBlock],
@@ -127,6 +127,9 @@ impl State {
     /// The sync phase the node reports: [`reported_sync_phase`] on this
     /// state.
     pub fn reported_sync_phase(&self) -> SyncPhase {
+        if self.transition_frontier.ledger_recovery_pending() {
+            return SyncPhase::Bootstrap;
+        }
         let frontier = &self.transition_frontier;
         let peers = || self.p2p.ready_peers_iter().map(|(_, peer)| peer);
         reported_sync_phase(

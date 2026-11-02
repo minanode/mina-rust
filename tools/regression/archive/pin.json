@@ -1,0 +1,17 @@
+{
+  "version": "4.0.4",
+  "commit": "c9e2eac5344da621828c1e96c074b8bdce665b51",
+  "package_url": "https://packages.o1test.net/pool/noble/m/mi/mina-archive-generic_4.0.4-c9e2eac_amd64.deb",
+  "package_sha256": "a6fd6091a18a65c9598866e10a4de35ccceb65d77c182199ec11e5e3aa1a9fe3",
+  "files": {
+    "usr/local/bin/mina-archive": "9f14d4756f396dc0cda7baf16b8cf21a40ed8289eec1e5c997fe71b00a59bb62",
+    "etc/mina/archive/create_schema.sql": "6a873db0449c46a9e7a72739bccbfc6c828be163b50c7bff5df94b4335b32d6c",
+    "etc/mina/archive/upgrade.sql": "c15afad0ba62e7ccce4416cd5936b1bb591db2e48a1f8f1d1eb7f23a1b643f52",
+    "usr/local/bin/mina-archive-hardfork-toolbox": "456fe134bde09a8d2148a8937d0984123adf77f86dd4f7aa60feaa0d9cb508cd",
+    "etc/mina/archive/downgrade.sql": "32732ca448301d7d90d7e151f211c1fdfb64b043fd1e8fb2ce09cd06c39781f9"
+  },
+  "previous_schema": {
+    "commit": "73134bfd3a43c3f4d8ee564b3d04a0c6ed2e0b3c",
+    "sha256": "8e4bd7b4f13e277a0ebc3346be7aa6fd943e2348f4823cdf86e812c12a3a4be4"
+  }
+}

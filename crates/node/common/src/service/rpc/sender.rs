@@ -11,7 +11,7 @@ use mina_node::{
 };
 
 use super::{
-    ledger::Ledger, state::State, stats::Stats, transaction_pool::TransactionPool,
+    ledger::Ledger, roles::Roles, state::State, stats::Stats, transaction_pool::TransactionPool,
     transition_frontier::TransitionFrontier, NodeRpcRequest,
 };
 
@@ -90,6 +90,11 @@ impl RpcSender {
 
     pub fn ledger(&self) -> Ledger {
         Ledger::new(self.clone())
+    }
+
+    /// What the page's key, send, worker and producer screens read.
+    pub fn roles(&self) -> Roles {
+        Roles::new(self.clone())
     }
 }
 

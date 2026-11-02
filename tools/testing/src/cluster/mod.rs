@@ -466,6 +466,7 @@ impl Cluster {
                 external_addrs: vec![],
                 enabled_channels: ChannelId::iter_all().collect(),
                 peer_discovery: testing_config.peer_discovery,
+                seed_only: false,
                 timeouts: testing_config.timeouts,
                 limits: {
                     let limits =
@@ -510,8 +511,12 @@ impl Cluster {
 
         if let Some(keypair) = block_producer_sec_key {
             info!(system_time(); "Initializing block producer for Rust node {}", node_id.index());
-            let provers = BlockProver::make(None, None).unwrap();
-            service_builder.block_producer_init(keypair, Some(provers));
+            // Dummy proofs bypass the prover, including its circuit files.
+            let provers = match self.config.proof_kind() {
+                ProofKind::Dummy => None,
+                _ => Some(BlockProver::make(None, None).unwrap()),
+            };
+            service_builder.block_producer_init(keypair, provers);
         }
 
         let real_service = service_builder

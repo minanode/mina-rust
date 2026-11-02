@@ -428,13 +428,36 @@ impl<T: BinProtRead> BinProtRead for Arc<T> {
     }
 }
 
+/// The most bytes a reader allocates for elements before it has read them.
+/// A length prefix is input like any other: past this, a vector grows as its
+/// elements arrive, so memory follows the bytes actually read.
+pub const MAX_PREALLOCATED_BYTES: usize = 64 * 1024;
+
+/// An empty vector with room for `len` elements, at most
+/// [`MAX_PREALLOCATED_BYTES`] of them.
+pub fn preallocated<T>(len: u64) -> Vec<T> {
+    let max = MAX_PREALLOCATED_BYTES / std::mem::size_of::<T>().max(1);
+    Vec::with_capacity(usize::try_from(len).map_or(max, |len| len.min(max)))
+}
+
+/// Reads exactly `len` bytes, allocating as they arrive rather than all of
+/// `len` up front.
+pub fn read_bytes<R: Read + ?Sized>(r: &mut R, len: u64) -> Result<Vec<u8>, Error> {
+    let mut buf = preallocated(len);
+    (&mut *r).take(len).read_to_end(&mut buf)?;
+    if buf.len() as u64 != len {
+        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+    }
+    Ok(buf)
+}
+
 impl<T: BinProtRead> BinProtRead for Vec<T> {
     fn binprot_read<R: Read + ?Sized>(r: &mut R) -> Result<Self, Error>
     where
         Self: Sized,
     {
         let len = int::read_nat0(r)?;
-        let mut v: Vec<T> = Vec::with_capacity(len as usize);
+        let mut v: Vec<T> = preallocated(len);
         for _i in 0..len {
             let item = T::binprot_read(r)?;
             v.push(item)
@@ -452,7 +475,7 @@ impl BinProtRead for Vec<f32> {
         Self: Sized,
     {
         let len = int::read_nat0(r)?;
-        let mut v: Vec<f32> = Vec::with_capacity(len as usize);
+        let mut v: Vec<f32> = preallocated(len);
         for _i in 0..len {
             let item = r.read_f32::<byteorder::NativeEndian>()?;
             v.push(item)
@@ -565,9 +588,7 @@ impl BinProtRead for BufferWithLen {
         Self: Sized,
     {
         let len = Nat0::binprot_read(r)?;
-        let mut buf: Vec<u8> = vec![0u8; len.0 as usize];
-        r.read_exact(&mut buf)?;
-        Ok(BufferWithLen(buf))
+        Ok(BufferWithLen(read_bytes(r, len.0)?))
     }
 }
 

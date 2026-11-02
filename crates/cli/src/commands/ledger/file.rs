@@ -15,10 +15,11 @@ use serde_json::json;
 
 use super::node_api::HashMismatch;
 
-/// Reads a file `mina ledger export` (OCaml's or ours) wrote.
+/// Reads a file `mina ledger export` (OCaml's or ours) wrote, with any bytes
+/// in its token symbols and zkApp URIs.
 pub fn read_ledger_file(path: &Path) -> Result<Vec<daemon_json::Account>> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    serde_json::from_reader(BufReader::new(file))
+    daemon_json::from_ocaml_json_reader(BufReader::new(file))
         .with_context(|| format!("could not parse the ledger JSON in {}", path.display()))
 }
 

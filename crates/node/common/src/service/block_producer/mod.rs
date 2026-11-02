@@ -1,6 +1,7 @@
 #[cfg(not(target_family = "wasm"))]
 mod vrf_cache;
 mod vrf_evaluator;
+pub use vrf_evaluator::{evaluate_slot, VrfEvaluatorWorker};
 
 use std::sync::Arc;
 
@@ -163,58 +164,83 @@ fn prover_loop(
     // distinct failure files instead of overwriting attempt 1 on the retry.
     let mut attempts = ProofAttemptCounter::default();
     while let Some(msg) = rx.blocking_recv() {
-        let ProveRequest {
-            provers,
-            block_hash,
-            mut input,
-            check,
-        } = msg.0;
+        let block_hash = msg.0.block_hash.clone();
         let attempt = attempts.next(&block_hash);
-        set_producer_private_key(&mut input, &keypair);
-        let input = &*input;
-        let verifier = check.then(block_verifier).flatten();
-        if check && verifier.is_none() {
-            mina_core::warn!(
-                message =
-                    "Block verifier not loaded: our block proof is not checked before broadcasting"
-            );
-        }
-
-        let res = prove_verified(
-            // P15 and the genesis state machine own the retry budget.
-            1,
-            || prove_input(provers.clone(), input, false),
-            |proof| {
-                verifier
-                    .as_ref()
-                    .is_none_or(|verifier| verify_block_proof(&input.next_state, proof, verifier))
-            },
-            |_, error| {
-                mina_core::error!(
-                    message = "Block proof failed",
-                    attempt = attempt,
-                    error = format!("{error:?}")
-                );
-                let input = Box::new(input.clone());
-                if let Err(error) =
-                    dump_failed_block_proof_input(block_hash.clone(), attempt, input, error)
-                {
-                    mina_core::error!(
-                        message = "Failure when dumping failed block proof inputs",
-                        error = format!("{error}")
-                    );
-                }
-            },
-        );
-        if res.is_ok() && verifier.is_some() {
-            mina_core::info!(
-                message = "Block proof verified in prover service",
-                block_hash = block_hash.to_string()
-            );
-        }
-        let res = res.map_err(|err| format!("{err:#}"));
+        // The attempt has its own boundary, which dumps the input; this one
+        // keeps the thread for a panic in the check or the dump.
+        let res =
+            ledger::proofs::catch_prover_panic("block", || prove_request(msg.0, &keypair, attempt))
+                .unwrap_or_else(|message| Err(format!("block prover panicked: {message}")));
         let _ = event_sender.send(BlockProducerEvent::BlockProve(block_hash, res).into());
     }
+}
+
+/// Proves and checks one block, for `prover_loop`.
+fn prove_request(
+    request: ProveRequest,
+    keypair: &AccountSecretKey,
+    attempt: usize,
+) -> Result<Arc<MinaBaseProofStableV2>, String> {
+    let ProveRequest {
+        provers,
+        block_hash,
+        mut input,
+        check,
+    } = request;
+    set_producer_private_key(&mut input, keypair);
+    let input = &*input;
+    let verifier = check.then(block_verifier).flatten();
+    if check && verifier.is_none() {
+        mina_core::warn!(
+            message =
+                "Block verifier not loaded: our block proof is not checked before broadcasting"
+        );
+    }
+
+    let res = prove_verified(
+        // P15 and the genesis state machine own the retry budget.
+        1,
+        || prove_contained(|| prove_input(provers.clone(), input, false)),
+        |proof| {
+            verifier
+                .as_ref()
+                .is_none_or(|verifier| verify_block_proof(&input.next_state, proof, verifier))
+        },
+        |_, error| {
+            mina_core::error!(
+                message = "Block proof failed",
+                attempt = attempt,
+                error = format!("{error:?}")
+            );
+            let input = Box::new(input.clone());
+            if let Err(error) =
+                dump_failed_block_proof_input(block_hash.clone(), attempt, input, error)
+            {
+                mina_core::error!(
+                    message = "Failure when dumping failed block proof inputs",
+                    error = format!("{error}")
+                );
+            }
+        },
+    );
+    if res.is_ok() && verifier.is_some() {
+        mina_core::info!(
+            message = "Block proof verified in prover service",
+            block_hash = block_hash.to_string()
+        );
+    }
+    res.map_err(|err| format!("{err:#}"))
+}
+
+/// One block proof attempt, in a panic boundary: a panic in the prover is
+/// this attempt's error, so the producer drops this block, as for a prover
+/// error, and this thread proves the next one. Before, the panic ended the
+/// thread: every later block was sent to a thread that was gone, and the
+/// producer made no block until a restart. The next proof makes the thread's
+/// SRS again if the panic poisoned it.
+fn prove_contained<T>(prove: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    ledger::proofs::catch_prover_panic("block", prove)
+        .unwrap_or_else(|message| Err(anyhow::anyhow!("block prover panicked: {message}")))
 }
 
 #[derive(Default)]
@@ -620,6 +646,81 @@ mod tests {
         tampered.body.consensus_state.last_vrf_output.0 .0[0] ^= 1;
         assert!(!verify_block_proof(&tampered, proof, &verifier));
         assert!(!verify_block_proof(&input.next_state, proof, &verifier));
+    }
+
+    /// A block proof that panics holding the prover thread's SRS lock fails
+    /// that block alone, as a prover error would: before, the panic ended the
+    /// thread, and the producer made no block until a restart. The thread
+    /// then proves the same block (P4.6a's offline 548149, whose step
+    /// verifies its parent's proof with the new SRS), and the live Mesa
+    /// mainnet key accepts the proof.
+    #[test]
+    #[ignore = "proves a block: run alone, in release, \
+                with --features ledger/embedded-circuits"]
+    fn a_block_proof_that_panics_holding_the_srs_fails_that_block_alone() {
+        use ledger::{proofs::verifiers::TransactionVerifier, verifier};
+        use mina_node::event_source::Event;
+        use mina_p2p_messages::binprot::BinProtRead;
+
+        mina_core::init_work_dir_if_unset(|| {
+            std::env::temp_dir().join("mina-node-common-block-producer-tests")
+        });
+        let _ = mina_core::NetworkConfig::init("mainnet");
+        assert_eq!(mina_core::NetworkConfig::global().name, "mainnet");
+        let input = Box::new(
+            ProverExtendBlockchainInputStableV2::binprot_read(&mut &*OFFLINE_548149).unwrap(),
+        );
+        let hash: StateHash = "3NKLvHFnXhZw3mzUDz8ZdaicqVGMHEuoUYzB4YxjzKrkXLg2nYNr"
+            .parse()
+            .unwrap();
+        let block_verifier = BlockVerifier::make();
+        let provers = BlockProver::make(
+            Some(block_verifier.clone()),
+            Some(TransactionVerifier::make()),
+        )
+        .unwrap();
+        let (requests, receiver) = mpsc::tracked_unbounded_channel();
+        let (event_sender, mut events) = mpsc::unbounded_channel();
+        // The offline chain's producer is the public genesis winner.
+        let keypair = AccountSecretKey::genesis_producer();
+        let thread = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || prover_loop(keypair, event_sender, receiver))
+            .unwrap();
+        let mut prove = || {
+            requests
+                .tracked_send(ProveRequest {
+                    provers: provers.clone(),
+                    block_hash: hash.clone(),
+                    input: input.clone(),
+                    check: true,
+                })
+                .unwrap_or_else(|_| panic!("the prover thread is gone"));
+            match events.blocking_recv().expect("the prover thread is gone") {
+                Event::BlockProducerEvent(BlockProducerEvent::BlockProve(proved, result)) => {
+                    assert_eq!(proved, hash);
+                    result
+                }
+                event => panic!("not a block proof: {event:?}"),
+            }
+        };
+
+        let rebuilds = verifier::prover_srs_rebuilds();
+        verifier::test_hooks::panic_next_proof_holding_srs();
+        let error = prove().unwrap_err();
+        assert!(
+            error.contains("block prover panicked: test hook"),
+            "{error}"
+        );
+        let proof = prove().expect("the next block is proved");
+        assert!(verify_block_proof(
+            &input.next_state,
+            &proof,
+            &block_verifier
+        ));
+        assert_eq!(verifier::prover_srs_rebuilds(), rebuilds + 1);
+        drop(requests);
+        thread.join().unwrap();
     }
 
     /// Two failed attempts give up, without a third: the block producer then

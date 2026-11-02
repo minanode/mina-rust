@@ -1,0 +1,7 @@
+/* The design system brings Tailwind, the fonts and the tokens. The page adds
+   no styles of its own. The dashboard's pages it reuses are sources too. */
+@import "@minanode/design-system/styles.css";
+
+@source "./";
+@source "../../dashboard/src/pages/peers.tsx";
+@source "../../dashboard/src/components/";

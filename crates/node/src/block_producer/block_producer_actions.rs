@@ -19,10 +19,19 @@ pub type BlockProducerActionWithMetaRef<'a> = redux::ActionWithMeta<&'a BlockPro
 #[derive(Serialize, Deserialize, Debug, Clone, ActionEvent)]
 #[action_event(level = debug)]
 pub enum BlockProducerAction {
+    LedgerRecoveryAbort,
     VrfEvaluator(BlockProducerVrfEvaluatorAction),
     BestTipUpdate {
         best_tip: ArcBlockWithHash,
     },
+    /// Checks again which epoch to evaluate without a new best tip: when the
+    /// clock enters another epoch (OCaml schedules its next VRF check at the
+    /// epoch's end), when it has passed the evaluated epoch, or when a
+    /// missing staking ledger is to be asked for again.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/block_producer/block_producer.ml#L1117-L1125>
+    #[action_event(level = debug)]
+    EvaluationRecheck,
     WonSlotSearch,
     #[action_event(
         level = info,
@@ -86,12 +95,24 @@ pub enum BlockProducerAction {
 
 impl redux::EnablingCondition<crate::State> for BlockProducerAction {
     fn is_enabled(&self, state: &crate::State, time: redux::Timestamp) -> bool {
-        if !state.transition_frontier.genesis_ledgers_ready() {
+        if matches!(self, Self::LedgerRecoveryAbort) {
+            return true;
+        }
+        if state.transition_frontier.ledger_recovery_pending()
+            || !state.transition_frontier.genesis_ledgers_ready()
+        {
             return false;
         }
         match self {
+            Self::LedgerRecoveryAbort => true,
             BlockProducerAction::VrfEvaluator(a) => a.is_enabled(state, time),
             BlockProducerAction::BestTipUpdate { .. } => true,
+            BlockProducerAction::EvaluationRecheck => state.block_producer.with(false, |this| {
+                state.transition_frontier.best_tip().is_some()
+                    && state
+                        .current_epoch()
+                        .is_some_and(|epoch| this.vrf_evaluator.recheck_due(epoch, time))
+            }),
             BlockProducerAction::WonSlotSearch => state
                 .block_producer
                 .with(None, |this| {

@@ -1,14 +1,16 @@
+use std::sync::Arc;
+
 use ledger::AccountIndex;
 use mina_node::{
     account::AccountPublicKey,
     block_producer::{
-        vrf_evaluator::{VrfEvaluationOutputWithHash, VrfEvaluatorInput},
+        vrf_evaluator::{DelegatorTable, VrfEvaluationOutputWithHash, VrfEvaluatorInput},
         BlockProducerEvent, BlockProducerVrfEvaluatorEvent,
     },
     core::channels::mpsc::{TrackedUnboundedReceiver, UnboundedSender},
     event_source::Event,
 };
-use mina_p2p_messages::v2::{ConsensusVrfOutputTruncatedStableV1, LedgerHash};
+use mina_p2p_messages::v2::ConsensusVrfOutputTruncatedStableV1;
 use mina_signer::Keypair;
 use mina_vrf::{Threshold, VrfEvaluationOutput, VrfWonSlot};
 #[cfg(not(target_family = "wasm"))]
@@ -23,59 +25,15 @@ pub fn vrf_evaluator(
     mut vrf_evaluation_receiver: TrackedUnboundedReceiver<VrfEvaluatorInput>,
     keypair: Keypair,
 ) {
-    let mut prepared: Option<(LedgerHash, u64, Vec<PreparedDelegator>)> = None;
-    #[cfg(not(target_family = "wasm"))]
-    let mut cache: Option<VrfCache> = None;
+    let mut worker = VrfEvaluatorWorker::new(keypair, None);
     while let Some(vrf_evaluator_input) = vrf_evaluation_receiver.blocking_recv() {
-        // let bytes = serde_json::to_string(&vrf_evaluator_input).unwrap();
-        // mina_core::http::download("vrf.json".to_string(), bytes.as_bytes().to_vec()).unwrap();
-
+        // The node sets its work directory after starting this thread: look
+        // it up with the first request.
         #[cfg(not(target_family = "wasm"))]
-        if cache
-            .as_ref()
-            .is_none_or(|cache| !cache.matches(&keypair, &vrf_evaluator_input))
-        {
-            cache = Some(VrfCache::open(
-                &mina_core::get_work_dir(),
-                &keypair,
-                &vrf_evaluator_input,
-            ));
+        if worker.work_dir.is_none() {
+            worker.work_dir = Some(mina_core::get_work_dir());
         }
-        #[cfg(not(target_family = "wasm"))]
-        let cached = cache
-            .as_ref()
-            .and_then(|cache| cache.get(vrf_evaluator_input.global_slot));
-        #[cfg(target_family = "wasm")]
-        let cached: Option<VrfEvaluationOutput> = None;
-        let vrf_result = cached.unwrap_or_else(|| {
-            if prepared.as_ref().is_none_or(|(ledger, total, _)| {
-                ledger != &vrf_evaluator_input.staking_ledger_hash
-                    || *total != vrf_evaluator_input.total_currency
-            }) {
-                prepared = Some((
-                    vrf_evaluator_input.staking_ledger_hash.clone(),
-                    vrf_evaluator_input.total_currency,
-                    prepare_delegators(&vrf_evaluator_input),
-                ));
-            }
-            let result = evaluate_slot_prepared(
-                &keypair,
-                &vrf_evaluator_input,
-                &prepared.as_ref().unwrap().2,
-            );
-            #[cfg(not(target_family = "wasm"))]
-            if let Some(cache) = cache.as_mut() {
-                if let Err(error) = cache.record(&result) {
-                    tracing::warn!("VRF cache write failed: {error}");
-                }
-            }
-            result
-        });
-
-        let vrf_result_with_hash = VrfEvaluationOutputWithHash::new(
-            vrf_result,
-            vrf_evaluator_input.staking_ledger_hash.clone(),
-        );
+        let vrf_result_with_hash = worker.evaluate(&vrf_evaluator_input);
 
         // send the result back to the state machine
         let _ = event_sender.send(
@@ -87,13 +45,111 @@ pub fn vrf_evaluator(
     }
 }
 
+/// The VRF evaluator service's work for one request at a time: a result from
+/// the disk cache when it holds one for the same key, seed, ledger, total
+/// currency and delegator table, else an evaluation, recorded in the cache.
+/// The response carries the request's ledger and generation.
+pub struct VrfEvaluatorWorker {
+    keypair: Keypair,
+    /// Where the disk cache is kept; none without one.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    work_dir: Option<std::path::PathBuf>,
+    prepared: Option<(Arc<DelegatorTable>, u64, Vec<PreparedDelegator>)>,
+    #[cfg(not(target_family = "wasm"))]
+    table_digest: Option<(Arc<DelegatorTable>, String)>,
+    #[cfg(not(target_family = "wasm"))]
+    cache: Option<VrfCache>,
+    cache_hits: u64,
+}
+
+/// Whether two requests use the same table: usually the same allocation.
+fn same_table(a: &Arc<DelegatorTable>, b: &Arc<DelegatorTable>) -> bool {
+    Arc::ptr_eq(a, b) || **a == **b
+}
+
+impl VrfEvaluatorWorker {
+    pub fn new(keypair: Keypair, work_dir: Option<std::path::PathBuf>) -> Self {
+        Self {
+            keypair,
+            work_dir,
+            prepared: None,
+            #[cfg(not(target_family = "wasm"))]
+            table_digest: None,
+            #[cfg(not(target_family = "wasm"))]
+            cache: None,
+            cache_hits: 0,
+        }
+    }
+
+    /// How many results came from the disk cache.
+    pub fn cache_hits(&self) -> u64 {
+        self.cache_hits
+    }
+
+    pub fn evaluate(&mut self, input: &VrfEvaluatorInput) -> VrfEvaluationOutputWithHash {
+        #[cfg(not(target_family = "wasm"))]
+        let cached = self.cached(input);
+        #[cfg(target_family = "wasm")]
+        let cached: Option<VrfEvaluationOutput> = None;
+        if cached.is_some() {
+            self.cache_hits = self.cache_hits.saturating_add(1);
+        }
+        let vrf_result = cached.unwrap_or_else(|| {
+            if self.prepared.as_ref().is_none_or(|(table, total, _)| {
+                !same_table(table, &input.delegator_table) || *total != input.total_currency
+            }) {
+                self.prepared = Some((
+                    input.delegator_table.clone(),
+                    input.total_currency,
+                    prepare_delegators(input),
+                ));
+            }
+            let result =
+                evaluate_slot_prepared(&self.keypair, input, &self.prepared.as_ref().unwrap().2);
+            #[cfg(not(target_family = "wasm"))]
+            if let Some(cache) = self.cache.as_mut() {
+                if let Err(error) = cache.record(&result) {
+                    tracing::warn!("VRF cache write failed: {error}");
+                }
+            }
+            result
+        });
+        VrfEvaluationOutputWithHash::new(vrf_result, input)
+    }
+
+    /// The cached result for `input`, opening the cache for its key first.
+    #[cfg(not(target_family = "wasm"))]
+    fn cached(&mut self, input: &VrfEvaluatorInput) -> Option<VrfEvaluationOutput> {
+        let work_dir = self.work_dir.as_ref()?;
+        if self
+            .table_digest
+            .as_ref()
+            .is_none_or(|(table, _)| !same_table(table, &input.delegator_table))
+        {
+            self.table_digest = Some((
+                input.delegator_table.clone(),
+                super::vrf_cache::table_digest(&input.delegator_table),
+            ));
+        }
+        let digest = &self.table_digest.as_ref()?.1;
+        if self
+            .cache
+            .as_ref()
+            .is_none_or(|cache| !cache.matches(&self.keypair, input, digest))
+        {
+            self.cache = Some(VrfCache::open(work_dir, &self.keypair, input, digest));
+        }
+        self.cache.as_ref()?.get(input.global_slot)
+    }
+}
+
 /// Whether the producer won the slot of `input` for any delegator, and with
 /// which: of the delegators that won, the one whose truncated VRF output has
 /// the greatest Blake2b digest, the first in ledger order on an equal
 /// digest. OCaml evaluates every delegator and keeps that one, its block
 /// being the likeliest to win a tie with a block for the same slot.
 ///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/consensus/proof_of_stake.ml#L840-L907>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/proof_of_stake.ml#L840-L907>
 pub fn evaluate_slot(keypair: &Keypair, input: &VrfEvaluatorInput) -> VrfEvaluationOutput {
     let prepared = prepare_delegators(input);
     evaluate_slot_prepared(keypair, input, &prepared)
@@ -128,6 +184,7 @@ fn evaluate_slot_prepared(
         global_slot,
         total_currency: _,
         staking_ledger_hash: _,
+        generation: _,
     } = input;
 
     let candidate =

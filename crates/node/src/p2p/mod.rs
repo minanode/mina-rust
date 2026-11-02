@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod privacy_tests;
+
 mod catchup;
 
 pub use mina_p2p::*;

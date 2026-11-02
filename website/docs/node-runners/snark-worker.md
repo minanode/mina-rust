@@ -20,7 +20,12 @@ mina node --network devnet --run-snarker B62q... --snarker-fee 0.004
 ```
 
 `--snarker-fee` is in MINA (default 0.1). The flags set the worker at every
-start.
+start. The `0.004` example needs a public key whose account already exists on
+chain for its work to be accepted. For a new unfunded key, use at least
+`--snarker-fee 1` to cover account creation. The CLI can start and prove with a
+lower fee even while `/snarker/control` reports `fee_problem`; completed or
+offered work does not mean peers accepted it or a block bought it. See
+[the fee rule](#the-fee-rule).
 
 ## Start it from the dashboard
 
@@ -85,17 +90,17 @@ brings the worker back with the same key and fee, with or without
 
 ## Circuit blobs
 
-The native `mina` binary includes the Mesa devnet prover circuits. A devnet
-worker needs no separate circuit download or host. For mainnet, or a binary
-built without the `embedded-circuits` feature, point
-`MINA_CIRCUIT_BLOBS_BASE_DIR` at a directory containing the network's circuit
-files (`tools/mesa-circuits/generate.sh` can make them). The loader also checks
-the home and system circuit directories, then GitHub releases. A missing mainnet
-circuit stops the worker with an error shown on the dashboard.
+The default native `mina` build embeds the Mesa prover circuits. It needs no
+separate circuit download or host. The loader checks the decompressed bytes
+against their SHA-256 pins before use; a decode or hash error fails without
+falling back to another source.
 
-To opt out of embedded-first, build `mina` without `embedded-circuits`: use
-`--no-default-features` and explicitly enable the P2P features you need. That
-build uses the directory and GitHub lookup.
+To build without embedded circuits, use `--no-default-features` and explicitly
+enable the P2P features you need. Set `MINA_CIRCUIT_BLOBS_BASE_DIR` to the base
+directory containing the network's circuit files; the loader then checks the
+crate directory, home circuit cache and system circuit directory. Generate the
+files with `tools/mesa-circuits/generate.sh`. The GitHub release fallback
+remains available for devnet when no local file is found.
 
 ## Capture jobs for a bug report
 
