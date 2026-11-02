@@ -614,7 +614,7 @@
                 "--snark-worker-fee"
               ],
               "help": [
-                "The fee asked for each SNARK work bundle, in MINA (for example `0.1`), as OCaml's `--snark-worker-fee`.",
+                "The fee asked for each SNARK work bundle, in MINA (for example `0.1`), as OCaml's `--snark-worker-fee`. Uptime proofs use this fee too, even when the ordinary SNARK worker is off.",
                 "If the worker's key has no account yet, OCaml nodes only accept work whose fee is at least the account creation fee (1 MINA)."
               ],
               "default": "0.1",
@@ -760,6 +760,20 @@
               "required": false,
               "repeatable": true,
               "global": false
+            },
+            {
+              "id": "node--webrtc-signaling-relay",
+              "syntax": "--webrtc-signaling-relay",
+              "aliases": [],
+              "help": [
+                "Allow peers to discover each other and exchange WebRTC offers through this node. Exposes connecting peers' addresses to each other; leave off on public browser relays. Direct HTTP signaling is always available."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
             }
           ]
         },
@@ -880,6 +894,146 @@
               "help": [
                 "Turn off peer discovery: no Kademlia, and no asking peers for more peers.",
                 "The node still dials its initial peers. Those are the network's default peers unless peers are given with `--peers`, `--peer-list-file` or `--peer-list-url`, or `--seed` is set."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            }
+          ]
+        },
+        {
+          "title": "Reporting",
+          "args": [
+            {
+              "id": "node--uptime-url",
+              "syntax": "--uptime-url <URL>",
+              "aliases": [],
+              "help": [
+                "Send signed uptime submissions to this URL, as OCaml's `--uptime-url`: from the next slot boundary, every five slots, the best tip, with up to eight delivery attempts. Before signing, the best-tip report proves a suitable transaction job and includes its SNARK work. Without a suitable job it reports without work; a proving failure skips the report. A block this node produces within four slots gets a separate report without work. Needs `--uptime-submitter-key` or `--uptime-submitter-pubkey`. Off by default."
+              ],
+              "default": null,
+              "env": "MINA_UPTIME_URL",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--uptime-submitter-key",
+              "syntax": "--uptime-submitter-key <FILE>",
+              "aliases": [],
+              "help": [
+                "Encrypted secret key file of the account that signs uptime submissions; need not be the block producer's. Its password is read from the `UPTIME_PRIVKEY_PASS` environment variable, which must be set (it may be empty), as OCaml requires."
+              ],
+              "default": null,
+              "env": "MINA_UPTIME_SUBMITTER_KEY",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--uptime-submitter-pubkey",
+              "syntax": "--uptime-submitter-pubkey <PUBLIC_KEY>",
+              "aliases": [],
+              "help": [
+                "Public key of the account that signs uptime submissions, whose key file is tracked in `<work dir>/wallets/store`, as OCaml tracks wallets in `<config dir>/wallets/store`. Its password is read from `UPTIME_PRIVKEY_PASS`"
+              ],
+              "default": null,
+              "env": "MINA_UPTIME_SUBMITTER_PUBKEY",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--uptime-send-node-commit-sha",
+              "syntax": "--uptime-send-node-commit-sha",
+              "aliases": [],
+              "help": [
+                "Include the first 8 characters of this build's commit in uptime submissions. Off by default."
+              ],
+              "default": null,
+              "env": "MINA_UPTIME_SEND_NODE_COMMIT_SHA",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--uptime-dry-run-dir",
+              "syntax": "--uptime-dry-run-dir <DIR>",
+              "aliases": [],
+              "help": [
+                "Don't send uptime submissions: write each request body, exactly as it would be POSTed to `--uptime-url`, to a file in this directory (created if missing), to compare with OCaml's. Not in OCaml."
+              ],
+              "default": null,
+              "env": "MINA_UPTIME_DRY_RUN_DIR",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--node-status-url",
+              "syntax": "--node-status-url <URL>",
+              "aliases": [],
+              "help": [
+                "Send the unsigned node status report to this URL five slots after start, then every five slots, once each. Off by default."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--simplified-node-stats",
+              "syntax": "--simplified-node-stats <SIMPLIFIED_NODE_STATS>",
+              "aliases": [],
+              "help": [
+                "Send the simplified node status (OCaml's default). `false` asks for OCaml's full version 2 report, which this node doesn't offer: it doesn't measure libp2p bandwidth or CPU, per-RPC and gossip counters or received-block queues."
+              ],
+              "default": "true",
+              "env": null,
+              "possible_values": [
+                {
+                  "name": "true",
+                  "help": null
+                },
+                {
+                  "name": "false",
+                  "help": null
+                }
+              ],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--node-error-url",
+              "syntax": "--node-error-url <URL>",
+              "aliases": [],
+              "help": [
+                "Send node error reports to this URL: one for the first panic, before the process ends, and one each time transactions fail to apply to a block this node produces. Sent once, never retried; a report over 10,000 bytes is not sent. Off by default."
+              ],
+              "default": null,
+              "env": null,
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
+              "id": "node--contact-info",
+              "syntax": "--contact-info <CONTACT_INFO>",
+              "aliases": [],
+              "help": [
+                "Contact details included in node error reports (shorter than 200 bytes)."
               ],
               "default": null,
               "env": null,
@@ -2003,7 +2157,7 @@
               "syntax": "--out <DIR>",
               "aliases": [],
               "help": [
-                "Directory to create. It must not exist; it gets `fork_config.json` (every account inline, OCaml's GraphQL `fork_config` layout), `daemon.json` and `daemon-migrated.json` (ledgers by stable and by OCaml 4.0.2's migrated root), `manifest.json` and, last, an empty `activated`"
+                "Directory to create. It must not exist; it gets `fork_config.json` (every account inline, OCaml's GraphQL `fork_config` layout), `daemon.json` and `daemon-migrated.json` (ledgers by stable and by OCaml 4.0.4's migrated root), `manifest.json` and, last, an empty `activated`"
               ],
               "default": null,
               "env": null,

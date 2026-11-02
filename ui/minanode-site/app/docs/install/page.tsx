@@ -22,8 +22,7 @@ import {
 
 export const metadata: Metadata = {
   title: "Install",
-  description:
-    "Download minanode 0.20.0 for Linux, check its SHA-256, unpack it and run it.",
+  description: `Download minanode ${release.version} for Linux, check its SHA-256, unpack it and run it.`,
   alternates: { canonical: "/docs/install/" },
 };
 
@@ -132,8 +131,7 @@ tar -xzf ${archiveName("x86_64")} -C mina-${release.version}`}
             <DocLink href="/docs/run-a-node/#troubleshooting">
               troubleshooting
             </DocLink>
-            . Next:{" "}
-            <DocLink href="/docs/run-a-node/">run a node</DocLink>.
+            . Next: <DocLink href="/docs/run-a-node/">run a node</DocLink>.
           </p>
         </Prose>
       </DocSection>

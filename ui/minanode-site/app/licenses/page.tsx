@@ -23,7 +23,7 @@ export default function LicensesPage() {
               <Prose className="rounded-xl border bg-card p-6">
                 <p>
                   The node source is licensed under Apache 2.0. See the{" "}
-                  <DocLink href={`${release.repositoryUrl}/blob/main/LICENSE`}>
+                  <DocLink href={`${release.repositoryUrl}/blob/develop/LICENSE`}>
                     software license
                   </DocLink>{" "}
                   and the license notices included in the release archive.

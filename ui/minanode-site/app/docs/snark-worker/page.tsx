@@ -21,6 +21,7 @@ export default function WorkerPage() {
       lead="A node may prove SNARK work and sell it. For each job, block producers buy the cheapest work in their pool and pay its fee to your public key. The worker needs only that public key, never a private key."
     >
       <Prose>
+        <p data-claim={worker.mainnet.claim}>{worker.mainnet.text}</p>
         <p>
           The commands on this page use the release binary. In Docker, see{" "}
           <DocLink href="/docs/docker/#snark-worker">

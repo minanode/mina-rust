@@ -1,6 +1,13 @@
 import { siteOrigin } from "@/lib/origin";
 
-/** Launch URLs: verify the planned public release at publish time (C69). */
+/** Packaging candidate; publication is a separate owner action. */
+export const candidateVersion = "0.20.1";
+
+/**
+ * Published release only. Keep version, download URLs and Docker digest together.
+ * At publication follow docs/release/RELEASING.md, "Published site switch".
+ * RELEASE_FINAL validates the signer; it does not publish or select a candidate.
+ */
 export const release = {
   version: "0.20.0",
   repositoryUrl: "https://github.com/minanode/mina-rust",

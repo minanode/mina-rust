@@ -1,4 +1,4 @@
-import { archiveName, releaseLabel } from "./release";
+import { archiveName, release, releaseLabel } from "./release";
 
 // The Docs pages' numbers and claims, as content/site.ts holds the home
 // page's: each with a claim id that CLAIMS.md maps to its source lines, and
@@ -61,6 +61,13 @@ const allDocsPages: DocsPage[] = [
     hidden: true,
   },
   {
+    slug: "run-web-node",
+    title: "Run the web node yourself",
+    summary: "Download, verify and run the browser node locally.",
+    // Enable with the published web archive, alongside the release switch.
+    hidden: true,
+  },
+  {
     slug: "dashboard",
     title: "The dashboard",
     summary: "What each page shows, and how to open it on a server.",
@@ -99,11 +106,11 @@ export const docsIndex = {
   status: { claim: "C04", label: releaseLabel },
   beta: {
     claim: "C04",
-    text: "0.20.0 is a beta release. Run it on devnet and in test setups. Expect changes before it is ready for production.",
+    text: `${release.version} is a beta release. Run it on devnet and in test setups. Expect changes before it is ready for production.`,
   },
   lead: {
     claim: "C60",
-    text: "minanode 0.20.0 is a Mina node for the public devnet: one program for Linux on x86-64 or ARM64, with a dashboard. It runs as a full node, verifying the chain, and may also prove SNARK work or produce blocks.",
+    text: `minanode ${release.version} is a Mina node for the public devnet: one program for Linux on x86-64 or ARM64, with a dashboard. It runs as a full node, verifying the chain, and may also prove SNARK work or produce blocks.`,
   },
   limitations: {
     claim: "C76",
@@ -160,7 +167,8 @@ export const requirements = {
     {
       claim: "C67",
       label: "Devnet block producer",
-      value: "About 1.3 GiB over 9 hours; peak 2.7 GiB, including the block prover",
+      value:
+        "About 1.3 GiB over 9 hours; peak 2.7 GiB, including the block prover",
     },
     {
       claim: "C66",
@@ -231,7 +239,7 @@ export const sourceBuild = {
   },
   circuits: {
     claim: "C78",
-    text: "The devnet prover circuits are in the source and embedded in the default build. There is no separate circuit download.",
+    text: "The 0.20.1 source embeds the devnet and mainnet prover circuits in the default native build. Each file is checked against its pinned SHA-256 before use. There is no separate circuit download.",
   },
   measurements: {
     claim: "C79",
@@ -283,6 +291,10 @@ export const run = {
 };
 
 export const worker = {
+  mainnet: {
+    claim: "C94",
+    text: "The 0.20.1 mainnet worker passed offline base, merge and zkApp proof tests with embedded circuits. Public mainnet work publication, purchases and fees remain untested.",
+  },
   fee: {
     claim: "C72",
     text: "The fee is in MINA, and the default is 0.1.",
@@ -345,5 +357,21 @@ export const lightEndpoints = {
   nextWindow: {
     claim: "C88",
     text: "On 26 October 2026, the 290 blocks between root and tip spanned 580 slots of 90 seconds, so next was unavailable for about 14.5 hours after the epoch began. If every slot had a block, the gap would be about 7.25 hours.",
+  },
+};
+
+/** UPTIME-0201C measurements and 0201D release behavior. */
+export const uptime = {
+  reports: {
+    claim: "C120",
+    text: "0.20.1 can send signed blocks and selected SNARK work. Reporting is off by default. Attempts start every five slots, or 450 seconds with 90-second slots.",
+  },
+  memory: {
+    claim: "C121",
+    text: "Allow about 560 MiB extra resident memory above a producer for uptime circuits. A selected zkApp job can load about 700 MiB more. These are circuit-load measurements, not proving peaks.",
+  },
+  zkapp: {
+    claim: "C122",
+    text: "OCaml and Rust both send terminal zkApp work with a zero SOK digest. OCaml's delegation verifier rejects its binding to the submitter and fee. Live service acceptance is not established by local verification.",
   },
 };

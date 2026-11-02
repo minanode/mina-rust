@@ -11,7 +11,7 @@ import {
   DocSection,
   Prose,
 } from "@/components/docs/prose";
-import { producer } from "@/content/docs";
+import { producer, uptime } from "@/content/docs";
 
 export const metadata: Metadata = {
   title: "Block producer",
@@ -210,11 +210,40 @@ mina wallet generate --output ~/keys/producer-key`}
 
       <DocSection id="uptime" title="Delegation program uptime">
         <Prose>
+          <p data-claim={uptime.reports.claim}>{uptime.reports.text}</p>
           <p>
-            0.20.0 doesn&apos;t send uptime reports to the uptime service of the
-            Mina Foundation delegation program. Support is coming soon. If you
-            need delegation program uptime, keep an OCaml node running for it
-            for now. The Mina docs describe the{" "}
+            Set <C>--uptime-url URL</C> and either{" "}
+            <C>--uptime-submitter-key FILE</C> or{" "}
+            <C>--uptime-submitter-pubkey PUBLICKEY</C>. Set{" "}
+            <C>UPTIME_PRIVKEY_PASS</C> privately to the key&apos;s password.
+            It must be present even when empty. The key need not be the
+            producer&apos;s. The key file must have mode 0600.
+          </p>
+          <p>
+            Reports contain the block, creation time, peer ID, signature and
+            submitter. The best-tip report includes selected work when a
+            suitable job exists. A scheduled local block also gets a report
+            without work. <C>--uptime-send-node-commit-sha</C> adds the build
+            commit. <C>--snarker-fee</C> sets the work fee.
+          </p>
+          <p>
+            Add <C>--uptime-dry-run-dir DIR</C> to save signed bodies without
+            sending them. A URL and key are still required. Use a loopback URL
+            for local checks. Dry run still loads circuits and proves work.{" "}
+            <C>/reporting/status</C> shows the reporter&apos;s results.
+          </p>
+          <p data-claim={uptime.memory.claim}>{uptime.memory.text}</p>
+          <p data-claim={uptime.zkapp.claim}>{uptime.zkapp.text}</p>
+          <p>
+            Uptime worker failure skips a report and leaves the node running.
+            Read the{" "}
+            <ExternalLink href="https://github.com/minanode/mina-rust/blob/develop/docs/release/uptime-reporting.md">
+              intended OCaml differences, measurements and release gate
+            </ExternalLink>
+            . The <DocLink href="/docs/cli/#node--uptime-url">CLI reference</DocLink>{" "}
+            lists the flags and environment variables. Sending reports does
+            not enroll a key in the delegation program. The Mina docs describe
+            the{" "}
             <ExternalLink href="https://docs.minaprotocol.com/node-operators/delegation-program/uptime-tracking-system">
               uptime tracking system
             </ExternalLink>

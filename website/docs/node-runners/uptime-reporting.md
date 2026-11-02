@@ -137,7 +137,7 @@ preserves the reference rejection; it is not a claim of full work verification
 or service acceptance.
 
 The
-[uptime release note](https://github.com/minanode/mina-rust/blob/main/docs/release/uptime-reporting.md)
+[uptime release note](https://github.com/minanode/mina-rust/blob/develop/docs/release/uptime-reporting.md)
 records the exact memory measurements and intended differences from OCaml. These
 include worker failure handling, flag aliases, key-directory permissions and the
 User-Agent. It also describes the local release gate and the separate

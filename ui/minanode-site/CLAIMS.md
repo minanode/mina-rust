@@ -554,14 +554,30 @@ independently validated by the public checker.
 - Figures: `1.92`, `24.11.0`
 - Caveat kept: the native build is distinct from formatting and WebAssembly.
 
-### C78 Embedded devnet circuits
+### C78 Embedded circuits
 
 - Page: Build from source, Build.
-- Says: "The devnet prover circuits are in the source and embedded in the
-  default build. There is no separate circuit download."
-- Sources: `coordinator: private pre-release evidence; Embedded devnet circuits`
-- Figures: `4.0.2devnet`, `24`
-- Caveat kept: applies to the default native build and devnet circuits.
+- Says: "The 0.20.1 source embeds the devnet and mainnet prover circuits in the
+  default native build. Each file is checked against its pinned SHA-256 before
+  use. There is no separate circuit download."
+- Sources:
+  `coordinator: BP-MN-1 manifests, loader tests and offline gate, 2026-10-28`
+- Figures: `0.20.1`, `4.0.2devnet`, `4.0.2mainnet`, `24 per network`
+- Caveat kept: the next release's default native build. A build without embedded
+  circuits requires pinned local files for mainnet. This does not describe the
+  browser loader or claim that 0.20.1 has been published.
+
+### C94 Mainnet worker proof gate
+
+- Page: SNARK worker, introduction.
+- Says: "The 0.20.1 mainnet worker passed offline base, merge and zkApp proof
+  tests with embedded circuits. Public mainnet work publication, purchases and
+  fees remain untested."
+- Sources: `coordinator: BP-MN-1 clean-cache offline proof gate, 2026-10-28`
+- Figures: `0.20.1`, `base`, `merge`, `zkApp`
+- Caveat kept: offline proof verification. The public full-node sync run had its
+  worker disabled. The worker startup run had no external network routes. Public
+  mainnet work admission and payment require a separate live gate.
 
 ### C79 Source-build measurements
 
@@ -667,3 +683,36 @@ locked in WASM memory on a Rayon pool, an install button, browser restore times,
 the UI latency, 0.46 s signing and 0 MiB heap figures. Also left out by choice:
 any comparison with the upstream project, and "before" figures that come from
 the upstream code.
+
+### C120 Uptime reports and schedule
+
+- Page: block producer, delegation program uptime.
+- Says: 0.20.1 sends signed blocks and selected work; opt-in; five-slot
+  schedule.
+- Sources: `coordinator: private uptime release-gate evidence (UPTIME-0201D)`
+- Figures: `0.20.1`, `five slots`, `450`, `90`
+- Caveat kept: local verification does not establish service acceptance.
+
+### C121 Uptime circuit memory
+
+- Page: block producer, delegation program uptime.
+- Says: allow about 560 MiB above a producer and about 700 MiB more for zkApps.
+- Sources: `coordinator: private uptime release-gate evidence (UPTIME-0201D)`
+- Figures: `560`, `700`
+- Caveat kept: process RSS after circuit loading, not proving peaks.
+
+### C122 Uptime zkApp limitation
+
+- Page: block producer, delegation program uptime.
+- Says: both implementations preserve zero SOK and the verifier rejects it.
+- Sources: `coordinator: private uptime release-gate evidence (UPTIME-0201D)`
+- Figures: none.
+- Caveat kept: no claim of live service acceptance.
+
+## OCaml 4.0.4 source compatibility
+
+The uptime payload, signature domains and worker sources are unchanged from
+4.0.3. This is source-comparison evidence, not a new runtime test. Historical
+4.0.3 archive results above retain their version: 4.0.4 changes the schema and
+archive processing. Protocol-state validation and replay qualification are
+tracked separately by OCAML-404-PSCHECK and OCAML-404-REPLAY.
