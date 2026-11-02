@@ -200,10 +200,11 @@ Signature formats and configuration:
 ## Published site switch
 
 The workspace and archive candidate version is 0.21.0. The site's `release`
-object in `ui/minanode-site/content/release.ts` continues to advertise published
-0.20.1 archives and its matching Docker digest. `candidateVersion` records the
-prepared version; it does not select downloads. `RELEASE_FINAL=1` validates the
-signer and content, and does not switch versions.
+object in `ui/minanode-site/content/release.ts` advertises the published 0.21.0
+archives and their matching Docker digest, switched after publication.
+`candidateVersion` records the prepared version; it does not select downloads.
+`RELEASE_FINAL=1` validates the signer and content, and does not switch
+versions.
 
 After the owner publishes and verifies the signed 0.21.0 archives and Docker
 image, update these together before deploying the site:
@@ -213,7 +214,8 @@ image, update these together before deploying the site:
    0.21.0 image index digest. Never reuse the 0.20.1 digest for 0.21.0.
 2. Change the fallback image in `docker-compose.yml` to
    `ghcr.io/minanode/mina-rust:0.21.0`. The site serves this file through its
-   `public/docker/` symlink, so the default remains 0.20.1 until publication.
+   `public/docker/` symlink, so the default switched to 0.21.0 only after
+   publication.
 3. Run the site build, typecheck and content checks below, including
    `RELEASE_FINAL=1`, and verify the archive, checksum, notes and image URLs.
    The archive names and Docker examples derive from the `release` object.
