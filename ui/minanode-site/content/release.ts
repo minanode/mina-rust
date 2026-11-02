@@ -9,14 +9,14 @@ export const candidateVersion = "0.20.1";
  * RELEASE_FINAL validates the signer; it does not publish or select a candidate.
  */
 export const release = {
-  version: "0.20.0",
+  version: "0.20.1",
   repositoryUrl: "https://github.com/minanode/mina-rust",
   downloadUrl:
-    "https://github.com/minanode/mina-rust/releases/download/v0.20.0",
-  notesUrl: "https://github.com/minanode/mina-rust/releases/tag/v0.20.0",
+    "https://github.com/minanode/mina-rust/releases/download/v0.20.1",
+  notesUrl: "https://github.com/minanode/mina-rust/releases/tag/v0.20.1",
   /** The Docker image index digest, as the release notes list it. */
   dockerDigest:
-    "sha256:66507e39fc2890ce37cf9d77b50517960b60887f5e655cfa2de5a35b2eeceab0",
+    "sha256:294443ace7947cba00050da2ddcb858071df9a9535d99846ce39ad13f7f12322",
 };
 
 export function archiveName(arch: string) {
