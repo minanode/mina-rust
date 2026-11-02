@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Web node**: the Overview and Start-up pages say what a reload does with
+  the saved chain: Not saved yet, Saved at #N, or Saved, but a reload syncs
+  again, with the reason. `/status` reports it as `frontier_store.saved_chain`.
+  The loader and the status decide with one set of restore rules, on the facts
+  the store thread reads from the newest manifest, the attempts record and the
+  stored tip's block, so the status never says saved when a restart would
+  bootstrap. The loader's checks and outcomes are unchanged.
 - **Web node**: sharing with other browsers, off by default: a switch on the
   Peers page, behind a warning that other visitors and modified pages get your
   IP address and that it uses your upload. A sharing page still dials only its

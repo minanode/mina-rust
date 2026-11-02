@@ -14,7 +14,7 @@
 //! new file's length and CRC32 in the manifest, so that only the checks of
 //! content catch them.
 
-use std::sync::Arc;
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use ledger::{
     proofs::verifiers::{block_verifier_index_of, BlockVerifier},
@@ -26,15 +26,27 @@ use mina_core::{
     constants::constraint_constants,
 };
 use mina_p2p_messages::list::List;
+use redux::Timestamp;
 
 use super::*;
-use crate::persist::{
-    load::{
-        load, BlockProofVerifier, LoadOutcome, PersistLoadRequest, RestoreGuard, Restored,
-        DISCARD_AFTER_ATTEMPTS, LEDGERS_ONLY_AFTER_ATTEMPTS,
+use crate::{
+    persist::{
+        event::{PersistEvent, PersistStoreSummary},
+        load::{
+            load, BlockProofVerifier, LoadOutcome, PersistLoadRequest, RestoreGuard, Restored,
+            TipStakingLedger, DISCARD_AFTER_ATTEMPTS, LEDGERS_ONLY_AFTER_ATTEMPTS,
+        },
+        test_fixtures::{
+            block_after, mainnet_blocks, synthetic_chain, ChainLedgers, SLOTS_PER_BLOCK,
+        },
+        writer::{summary, PartsSnapshot, PersistJob, StoreWorker, WriterOptions},
     },
-    test_fixtures::{block_after, mainnet_blocks, synthetic_chain, ChainLedgers, SLOTS_PER_BLOCK},
-    writer::PartsSnapshot,
+    rpc::RpcSavedChain,
+    rpc_effectful::frontier_store_status_of,
+    transition_frontier::persist::{
+        PersistCheckpointState, PersistLastCheckpoint, PersistReadyState, PersistRestoreOutcome,
+        PersistRestoreState, TransitionFrontierPersistConfig, TransitionFrontierPersistState,
+    },
 };
 
 fn chain_entries(blocks: &[ArcBlockWithHash]) -> Vec<ChainEntry> {
@@ -1662,4 +1674,431 @@ fn ledger_0201_a_stalled_read_is_abandoned_after_the_cancellation_cap() {
         );
         assert!(!control.begin_handoff());
     });
+}
+
+// The saved chain `/status` reports: the loader's own rules on the store
+// thread's summary. Each case checks the status against what the loader then
+// does with the same store, at the same clock.
+
+/// The store as `/status` sees it once the restore at startup is over.
+fn ready_with(
+    store: PersistStoreSummary,
+    restore: PersistRestoreState,
+) -> TransitionFrontierPersistState {
+    TransitionFrontierPersistState::Ready(Box::new(PersistReadyState {
+        opened_at: Timestamp::ZERO,
+        dir: "memory".into(),
+        open_outcome: "opened".into(),
+        store,
+        chain_put_sent: None,
+        chain_puts_pending: 0,
+        checkpoint: PersistCheckpointState::Idle,
+        last_checkpoint: None,
+        retry_after: None,
+        stats: Default::default(),
+        restore,
+        checkpoint_chain_len_limit: None,
+    }))
+}
+
+fn restore_over() -> PersistRestoreState {
+    PersistRestoreState::Done {
+        time: Timestamp::ZERO,
+        outcome: PersistRestoreOutcome::Absent {
+            reason: "the store is empty".into(),
+        },
+    }
+}
+
+fn saved_chain(
+    persist: &TransitionFrontierPersistState,
+    current_slot: Option<u32>,
+) -> RpcSavedChain {
+    let config = TransitionFrontierPersistConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    frontier_store_status_of(&config, persist, Some(&request(current_slot)))
+        .expect("the store is on")
+        .saved_chain
+        .expect("the store is open")
+}
+
+/// The store thread's summary of the store a new process opens.
+fn summary_of(mem: &MemBackend) -> PersistStoreSummary {
+    summary(&mut reopened(mem), &mut None).unwrap()
+}
+
+/// What `/status` says of the store at `now`, then what the loader does with
+/// it at `now`: saved exactly when the loader restores, at the stored tip's
+/// height; not saved or not restorable never when it restores. The load's
+/// attempt is then cleared, as a committed restore or the ledgers' handover
+/// clears it.
+fn status_then_load(mem: &MemBackend, now: Option<u32>) -> RpcSavedChain {
+    let status = saved_chain(&ready_with(summary_of(mem), restore_over()), now);
+    let outcome = load_from(mem, now);
+    match (&status, &outcome) {
+        (RpcSavedChain::Saved { height }, LoadOutcome::Restored(restored)) => {
+            let tip = restored.blocks.last().unwrap_or(&restored.root);
+            assert_eq!(*height, tip.height());
+        }
+        (RpcSavedChain::Saved { .. }, other) => {
+            panic!(
+                "saved, but the load is {} ({})",
+                other.kind(),
+                reason_of(other)
+            )
+        }
+        (
+            RpcSavedChain::NotSaved | RpcSavedChain::NotRestorable { .. },
+            LoadOutcome::Restored(_),
+        ) => panic!("{status:?}, but the load restored"),
+        _ => {}
+    }
+    if attempts(mem).is_some() {
+        reopened(mem).clear_attempts().unwrap();
+    }
+    status
+}
+
+fn not_restorable(status: RpcSavedChain) -> String {
+    match status {
+        RpcSavedChain::NotRestorable { reason } => reason,
+        other => panic!("not 'not restorable': {other:?}"),
+    }
+}
+
+/// `len` blocks after `parent`, the last at `tip_slot`, with these ledgers.
+fn chain_after(
+    parent: &ArcBlockWithHash,
+    len: u32,
+    tip_slot: u32,
+    ledgers: &ChainLedgers,
+) -> Vec<ArcBlockWithHash> {
+    let mut blocks: Vec<ArcBlockWithHash> = Vec::new();
+    for i in 0..len {
+        let previous = blocks.last().unwrap_or(parent);
+        blocks.push(block_after(
+            previous.hash().clone(),
+            previous.height() + 1,
+            tip_slot - SLOTS_PER_BLOCK * (len - 1 - i),
+            ledgers,
+        ));
+    }
+    blocks
+}
+
+#[test]
+fn saved_chain_of_a_fresh_store_is_not_saved() {
+    let mem = MemBackend::new();
+    assert_eq!(summary_of(&mem), PersistStoreSummary::default());
+    assert_eq!(status_then_load(&mem, Some(5)), RpcSavedChain::NotSaved);
+}
+
+#[test]
+fn saved_chain_is_not_saved_until_the_first_checkpoint_is_written() {
+    let stored = Stored::new(6, 3);
+    let mem = MemBackend::new();
+    reopened(&mem)
+        .chain_put(
+            chain_entries(&stored.blocks),
+            encoded_blocks(&stored.blocks),
+        )
+        .unwrap();
+    let now = Some(stored.tip_slot());
+    // The node put its chain and asked for the first checkpoint: until the
+    // checkpoint's manifest is written, a reload syncs again.
+    let mut persist = ready_with(summary_of(&mem), restore_over());
+    if let TransitionFrontierPersistState::Ready(ready) = &mut persist {
+        ready.checkpoint = PersistCheckpointState::Init {
+            time: Timestamp::ZERO,
+            root: stored.blocks[0].hash().clone(),
+        };
+    }
+    assert_eq!(saved_chain(&persist, now), RpcSavedChain::NotSaved);
+    assert_eq!(status_then_load(&mem, now), RpcSavedChain::NotSaved);
+
+    reopened(&mem).checkpoint(stored.write()).unwrap();
+    assert_eq!(
+        status_then_load(&mem, now),
+        RpcSavedChain::Saved {
+            height: stored.blocks.last().unwrap().height()
+        }
+    );
+}
+
+#[test]
+fn saved_chain_of_a_restorable_store_is_saved_at_its_tip() {
+    let stored = Stored::new(8, 4);
+    let mem = stored.store();
+    let now = Some(stored.tip_slot() + 3);
+    let height = stored.blocks.last().unwrap().height();
+    assert_eq!(status_then_load(&mem, now), RpcSavedChain::Saved { height });
+    // The facts are the loader's: generation, attempts, checkpoint, tip.
+    let facts = summary_of(&mem).restore;
+    assert_eq!(facts.generation, 1);
+    assert_eq!(facts.prior_attempts, Some(0));
+    assert!(facts.has_checkpoint);
+    let tip = facts.tip.unwrap();
+    assert_eq!(tip.height, height);
+    assert_eq!(tip.global_slot, stored.tip_slot());
+    assert_eq!(
+        tip.staking_ledger,
+        Some(TipStakingLedger {
+            hash: stored.ledgers.staking.clone(),
+            stored: true
+        })
+    );
+
+    // A node that doesn't know the time: the loader skips its clock rules,
+    // and the status claims nothing.
+    assert!(matches!(
+        status_then_load(&mem, None),
+        RpcSavedChain::Unknown { .. }
+    ));
+    // While the restore at startup is under way: checking.
+    for restore in [
+        PersistRestoreState::Idle,
+        PersistRestoreState::LoadPending {
+            time: Timestamp::ZERO,
+            completed_stages: 2,
+            last_progress_time: None,
+        },
+        PersistRestoreState::Cancelling {
+            time: Timestamp::ZERO,
+        },
+    ] {
+        assert_eq!(
+            saved_chain(&ready_with(summary_of(&mem), restore), now),
+            RpcSavedChain::Checking
+        );
+    }
+    // A node run with restoring off doesn't restore it.
+    let config = TransitionFrontierPersistConfig {
+        enabled: true,
+        restore: false,
+        ..Default::default()
+    };
+    let persist = ready_with(summary_of(&mem), restore_over());
+    let status = frontier_store_status_of(&config, &persist, Some(&request(now)));
+    assert!(matches!(
+        status.unwrap().saved_chain,
+        Some(RpcSavedChain::NotRestorable { .. })
+    ));
+}
+
+#[test]
+fn saved_chain_of_a_stale_store_is_not_restorable_until_a_fresh_checkpoint() {
+    let stored = Stored::new(8, 4);
+    let mem = stored.store();
+    let tip = stored.tip_slot();
+    let stale = request(None).stale_slots;
+
+    // Exactly 4k behind still restores; one slot more gives only the
+    // ledgers, and the checkpoint stays in the store.
+    assert!(matches!(
+        status_then_load(&mem, Some(tip + stale)),
+        RpcSavedChain::Saved { .. }
+    ));
+    let now = tip + stale + 1;
+    let reason = not_restorable(status_then_load(&mem, Some(now)));
+    assert!(reason.contains("behind the clock"), "{reason}");
+    assert!(summary_of(&mem).has_checkpoint());
+    let reason = not_restorable(status_then_load(&mem, Some(tip - 11)));
+    assert!(reason.contains("ahead of the clock"), "{reason}");
+
+    // A checkpoint of a chain near the clock: saved again.
+    let fresh = chain_after(stored.blocks.last().unwrap(), 3, now, &stored.ledgers);
+    reopened(&mem)
+        .checkpoint(stored.write_with(&fresh))
+        .unwrap();
+    assert_eq!(
+        status_then_load(&mem, Some(now)),
+        RpcSavedChain::Saved {
+            height: fresh.last().unwrap().height()
+        }
+    );
+}
+
+/// The status reads the stored tip from the store, never from the best
+/// chain: a stale stored tip the node has no block of is still not
+/// restorable, during the load and after it.
+#[test]
+fn saved_chain_of_a_stored_tip_not_on_the_best_chain_is_decided_from_the_store() {
+    let stored = Stored::new(8, 4);
+    let mem = stored.store();
+    let now = Some(stored.tip_slot() + request(None).stale_slots + 1);
+    let summary = summary_of(&mem);
+    let pending = PersistRestoreState::LoadPending {
+        time: Timestamp::ZERO,
+        completed_stages: 0,
+        last_progress_time: None,
+    };
+    assert_eq!(
+        saved_chain(&ready_with(summary.clone(), pending), now),
+        RpcSavedChain::Checking
+    );
+    let ledgers_only = PersistRestoreState::Done {
+        time: Timestamp::ZERO,
+        outcome: PersistRestoreOutcome::LedgersOnly {
+            reason: "behind the clock".into(),
+            ledgers: 2,
+        },
+    };
+    let reason = not_restorable(saved_chain(&ready_with(summary, ledgers_only), now));
+    assert!(reason.contains("behind the clock"), "{reason}");
+    assert!(matches!(
+        status_then_load(&mem, now),
+        RpcSavedChain::NotRestorable { .. }
+    ));
+}
+
+/// The chain crosses into an epoch whose staking ledger the store doesn't
+/// have: the store thread reads it from the tip's block, and the status says
+/// what the loader does.
+#[test]
+fn saved_chain_across_an_epoch_without_its_staking_ledger_is_not_restorable() {
+    let stored = Stored::new(8, 3);
+    let mem = stored.store();
+    let now = stored.tip_slot() + 1;
+    assert!(matches!(
+        status_then_load(&mem, Some(now)),
+        RpcSavedChain::Saved { .. }
+    ));
+
+    // As a running node stores its chain: the store thread's chain put, with
+    // the new tip's block in hand.
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let mut writer = {
+        let (mem, events) = (mem.second_handle(), events.clone());
+        StoreWorker::new(
+            // A new process: the last one's lock is free.
+            move |_: &ChainId| Ok((mem.reopen(), "memory".to_owned())),
+            WriterOptions::default(),
+            move |event| events.borrow_mut().push(event),
+        )
+    };
+    writer.handle(PersistJob::Open {
+        chain_id: MAINNET_CHAIN_ID,
+        genesis_state_hash: genesis(),
+    });
+    let crossed = ChainLedgers {
+        staking: hash_of(&stored.fixture.staged),
+        ..stored.ledgers.clone()
+    };
+    let next = chain_after(stored.blocks.last().unwrap(), 1, now, &crossed);
+    let mut chain = stored.blocks.clone();
+    chain.extend(next.iter().cloned());
+    writer.handle(PersistJob::ChainPut {
+        chain: chain_entries(&chain),
+        blocks: next,
+    });
+    let summaries = events
+        .borrow_mut()
+        .drain(..)
+        .map(|event| match event {
+            PersistEvent::Opened(opened) => opened.store,
+            PersistEvent::ChainPut(Ok(done)) => done.store,
+            other => panic!("{other:?}"),
+        })
+        .collect::<Vec<_>>();
+    drop(writer);
+    let [opened, put] = summaries.as_slice() else {
+        panic!("{summaries:?}");
+    };
+    assert!(matches!(
+        saved_chain(&ready_with(opened.clone(), restore_over()), Some(now)),
+        RpcSavedChain::Saved { .. }
+    ));
+    let reason = not_restorable(saved_chain(
+        &ready_with(put.clone(), restore_over()),
+        Some(now),
+    ));
+    assert!(reason.contains("staking ledger"), "{reason}");
+    // A new process reads the tip's block from the store: the same.
+    let reason = not_restorable(status_then_load(&mem, Some(now)));
+    assert!(reason.contains("staking ledger"), "{reason}");
+}
+
+#[test]
+fn saved_chain_after_unfinished_restores_is_not_restorable() {
+    let stored = Stored::new(8, 3);
+    let mem = stored.store();
+    let now = Some(stored.tip_slot());
+    let set = |count| {
+        reopened(&mem)
+            .set_attempts(Attempts {
+                generation: 1,
+                count,
+            })
+            .unwrap();
+    };
+    set(1);
+    assert!(matches!(
+        status_then_load(&mem, now),
+        RpcSavedChain::Saved { .. }
+    ));
+    set(2);
+    let reason = not_restorable(status_then_load(&mem, now));
+    assert!(reason.contains("2 restores"), "{reason}");
+}
+
+/// A restore of this run that failed or timed out loads the same checkpoint
+/// at a restart: not restorable, until a checkpoint is written.
+#[test]
+fn saved_chain_after_a_failed_restore_is_not_restorable_until_a_checkpoint() {
+    let stored = Stored::new(8, 3);
+    let mem = stored.store();
+    let now = Some(stored.tip_slot());
+    for outcome in [
+        PersistRestoreOutcome::Failed {
+            error: "a read failed".into(),
+        },
+        PersistRestoreOutcome::TimedOut,
+    ] {
+        let mut persist = ready_with(
+            summary_of(&mem),
+            PersistRestoreState::Done {
+                time: Timestamp::ZERO,
+                outcome,
+            },
+        );
+        not_restorable(saved_chain(&persist, now));
+        if let TransitionFrontierPersistState::Ready(ready) = &mut persist {
+            ready.last_checkpoint = Some(PersistLastCheckpoint {
+                time: Timestamp::ZERO,
+                root: stored.blocks[0].hash().clone(),
+                root_height: stored.blocks[0].height(),
+                generation: 1,
+            });
+        }
+        assert!(matches!(
+            saved_chain(&persist, now),
+            RpcSavedChain::Saved { .. }
+        ));
+    }
+}
+
+/// Only an open store has a saved chain to report.
+#[test]
+fn saved_chain_is_reported_only_for_an_open_store() {
+    let config = TransitionFrontierPersistConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    for persist in [
+        TransitionFrontierPersistState::Idle,
+        TransitionFrontierPersistState::OpenPending {
+            time: Timestamp::ZERO,
+        },
+        TransitionFrontierPersistState::Disabled {
+            reason: PersistError::Locked.to_string(),
+        },
+    ] {
+        let status = frontier_store_status_of(&config, &persist, Some(&request(Some(5)))).unwrap();
+        assert_eq!(status.saved_chain, None);
+    }
+    let off = TransitionFrontierPersistConfig::default();
+    let persist = TransitionFrontierPersistState::new(&off);
+    assert_eq!(frontier_store_status_of(&off, &persist, None), None);
 }

@@ -13,7 +13,13 @@ import { useNodeStatus, useSyncRestore } from "@minanode/node-client/react";
 import { BootFailureAlert, BootSteps } from "../app/boot-screen";
 import { useBoot } from "../app/boot-context";
 import { resetFrontierStore } from "../boot/boot";
-import { SAVED_CHAIN_DOCS_URL, storeLabel, storeState } from "../lib/store";
+import {
+  SAVED_CHAIN_DOCS_URL,
+  savedChainLabel,
+  savedChainReason,
+  storeLabel,
+  storeState,
+} from "../lib/store";
 
 /** The frontier store: its status, how this run started, and a reset that
  * deletes it and restarts the node. */
@@ -24,9 +30,12 @@ export function FrontierStoreCard() {
   const [confirming, setConfirming] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [failed, setFailed] = React.useState(false);
-  const state = storeState(boot.frontierStore, status.data?.frontierStore);
+  const store = status.data?.frontierStore;
+  const state = storeState(boot.frontierStore, store);
   // The reset only once the node says the store is open in this tab.
   const usable = state.kind === "on";
+  const saved = savedChainLabel(state, store?.savedChain);
+  const savedReason = savedChainReason(store?.savedChain);
 
   const rows = [
     { label: "Status", value: storeLabel(state), tone: "brand" as const },
@@ -35,6 +44,12 @@ export function FrontierStoreCard() {
     rows.push({ label: "Held by", value: "Another tab", tone: "brand" });
   } else if (state.kind === "unavailable") {
     rows.push({ label: "Reason", value: state.reason, tone: "brand" });
+  }
+  if (saved) {
+    rows.push({ label: "Saved chain", value: saved, tone: "brand" });
+    if (savedReason) {
+      rows.push({ label: "Why", value: savedReason, tone: "brand" });
+    }
   }
   if (usable) {
     rows.push({

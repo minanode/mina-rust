@@ -27,7 +27,11 @@ use ledger::{
     Mask,
 };
 use mina_core::{block::ArcBlockWithHash, ChainId};
-use mina_p2p_messages::{binprot::BinProtWrite, list::List, v2};
+use mina_p2p_messages::{
+    binprot::{BinProtRead, BinProtWrite},
+    list::List,
+    v2,
+};
 // `std::time::Instant` isn't there in the browser (I5e).
 use redux::Instant;
 
@@ -39,8 +43,11 @@ use super::{
         PersistRestored, PersistSnapshotInfo, PersistStoreSummary, PersistStoredLedger,
         PersistWriteError, PersistWritten,
     },
-    format::{encode_manifest, parts_name, ChainEntry, Checkpoint, Manifest},
-    load::{self, BlockProofVerifier, LoadOutcome, PersistLoadRequest, RestoreGuard, Restored},
+    format::{block_name, encode_manifest, parts_name, ChainEntry, Checkpoint, Manifest},
+    load::{
+        self, BlockProofVerifier, LoadOutcome, PersistLoadRequest, RestoreFacts, RestoreGuard,
+        Restored,
+    },
     store::{Blob, CheckpointWrite, FrontierStore, OpenOutcome, StoreConfig},
     PersistError,
 };
@@ -250,6 +257,9 @@ pub struct StoreWorker<B: StoreBackend, F, E> {
     store: Option<FrontierStore<B>>,
     /// I/O errors since the last job that succeeded.
     io_errors: u32,
+    /// The staking ledger of the last stored tip it was known for, so that
+    /// a summary reads the tip's block only when the tip is new to it.
+    tip_staking: Option<(v2::StateHash, v2::LedgerHash)>,
 }
 
 /// The wall clock, in milliseconds since the Unix epoch, on any thread of a
@@ -322,6 +332,7 @@ where
             emit,
             store: None,
             io_errors: 0,
+            tip_staking: None,
         }
     }
 
@@ -402,7 +413,7 @@ where
                 if let (false, Some(store)) = (restored, self.store.as_mut()) {
                     // Best effort: without it the next checkpoint may fail
                     // once, and be retried.
-                    if let Ok(summary) = summary(store) {
+                    if let Ok(summary) = summary(store, &mut self.tip_staking) {
                         (self.emit)(PersistEvent::Summary(summary));
                     }
                 }
@@ -591,7 +602,7 @@ where
                 OpenOutcome::Reset { reason } => format!("reset: {reason}"),
             }
         };
-        let summary = summary(&mut store)?;
+        let summary = summary(&mut store, &mut self.tip_staking)?;
         mina_core::info!(
             mina_core::log::system_time();
             kind = "PersistOpened",
@@ -615,12 +626,6 @@ where
         })
     }
 
-    fn store_mut(&mut self) -> Result<&mut FrontierStore<B>, PersistError> {
-        self.store
-            .as_mut()
-            .ok_or_else(|| PersistError::Invalid("the store is not open".into()))
-    }
-
     fn chain_put(
         &mut self,
         chain: Vec<ChainEntry>,
@@ -632,7 +637,13 @@ where
             .ok_or_else(|| PersistError::Invalid("an empty chain".into()))?
             .hash
             .clone();
-        let store = self.store_mut()?;
+        if let Some(block) = blocks.iter().find(|block| block.hash() == &tip) {
+            self.tip_staking = Some((tip.clone(), block.staking_epoch_ledger_hash().clone()));
+        }
+        let store = self
+            .store
+            .as_mut()
+            .ok_or_else(|| PersistError::Invalid("the store is not open".into()))?;
         let before = referenced([store.manifest(), store.previous_manifest()]);
         let blocks = blocks
             .into_iter()
@@ -640,7 +651,7 @@ where
             .collect();
         let result = store.chain_put(chain, blocks)?;
         let written = written(store, &before);
-        let summary = summary(store)?;
+        let summary = summary(store, &mut self.tip_staking)?;
         let done = PersistChainPutDone {
             tip,
             generation: result.generation,
@@ -716,7 +727,7 @@ where
             .and_then(|manifest| manifest.file(&parts_name(&root)))
             .map_or(0, |file| file.len);
         let written = written(store, &before);
-        let summary = summary(store)?;
+        let summary = summary(store, &mut self.tip_staking)?;
         let stream = *stream_stats.lock().unwrap();
         let encode_ms = *encode_ms.lock().unwrap();
         let done = PersistCheckpointDone {
@@ -781,8 +792,9 @@ fn written<B: StoreBackend>(store: &FrontierStore<B>, before: &BTreeSet<String>)
     written
 }
 
-fn summary<B: StoreBackend>(
+pub(crate) fn summary<B: StoreBackend>(
     store: &mut FrontierStore<B>,
+    tip_staking: &mut Option<(v2::StateHash, v2::LedgerHash)>,
 ) -> Result<PersistStoreSummary, PersistError> {
     let Some(manifest) = store.manifest().cloned() else {
         return Ok(PersistStoreSummary::default());
@@ -800,7 +812,46 @@ fn summary<B: StoreBackend>(
         ledgers,
         files: manifest.files.len() as u32,
         bytes: manifest.files.iter().map(|file| file.len).sum(),
+        restore: restore_facts(store, &manifest, tip_staking),
     })
+}
+
+/// The loader's facts of the newest manifest. Best effort: what can't be
+/// read is unknown, and the write it reports still succeeds.
+fn restore_facts<B: StoreBackend>(
+    store: &mut FrontierStore<B>,
+    manifest: &Manifest,
+    tip_staking: &mut Option<(v2::StateHash, v2::LedgerHash)>,
+) -> RestoreFacts {
+    let prior = store
+        .attempts()
+        .ok()
+        .map(|record| load::prior_attempts(record, manifest.generation));
+    let staking = manifest.chain.last().and_then(|tip| {
+        if let Some((hash, ledger)) = tip_staking.as_ref() {
+            if hash == &tip.hash {
+                return Some(ledger.clone());
+            }
+        }
+        let ledger = stored_staking_ledger(store, manifest, &tip.hash)?;
+        *tip_staking = Some((tip.hash.clone(), ledger.clone()));
+        Some(ledger)
+    });
+    RestoreFacts::of(manifest, prior, staking.as_ref())
+}
+
+/// The staking epoch ledger of the stored block `hash`, read from its file
+/// as the loader reads it: decoded and named by its own hash.
+fn stored_staking_ledger<B: StoreBackend>(
+    store: &mut FrontierStore<B>,
+    manifest: &Manifest,
+    hash: &v2::StateHash,
+) -> Option<v2::LedgerHash> {
+    let file = manifest.file(&block_name(hash))?.clone();
+    let bytes = store.read_blob(&file).ok()?;
+    let block = v2::MinaBlockBlockStableV2::binprot_read(&mut bytes.as_slice()).ok()?;
+    let block = ArcBlockWithHash::try_new(Arc::new(block)).ok()?;
+    (block.hash() == hash).then(|| block.staking_epoch_ledger_hash().clone())
 }
 
 /// One log line per load, saying what the node does next and why.

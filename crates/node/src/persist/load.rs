@@ -538,9 +538,7 @@ fn load_generation<B: StoreBackend>(
 
     // The attempts record first, so that a load that panics counts.
     let previous = store.attempts()?;
-    let prior = previous
-        .filter(|attempts| attempts.generation == generation)
-        .map_or(0, |attempts| attempts.count);
+    let prior = prior_attempts(previous, generation);
     if prior >= DISCARD_AFTER_ATTEMPTS {
         store.reset()?;
         return Ok(LoadOutcome::Discarded {
@@ -558,7 +556,9 @@ fn load_generation<B: StoreBackend>(
     )?;
 
     let mut timings = PersistLoadTimings::default();
-    if let Some(reason) = ledgers_only_reason(&manifest, request, prior) {
+    let facts = RestoreFacts::of(&manifest, Some(prior), None);
+    if let Err(reason) = facts.check_manifest(request.current_slot, request.stale_slots) {
+        let reason = reason.to_string();
         if manifest.ledgers.is_empty() {
             return Ok(LoadOutcome::Absent { reason });
         }
@@ -587,18 +587,8 @@ fn load_generation<B: StoreBackend>(
         ));
     }
     let tip = blocks.last().unwrap_or(&root);
-    if !manifest.has_ledger(tip.staking_epoch_ledger_hash()) {
-        return ledgers_only(
-            store,
-            &manifest,
-            format!(
-                "the tip's staking ledger {} is not stored",
-                tip.staking_epoch_ledger_hash()
-            ),
-            started,
-            control,
-            pool,
-        );
+    if let Err(reason) = TipStakingLedger::of(&manifest, tip.staking_epoch_ledger_hash()).check() {
+        return ledgers_only(store, &manifest, reason.to_string(), started, control, pool);
     }
     control.completed(1)?;
 
@@ -707,39 +697,235 @@ fn load_generation<B: StoreBackend>(
     })))
 }
 
-/// Why only the ledgers are loaded, if they are: too many unfinished
-/// restores, no checkpoint, or a stored tip too far from the clock.
-fn ledgers_only_reason(
-    manifest: &Manifest,
-    request: &PersistLoadRequest,
-    prior_attempts: u32,
-) -> Option<String> {
-    if prior_attempts >= LEDGERS_ONLY_AFTER_ATTEMPTS {
-        return Some(format!(
-            "{prior_attempts} restores of generation {} didn't finish",
-            manifest.generation
-        ));
+/// Why the loader replays no chain from a store, each also the reason it
+/// logs: R20 D5's rules on the manifest, the attempts record and the stored
+/// tip, which can be told without a load. Damage its checks of content find
+/// is not among them.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum NotRestorable {
+    /// Too many unfinished restores of this generation.
+    UnfinishedRestores {
+        attempts: u32,
+        generation: u64,
+    },
+    NoCheckpoint,
+    /// The stored tip more than `stale_slots` behind the clock: the
+    /// network's root has left the stored chain.
+    BehindTheClock {
+        tip_slot: u32,
+        behind: u32,
+        stale_slots: u32,
+    },
+    /// The stored tip ahead of the clock: the clock or the store is wrong.
+    AheadOfTheClock {
+        tip_slot: u32,
+        now: u32,
+    },
+    /// The commit needs the tip's staking ledger.
+    StakingLedgerNotStored {
+        ledger: v2::LedgerHash,
+    },
+}
+
+impl std::fmt::Display for NotRestorable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnfinishedRestores {
+                attempts,
+                generation,
+            } => write!(
+                f,
+                "{attempts} restores of generation {generation} didn't finish"
+            ),
+            Self::NoCheckpoint => f.write_str("the store has no checkpoint"),
+            Self::BehindTheClock {
+                tip_slot,
+                behind,
+                stale_slots,
+            } => write!(
+                f,
+                "the stored tip is at slot {tip_slot}, {behind} slots behind the clock (more than {stale_slots})"
+            ),
+            Self::AheadOfTheClock { tip_slot, now } => write!(
+                f,
+                "the stored tip is at slot {tip_slot}, ahead of the clock's {now}"
+            ),
+            Self::StakingLedgerNotStored { ledger } => {
+                write!(f, "the tip's staking ledger {ledger} is not stored")
+            }
+        }
     }
-    if manifest.checkpoint.is_none() {
-        return Some("the store has no checkpoint".into());
+}
+
+/// What the loader decides a restore on before it checks any file's content:
+/// the newest manifest and the attempts record, in short. The store thread
+/// sends them with every [`PersistStoreSummary`](super::event::PersistStoreSummary),
+/// so that the node's status applies the loader's own rules
+/// ([`Self::decide`]) and says a chain is saved only when a restart would
+/// replay it.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct RestoreFacts {
+    pub generation: u64,
+    /// Unfinished restores of this generation (`ATTEMPTS`); `None` if the
+    /// record couldn't be read.
+    pub prior_attempts: Option<u32>,
+    pub has_checkpoint: bool,
+    /// The last block of the stored chain.
+    pub tip: Option<StoredTip>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct StoredTip {
+    pub hash: v2::StateHash,
+    pub height: u32,
+    pub global_slot: u32,
+    /// `None` if the tip's block wasn't read.
+    pub staking_ledger: Option<TipStakingLedger>,
+}
+
+/// The stored tip's staking epoch ledger, and whether the manifest stores it.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct TipStakingLedger {
+    pub hash: v2::LedgerHash,
+    pub stored: bool,
+}
+
+/// What a restart would do with the store, by the loader's rules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestoreDecision {
+    /// The loader replays the chain to the stored tip, if every file passes
+    /// its checks.
+    Restore { tip_height: u32 },
+    /// The loader replays no chain: at most it reuses the ledgers, and the
+    /// node bootstraps.
+    NotRestorable(NotRestorable),
+    /// The facts aren't all known.
+    Unknown { reason: String },
+}
+
+/// The unfinished restores of `generation` the attempts record counts.
+pub fn prior_attempts(record: Option<Attempts>, generation: u64) -> u32 {
+    record
+        .filter(|attempts| attempts.generation == generation)
+        .map_or(0, |attempts| attempts.count)
+}
+
+impl RestoreFacts {
+    /// The facts of `manifest`; the tip's staking ledger, if known, is
+    /// `tip_staking_ledger`.
+    pub fn of(
+        manifest: &Manifest,
+        prior_attempts: Option<u32>,
+        tip_staking_ledger: Option<&v2::LedgerHash>,
+    ) -> Self {
+        Self {
+            generation: manifest.generation,
+            prior_attempts,
+            has_checkpoint: manifest.checkpoint.is_some(),
+            tip: manifest.chain.last().map(|entry| StoredTip {
+                hash: entry.hash.clone(),
+                height: entry.height,
+                global_slot: entry.global_slot,
+                staking_ledger: tip_staking_ledger.map(|hash| TipStakingLedger::of(manifest, hash)),
+            }),
+        }
     }
-    let tip = manifest.chain.last()?;
-    let now = request.current_slot?;
-    if now > tip.global_slot.saturating_add(request.stale_slots) {
-        return Some(format!(
-            "the stored tip is at slot {}, {} slots behind the clock (more than {})",
-            tip.global_slot,
-            now - tip.global_slot,
-            request.stale_slots
-        ));
+
+    /// The rules the loader applies before it reads the stored chain, in its
+    /// order: too many unfinished restores, no checkpoint, a stored tip too
+    /// far from the clock. An unknown attempts record counts as none (see
+    /// [`Self::decide`]); without a clock the clock rules are skipped.
+    pub fn check_manifest(
+        &self,
+        current_slot: Option<u32>,
+        stale_slots: u32,
+    ) -> Result<(), NotRestorable> {
+        let prior = self.prior_attempts.unwrap_or(0);
+        if prior >= LEDGERS_ONLY_AFTER_ATTEMPTS {
+            return Err(NotRestorable::UnfinishedRestores {
+                attempts: prior,
+                generation: self.generation,
+            });
+        }
+        if !self.has_checkpoint {
+            return Err(NotRestorable::NoCheckpoint);
+        }
+        let (Some(tip), Some(now)) = (&self.tip, current_slot) else {
+            return Ok(());
+        };
+        if now > tip.global_slot.saturating_add(stale_slots) {
+            return Err(NotRestorable::BehindTheClock {
+                tip_slot: tip.global_slot,
+                behind: now - tip.global_slot,
+                stale_slots,
+            });
+        }
+        if tip.global_slot > now.saturating_add(AHEAD_OF_CLOCK_SLOTS) {
+            return Err(NotRestorable::AheadOfTheClock {
+                tip_slot: tip.global_slot,
+                now,
+            });
+        }
+        Ok(())
     }
-    if tip.global_slot > now.saturating_add(AHEAD_OF_CLOCK_SLOTS) {
-        return Some(format!(
-            "the stored tip is at slot {}, ahead of the clock's {now}",
-            tip.global_slot
-        ));
+
+    /// Every rule of the loader's that the facts can tell, as the loader
+    /// applies them ([`Self::check_manifest`], then
+    /// [`TipStakingLedger::check`]). `Restore` only when each rule is known
+    /// to pass: an unread attempts record, tip block or clock is `Unknown`.
+    /// Damage the loader's checks of content find is not foreseen.
+    pub fn decide(&self, current_slot: Option<u32>, stale_slots: u32) -> RestoreDecision {
+        if let Err(reason) = self.check_manifest(current_slot, stale_slots) {
+            return RestoreDecision::NotRestorable(reason);
+        }
+        if self.prior_attempts.is_none() {
+            return RestoreDecision::Unknown {
+                reason: "the restore attempts record couldn't be read".into(),
+            };
+        }
+        if current_slot.is_none() {
+            return RestoreDecision::Unknown {
+                reason: "the clock's slot isn't known".into(),
+            };
+        }
+        let Some(tip) = &self.tip else {
+            return RestoreDecision::Unknown {
+                reason: "the stored chain is empty".into(),
+            };
+        };
+        let Some(staking_ledger) = &tip.staking_ledger else {
+            return RestoreDecision::Unknown {
+                reason: "the stored tip's block wasn't read".into(),
+            };
+        };
+        match staking_ledger.check() {
+            Err(reason) => RestoreDecision::NotRestorable(reason),
+            Ok(()) => RestoreDecision::Restore {
+                tip_height: tip.height,
+            },
+        }
     }
-    None
+}
+
+impl TipStakingLedger {
+    pub fn of(manifest: &Manifest, hash: &v2::LedgerHash) -> Self {
+        Self {
+            hash: hash.clone(),
+            stored: manifest.has_ledger(hash),
+        }
+    }
+
+    /// The rule the loader applies once it has read the stored chain: the
+    /// commit needs the tip's staking ledger.
+    pub fn check(&self) -> Result<(), NotRestorable> {
+        if self.stored {
+            Ok(())
+        } else {
+            Err(NotRestorable::StakingLedgerNotStored {
+                ledger: self.hash.clone(),
+            })
+        }
+    }
 }
 
 /// Only the snarked ledgers, each rehashed in full: a copy origin's hashes

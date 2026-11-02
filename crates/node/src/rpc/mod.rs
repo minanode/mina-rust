@@ -943,6 +943,29 @@ pub struct RpcNodeStatusFrontierStore {
     pub unavailable: Option<String>,
     /// Another process, or another browser tab, holds the store's lock.
     pub locked: bool,
+    /// What a restart does with the saved chain; `None` until the store is
+    /// open.
+    pub saved_chain: Option<RpcSavedChain>,
+}
+
+/// What a restart does with the frontier store's chain, by the loader's own
+/// rules.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum RpcSavedChain {
+    /// The restore at startup is under way.
+    Checking,
+    /// No chain is saved yet: a restart syncs again.
+    NotSaved,
+    /// A restart restores the chain to this height, if the store's files
+    /// pass the loader's checks.
+    Saved { height: u32 },
+    /// A chain is saved, but a restart doesn't restore it: the node syncs
+    /// again, at most reusing the saved ledgers.
+    NotRestorable { reason: String },
+    /// Not known: something the rules need couldn't be read.
+    Unknown { reason: String },
 }
 
 /// Network configuration information for the node.

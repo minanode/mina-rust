@@ -59,7 +59,7 @@ test("the frontier store: open, locked, or absent", () => {
     parseStatus({
       frontier_store: { open: true, unavailable: null, locked: false },
     }).frontierStore,
-  ).toEqual({ open: true, unavailable: null, locked: false });
+  ).toEqual({ open: true, unavailable: null, locked: false, savedChain: null });
   expect(
     parseStatus({
       frontier_store: {
@@ -72,7 +72,35 @@ test("the frontier store: open, locked, or absent", () => {
     open: false,
     unavailable: "the store is locked by another process",
     locked: true,
+    savedChain: null,
   });
+});
+
+test("the saved chain: each state, and an unknown one", () => {
+  const chain = (saved_chain: unknown) =>
+    parseStatus({
+      frontier_store: { open: true, unavailable: null, locked: false, saved_chain },
+    }).frontierStore?.savedChain;
+  expect(chain({ state: "checking" })).toEqual({ state: "checking" });
+  expect(chain({ state: "not_saved" })).toEqual({ state: "not_saved" });
+  expect(chain({ state: "saved", height: 583765 })).toEqual({
+    state: "saved",
+    height: 583765,
+  });
+  expect(chain({ state: "saved" })).toBeNull();
+  expect(
+    chain({
+      state: "not_restorable",
+      reason: "the stored tip is at slot 9, 1200 slots behind the clock",
+    }),
+  ).toEqual({
+    state: "not_restorable",
+    reason: "the stored tip is at slot 9, 1200 slots behind the clock",
+  });
+  expect(chain({ state: "unknown", reason: "the clock's slot isn't known" }))
+    .toEqual({ state: "unknown", reason: "the clock's slot isn't known" });
+  expect(chain({ state: "restored" })).toBeNull();
+  expect(chain(null)).toBeNull();
 });
 
 test("a block's nanosecond timestamp is used when timestamp_ms is absent", () => {
