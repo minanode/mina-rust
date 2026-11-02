@@ -37,6 +37,7 @@ import {
   formatHeight,
   formatMina,
 } from "@minanode/node-client";
+import type { Polled } from "@minanode/node-client/react";
 
 import { useAccount, useKeyGlue, useKeys, useRoleNode } from "../roles/hooks";
 import type { Account } from "../roles/node";
@@ -58,6 +59,7 @@ import {
   nonceFor,
   SENT_OPEN_MAX,
   sentStore,
+  trackOnce,
   Tracker,
   type NonceState,
 } from "../roles/sent";
@@ -77,8 +79,9 @@ const STAGES: Record<
   rejected: { label: "Refused", tone: "warn" },
 };
 
-/** A reviewed payment: what the confirmation shows, and what is signed. */
-type Reviewed = Payment & { from: string; nonce: number };
+/** A reviewed payment: what the confirmation shows, and what is signed.
+ * `replaces`: it takes a missing payment's nonce. */
+type Reviewed = Payment & { from: string; nonce: number; replaces: boolean };
 
 function useSent() {
   return React.useSyncExternalStore(sentStore.subscribe, sentStore.getSnapshot);
@@ -105,17 +108,52 @@ export function SendPage() {
 
 const EMPTY: PaymentForm = { to: "", amount: "", fee: DEFAULT_FEE, memo: "" };
 
-/** The next payment's nonce from `sender`'s account and this tab's list. A
- * key with no account yet sends at 0, to see the pool's refusal. */
-function nonceState(
-  sender: Account | null,
-  sent: readonly Sent[] = sentStore.getSnapshot(),
-): NonceState {
-  return sender ? nonceFor(sender, sent) : { kind: "ready", nonce: 0 };
+/** The sender's account as far as the page knows: read, confirmed absent
+ * from the ledger, or not known yet (loading, or the lookup failed). */
+type SenderState =
+  | { kind: "account"; account: Account }
+  | { kind: "absent" }
+  | { kind: "unknown"; failed: boolean };
+
+function senderState(polled: Polled<Account | null>): SenderState {
+  if (polled.data) return { kind: "account", account: polled.data };
+  // An answer of null, with no error since: the ledger has no account.
+  if (polled.updatedAt !== null && polled.error === null) {
+    return { kind: "absent" };
+  }
+  return { kind: "unknown", failed: polled.error !== null };
 }
 
+type FormNonce = NonceState | { kind: "unknown"; failed: boolean };
+
+/** The next payment's nonce from the sender's account and this tab's list.
+ * A key with no account yet starts at 0, to see the pool's refusal; its
+ * kept payments count as any account's do. None while the account isn't
+ * known. */
+function nonceState(
+  from: string,
+  sender: SenderState,
+  sent: readonly Sent[] = sentStore.getSnapshot(),
+): FormNonce {
+  switch (sender.kind) {
+    case "account":
+      return nonceFor(sender.account, sent);
+    case "absent":
+      return nonceFor(
+        { publicKey: from, balance: 0n, nonce: 0, delegate: null },
+        sent,
+      );
+    case "unknown":
+      return sender;
+  }
+}
+
+/** The pool's reasons include `name`. */
+const refusedAs = (reason: string | null, name: string) =>
+  !!reason?.split("; ").some(r => r.replace(/^"|"$/g, "") === name);
+
 /** The nonce a payment can take now, or null while it can't. */
-function usable(state: NonceState): number | null {
+function usable(state: FormNonce): number | null {
   return state.kind === "ready" || state.kind === "missing"
     ? state.nonce
     : null;
@@ -138,14 +176,16 @@ function SendForm() {
   const [review, setReview] = React.useState<Reviewed | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [outcome, setOutcome] = React.useState<string | null>(null);
+  const [looking, setLooking] = React.useState(false);
   const to = form.to.trim();
   const recipient = useAccount(
     glue && to && glue.account_public_key_valid(to) ? to : null,
   );
   if (!key || !glue || !node) return null;
 
-  const sender: Account | null = account.data ?? null;
-  const nonce = nonceState(sender, sent);
+  const from = senderState(account);
+  const sender: Account | null = from.kind === "account" ? from.account : null;
+  const nonce = nonceState(key.publicKey, from, sent);
   const nextNonce = usable(nonce);
   const { payment, errors } = checkPayment(form, {
     from: key.publicKey,
@@ -172,18 +212,37 @@ function SendForm() {
       </p>
     ) : null;
 
+  /** One look at every open payment now, for a kept one that couldn't be
+   * checked. */
+  async function lookAgain() {
+    if (!node || looking) return;
+    setLooking(true);
+    try {
+      await trackOnce(node, sentStore);
+    } finally {
+      setLooking(false);
+    }
+  }
+
   async function send(p: Reviewed) {
     if (!key || !node || p.from !== key.publicKey) return;
-    // The nonce shown is the nonce signed; if another payment took it
-    // meanwhile, review again.
-    const nonce = usable(nonceState(sender));
-    if (nonce === null || nonce !== p.nonce) {
-      setReview(null);
-      setOutcome("The next nonce changed since the review: review it again.");
-      return;
-    }
     setBusy(true);
     try {
+      // A replacement competes with a payment that may be back: look again
+      // right before signing.
+      if (p.replaces) await trackOnce(node, sentStore);
+      // The nonce shown is the nonce signed; if another payment took it
+      // meanwhile, or the missing one is back, review again.
+      const state = nonceState(key.publicKey, from);
+      const nonce = usable(state);
+      if (nonce !== p.nonce || (state.kind === "missing") !== p.replaces) {
+        setOutcome(
+          p.replaces && nonce !== null && state.kind !== "missing"
+            ? `The payment at nonce ${formatCount(p.nonce)} is back in the pool: review it again.`
+            : "The next nonce changed since the review: review it again.",
+        );
+        return;
+      }
       const receipt = await node.sendPayment(key.privateKey, {
         from: key.publicKey,
         to: p.to,
@@ -192,6 +251,29 @@ function SendForm() {
         nonce,
         memo: p.memo,
       });
+      if (!receipt.accepted && refusedAs(receipt.rejection, "Duplicate")) {
+        // The pool has this very payment: it holds its nonce.
+        const held = sentStore.getSnapshot().find(s => s.hash === receipt.hash);
+        if (held && isOpen(held)) {
+          sentStore.update(receipt.hash, () => ({ check: undefined }));
+        } else {
+          sentStore.add({
+            hash: receipt.hash,
+            from: key.publicKey,
+            to: p.to,
+            amount: p.amount,
+            fee: p.fee,
+            nonce,
+            memo: p.memo,
+            sentAt: Date.now(),
+            stage: "pending",
+            detail: null,
+            inclusion: null,
+          });
+        }
+        setOutcome("This node's pool already has this payment.");
+        return;
+      }
       sentStore.add({
         hash: receipt.hash,
         from: key.publicKey,
@@ -228,7 +310,7 @@ function SendForm() {
         <CardTitle>New payment</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        {!account.loading && !sender ? (
+        {from.kind === "absent" ? (
           <Alert variant="caution">
             <AlertTitle>This key has no devnet MINA yet</AlertTitle>
             <AlertDescription>
@@ -253,6 +335,9 @@ function SendForm() {
         ) : null}
         <NonceNotice
           state={nonce}
+          looking={looking}
+          onLookAgain={() => void lookAgain()}
+          onReadAccount={account.refresh}
           onRefill={p => {
             setForm({
               to: p.to,
@@ -289,9 +374,15 @@ function SendForm() {
                     validKey: k => glue.account_public_key_valid(k),
                   }).payment
                 : null);
-            const n = usable(nonceState(sender));
+            const state = nonceState(key.publicKey, from);
+            const n = usable(state);
             if (p && n !== null) {
-              setReview({ ...p, from: key.publicKey, nonce: n });
+              setReview({
+                ...p,
+                from: key.publicKey,
+                nonce: n,
+                replaces: state.kind === "missing",
+              });
             }
           }}
         >
@@ -420,16 +511,58 @@ function SendForm() {
 /** Why the next payment waits, or takes a missing payment's nonce. */
 function NonceNotice({
   state,
+  looking,
+  onLookAgain,
+  onReadAccount,
   onRefill,
 }: {
-  state: NonceState;
+  state: FormNonce;
+  looking: boolean;
+  onLookAgain: () => void;
+  onReadAccount: () => void;
   onRefill: (payment: Sent) => void;
 }) {
+  const retry = (onClick: () => void, busy = false) => (
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      className="mt-2 w-fit"
+      data-action="retry"
+      disabled={busy}
+      onClick={onClick}
+    >
+      {busy ? "Checking…" : "Retry"}
+    </Button>
+  );
   switch (state.kind) {
     case "ready":
       return null;
+    case "unknown":
+      return state.failed ? (
+        <Alert variant="caution" data-nonce="unknown">
+          <AlertTitle>Couldn't read this key's account</AlertTitle>
+          <AlertDescription>
+            <p>Send waits for its nonce.</p>
+            {retry(onReadAccount)}
+          </AlertDescription>
+        </Alert>
+      ) : null;
     case "checking":
-      return (
+      return state.failed ? (
+        <Alert variant="caution" data-nonce="check-failed">
+          <AlertTitle>
+            Couldn't check the payment at nonce {formatCount(state.nonce)}
+          </AlertTitle>
+          <AlertDescription>
+            <p>
+              It was sent before the restart. Send waits until this node finds
+              it in its pool or a block, or finds it in neither.
+            </p>
+            {retry(onLookAgain, looking)}
+          </AlertDescription>
+        </Alert>
+      ) : (
         <p className="text-sm text-muted-foreground" data-nonce="checking">
           Checking the payment at nonce {formatCount(state.nonce)}, sent before
           the restart.
@@ -439,13 +572,14 @@ function NonceNotice({
       return (
         <Alert variant="caution" data-nonce="missing">
           <AlertTitle>
-            Nonce {formatCount(state.nonce)} is in no block or pool
+            Nonce {formatCount(state.nonce)}: payment not found
           </AlertTitle>
           <AlertDescription>
             <p>
-              The payment sent at it before the restart isn't in this node's
-              pool or a block. The next payment takes nonce{" "}
-              {formatCount(state.nonce)} in its place.
+              The payment sent at it before the restart is in neither this
+              node's pool nor a block. Other nodes may still have it. The next
+              payment competes for nonce {formatCount(state.nonce)}: a block
+              includes at most one of the two.
             </p>
             <Button
               type="button"

@@ -146,9 +146,10 @@ export interface Sent {
   inclusion: Inclusion | null;
   /** Absent: this run's node has had it, in its pool or a block. Set for a
    * payment kept from before a restart, whose node starts with an empty
-   * pool: "unchecked" until a look, then "missing" while the look finds
-   * it in neither the pool nor a block. */
-  check?: "unchecked" | "missing";
+   * pool: "unchecked" until a look answers, "failed" while looks fail,
+   * then "missing" while a look finds it in neither the pool nor a
+   * block. */
+  check?: "unchecked" | "failed" | "missing";
 }
 
 /** One look at the node for a sent payment. `undefined` is a lookup that

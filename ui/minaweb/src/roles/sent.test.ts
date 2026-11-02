@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type { Account, InclusionLook } from "./node";
 import type { Sent } from "./payment";
@@ -8,7 +8,9 @@ import {
   nonceFor,
   parseSent,
   pruneSent,
+  LOOK_TIMEOUT_MS,
   SENT_OPEN_MAX,
+  SENT_OPEN_ROWS,
   SENT_KEEP_MS,
   SENT_KEY,
   SENT_MAX,
@@ -411,6 +413,12 @@ describe("the next nonce", () => {
     expect(nonceFor(ledger(7), [at(7, { check: "unchecked" })])).toEqual({
       kind: "checking",
       nonce: 7,
+      failed: false,
+    });
+    expect(nonceFor(ledger(7), [at(7, { check: "failed" })])).toEqual({
+      kind: "checking",
+      nonce: 7,
+      failed: true,
     });
     const missing = at(7, { check: "missing" });
     expect(nonceFor(ledger(7), [missing])).toEqual({
@@ -456,11 +464,19 @@ describe("the next nonce", () => {
     expect(check({})).toBe("missing");
     expect(check({ inPool: true })).toBeUndefined();
     expect(check({ inclusion: found })).toBeUndefined();
-    // A lookup that failed, or no best tip: still unchecked.
-    expect(check({ inPool: undefined })).toBe("unchecked");
-    expect(check({ inclusion: undefined })).toBe("unchecked");
+    // A lookup that failed: failed, never missing. No best tip: unchanged.
+    expect(check({ inPool: undefined })).toBe("failed");
+    expect(check({ inclusion: undefined })).toBe("failed");
+    expect(check({ accountNonce: undefined })).toBe("failed");
     expect(check({ inclusion: null })).toBe("unchecked");
-    expect(check({ accountNonce: undefined })).toBe("unchecked");
+    // A missing one stays missing when a later lookup fails.
+    expect(
+      nextCheck(at(7, { check: "missing" }), {
+        inclusion: undefined,
+        inPool: false,
+        accountNonce: 7,
+      }),
+    ).toBe("missing");
     // A payment this run's node had is never checked.
     expect(
       nextCheck(at(7), { inclusion: none, inPool: false, accountNonce: 7 }),
@@ -574,5 +590,137 @@ describe("review findings", () => {
     expect(list.filter(s => s.stage === "rejected")).toHaveLength(SENT_MAX);
     expect(list.some(s => s.hash === kept.hash)).toBe(true);
     expect(nonceFor(FUNDED, list)).toEqual({ kind: "ready", nonce: 8 });
+  });
+});
+
+describe("re-review findings", () => {
+  const FUNDED: Account = { ...account(7) };
+  const none = async () => ({ found: null, tipHeight: 100, depthSearched: 40 });
+  const kept = (n: number): Sent => ({
+    ...payment(`5JuKept${n}`, 7 + n),
+    sentAt: Date.now(),
+  });
+  const restart = (list: Sent[]) => {
+    const storage = new MemoryStorage();
+    const before = new SentStore(() => storage);
+    for (const s of [...list].reverse()) before.add(s);
+    return new SentStore(() => storage);
+  };
+
+  test("50 missing payments can each be replaced, without a new slot", async () => {
+    const store = restart(
+      Array.from({ length: SENT_OPEN_MAX }, (_, n) => kept(n)),
+    );
+    await trackOnce(
+      {
+        account: async () => FUNDED,
+        inPool: async () => false,
+        inclusion: none,
+      },
+      store,
+    );
+    expect(store.getSnapshot().every(s => s.check === "missing")).toBe(true);
+    expect(nonceFor(FUNDED, store.getSnapshot())).toMatchObject({
+      kind: "missing",
+      nonce: 7,
+    });
+    // Replace each in turn: every one is offered, none is full.
+    for (let n = 0; n < SENT_OPEN_MAX; n++) {
+      const state = nonceFor(FUNDED, store.getSnapshot());
+      expect(state).toMatchObject({ kind: "missing", nonce: 7 + n });
+      store.add({ ...kept(n), hash: `5JuNew${n}` });
+    }
+    // All 50 nonces held by replacements: a new nonce waits for blocks.
+    expect(nonceFor(FUNDED, store.getSnapshot())).toEqual({ kind: "full" });
+    expect(store.getSnapshot()).toHaveLength(2 * SENT_OPEN_MAX);
+  });
+
+  test("a refusal of an open payment's hash never replaces it", () => {
+    const store = new SentStore();
+    store.add(kept(0));
+    store.add({ ...kept(0), stage: "rejected", detail: "Duplicate" });
+    expect(store.getSnapshot()).toHaveLength(1);
+    expect(store.getSnapshot()[0].stage).toBe("pending");
+    expect(nonceFor(FUNDED, store.getSnapshot())).toEqual({
+      kind: "ready",
+      nonce: 8,
+    });
+    // A done one is replaced, as before.
+    store.update(kept(0).hash, () => ({ stage: "dropped" }));
+    store.add({ ...kept(0), stage: "rejected" });
+    expect(store.getSnapshot()[0].stage).toBe("rejected");
+  });
+
+  test("failed lookups keep the nonce; a look that answers decides it", async () => {
+    const store = restart([kept(0)]);
+    const fail = async () => {
+      throw new Error("busy");
+    };
+    for (let n = 0; n < 3; n++) {
+      await trackOnce(
+        { account: async () => FUNDED, inPool: fail, inclusion: none },
+        store,
+      );
+    }
+    expect(nonceFor(FUNDED, store.getSnapshot())).toEqual({
+      kind: "checking",
+      nonce: 7,
+      failed: true,
+    });
+    await trackOnce(
+      {
+        account: async () => FUNDED,
+        inPool: async () => true,
+        inclusion: none,
+      },
+      store,
+    );
+    expect(nonceFor(FUNDED, store.getSnapshot())).toEqual({
+      kind: "ready",
+      nonce: 8,
+    });
+  });
+
+  test("a lookup that never answers times out as failed", async () => {
+    const store = restart([kept(0)]);
+    const tracker = new Tracker(
+      {
+        account: async () => FUNDED,
+        inPool: () => new Promise(() => {}),
+        inclusion: none,
+      },
+      store,
+    );
+    vi.useFakeTimers();
+    try {
+      const tick = tracker.tick();
+      await vi.advanceTimersByTimeAsync(LOOK_TIMEOUT_MS);
+      expect(await tick).toBe(true);
+      expect(store.getSnapshot()[0].check).toBe("failed");
+      // The tracker is free for the next look.
+      const next = tracker.tick();
+      await vi.advanceTimersByTimeAsync(LOOK_TIMEOUT_MS);
+      expect(await next).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("superseded missing payments go first past the row cap", () => {
+    const list: Sent[] = [];
+    for (let n = 0; n < SENT_OPEN_ROWS + 5; n++) {
+      list.push({ ...kept(n), nonce: 7 + (n % 60), hash: `5JuRow${n}` });
+    }
+    // The 5 oldest rows: missing, their nonces held by newer rows.
+    for (let n = SENT_OPEN_ROWS; n < SENT_OPEN_ROWS + 5; n++) {
+      list[n] = { ...list[n], check: "missing" };
+    }
+    const pruned = pruneSent(list, Date.now());
+    expect(pruned).toHaveLength(SENT_OPEN_ROWS);
+    expect(pruned.some(s => s.check === "missing")).toBe(false);
+    // One that may still hold a nonce is never dropped.
+    const unheld = [...list];
+    unheld[SENT_OPEN_ROWS] = { ...unheld[SENT_OPEN_ROWS], nonce: 1000 };
+    expect(pruneSent(unheld, Date.now()).map(s => s.nonce)).toContain(1000);
   });
 });
