@@ -2,7 +2,18 @@ import { describe, expect, test } from "vitest";
 
 import type { Account, InclusionLook } from "./node";
 import type { Sent } from "./payment";
-import { SentStore, Tracker, trackOnce, type TrackNode } from "./sent";
+import {
+  parseSent,
+  pruneSent,
+  SENT_KEEP_MS,
+  SENT_KEY,
+  SENT_MAX,
+  SentStore,
+  Tracker,
+  trackOnce,
+  type TrackNode,
+} from "./sent";
+import { MemoryStorage } from "./test-storage";
 
 const FROM = `B62q${"1".repeat(51)}`;
 const TO = `B62q${"2".repeat(51)}`;
@@ -15,7 +26,8 @@ const payment = (hash: string, nonce: number): Sent => ({
   fee: 1n,
   nonce,
   memo: "",
-  sentAt: 0,
+  // Recent: a payment that is done and old leaves the list.
+  sentAt: Date.now(),
   stage: "pending",
   detail: null,
   inclusion: null,
@@ -206,4 +218,149 @@ test("one poll reads each sender once and never applies another sender's nonce",
       .filter(s => s.from === "fresh")
       .every(s => !s.detail?.includes("nonce moved")),
   ).toBe(true);
+});
+
+describe("keeping the list across a restart", () => {
+  const NOW = 1_793_643_210_000;
+  const HOUR = 60 * 60_000;
+  const hash = (n: number) => `5Ju${String(n).padStart(4, "0")}`;
+  const sent = (n: number, change: Partial<Sent> = {}): Sent => ({
+    ...payment(hash(n), n),
+    amount: 1_000_000_000n,
+    fee: 100_000_000n,
+    sentAt: NOW,
+    ...change,
+  });
+  const store = (storage: Storage | null, now = NOW) =>
+    new SentStore(
+      () => storage,
+      () => now,
+    );
+
+  test("a new store in the same tab has the list, as it was", () => {
+    const storage = new MemoryStorage();
+    const before = store(storage);
+    before.add(sent(0));
+    before.add(sent(1));
+    before.update(hash(0), () => ({
+      stage: "included",
+      inclusion: { height: 583746, blockHash: "3NLr", depth: 2, failure: null },
+    }));
+
+    const after = store(storage, NOW + 60_000).getSnapshot();
+    expect(after).toEqual(before.getSnapshot());
+    expect(after.map(s => s.hash)).toEqual([hash(1), hash(0)]);
+    expect(after[1].amount).toBe(1_000_000_000n);
+    expect(after[1].inclusion?.height).toBe(583746);
+  });
+
+  test("storage holds the public fields only: no memo, nothing else", () => {
+    const storage = new MemoryStorage();
+    const s = store(storage);
+    s.add({ ...sent(0), memo: "a note", secret: "EKxyz" } as Sent);
+    const raw = storage.getItem(SENT_KEY)!;
+    expect(raw).not.toContain("a note");
+    expect(raw).not.toContain("EK");
+    expect(Object.keys(JSON.parse(raw)[0]).sort()).toEqual([
+      "amount",
+      "detail",
+      "fee",
+      "from",
+      "hash",
+      "inclusion",
+      "nonce",
+      "sentAt",
+      "stage",
+      "to",
+    ]);
+    expect(store(storage).getSnapshot()[0].memo).toBe("");
+  });
+
+  test(`the list keeps the newest ${SENT_MAX}`, () => {
+    const storage = new MemoryStorage();
+    const s = store(storage);
+    for (let n = 0; n < SENT_MAX + 5; n++) s.add(sent(n));
+    expect(s.getSnapshot()).toHaveLength(SENT_MAX);
+    expect(s.getSnapshot()[0].hash).toBe(hash(SENT_MAX + 4));
+    expect(JSON.parse(storage.getItem(SENT_KEY)!)).toHaveLength(SENT_MAX);
+  });
+
+  test("a payment that is done and old leaves; an open one stays", () => {
+    const old = NOW - SENT_KEEP_MS - HOUR;
+    const list = [
+      sent(0, { stage: "confirmed", sentAt: old }),
+      sent(1, { stage: "dropped", sentAt: old }),
+      sent(2, { stage: "included", sentAt: old }),
+      sent(3, { stage: "pending", sentAt: old }),
+      sent(4, { stage: "confirmed", sentAt: NOW - HOUR }),
+    ];
+    expect(pruneSent(list, NOW).map(s => s.nonce)).toEqual([2, 3, 4]);
+
+    // On load too, and storage drops them.
+    const storage = new MemoryStorage();
+    const s = store(storage, old);
+    for (const p of [...list].reverse()) s.add(p);
+    expect(s.getSnapshot()).toHaveLength(5);
+    expect(
+      store(storage)
+        .getSnapshot()
+        .map(s => s.nonce),
+    ).toEqual([2, 3, 4]);
+    expect(JSON.parse(storage.getItem(SENT_KEY)!)).toHaveLength(3);
+  });
+
+  test("the last payment leaving removes the entry", () => {
+    const storage = new MemoryStorage();
+    store(storage, NOW - SENT_KEEP_MS - HOUR).add(
+      sent(0, { stage: "confirmed", sentAt: NOW - SENT_KEEP_MS - HOUR }),
+    );
+    expect(storage.getItem(SENT_KEY)).not.toBeNull();
+    expect(store(storage).getSnapshot()).toEqual([]);
+    expect(storage.getItem(SENT_KEY)).toBeNull();
+  });
+
+  test("stored values that don't parse are left out", () => {
+    const good = JSON.parse(
+      (() => {
+        const storage = new MemoryStorage();
+        store(storage).add(sent(0));
+        return storage.getItem(SENT_KEY)!;
+      })(),
+    )[0];
+    expect(parseSent(null)).toEqual([]);
+    expect(parseSent("not json")).toEqual([]);
+    expect(parseSent('{"hash":"x"}')).toEqual([]);
+    const list = parseSent(
+      JSON.stringify([
+        good,
+        good,
+        { ...good, hash: hash(1), amount: 1 },
+        { ...good, hash: hash(2), amount: "-1" },
+        { ...good, hash: hash(3), to: ` ${TO}` },
+        { ...good, hash: hash(4), stage: "spent" },
+        { ...good, hash: hash(5), nonce: 1.5 },
+        { ...good, hash: hash(6), inclusion: { height: 1 } },
+        { ...good, hash: "not a hash!" },
+        { ...good, hash: hash(7), detail: "x".repeat(1000) },
+        null,
+        { ...good, hash: hash(8) },
+      ]),
+    );
+    expect(list.map(s => s.hash)).toEqual([hash(0), hash(8)]);
+  });
+
+  test("a tab without storage, or with it full, keeps the list in memory", () => {
+    const full = new MemoryStorage();
+    full.refuseWrites = true;
+    const s = store(full);
+    s.add(sent(0));
+    expect(s.getSnapshot()).toHaveLength(1);
+    expect(full.getItem(SENT_KEY)).toBeNull();
+
+    const denied = new SentStore(() => {
+      throw new DOMException("The operation is insecure.", "SecurityError");
+    });
+    denied.add(sent(0));
+    expect(denied.getSnapshot()).toHaveLength(1);
+  });
 });

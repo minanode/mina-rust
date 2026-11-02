@@ -155,3 +155,52 @@ test("two payments accepted back to back are both kept", async () => {
   const [first, second] = sendPayment.mock.calls.map(c => c[1].nonce);
   expect(second).toBe(first + 1);
 });
+
+test("the sent list comes back after the restart, with no secret in storage", async () => {
+  render(<SendPage />);
+  sendPayment.mockResolvedValueOnce({
+    hash: "5JuKept",
+    accepted: true,
+    rejection: null,
+  });
+  type("send-to", TO);
+  type("send-amount", "3");
+  type("send-memo", "a private note");
+  fireEvent.click(screen.getByRole("button", { name: "Review" }));
+  await act(async () => {
+    fireEvent.click(
+      document.querySelector("[data-action=confirm-send]") as HTMLElement,
+    );
+  });
+  const raw = sessionStorage.getItem("minaweb.sent") ?? "";
+  expect(raw).toContain("5JuKept");
+  expect(raw).not.toContain(PRIVATE);
+  expect(raw).not.toContain("a private note");
+  const sent = document.querySelectorAll("[data-sent]").length;
+  const nonce = sendPayment.mock.calls.at(-1)![1].nonce;
+  cleanup();
+
+  // The role change's restart: the page's modules load again.
+  vi.resetModules();
+  const again = await import("./send");
+  render(<again.SendPage />);
+  await waitFor(() =>
+    expect(document.querySelectorAll("[data-sent]").length).toBe(sent),
+  );
+  expect(screen.getByText("5JuKept", { exact: false })).toBeTruthy();
+  // The next payment follows the kept one's nonce.
+  sendPayment.mockResolvedValueOnce({
+    hash: "5JuNext",
+    accepted: true,
+    rejection: null,
+  });
+  type("send-to", TO);
+  type("send-amount", "1");
+  fireEvent.click(screen.getByRole("button", { name: "Review" }));
+  await act(async () => {
+    fireEvent.click(
+      document.querySelector("[data-action=confirm-send]") as HTMLElement,
+    );
+  });
+  expect(sendPayment.mock.calls.at(-1)![1].nonce).toBe(nonce + 1);
+});
