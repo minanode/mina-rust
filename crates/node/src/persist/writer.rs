@@ -406,16 +406,11 @@ where
                 ) {
                     store.restore_guard().end();
                 }
-                let restored = matches!(
-                    result,
-                    PersistLoadResult::Restored(_) | PersistLoadResult::Cancelled
-                );
-                if let (false, Some(store)) = (restored, self.store.as_mut()) {
-                    // Best effort: without it the next checkpoint may fail
-                    // once, and be retried.
-                    if let Ok(summary) = summary(store, &mut self.tip_staking) {
-                        (self.emit)(PersistEvent::Summary(summary));
-                    }
+                // A cancelled load is never heard of again; any other may
+                // have fallen back to an older generation, and counted an
+                // attempt.
+                if !matches!(result, PersistLoadResult::Cancelled) {
+                    self.report_store();
                 }
                 (self.emit)(PersistEvent::Loaded(Box::new(result)));
             }
@@ -437,6 +432,10 @@ where
                             );
                         }
                     }
+                    // Cleared or not, the record is what the next restore
+                    // counts.
+                    let facts = current_restore_facts(store, &mut self.tip_staking);
+                    (self.emit)(PersistEvent::RestoreFacts(facts));
                 }
             }
             PersistJob::Discard { reason } => {
@@ -453,6 +452,22 @@ where
                 }
             }
         }
+    }
+
+    /// Reports the store's newest manifest. Best effort: without the summary
+    /// the next checkpoint may fail once, and be retried. Its restore facts
+    /// are sent anyway, so that the status never keeps an older store's.
+    fn report_store(&mut self) {
+        let Some(store) = self.store.as_mut() else {
+            return;
+        };
+        let event = match summary(store, &mut self.tip_staking) {
+            Ok(summary) => PersistEvent::Summary(summary),
+            Err(_) => {
+                PersistEvent::RestoreFacts(current_restore_facts(store, &mut self.tip_staking))
+            }
+        };
+        (self.emit)(event);
     }
 
     /// Loads the store for a restore (R20 D5 step 3) and hands what it loaded
@@ -816,6 +831,18 @@ pub(crate) fn summary<B: StoreBackend>(
     })
 }
 
+/// The loader's facts of the store's newest manifest; none for an empty
+/// store.
+fn current_restore_facts<B: StoreBackend>(
+    store: &mut FrontierStore<B>,
+    tip_staking: &mut Option<(v2::StateHash, v2::LedgerHash)>,
+) -> RestoreFacts {
+    match store.manifest().cloned() {
+        Some(manifest) => restore_facts(store, &manifest, tip_staking),
+        None => RestoreFacts::default(),
+    }
+}
+
 /// The loader's facts of the newest manifest. Best effort: what can't be
 /// read is unknown, and the write it reports still succeeds.
 fn restore_facts<B: StoreBackend>(
@@ -833,25 +860,29 @@ fn restore_facts<B: StoreBackend>(
                 return Some(ledger.clone());
             }
         }
-        let ledger = stored_staking_ledger(store, manifest, &tip.hash)?;
+        let ledger = stored_staking_ledger(store, manifest, tip)?;
         *tip_staking = Some((tip.hash.clone(), ledger.clone()));
         Some(ledger)
     });
     RestoreFacts::of(manifest, prior, staking.as_ref())
 }
 
-/// The staking epoch ledger of the stored block `hash`, read from its file
-/// as the loader reads it: decoded and named by its own hash.
+/// The staking epoch ledger of the stored block `entry`, read from its file
+/// as the loader reads it: decoded, named by its own hash, and at the height
+/// and slot the manifest records.
 fn stored_staking_ledger<B: StoreBackend>(
     store: &mut FrontierStore<B>,
     manifest: &Manifest,
-    hash: &v2::StateHash,
+    entry: &ChainEntry,
 ) -> Option<v2::LedgerHash> {
-    let file = manifest.file(&block_name(hash))?.clone();
+    let file = manifest.file(&block_name(&entry.hash))?.clone();
     let bytes = store.read_blob(&file).ok()?;
     let block = v2::MinaBlockBlockStableV2::binprot_read(&mut bytes.as_slice()).ok()?;
     let block = ArcBlockWithHash::try_new(Arc::new(block)).ok()?;
-    (block.hash() == hash).then(|| block.staking_epoch_ledger_hash().clone())
+    (block.hash() == &entry.hash
+        && block.height() == entry.height
+        && block.global_slot() == entry.global_slot)
+        .then(|| block.staking_epoch_ledger_hash().clone())
 }
 
 /// One log line per load, saying what the node does next and why.

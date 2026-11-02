@@ -31,15 +31,16 @@ use redux::Timestamp;
 use super::*;
 use crate::{
     persist::{
-        event::{PersistEvent, PersistStoreSummary},
+        event::{PersistEvent, PersistLoadResult, PersistStoreSummary},
         load::{
             load, BlockProofVerifier, LoadOutcome, PersistLoadRequest, RestoreGuard, Restored,
             TipStakingLedger, DISCARD_AFTER_ATTEMPTS, LEDGERS_ONLY_AFTER_ATTEMPTS,
         },
+        load_control::LoadControl,
         test_fixtures::{
             block_after, mainnet_blocks, synthetic_chain, ChainLedgers, SLOTS_PER_BLOCK,
         },
-        writer::{summary, PartsSnapshot, PersistJob, StoreWorker, WriterOptions},
+        writer::{summary, LoadJob, PartsSnapshot, PersistJob, StoreWorker, WriterOptions},
     },
     rpc::RpcSavedChain,
     rpc_effectful::frontier_store_status_of,
@@ -2101,4 +2102,157 @@ fn saved_chain_is_reported_only_for_an_open_store() {
     let off = TransitionFrontierPersistConfig::default();
     let persist = TransitionFrontierPersistState::new(&off);
     assert_eq!(frontier_store_status_of(&off, &persist, None), None);
+}
+
+/// A store thread over `mem` that records its events, opened as a new
+/// process opens the store.
+fn opened_worker(
+    mem: &MemBackend,
+) -> (
+    StoreWorker<
+        MemBackend,
+        impl Fn(&ChainId) -> std::io::Result<(MemBackend, String)>,
+        impl Fn(PersistEvent),
+    >,
+    Rc<RefCell<Vec<PersistEvent>>>,
+) {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let (mem, emit) = (mem.second_handle(), events.clone());
+    let mut worker = StoreWorker::new(
+        move |_: &ChainId| Ok((mem.reopen(), "memory".to_owned())),
+        WriterOptions::default(),
+        move |event| emit.borrow_mut().push(event),
+    );
+    worker.handle(PersistJob::Open {
+        chain_id: MAINNET_CHAIN_ID,
+        genesis_state_hash: genesis(),
+    });
+    (worker, events)
+}
+
+/// A load on the store thread that hands its ledgers over; the summary it
+/// sends before its result, and the result.
+fn worker_load(
+    worker: &mut StoreWorker<
+        MemBackend,
+        impl Fn(&ChainId) -> std::io::Result<(MemBackend, String)>,
+        impl Fn(PersistEvent),
+    >,
+    events: &Rc<RefCell<Vec<PersistEvent>>>,
+    now: Option<u32>,
+) -> (PersistStoreSummary, PersistLoadResult) {
+    events.borrow_mut().clear();
+    worker.handle(PersistJob::Load(Box::new(LoadJob {
+        request: request(now),
+        verifier: None,
+        insert: Box::new(|_| -> Result<f64, String> { Ok(0.0) }),
+        control: Arc::new(LoadControl::default()),
+    })));
+    match events.borrow_mut().drain(..).collect::<Vec<_>>().as_slice() {
+        [PersistEvent::Summary(summary), PersistEvent::Loaded(result)] => {
+            (summary.clone(), (**result).clone())
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The restore's attempts record, through the whole restore: the load counts
+/// an attempt, and the commit's `RestoreDone` clears it. The status follows
+/// the record, including when the clear fails.
+#[test]
+fn saved_chain_follows_the_attempts_record_through_a_restore() {
+    let stored = Stored::new(8, 3);
+    let now = Some(stored.tip_slot());
+    for clear_fails in [true, false] {
+        let mem = stored.store();
+        // One unfinished restore before this one.
+        reopened(&mem)
+            .set_attempts(Attempts {
+                generation: 1,
+                count: 1,
+            })
+            .unwrap();
+        let (mut worker, events) = opened_worker(&mem);
+        let (mut summary, result) = worker_load(&mut worker, &events, now);
+        assert!(
+            matches!(result, PersistLoadResult::Restored(_)),
+            "{result:?}"
+        );
+        // Replayed, not yet cleared: a reload now is the third attempt.
+        assert_eq!(summary.restore.prior_attempts, Some(2));
+        let reason = not_restorable(saved_chain(
+            &ready_with(summary.clone(), restore_over()),
+            now,
+        ));
+        assert!(reason.contains("2 restores"), "{reason}");
+
+        if clear_fails {
+            mem.set_faults(Faults {
+                fail_at_call: Some(0),
+                ..Default::default()
+            });
+        }
+        worker.handle(PersistJob::RestoreDone);
+        let facts = match events.borrow_mut().drain(..).collect::<Vec<_>>().as_slice() {
+            [PersistEvent::RestoreFacts(facts)] => facts.clone(),
+            other => panic!("{other:?}"),
+        };
+        summary.restore = facts;
+        let status = saved_chain(&ready_with(summary, restore_over()), now);
+        drop(worker);
+        if clear_fails {
+            // The record couldn't be read either: not saved, whatever it says.
+            assert!(
+                matches!(status, RpcSavedChain::Unknown { .. }),
+                "{status:?}"
+            );
+            // It still says 2: the next start gives only the ledgers.
+            let reason = not_restorable(status_then_load(&mem, now));
+            assert!(reason.contains("2 restores"), "{reason}");
+        } else {
+            let height = stored.blocks.last().unwrap().height();
+            assert_eq!(status, RpcSavedChain::Saved { height });
+            assert_eq!(status_then_load(&mem, now), RpcSavedChain::Saved { height });
+        }
+    }
+}
+
+/// A restore that gives up a damaged newest generation and restores the one
+/// before: the status then describes the store that is left, not the one the
+/// store thread opened.
+#[test]
+fn saved_chain_after_a_fall_back_describes_the_remaining_generation() {
+    let stored = Stored::new(10, 4);
+    let now = Some(stored.tip_slot() + 10);
+    let (mem, extended) = two_generation_store(&stored);
+    // The newest generation's own block below its tip: its tip still reads.
+    let own = block_name(extended[extended.len() - 2].hash());
+    flip(&mem, &own, 100);
+
+    let (mut worker, events) = opened_worker(&mem);
+    let opened = match events.borrow_mut().drain(..).collect::<Vec<_>>().as_slice() {
+        [PersistEvent::Opened(opened)] => opened.store.clone(),
+        other => panic!("{other:?}"),
+    };
+    let newest = extended.last().unwrap().height();
+    assert_eq!(
+        saved_chain(&ready_with(opened, restore_over()), now),
+        RpcSavedChain::Saved { height: newest }
+    );
+
+    let (summary, result) = worker_load(&mut worker, &events, now);
+    assert!(
+        matches!(result, PersistLoadResult::Restored(_)),
+        "{result:?}"
+    );
+    assert_eq!(summary.generation, 1);
+    let height = stored.blocks.last().unwrap().height();
+    assert!(height < newest);
+    assert_eq!(
+        saved_chain(&ready_with(summary, restore_over()), now),
+        RpcSavedChain::Saved { height }
+    );
+    worker.handle(PersistJob::RestoreDone);
+    drop(worker);
+    assert_eq!(status_then_load(&mem, now), RpcSavedChain::Saved { height });
 }

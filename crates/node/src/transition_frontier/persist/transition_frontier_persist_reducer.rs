@@ -206,6 +206,11 @@ impl TransitionFrontierPersistState {
                     ready.store = (**store).clone();
                 }
             }
+            TransitionFrontierPersistAction::StoreRestoreFacts { facts } => {
+                if let Some(ready) = state.ready_mut() {
+                    ready.store.restore = (**facts).clone();
+                }
+            }
             TransitionFrontierPersistAction::LoadTimeout => {
                 if matches!(
                     state.restore(),

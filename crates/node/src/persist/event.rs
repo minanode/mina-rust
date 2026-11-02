@@ -21,11 +21,16 @@ pub enum PersistEvent {
     /// What a load for a restore found (I5d1). The ledgers it loaded are
     /// with the ledger thread before this is sent.
     Loaded(Box<PersistLoadResult>),
-    /// The store's newest manifest after a load that didn't restore, sent
-    /// before its [`Self::Loaded`]: a load that gives up a damaged generation
-    /// falls back to the older one, which may store other ledgers than the
-    /// store opened with, and the next checkpoint must know which (I5e).
+    /// The store's newest manifest after a load, sent before its
+    /// [`Self::Loaded`]: a load that gives up a damaged generation falls back
+    /// to the older one, which may store other ledgers and another chain than
+    /// the store opened with, and the next checkpoint and the status must
+    /// know which (I5e). A load counts an attempt, which the status needs too.
     Summary(PersistStoreSummary),
+    /// What the loader would decide a restore on, when only that may have
+    /// changed (the attempts record after a restore) or the rest of the
+    /// summary couldn't be read: it replaces the summary's `restore`.
+    RestoreFacts(RestoreFacts),
 }
 
 /// The result of a load (I5d1), as the node hears it.
