@@ -15,15 +15,43 @@
 //! request from its count when it sends the answer, before we receive it, so
 //! it never counts more than we do. libp2p peers, and every other request,
 //! keep the single slot.
+//!
+//! Five a round trip still held a browser 170 ms from its relay to about
+//! 1 MB/s from each, so a WebRTC peer now advertises how many it takes in its
+//! offer or answer (`max_rpc_requests`, [`advertised_max_rpc_requests`]), and
+//! the pipeline fills to that ([`P2pRpcPipeline::peer_limit`]). A peer that
+//! advertises nothing predates it and gets five.
 
 use serde::{Deserialize, Serialize};
 
-use super::{P2pChannelsRpcState, P2pRpcId, P2pRpcRequest, MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS};
+use super::{
+    P2pChannelsRpcState, P2pRpcId, P2pRpcRequest, MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS,
+    MAX_P2P_RPC_WEBRTC_CONCURRENT_REQUESTS,
+};
 
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+/// What we advertise as the most RPC requests we take at once from a WebRTC
+/// peer: [`MAX_P2P_RPC_WEBRTC_CONCURRENT_REQUESTS`].
+pub fn advertised_max_rpc_requests() -> u16 {
+    MAX_P2P_RPC_WEBRTC_CONCURRENT_REQUESTS as u16
+}
+
+/// The most requests to keep unanswered with a peer that advertised
+/// `advertised`: at most what we take ourselves, so a peer cannot make us
+/// queue more than that, and five for a peer that advertised nothing.
+pub fn peer_rpc_limit(advertised: Option<u16>) -> usize {
+    advertised.map_or(MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS, |n| {
+        usize::from(n).clamp(1, MAX_P2P_RPC_WEBRTC_CONCURRENT_REQUESTS)
+    })
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct P2pRpcPipeline {
     /// Whether the peer takes pipelined requests: a WebRTC peer.
     pub enabled: bool,
+    /// The most requests the peer takes at once, the slot's included:
+    /// [`peer_rpc_limit`] of what it advertised when it connected.
+    #[serde(default = "default_peer_limit")]
+    pub peer_limit: usize,
     /// Unanswered, oldest first.
     pub requests: Vec<P2pRpcPipelined>,
     /// The last one answered, for the answer's callback to find what was
@@ -43,10 +71,27 @@ pub struct P2pRpcPipelined {
     pub timed_out: Option<redux::Timestamp>,
 }
 
+fn default_peer_limit() -> usize {
+    MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS
+}
+
+impl Default for P2pRpcPipeline {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            peer_limit: default_peer_limit(),
+            requests: Vec::new(),
+            responded: None,
+        }
+    }
+}
+
 impl P2pRpcPipeline {
-    pub fn for_peer(is_libp2p: bool) -> Self {
+    /// `peer_limit`: [`peer_rpc_limit`] of what the peer advertised.
+    pub fn for_peer(is_libp2p: bool, peer_limit: usize) -> Self {
         Self {
             enabled: !is_libp2p,
+            peer_limit,
             ..Default::default()
         }
     }
@@ -65,7 +110,7 @@ impl P2pRpcPipeline {
     pub fn has_room(&self, slot: &P2pChannelsRpcState) -> bool {
         self.enabled
             && slot.unanswered_local_rpc().is_some()
-            && self.requests.len() + 1 < MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS
+            && self.requests.len() + 1 < self.peer_limit
     }
 
     pub fn get(&self, id: P2pRpcId) -> Option<&P2pRpcPipelined> {
@@ -142,7 +187,7 @@ mod tests {
             id: 0,
             request: Box::new(query()),
         });
-        let mut pipeline = P2pRpcPipeline::for_peer(false);
+        let mut pipeline = P2pRpcPipeline::for_peer(false, 5);
         for id in 1..MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS as u64 {
             assert!(pipeline.has_room(&taken));
             pipeline.requests.push(pipelined(id));
@@ -165,20 +210,52 @@ mod tests {
     #[test]
     fn the_pipeline_is_only_behind_a_taken_slot_of_a_webrtc_peer() {
         let free = slot(P2pRpcLocalState::WaitingForRequest { time: at(0) });
-        assert!(!P2pRpcPipeline::for_peer(false).has_room(&free));
+        assert!(!P2pRpcPipeline::for_peer(false, 5).has_room(&free));
         let taken = slot(P2pRpcLocalState::TimedOut {
             time: at(5),
             sent: at(1),
             id: 0,
             request: Box::new(query()),
         });
-        assert!(P2pRpcPipeline::for_peer(false).has_room(&taken));
-        assert!(!P2pRpcPipeline::for_peer(true).has_room(&taken));
+        assert!(P2pRpcPipeline::for_peer(false, 5).has_room(&taken));
+        assert!(!P2pRpcPipeline::for_peer(true, 5).has_room(&taken));
+    }
+
+    /// A peer that advertised a deeper limit gets that many, up to what we
+    /// take ourselves; one that advertised nothing gets five.
+    #[test]
+    fn the_pipeline_fills_to_what_the_peer_advertised() {
+        assert_eq!(peer_rpc_limit(None), MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS);
+        assert_eq!(peer_rpc_limit(Some(0)), 1);
+        assert_eq!(peer_rpc_limit(Some(8)), 8);
+        assert_eq!(
+            peer_rpc_limit(Some(u16::MAX)),
+            MAX_P2P_RPC_WEBRTC_CONCURRENT_REQUESTS
+        );
+        assert_eq!(
+            peer_rpc_limit(Some(advertised_max_rpc_requests())),
+            MAX_P2P_RPC_WEBRTC_CONCURRENT_REQUESTS
+        );
+
+        let taken = slot(P2pRpcLocalState::Requested {
+            time: at(1),
+            id: 0,
+            request: Box::new(query()),
+        });
+        let limit = peer_rpc_limit(Some(advertised_max_rpc_requests()));
+        let mut pipeline = P2pRpcPipeline::for_peer(false, limit);
+        for id in 1..limit as u64 {
+            assert!(pipeline.has_room(&taken));
+            pipeline.requests.push(pipelined(id));
+        }
+        assert_eq!(pipeline.requests.len() + 1, limit);
+        assert!(!pipeline.has_room(&taken));
+        assert_eq!(P2pRpcPipeline::default().peer_limit, 5);
     }
 
     #[test]
     fn an_answer_leaves_its_request_for_the_callback() {
-        let mut pipeline = P2pRpcPipeline::for_peer(false);
+        let mut pipeline = P2pRpcPipeline::for_peer(false, 5);
         pipeline.requests.extend([pipelined(3), pipelined(4)]);
         assert!(!pipeline.answer(5));
         assert!(pipeline.answer(4));

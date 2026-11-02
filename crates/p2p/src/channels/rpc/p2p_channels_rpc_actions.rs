@@ -8,7 +8,16 @@ use super::{P2pChannelsRpcState, P2pRpcId, P2pRpcRequest, P2pRpcResponse};
 
 pub type P2pChannelsRpcActionWithMetaRef<'a> = redux::ActionWithMeta<&'a P2pChannelsRpcAction>;
 
+/// The most RPC requests a peer may have unanswered with us at once: a
+/// libp2p peer, and what we assume a WebRTC peer takes when it advertises no
+/// limit of its own. A peer that sends one more is disconnected.
 pub const MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS: usize = 5;
+/// The same for a WebRTC peer, which we advertise in our offers and answers
+/// (`max_rpc_requests`), so that a peer that knows it can pipeline this many
+/// sync requests to us. A browser far from its relay needs a deeper
+/// pipeline: each request waits a round trip, so five ledger queries of
+/// about 33 KB held a browser 170 ms away to about 1 MB/s from each relay.
+pub const MAX_P2P_RPC_WEBRTC_CONCURRENT_REQUESTS: usize = 16;
 
 #[derive(Serialize, Deserialize, Debug, Clone, ActionEvent)]
 #[action_event(fields(display(peer_id)))]
@@ -142,8 +151,10 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsRpcAction {
                                         && state.config.catchup_rpc.allows(peer_id)
                                     {
                                         super::MAX_CATCHUP_RPC_REQUESTS
-                                    } else {
+                                    } else if state.is_libp2p_peer(peer_id) {
                                         MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS
+                                    } else {
+                                        MAX_P2P_RPC_WEBRTC_CONCURRENT_REQUESTS
                                     }
                                     && remote.pending_requests.iter().all(|v| v.id != *id)
                             }
