@@ -17,7 +17,7 @@ use mina_node::{
     p2p::{
         connection::outgoing::P2pConnectionOutgoingInitOpts,
         identity::SecretKey,
-        webrtc::{IceServer, UdpPortRange, WebrtcConfig},
+        webrtc::{IceServer, UdpPortRange, WebrtcConfig, DEFAULT_SCTP_WINDOW, SCTP_WINDOW_RANGE},
     },
     service::Recorder,
     snark::{BlockVerifier, TransactionVerifier},
@@ -631,6 +631,21 @@ pub struct Node {
     )]
     pub webrtc_nat_ip: Vec<IpAddr>,
 
+    /// The most data, in bytes, a connection to a browser may have sent and
+    /// not yet acknowledged, or queued to send. It bounds what one browser
+    /// gets each round trip, so it sets how fast a distant browser syncs.
+    /// Each connection may hold up to this much memory.
+    ///
+    /// Defaults to 1048576 (1 MiB), from 65536 to 16777216.
+    #[arg(
+        long,
+        env = "MINA_WEBRTC_SCTP_WINDOW",
+        value_name = "BYTES",
+        value_parser = parse_sctp_window,
+        help_heading = "WebRTC"
+    )]
+    pub webrtc_sctp_window: Option<usize>,
+
     // Logging.
     /// The log level of the console and the log file: `error`, `warn`,
     /// `info`, `debug` or `trace`.
@@ -1113,6 +1128,7 @@ impl Node {
             self.webrtc_ice_servers.as_deref(),
             self.webrtc_udp_ports,
             &self.webrtc_nat_ip,
+            self.webrtc_sctp_window,
         )?;
 
         // A node started with a daemon JSON and the frontier store, which
@@ -1795,6 +1811,7 @@ fn webrtc_config(
     ice_servers: Option<&std::path::Path>,
     udp_ports: Option<UdpPortRange>,
     nat_ips: &[IpAddr],
+    sctp_window: Option<usize>,
 ) -> anyhow::Result<WebrtcConfig> {
     let ice_servers = match ice_servers {
         None => None,
@@ -1810,6 +1827,7 @@ fn webrtc_config(
         ice_servers,
         udp_ports,
         nat_ips: nat_ips.to_vec(),
+        sctp_window,
     };
     let urls: Vec<String> = config
         .ice_servers()
@@ -1822,8 +1840,24 @@ fn webrtc_config(
         ice_servers = urls.join(" "),
         udp_ports = config.udp_ports.map_or("any".to_owned(), |p| p.to_string()),
         nat_ips = format!("{:?}", config.nat_ips),
+        sctp_window = config.sctp_window(),
     );
     Ok(config)
+}
+
+/// `--webrtc-sctp-window`: a number of bytes in [`SCTP_WINDOW_RANGE`].
+fn parse_sctp_window(value: &str) -> Result<usize, String> {
+    let bytes: usize = value
+        .parse()
+        .map_err(|_| format!("`{value}` is not a number of bytes"))?;
+    if !SCTP_WINDOW_RANGE.contains(&bytes) {
+        return Err(format!(
+            "{bytes} is outside {} to {} bytes",
+            SCTP_WINDOW_RANGE.start(),
+            SCTP_WINDOW_RANGE.end()
+        ));
+    }
+    Ok(bytes)
 }
 
 impl Node {
@@ -2166,6 +2200,24 @@ mod tests {
             parse(&["--metrics-addr", "0.0.0.0"]).unwrap().metrics_addr,
             "0.0.0.0".parse::<IpAddr>().unwrap()
         );
+    }
+
+    #[test]
+    fn sctp_window_is_bounded_and_defaults_as_its_help_says() {
+        let unset = parse(&[]).unwrap().webrtc_sctp_window;
+        assert_eq!(unset, None);
+        let config = webrtc_config(None, None, &[], unset).unwrap();
+        assert_eq!(config.sctp_window(), DEFAULT_SCTP_WINDOW);
+        assert_eq!(DEFAULT_SCTP_WINDOW, 1048576, "update the flag's help");
+        assert_eq!(
+            parse(&["--webrtc-sctp-window", "4194304"])
+                .unwrap()
+                .webrtc_sctp_window,
+            Some(4194304)
+        );
+        for bad in ["65535", "16777217", "1M", "-1"] {
+            assert!(parse(&["--webrtc-sctp-window", bad]).is_err(), "{bad}");
+        }
     }
 
     #[test]

@@ -675,6 +675,7 @@ const KEPT_VALUE_ARGS: &[&str] = &[
     "catchup_rpc_peer",
     "webrtc_udp_ports",
     "webrtc_nat_ip",
+    "webrtc_sctp_window",
 ];
 
 /// Paths: any could be in a directory of keys, so only a harmless file name

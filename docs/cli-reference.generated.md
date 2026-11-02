@@ -345,6 +345,14 @@ For a cloud host whose interface has a private address. Repeat it, or separate a
 
 Environment: `MINA_WEBRTC_NAT_IP`.
 
+#### `--webrtc-sctp-window <BYTES>`
+
+The most data, in bytes, a connection to a browser may have sent and not yet acknowledged, or queued to send. It bounds what one browser gets each round trip, so it sets how fast a distant browser syncs. Each connection may hold up to this much memory.
+
+Defaults to 1048576 (1 MiB), from 65536 to 16777216.
+
+Environment: `MINA_WEBRTC_SCTP_WINDOW`.
+
 #### `--webrtc-sharing-relay`
 
 Introduce web nodes that turned on sharing with other browsers to each other, within limits per peer key, per address and in total, an hour. Two pages introduced see each other's IP address; pages that didn't turn sharing on are never introduced. Peers use this node for introductions only.

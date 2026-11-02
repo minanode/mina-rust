@@ -63,6 +63,7 @@ pub type Api = Arc<ApiConfig>;
 pub struct ApiConfig {
     udp_ports: Option<(u16, u16)>,
     nat_ip: Option<String>,
+    sctp_window: usize,
 }
 
 /// rustrtc makes a fresh self-signed DTLS certificate per connection, as
@@ -71,8 +72,9 @@ pub type RTCCertificate = ();
 
 pub fn certificate_from_pem_key(_: &str) -> RTCCertificate {}
 
-/// The WebRTC settings of `config` (W1): the candidates' UDP port range and
-/// the NAT address. rustrtc advertises one external address, the first.
+/// The WebRTC settings of `config` (W1): the candidates' UDP port range,
+/// the NAT address and the SCTP window. rustrtc advertises one external
+/// address, the first.
 pub fn build_api(config: &WebrtcConfig) -> Api {
     if config.nat_ips.len() > 1 {
         mina_core::warn!(
@@ -84,6 +86,7 @@ pub fn build_api(config: &WebrtcConfig) -> Api {
     Arc::new(ApiConfig {
         udp_ports: config.udp_ports.map(|ports| (ports.min, ports.max)),
         nat_ip: config.nat_ips.first().map(ToString::to_string),
+        sctp_window: config.sctp_window(),
     })
 }
 
@@ -138,6 +141,11 @@ impl RTCConnection {
             // band is refused, and its data dropped.
             accept_remote_data_channels: false,
             sctp_rto_min: SCTP_RTO_MIN,
+            // Both: the send buffer limit admits a message while what is in
+            // flight and queued is below it, so with a smaller one small
+            // answers could not fill the window.
+            sctp_max_cwnd: api.sctp_window,
+            sctp_max_buffered_amount: api.sctp_window,
             ..Default::default()
         };
         if let Some((min, max)) = api.udp_ports {

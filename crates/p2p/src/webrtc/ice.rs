@@ -176,6 +176,19 @@ impl fmt::Display for UdpPortRange {
     }
 }
 
+/// The most data sent to one peer and not yet acknowledged, or queued to
+/// send, by default: rustrtc's congestion window cap and its send buffer
+/// limit. A connection delivers at most this much each round trip, so
+/// rustrtc's own 256 KiB held a browser's staged ledger download to about
+/// 1.3 MB/s at 170 ms and 0.75 MB/s at 310 ms, below what a browser takes;
+/// Chrome offers about 4.7 MB of receive window. The sender is paced, so a
+/// larger window raises the steady rate rather than the size of bursts. At
+/// 1 MiB a browser 310 ms away synced in 209 s instead of 276 s; 4 MiB was no
+/// faster. It costs relay memory: up to this much per connection.
+pub const DEFAULT_SCTP_WINDOW: usize = 1024 * 1024;
+/// The least and most `--webrtc-sctp-window` takes.
+pub const SCTP_WINDOW_RANGE: std::ops::RangeInclusive<usize> = 64 * 1024..=16 * 1024 * 1024;
+
 /// A node's WebRTC settings. The default is what a node did before they
 /// could be set: [`IceServer::defaults`], any UDP port, interface addresses.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -187,11 +200,18 @@ pub struct WebrtcConfig {
     /// Native nodes only: the public addresses of a 1:1 NAT, put in host
     /// candidates in place of the interface addresses.
     pub nat_ips: Vec<IpAddr>,
+    /// Native nodes only: the most data, in bytes, sent to one peer and not
+    /// yet acknowledged, or queued to send. `None` for the default.
+    pub sctp_window: Option<usize>,
 }
 
 impl WebrtcConfig {
     pub fn ice_servers(&self) -> Vec<IceServer> {
         self.ice_servers.clone().unwrap_or_else(IceServer::defaults)
+    }
+
+    pub fn sctp_window(&self) -> usize {
+        self.sctp_window.unwrap_or(DEFAULT_SCTP_WINDOW)
     }
 }
 

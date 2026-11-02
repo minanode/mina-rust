@@ -762,6 +762,21 @@
               "global": false
             },
             {
+              "id": "node--webrtc-sctp-window",
+              "syntax": "--webrtc-sctp-window <BYTES>",
+              "aliases": [],
+              "help": [
+                "The most data, in bytes, a connection to a browser may have sent and not yet acknowledged, or queued to send. It bounds what one browser gets each round trip, so it sets how fast a distant browser syncs. Each connection may hold up to this much memory.",
+                "Defaults to 1048576 (1 MiB), from 65536 to 16777216."
+              ],
+              "default": null,
+              "env": "MINA_WEBRTC_SCTP_WINDOW",
+              "possible_values": [],
+              "required": false,
+              "repeatable": false,
+              "global": false
+            },
+            {
               "id": "node--webrtc-sharing-relay",
               "syntax": "--webrtc-sharing-relay",
               "aliases": [],
