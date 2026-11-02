@@ -118,6 +118,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consumed at the next load; a key saved in the browser but locked asks once
   for its own passphrase, and the passphrase screens remain only as a fallback
   (PR #252).
+- **Web node**: the start screen lists the six start-up steps, waiting, each
+  with a figure from the build (the WASM's size, the relays' names), and links
+  "How the web node works". After Start the boot screen keeps the same page
+  and runs the same list in place. `MINAWEB_WASM_COMPRESSED_BYTES` adds the
+  size the host sends the WASM at to the download step.
 
 ### Fixed
 

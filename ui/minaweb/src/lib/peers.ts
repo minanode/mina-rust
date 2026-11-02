@@ -57,6 +57,18 @@ export function relayName(multiaddr: string): string {
   return family === "ip6" ? `[${host}]:${port}` : `${host}:${port}`;
 }
 
+/** The relays' names, short: each domain's first label (relay1), or every
+ * full name when two short ones would be the same. */
+export function relayShortNames(relays: string[]): string[] {
+  const short = relays.map(relay => {
+    const match = ADDRESS.exec(relay);
+    return match?.[1].startsWith("dns")
+      ? match[2].split(".")[0]
+      : relayName(relay);
+  });
+  return new Set(short).size === short.length ? short : relays.map(relayName);
+}
+
 /** The libp2p peer ID a multiaddr ends with. */
 export function multiaddrPeerId(multiaddr: string | null): string | null {
   return multiaddr ? (/\/p2p\/(\w+)$/.exec(multiaddr)?.[1] ?? null) : null;

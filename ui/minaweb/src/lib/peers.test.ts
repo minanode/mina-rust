@@ -8,6 +8,7 @@ import {
   otherPeers,
   parseRouteStats,
   relayName,
+  relayShortNames,
   relayRows,
 } from "./peers";
 
@@ -41,6 +42,20 @@ test("a relay's name: its domain, or its address and port", () => {
   );
   expect(multiaddrPeerId(RELAY1)).toBe(R1);
   expect(multiaddrPeerId(null)).toBeNull();
+});
+
+test("the relays' short names: each domain's first label", () => {
+  const other = `/dns4/relay2.minaweb.org/tcp/443/webrtc/https/p2p/${R2}`;
+  expect(relayShortNames([RELAY1, other])).toEqual(["relay1", "relay2"]);
+  expect(relayShortNames([RELAY1, RELAY2])).toEqual([
+    "relay1",
+    "127.0.0.1:3540",
+  ]);
+  const twin = `/dns4/relay1.example.org/tcp/443/webrtc/https/p2p/${R2}`;
+  expect(relayShortNames([RELAY1, twin])).toEqual([
+    "relay1.minaweb.org",
+    "relay1.example.org",
+  ]);
 });
 
 test("the route is TURN when either selected candidate is a relay one", () => {
