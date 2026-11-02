@@ -54,7 +54,8 @@ export type BlockProductionWonSlotsDiscardReason =
   | 'ProofGenerationFailed'
   | 'ProofVerificationFailed'
   | 'WonSlotExpired'
-  | 'EpochDataChanged';
+  | 'EpochDataChanged'
+  | 'ParentChanged';
 
 export enum BlockProductionWonSlotsStatus {
   Scheduled = 'Scheduled',

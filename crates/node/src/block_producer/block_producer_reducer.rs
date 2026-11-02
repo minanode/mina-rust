@@ -169,6 +169,22 @@ impl BlockProducerEnabled {
                     };
                 }
             }
+            BlockProducerAction::WonSlotRebuild => {
+                if let Some(won_slot) = state.current.won_slot().cloned() {
+                    mina_core::info!(meta.time();
+                        kind = "ProducerBlockRebuild",
+                        slot = won_slot.global_slot.slot_number.as_u32(),
+                        state_hash = state.current.built_block_hash().map(ToString::to_string),
+                        best_tip_hash = best_chain.last().map(|tip| tip.hash().to_string()),
+                        message = "The best tip changed our block's parent before the slot; building it again");
+                    state.current = BlockProducerCurrentState::WonSlot {
+                        time: meta.time(),
+                        won_slot: won_slot.clone(),
+                    };
+                    let dispatcher = state_context.into_dispatcher();
+                    dispatcher.push(BlockProducerEffectfulAction::WonSlot { won_slot });
+                }
+            }
             BlockProducerAction::WonSlotProduceInit => {
                 // Pool reconciliation never delays a won slot. Capture the parent
                 // and select the immediately available transactions in this dispatch.
@@ -239,6 +255,11 @@ impl BlockProducerEnabled {
                     return;
                 }
 
+                if let Some(won_slot) = state.current.won_slot() {
+                    state
+                        .production_times
+                        .start(won_slot.global_slot(), meta.time());
+                }
                 let dispatcher = state_context.into_dispatcher();
                 dispatcher.push(BlockProducerAction::WonSlotTransactionsGet);
             }
@@ -490,6 +511,9 @@ impl BlockProducerEnabled {
                     if let Some(waiter) = &mut state.uptime_produced_block {
                         waiter.complete(&block, won_slot.slot_time);
                     }
+                    state
+                        .production_times
+                        .finish(meta.time(), !state.proof_retried);
                     state.current = BlockProducerCurrentState::Produced {
                         time: meta.time(),
                         won_slot,
@@ -685,9 +709,15 @@ impl BlockProducerEnabled {
         });
         Self::dispatch_evaluability_check(dispatcher, state, best_tip);
 
-        if let Some(reason) = state.block_producer.with(None, |bp| {
-            bp.current.won_slot_should_discard(best_tip, time)
-        }) {
+        let rebuild = state.block_producer.with(false, |bp| {
+            bp.parent_change(best_tip, time) == Some(super::ParentChange::Rebuild)
+        });
+        if rebuild {
+            dispatcher.push(BlockProducerAction::WonSlotRebuild);
+        } else if let Some(reason) = state
+            .block_producer
+            .with(None, |bp| bp.won_slot_should_discard(best_tip, time))
+        {
             dispatcher.push(BlockProducerAction::WonSlotDiscard { reason });
         } else {
             dispatcher.push(BlockProducerAction::WonSlotSearch);

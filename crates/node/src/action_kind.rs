@@ -149,6 +149,7 @@ pub enum ActionKind {
     BlockProducerWonSlot,
     BlockProducerWonSlotDiscard,
     BlockProducerWonSlotProduceInit,
+    BlockProducerWonSlotRebuild,
     BlockProducerWonSlotSearch,
     BlockProducerWonSlotTransactionsGet,
     BlockProducerWonSlotTransactionsSuccess,
@@ -873,7 +874,7 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    pub const COUNT: u16 = 742;
+    pub const COUNT: u16 = 743;
 }
 
 impl std::fmt::Display for ActionKind {
@@ -1166,6 +1167,7 @@ impl ActionKindGet for BlockProducerAction {
             Self::WonSlot { .. } => ActionKind::BlockProducerWonSlot,
             Self::WonSlotDiscard { .. } => ActionKind::BlockProducerWonSlotDiscard,
             Self::WonSlotWait => ActionKind::BlockProducerWonSlotWait,
+            Self::WonSlotRebuild => ActionKind::BlockProducerWonSlotRebuild,
             Self::WonSlotTransactionsGet => ActionKind::BlockProducerWonSlotTransactionsGet,
             Self::WonSlotTransactionsSuccess { .. } => {
                 ActionKind::BlockProducerWonSlotTransactionsSuccess

@@ -454,7 +454,7 @@ impl State {
     pub fn producing_block_after_genesis(&self) -> bool {
         const GENESIS_PROOF_LEAD: Duration = Duration::from_secs(2 * 60);
         self.block_producer.with(false, |bp| {
-            bp.current.won_slot_is_due(self.time(), GENESIS_PROOF_LEAD)
+            bp.won_slot_is_due(self.time(), GENESIS_PROOF_LEAD)
         }) && self.genesis_block().is_some_and(|b| {
             let slot = &b.consensus_state().curr_global_slot_since_hard_fork;
             let epoch = slot
@@ -490,7 +490,7 @@ impl State {
         };
         let now = self.time();
         let producing = self.block_producer.with(false, |bp| {
-            bp.current.is_producing() || bp.current.won_slot_is_due(now, lead)
+            bp.current.is_producing() || bp.won_slot_is_due(now, lead)
         });
         use crate::transition_frontier::genesis::TransitionFrontierGenesisState as Genesis;
         let genesis_proving = match &self.transition_frontier.genesis {

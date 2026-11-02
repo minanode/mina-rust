@@ -56,6 +56,10 @@ pub enum BlockProducerAction {
         reason: BlockProducerWonSlotDiscardReason,
     },
     WonSlotWait,
+    /// Builds our block again on the best tip's parent choice, which changed
+    /// before the won slot started ([`super::ParentChange::Rebuild`]).
+    #[action_event(level = info)]
+    WonSlotRebuild,
     WonSlotTransactionsGet,
     WonSlotTransactionsSuccess {
         transactions_by_fee: Vec<valid::UserCommand>,
@@ -148,7 +152,15 @@ impl redux::EnablingCondition<crate::State> for BlockProducerAction {
             }),
             BlockProducerAction::WonSlotWait => state
                 .block_producer
-                .with(false, |this| this.current.won_slot_should_wait(time)),
+                .with(false, |this| this.won_slot_should_wait(time)),
+            BlockProducerAction::WonSlotRebuild => state.block_producer.with(false, |this| {
+                state
+                    .transition_frontier
+                    .best_tip()
+                    .is_some_and(|best_tip| {
+                        this.parent_change(best_tip, time) == Some(super::ParentChange::Rebuild)
+                    })
+            }),
             BlockProducerAction::WonSlotProduceInit => {
                 state.block_producer.with(false, |this| {
                     let has_genesis_proven_if_needed = || {
@@ -158,7 +170,7 @@ impl redux::EnablingCondition<crate::State> for BlockProducerAction {
                                 || proven_block.is_some_and(|b| Arc::ptr_eq(&b.block, &tip.block))
                         })
                     };
-                    this.current.won_slot_should_produce(time)
+                    this.won_slot_should_produce(time)
                         && this.current.won_slot().is_some_and(|slot| mina_core::constants::stop_slots().blocks_allowed(slot.global_slot()))
                         && has_genesis_proven_if_needed()
                         // don't start block production (particularly staged ledger diff creation),
@@ -312,7 +324,7 @@ impl redux::EnablingCondition<crate::State> for BlockProducerAction {
             BlockProducerAction::WonSlotDiscard { reason } => {
                 let current_reason = state.block_producer.with(None, |bp| {
                     let best_tip = state.transition_frontier.best_tip()?;
-                    bp.current.won_slot_should_discard(best_tip, time)
+                    bp.won_slot_should_discard(best_tip, time)
                 });
                 Some(reason) == current_reason.as_ref()
             }

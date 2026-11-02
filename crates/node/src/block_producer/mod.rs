@@ -304,11 +304,19 @@ mod timing_tests {
             },
         ] {
             let start = u64::from(slot.slot_time);
-            assert!(!state.won_slot_should_produce(redux::Timestamp::new(start - 21_000_000_000)));
-            assert!(state.won_slot_should_produce(redux::Timestamp::new(start - 6_000_000_000)));
-            assert!(state.won_slot_should_produce(redux::Timestamp::new(start + 89_999_999_999)));
-            assert!(!state.won_slot_should_produce(redux::Timestamp::new(start + 90_000_000_000)));
-            assert!(!state.won_slot_should_produce(redux::Timestamp::new(start + 179_000_000_000)));
+            let native = ProductionLeadPolicy::NATIVE;
+            let lead = native.lead(
+                native.default_estimate,
+                std::time::Duration::from_nanos(slot_duration_ns()),
+            );
+            assert_eq!(lead, std::time::Duration::from_secs(6));
+            let due = |ns| state.won_slot_is_due(redux::Timestamp::new(ns), lead);
+            assert!(!due(start - 21_000_000_000));
+            assert!(!due(start - 6_000_000_001));
+            assert!(due(start - 6_000_000_000));
+            assert!(due(start + 89_999_999_999));
+            assert!(!due(start + 90_000_000_000));
+            assert!(!due(start + 179_000_000_000));
         }
     }
 

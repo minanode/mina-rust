@@ -121,6 +121,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Block producer**: a web node starts its block up to 60 s before the slot
+  (one 90 s slot less 30 s), or its measured production time plus 10 s if
+  that is shorter, and never less than the 20 s it used before. With a 95 s
+  browser proof, its blocks went out about 79 s into the slot. They now go out
+  about 40 s in. A native node keeps its 6 s lead. If the best tip moves to
+  another parent before the slot starts, the producer builds the block again
+  on it. If that block could not be sent before the slot ends, the producer
+  gives the slot up (`ParentChanged`). It never sends a block on the old
+  parent.
 - **Web node**: a second tab of the same browser, which can't open the
   frontier store the first tab holds, now says so: one caution banner, and the
   Overview and Start-up show the store as not available in this tab, with no

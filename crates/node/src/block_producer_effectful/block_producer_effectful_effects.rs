@@ -135,12 +135,16 @@ pub fn block_producer_effects<S: crate::Service>(
             }
 
             // Our block's consensus state exists now: it is proved only if
-            // it beats the best tip, which may have changed meanwhile.
+            // it beats the best tip, which may have changed meanwhile, and
+            // built again if the best tip changed its parent before the slot.
+            if store.dispatch(BlockProducerAction::WonSlotRebuild) {
+                return;
+            }
             let state = store.state.get();
             let discard = state.transition_frontier.best_tip().and_then(|best_tip| {
-                state.block_producer.with(None, |bp| {
-                    bp.current.won_slot_should_discard(best_tip, meta.time())
-                })
+                state
+                    .block_producer
+                    .with(None, |bp| bp.won_slot_should_discard(best_tip, meta.time()))
             });
             match discard {
                 Some(reason) => store.dispatch(BlockProducerAction::WonSlotDiscard { reason }),

@@ -1134,13 +1134,13 @@ fn reduce_collect(state: &mut State, now: Timestamp, action: impl Into<Action>) 
 /// P5.3: the web node's SNARK worker shares its one prover instance with the
 /// block producer, which proves one thing at a time and cannot stop a
 /// proof. So the worker takes no job from `lead` (the longest a job takes)
-/// plus the production estimate before a won slot until the slot is done:
+/// plus the production lead before a won slot until the slot is done:
 /// a block proof never waits behind SNARK work. A worker with a prover of its
 /// own (no lead, the native node) takes jobs at any time.
 #[test]
 fn a_worker_sharing_the_prover_takes_no_job_near_our_won_slot() {
     use std::time::Duration;
-    // Natively the block takes 6 s to produce (20 s in a browser).
+    // Natively a block is started 6 s ahead (`ProductionLeadPolicy::NATIVE`).
     const ESTIMATE_S: i64 = 6;
     let genesis = genesis();
     let slot = 30;
@@ -1644,6 +1644,420 @@ fn uptime_subscription_excludes_history_and_old_cancellation() {
 /// BP-MN-11: exercise the actual guards and reducers, withholding ledger/VRF
 /// service responses to cover asynchronous boundaries. No cryptography or
 /// network services run; the assertions concern control flow, not VRF values.
+/// The lead a block is started with. Natively it stays 6 s, whatever is
+/// measured. A web node starts its measured production time plus 10 s ahead,
+/// never less than the 20 s it used to, and never more than a slot less 30 s:
+/// a block of the previous slot has 30 s to arrive before the parent is
+/// chosen. With 90 s slots and the 95 s a browser takes, it starts 60 s ahead.
+#[test]
+fn the_production_lead_follows_the_measured_time_within_bounds() {
+    use super::ProductionLeadPolicy;
+    use std::time::Duration;
+    let s = Duration::from_secs;
+    let native = ProductionLeadPolicy::NATIVE;
+    for (estimate, slot) in [(6, 90), (1, 90), (95, 90), (95, 180), (95, 20)] {
+        assert_eq!(
+            native.lead(s(estimate), s(slot)),
+            s(6),
+            "{estimate} s, {slot} s"
+        );
+    }
+    let web = ProductionLeadPolicy::WEB;
+    for (estimate, slot, lead) in [
+        (95, 90, 60),
+        (40, 90, 50),
+        (30, 90, 40),
+        (5, 90, 20),
+        (95, 180, 105),
+        (200, 180, 150),
+        (95, 40, 20),
+        (95, 0, 20),
+    ] {
+        assert_eq!(
+            web.lead(s(estimate), s(slot)),
+            s(lead),
+            "{estimate} s, {slot} s"
+        );
+    }
+    assert_eq!(
+        web.lead(Duration::MAX, Duration::MAX),
+        Duration::MAX - s(30)
+    );
+}
+
+/// Production times: the median of the last five, the greater middle one of
+/// an even number, or the default before any. A block built again for the
+/// same slot, or whose proof was retried, is not measured.
+#[test]
+fn production_times_keep_the_median_of_clean_productions() {
+    use super::BlockProductionTimes;
+    use std::time::Duration;
+    let s = Duration::from_secs;
+    let t = |secs: u64| Timestamp::new(secs * 1_000_000_000);
+    let mut times = BlockProductionTimes::default();
+    assert_eq!(times.estimate(s(95)), s(95));
+
+    let produce = |times: &mut BlockProductionTimes, slot, took, measured| {
+        let start = u64::from(slot) * 90;
+        times.start(slot, t(start));
+        times.finish(t(start + took), measured);
+    };
+    produce(&mut times, 1, 90, true);
+    assert_eq!(times.estimate(s(95)), s(90));
+    produce(&mut times, 2, 100, true);
+    assert_eq!(times.estimate(s(95)), s(100));
+    produce(&mut times, 3, 80, true);
+    assert_eq!(times.estimate(s(95)), s(90));
+    // A retried proof is not measured.
+    produce(&mut times, 4, 300, false);
+    assert_eq!(times.estimate(s(95)), s(90));
+    // Nor is a block built again for its slot, which may have waited for
+    // the proof it replaced.
+    times.start(5, t(450));
+    times.start(5, t(460));
+    times.finish(t(700), true);
+    assert_eq!(times.estimate(s(95)), s(90));
+    // A block finished without a start is not measured either.
+    times.finish(t(800), true);
+    for (slot, took) in [(6, 70), (7, 70), (8, 70)] {
+        produce(&mut times, slot, took, true);
+    }
+    // The first two are gone: 80, 70, 70, 70 and the last below.
+    produce(&mut times, 9, 120, true);
+    assert_eq!(times.estimate(s(95)), s(70));
+}
+
+/// A won slot is due its production lead before it starts, until it ends.
+/// Natively that is 6 s whatever the node measured. With the web policy, a
+/// node that measured 95 s productions starts 60 s ahead.
+#[test]
+fn a_won_slot_is_due_its_production_lead_before_it_starts() {
+    use super::ProductionLeadPolicy;
+    use std::time::Duration;
+    let genesis = genesis();
+    let slot = 3;
+    let start = genesis.slot_time(slot);
+    let mut state = node(&genesis, start, &[slot]);
+    let producer = state.block_producer.as_mut().unwrap();
+    producer.current = BlockProducerCurrentState::WonSlot {
+        time: start,
+        won_slot: genesis.won_slot(slot),
+    };
+    for (offset_s, due) in [(-7, false), (-6, true), (0, true), (89, true), (90, false)] {
+        assert_eq!(
+            producer.won_slot_should_produce(at(start, offset_s)),
+            due,
+            "{offset_s} s"
+        );
+        assert_eq!(producer.won_slot_should_wait(at(start, offset_s)), !due);
+    }
+    // Measured times do not change the native lead.
+    for slot in 10..15 {
+        producer.production_times.start(slot, start);
+        producer.production_times.finish(at(start, 95), true);
+    }
+    assert_eq!(producer.production_estimate(), Duration::from_secs(95));
+    assert_eq!(producer.production_lead(), Duration::from_secs(6));
+    assert!(!producer.won_slot_should_produce(at(start, -7)));
+    // The genesis proof is started two minutes before that.
+    assert!(producer.won_slot_is_due(at(start, -126), Duration::from_secs(120)));
+    assert!(!producer.won_slot_is_due(at(start, -127), Duration::from_secs(120)));
+
+    let web = ProductionLeadPolicy::WEB.lead(
+        producer.production_estimate(),
+        Duration::from_nanos(super::slot_duration_ns()),
+    );
+    assert_eq!(web, Duration::from_secs(60));
+    assert!(!producer.current.won_slot_is_due(at(start, -61), web));
+    assert!(producer.current.won_slot_is_due(at(start, -60), web));
+    assert!(producer.current.won_slot_is_due(at(start, 89), web));
+    assert!(!producer.current.won_slot_is_due(at(start, 90), web));
+}
+
+/// A block of the slot before ours, which our block in production does not
+/// extend: what a block started early meets when that block arrives late.
+fn previous_slot_tip(genesis: &Genesis, slot: u32) -> ArcBlockWithHash {
+    let (hash, _) = state_hashes();
+    let vrf = v2::ConsensusVrfOutputTruncatedStableV1::from(&*genesis.won_slot(slot).vrf_output);
+    block_at(genesis, slot.checked_sub(1).unwrap(), 2, &vrf, &hash)
+}
+
+fn set_best_tip(state: &mut State, tip: &ArcBlockWithHash) {
+    state.transition_frontier.best_chain = vec![AppliedBlock {
+        block: tip.clone(),
+        just_emitted_a_proof: false,
+    }];
+}
+
+/// Whether `actions` holds a block producer action like `action`.
+fn dispatched(actions: &[Action], action: &BlockProducerAction) -> bool {
+    actions.iter().any(|a| match a {
+        Action::BlockProducer(a) => std::mem::discriminant(a) == std::mem::discriminant(action),
+        _ => false,
+    })
+}
+
+/// A new best tip while our block is being proved, before its slot starts,
+/// has the block built again on it, never sent on the old parent. The slot
+/// is not given up, the old proof's result is ignored, and the new block is
+/// made on the new best tip.
+#[test]
+fn a_new_best_tip_before_the_slot_has_the_block_built_again() {
+    let genesis = genesis();
+    let slot = 3;
+    let start = genesis.slot_time(slot);
+    let now = at(start, -4);
+    let mut state = node(&genesis, now, &[slot]);
+    state.transition_frontier.genesis = TransitionFrontierGenesisState::ProveSuccess {
+        time: now,
+        genesis: genesis.block.clone(),
+    };
+    state.block_producer.as_mut().unwrap().current = proving(&genesis, now, slot);
+    let rebuild = BlockProducerAction::WonSlotRebuild;
+    assert!(!rebuild.is_enabled(&state, now), "on the best tip");
+
+    let tip = previous_slot_tip(&genesis, slot);
+    set_best_tip(&mut state, &tip);
+    let bp = state.block_producer.as_ref().unwrap();
+    assert!(bp.current.parent_is_stale(&tip));
+    assert_eq!(
+        bp.parent_change(&tip, now),
+        Some(super::ParentChange::Rebuild)
+    );
+    assert_eq!(bp.won_slot_should_discard(&tip, now), None);
+
+    let actions = reduce_collect(
+        &mut state,
+        now,
+        BlockProducerAction::BestTipUpdate {
+            best_tip: tip.clone(),
+        },
+    );
+    assert!(dispatched(&actions, &rebuild), "{actions:?}");
+    assert!(!actions.iter().any(|a| matches!(
+        a,
+        Action::BlockProducer(BlockProducerAction::WonSlotDiscard { .. })
+    )));
+
+    reduce(&mut state, now, rebuild);
+    let bp = state.block_producer.as_ref().unwrap();
+    assert!(
+        matches!(&bp.current, BlockProducerCurrentState::WonSlot { won_slot, .. }
+            if won_slot.global_slot() == slot),
+        "{:?}",
+        bp.current
+    );
+    // The old proof's result goes nowhere.
+    let old = BlockProducerAction::BlockProofVerify {
+        block_hash: genesis.hash.clone(),
+        proof: ledger::dummy::dummy_blockchain_proof(),
+    };
+    assert!(!old.is_enabled(&state, now));
+
+    reduce(&mut state, now, BlockProducerAction::WonSlotProduceInit);
+    let chain = state.block_producer.current_parent_chain().unwrap();
+    assert_eq!(chain.last().unwrap().hash(), tip.hash());
+}
+
+/// From the slot's start the parent stays, as OCaml chooses it then, and
+/// selection decides; a best tip on our parent, or of our slot on our parent,
+/// changes nothing.
+#[test]
+fn the_parent_is_checked_only_before_the_slot_starts() {
+    let genesis = genesis();
+    let slot = 3;
+    let start = genesis.slot_time(slot);
+    let mut state = node(&genesis, start, &[slot]);
+    state.block_producer.as_mut().unwrap().current = proving(&genesis, start, slot);
+    let tip = previous_slot_tip(&genesis, slot);
+    set_best_tip(&mut state, &tip);
+    let bp = state.block_producer.as_ref().unwrap();
+    assert!(bp.current.parent_is_stale(&tip));
+    for offset_s in [0, 1, 60] {
+        assert_eq!(bp.parent_change(&tip, at(start, offset_s)), None);
+        assert!(!BlockProducerAction::WonSlotRebuild.is_enabled(&state, at(start, offset_s)));
+    }
+
+    let before = at(start, -4);
+    assert_eq!(bp.parent_change(&genesis.block, before), None);
+    let mut same_slot = tip.clone();
+    let same = std::sync::Arc::make_mut(&mut same_slot.block);
+    same.header.protocol_state.previous_state_hash = genesis.hash.clone();
+    same.header
+        .protocol_state
+        .body
+        .consensus_state
+        .curr_global_slot_since_hard_fork
+        .slot_number = v2::MinaNumbersGlobalSlotSinceHardForkMStableV1::SinceHardFork(slot.into());
+    assert!(!bp.current.parent_is_stale(&same_slot));
+    assert_eq!(bp.parent_change(&same_slot, before), None);
+
+    // A block not built yet is checked once built.
+    let mut waiting = bp.clone();
+    waiting.current = BlockProducerCurrentState::WonSlotProduceInit {
+        time: before,
+        won_slot: genesis.won_slot(slot),
+        chain: vec![AppliedBlock {
+            block: genesis.block.clone(),
+            just_emitted_a_proof: false,
+        }],
+    };
+    assert!(waiting.current.parent_is_stale(&tip));
+    assert_eq!(waiting.parent_change(&tip, before), None);
+}
+
+/// A rebuild that could not be sent before the slot ends gives the slot up
+/// rather than send the block on its old parent. With 95 s productions, as in
+/// a browser, a block being proved 60 s before its slot leaves the prover
+/// busy for 95 s, and a new one 95 s more: too late for a 90 s slot. Once
+/// proved, a new block could be ready in time, so it is built again. The
+/// slot given up is not tried again.
+#[test]
+fn a_rebuild_too_late_for_the_slot_gives_it_up() {
+    let genesis = genesis();
+    let (slot, next) = (3, 6);
+    let start = genesis.slot_time(slot);
+    let now = at(start, -60);
+    let mut state = node(&genesis, now, &[slot, next]);
+    let producer = state.block_producer.as_mut().unwrap();
+    for slot in 10..15 {
+        producer.production_times.start(slot, now);
+        producer.production_times.finish(at(now, 95), true);
+    }
+    producer.current = proving(&genesis, now, slot);
+    let tip = previous_slot_tip(&genesis, slot);
+    set_best_tip(&mut state, &tip);
+
+    let bp = state.block_producer.as_ref().unwrap();
+    assert_eq!(
+        bp.parent_change(&tip, now),
+        Some(super::ParentChange::GiveUp)
+    );
+    // 20 s later the old proof still runs.
+    assert_eq!(
+        bp.parent_change(&tip, at(start, -40)),
+        Some(super::ParentChange::GiveUp)
+    );
+    let discard = BlockProducerAction::WonSlotDiscard {
+        reason: BlockProducerWonSlotDiscardReason::ParentChanged,
+    };
+    assert!(discard.is_enabled(&state, now));
+    assert!(!BlockProducerAction::WonSlotRebuild.is_enabled(&state, now));
+
+    // Proved and waiting for the slot: the prover is free.
+    let mut proved = bp.clone();
+    let BlockProducerCurrentState::BlockProvePending {
+        won_slot,
+        chain,
+        block,
+        block_hash,
+        ..
+    } = proved.current.clone()
+    else {
+        unreachable!()
+    };
+    proved.current = BlockProducerCurrentState::BlockProveSuccess {
+        time: now,
+        won_slot,
+        chain,
+        block,
+        block_hash,
+        proof: ledger::dummy::dummy_blockchain_proof(),
+    };
+    assert_eq!(
+        proved.parent_change(&tip, at(start, -10)),
+        Some(super::ParentChange::Rebuild)
+    );
+    assert_eq!(
+        proved.parent_change(&tip, at(start, -5)),
+        Some(super::ParentChange::GiveUp)
+    );
+
+    reduce(&mut state, now, discard);
+    let current = &state.block_producer.as_ref().unwrap().current;
+    assert!(
+        matches!(
+            current,
+            BlockProducerCurrentState::WonSlotDiscarded {
+                reason: BlockProducerWonSlotDiscardReason::ParentChanged,
+                ..
+            }
+        ),
+        "{current:?}"
+    );
+    let found = state
+        .block_producer
+        .with(None, |bp| bp.next_won_slot(slot, &tip));
+    assert_eq!(found.map(|won_slot| won_slot.global_slot()), Some(next));
+}
+
+/// The time from a block's parent chosen to its proof verified is measured
+/// on the producer's own actions; a rebuild of the same slot is not.
+#[test]
+fn a_produced_block_measures_its_production_time() {
+    use std::time::Duration;
+    let genesis = genesis();
+    let slot = 3;
+    let start = genesis.slot_time(slot);
+    let began = at(start, -6);
+    let mut state = node(&genesis, began, &[slot]);
+    state.transition_frontier.genesis = TransitionFrontierGenesisState::ProveSuccess {
+        time: began,
+        genesis: genesis.block.clone(),
+    };
+    state.block_producer.as_mut().unwrap().current = BlockProducerCurrentState::WonSlot {
+        time: began,
+        won_slot: genesis.won_slot(slot),
+    };
+    reduce(&mut state, began, BlockProducerAction::WonSlotProduceInit);
+
+    let done = at(start, 2);
+    let producer = state.block_producer.as_mut().unwrap();
+    let BlockProducerCurrentState::BlockProvePending {
+        won_slot,
+        chain,
+        block,
+        block_hash,
+        ..
+    } = proving(&genesis, began, slot)
+    else {
+        unreachable!()
+    };
+    producer.current = BlockProducerCurrentState::BlockProveSuccess {
+        time: done,
+        won_slot,
+        chain,
+        block,
+        block_hash,
+        proof: ledger::dummy::dummy_blockchain_proof(),
+    };
+    let proved = producer.current.clone();
+    reduce(&mut state, done, BlockProducerAction::BlockProduced);
+    let producer = state.block_producer.as_mut().unwrap();
+    assert_eq!(producer.production_estimate(), Duration::from_secs(8));
+
+    // The same slot built again is not measured.
+    producer.current = BlockProducerCurrentState::WonSlot {
+        time: done,
+        won_slot: genesis.won_slot(slot),
+    };
+    reduce(
+        &mut state,
+        at(start, 1),
+        BlockProducerAction::WonSlotProduceInit,
+    );
+    state.block_producer.as_mut().unwrap().current = proved;
+    reduce(
+        &mut state,
+        at(start, 60),
+        BlockProducerAction::BlockProduced,
+    );
+    assert_eq!(
+        state.block_producer.as_ref().unwrap().production_estimate(),
+        Duration::from_secs(8)
+    );
+}
+
 mod vrf_waiting {
     use super::*;
     use crate::block_producer::vrf_evaluator::{

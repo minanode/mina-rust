@@ -160,6 +160,12 @@ const DISCARD_REASONS: Record<
     reason:
       "The chain switched to a fork with another staking ledger, where this slot isn't ours.",
   },
+  ParentChanged: {
+    outcome: "missed",
+    tone: "warn",
+    reason:
+      "A new block arrived before the slot started, too late to build ours again on it.",
+  },
   ProofGenerationFailed: {
     outcome: "missed",
     tone: "error",

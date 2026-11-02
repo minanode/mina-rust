@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
 
 use ledger::scan_state::transaction_logic::valid;
 use mina_core::{
@@ -41,6 +45,130 @@ pub struct BlockProducerEnabled {
     /// same win for the same parent again.
     #[serde(default)]
     pub epoch_data_refused: Option<RefusedWin>,
+    /// How long our recent blocks took to produce.
+    #[serde(default)]
+    pub production_times: BlockProductionTimes,
+}
+
+/// When to start producing a block, ahead of its won slot.
+///
+/// OCaml starts at the slot's start and proves in seconds. A browser proves a
+/// block in about 95 s, longer than a 90 s slot, so a web node must start a
+/// slot or more ahead. The lead is the measured production time plus a margin,
+/// at least `min` and at most `max`. It is also at most a slot less
+/// `previous_block_allowance`: the parent is chosen when production starts, and
+/// starting earlier would choose it before the previous slot's block arrives.
+/// OCaml blocks have reached us 9-10 s into their slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProductionLeadPolicy {
+    /// The production time assumed until one is measured.
+    pub default_estimate: Duration,
+    /// Added to the production time, for its variation.
+    pub margin: Duration,
+    /// The shortest lead. It takes precedence over both caps.
+    pub min: Duration,
+    /// The longest lead.
+    pub max: Duration,
+    /// The part of the previous slot left for its block to arrive.
+    pub previous_block_allowance: Duration,
+}
+
+impl ProductionLeadPolicy {
+    /// A native node starts 6 s ahead, whatever it measures.
+    pub const NATIVE: Self = Self {
+        default_estimate: Duration::from_secs(6),
+        margin: Duration::ZERO,
+        min: Duration::from_secs(6),
+        max: Duration::from_secs(6),
+        previous_block_allowance: Duration::from_secs(30),
+    };
+
+    /// A web node starts its measured production time ahead, and 20 s at
+    /// least, as it did before it measured.
+    pub const WEB: Self = Self {
+        default_estimate: Duration::from_secs(95),
+        margin: Duration::from_secs(10),
+        min: Duration::from_secs(20),
+        max: Duration::MAX,
+        previous_block_allowance: Duration::from_secs(30),
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub const PLATFORM: Self = Self::NATIVE;
+    #[cfg(target_arch = "wasm32")]
+    pub const PLATFORM: Self = Self::WEB;
+
+    /// The lead for a block that takes `estimate` to produce, with slots of
+    /// `slot` each.
+    pub fn lead(&self, estimate: Duration, slot: Duration) -> Duration {
+        estimate
+            .saturating_add(self.margin)
+            .min(self.max)
+            .min(slot.saturating_sub(self.previous_block_allowance))
+            .max(self.min)
+    }
+}
+
+/// How long our recent blocks took to produce: from the parent chosen to the
+/// proof verified.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+pub struct BlockProductionTimes {
+    /// The global slot of the latest production started.
+    slot: Option<u32>,
+    /// When the production being measured started.
+    started: Option<redux::Timestamp>,
+    /// The latest durations, in nanoseconds, oldest first.
+    recent: VecDeque<u64>,
+}
+
+impl BlockProductionTimes {
+    /// How many durations are kept.
+    pub const KEPT: usize = 5;
+
+    /// Production of a block for global slot `slot` starts at `now`. Only the
+    /// first production for a slot is measured: one that rebuilds the block
+    /// may wait for the proof it replaces.
+    pub fn start(&mut self, slot: u32, now: redux::Timestamp) {
+        let first = self.slot != Some(slot);
+        self.slot = Some(slot);
+        self.started = first.then_some(now);
+    }
+
+    /// The block being measured is proved at `now`. A block whose proof was
+    /// retried is not measured: it took two proofs.
+    pub fn finish(&mut self, now: redux::Timestamp, measured: bool) {
+        let Some(started) = self.started.take() else {
+            return;
+        };
+        if !measured {
+            return;
+        }
+        if self.recent.len() >= Self::KEPT {
+            self.recent.pop_front();
+        }
+        self.recent
+            .push_back(u64::from(now).saturating_sub(u64::from(started)));
+    }
+
+    /// The median of the kept durations, the greater middle one of an even
+    /// number, or `default` with none.
+    pub fn estimate(&self, default: Duration) -> Duration {
+        let mut sorted: Vec<u64> = self.recent.iter().copied().collect();
+        sorted.sort_unstable();
+        sorted
+            .get(sorted.len() / 2)
+            .map_or(default, |&ns| Duration::from_nanos(ns))
+    }
+}
+
+/// What to do about our block when the best tip changes its parent before
+/// the won slot starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParentChange {
+    /// Build it again on the new parent.
+    Rebuild,
+    /// Give the slot up: a new block would not be ready in time.
+    GiveUp,
 }
 
 /// A win refused for its parent's epoch data, and the parent.
@@ -215,6 +343,9 @@ pub enum BlockProducerWonSlotDiscardReason {
     /// The block would extend a parent selecting other epoch data (seed,
     /// staking ledger or total currency) than the win was evaluated with.
     EpochDataChanged,
+    /// The best tip changed our block's parent before the slot started, too
+    /// late to build the block again.
+    ParentChanged,
 }
 
 impl BlockProducerState {
@@ -228,6 +359,7 @@ impl BlockProducerState {
             proof_retried: false,
             uptime_produced_block: None,
             epoch_data_refused: None,
+            production_times: Default::default(),
         }))
     }
 
@@ -393,6 +525,102 @@ impl BlockProducerEnabled {
         });
     }
 
+    /// How long a block takes to produce on this node: measured, or assumed
+    /// until it is.
+    pub fn production_estimate(&self) -> Duration {
+        self.production_times
+            .estimate(ProductionLeadPolicy::PLATFORM.default_estimate)
+    }
+
+    /// How long before its won slot starts to start producing a block.
+    pub fn production_lead(&self) -> Duration {
+        ProductionLeadPolicy::PLATFORM.lead(
+            self.production_estimate(),
+            Duration::from_nanos(super::slot_duration_ns()),
+        )
+    }
+
+    /// Whether to wait before producing the won slot's block.
+    pub fn won_slot_should_wait(&self, now: redux::Timestamp) -> bool {
+        matches!(self.current, BlockProducerCurrentState::WonSlot { .. })
+            && !self.won_slot_should_produce(now)
+    }
+
+    /// Whether to start producing the won slot's block.
+    pub fn won_slot_should_produce(&self, now: redux::Timestamp) -> bool {
+        self.won_slot_is_due(now, Duration::ZERO)
+    }
+
+    /// Whether the won slot we wait for is due `lead` before its block is:
+    /// [`BlockProducerCurrentState::won_slot_is_due`] with the production
+    /// lead.
+    pub fn won_slot_is_due(&self, now: redux::Timestamp, lead: Duration) -> bool {
+        self.current
+            .won_slot_is_due(now, self.production_lead().saturating_add(lead))
+    }
+
+    /// What to do about our block when `best_tip`, at `now`, is not on its
+    /// parent, if anything.
+    ///
+    /// OCaml chooses the parent when the slot starts. A block started earlier
+    /// must end up on the parent OCaml would choose, never on a stale one. So
+    /// until the slot starts, a best tip on another parent has the block built
+    /// again, if a new one can be proved and sent before the slot ends, or
+    /// else the slot given up. A proof being made cannot be stopped, so the
+    /// new one waits for it. From the slot's start the parent stays, as in
+    /// OCaml, and selection decides ([`Self::won_slot_should_discard`]).
+    ///
+    /// Only a built block is checked. One being built is checked once built,
+    /// before its proof is asked for.
+    pub fn parent_change(
+        &self,
+        best_tip: &ArcBlockWithHash,
+        now: redux::Timestamp,
+    ) -> Option<ParentChange> {
+        let won_slot = self.current.won_slot()?;
+        if now >= won_slot.slot_time
+            || self.current.candidate_block().is_none()
+            || !self.current.parent_is_stale(best_tip)
+        {
+            return None;
+        }
+        let policy = ProductionLeadPolicy::PLATFORM;
+        let to_ns = |duration: Duration| u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
+        let estimate = to_ns(self.production_estimate().saturating_add(policy.margin));
+        let prover_free = match &self.current {
+            BlockProducerCurrentState::BlockProvePending { time, .. } => time
+                .checked_add(estimate)
+                .map_or(redux::Timestamp::new(u64::MAX), |free| free.max(now)),
+            _ => now,
+        };
+        let inject_delay_ns =
+            super::effective_block_inject_delay_ms(self.config.block_inject_delay_ms)
+                .saturating_mul(1_000_000);
+        let sent = prover_free
+            .checked_add(estimate)
+            .and_then(|ready| ready.checked_add(inject_delay_ns));
+        Some(match sent {
+            Some(sent) if sent < won_slot.next_slot_time() => ParentChange::Rebuild,
+            _ => ParentChange::GiveUp,
+        })
+    }
+
+    /// Why to give up the won slot at `now`, with `best_tip`, if we are to:
+    /// [`BlockProducerCurrentState::won_slot_should_discard`], but a block to
+    /// build again on a new parent is kept, and one that cannot be is given
+    /// up ([`Self::parent_change`]).
+    pub fn won_slot_should_discard(
+        &self,
+        best_tip: &ArcBlockWithHash,
+        now: redux::Timestamp,
+    ) -> Option<BlockProducerWonSlotDiscardReason> {
+        match self.parent_change(best_tip, now) {
+            Some(ParentChange::Rebuild) => None,
+            Some(ParentChange::GiveUp) => Some(BlockProducerWonSlotDiscardReason::ParentChanged),
+            None => self.current.won_slot_should_discard(best_tip, now),
+        }
+    }
+
     /// The next won slot to produce a block in, from `cur_global_slot` on,
     /// that `best_tip` may not beat, but for a won slot already tried
     /// ([`BlockProducerCurrentState::won_slot_search_start`]).
@@ -479,44 +707,46 @@ impl BlockProducerCurrentState {
         }
     }
 
-    pub fn won_slot_should_wait(&self, now: redux::Timestamp) -> bool {
-        matches!(self, Self::WonSlot { .. }) && !self.won_slot_should_produce(now)
-    }
-
-    pub fn won_slot_should_produce(&self, now: redux::Timestamp) -> bool {
-        self.won_slot_is_due(now, Duration::ZERO)
-    }
-
-    /// Whether the won slot we wait for starts within `lead` from `now`,
-    /// plus the time a block takes to produce, and has not ended: with no
-    /// lead, it is time to start producing the block; with one, to start
-    /// what must be ready by then, such as the genesis block's proof
+    /// Whether the won slot we wait for starts within `lead` from `now` and
+    /// has not ended: with the production lead
+    /// ([`BlockProducerEnabled::production_lead`]), it is time to start
+    /// producing the block; with more, to start what must be ready by then,
+    /// such as the genesis block's proof
     /// ([`crate::State::producing_block_after_genesis`]). The end does not
     /// depend on the lead, so a slot that has started stays due to its end.
     pub fn won_slot_is_due(&self, now: redux::Timestamp, lead: Duration) -> bool {
-        // TODO(binier): maybe have runtime estimate
-        #[cfg(not(target_arch = "wasm32"))]
-        const BLOCK_PRODUCTION_ESTIMATE: u64 = Duration::from_secs(6).as_nanos() as u64;
-        #[cfg(target_arch = "wasm32")]
-        const BLOCK_PRODUCTION_ESTIMATE: u64 = Duration::from_secs(20).as_nanos() as u64;
-
         match self {
             Self::WonSlot { won_slot, .. } | Self::WonSlotWait { won_slot, .. } => {
-                let slot_upper_bound = won_slot.next_slot_time();
-                let lead = u64::try_from(lead.as_nanos()).expect("overflow");
-                let estimated_produced_time = now
-                    .checked_add(BLOCK_PRODUCTION_ESTIMATE)
-                    .and_then(|time| time.checked_add(lead))
-                    .expect("overflow");
-                estimated_produced_time >= won_slot.slot_time && now < slot_upper_bound
+                let lead = u64::try_from(lead.as_nanos()).unwrap_or(u64::MAX);
+                let start = u64::from(won_slot.slot_time).saturating_sub(lead);
+                u64::from(now) >= start && now < won_slot.next_slot_time()
             }
             _ => false,
         }
     }
 
+    /// Whether the best tip is on another parent than our block: the parent
+    /// [`super::BlockProducerAction::WonSlotProduceInit`] would choose now, the
+    /// best tip or, if it is of our slot, its parent.
+    pub fn parent_is_stale(&self, best_tip: &ArcBlockWithHash) -> bool {
+        let (Some(won_slot), Some(parent)) = (
+            self.won_slot(),
+            self.parent_chain().and_then(|chain| chain.last()),
+        ) else {
+            return false;
+        };
+        let expected = if best_tip.global_slot() == won_slot.global_slot() {
+            best_tip.pred_hash()
+        } else {
+            best_tip.hash()
+        };
+        parent.hash() != expected
+    }
+
     /// The global slot to search the next won slot from, at `cur_global_slot`:
     /// that one, or the one after a won slot already tried, whose block we
-    /// injected, could not prove, found beaten or did not start in time. As a
+    /// injected, could not prove, found beaten, could not build again on a new
+    /// parent in time or did not start in time. As a
     /// best tip of its own slot no longer rules it out, such a slot would
     /// otherwise be found again while it lasts, built and proved again. OCaml
     /// takes each won slot off a queue, so it tries a slot once, whatever
@@ -532,7 +762,8 @@ impl BlockProducerCurrentState {
                     BlockProducerWonSlotDiscardReason::ProofGenerationFailed
                     | BlockProducerWonSlotDiscardReason::ProofVerificationFailed
                     | BlockProducerWonSlotDiscardReason::BestTipSuperior
-                    | BlockProducerWonSlotDiscardReason::WonSlotExpired,
+                    | BlockProducerWonSlotDiscardReason::WonSlotExpired
+                    | BlockProducerWonSlotDiscardReason::ParentChanged,
                 ..
             }
             | Self::Injected { won_slot, .. } => {
@@ -747,17 +978,19 @@ mod tests {
         let ms = |ms: u64| ms * 1_000_000;
         let start = redux::Timestamp::new(ms(1_000_000_000));
         let state = won_slot_at(start);
+        let native = ProductionLeadPolicy::NATIVE;
+        let lead = native.lead(native.default_estimate, Duration::from_millis(window_ms));
         let at = |offset_ms: i64| {
             let ns = u64::from(start) as i64 + offset_ms * 1_000_000;
-            state.won_slot_should_produce(redux::Timestamp::new(ns as u64))
+            state.won_slot_is_due(redux::Timestamp::new(ns as u64), lead)
         };
 
         assert!(!at(-60_000));
-        assert!(at(-1_000), "within the production estimate before the slot");
+        assert!(at(-1_000), "within the production lead before the slot");
         assert!(at(0));
         assert!(at(window_ms as i64 - 1));
         assert!(!at(window_ms as i64), "the slot is over");
         assert!(!at(150_000), "the slot is over, though 180 s are not");
-        assert!(state.won_slot_should_wait(redux::Timestamp::new(u64::from(start) - ms(60_000))));
+        assert!(!state.won_slot_is_due(redux::Timestamp::new(u64::from(start) - ms(60_000)), lead));
     }
 }
