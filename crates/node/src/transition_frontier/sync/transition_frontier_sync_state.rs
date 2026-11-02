@@ -119,16 +119,28 @@ impl TransitionFrontierSyncLedgerPending {
             return;
         }
 
-        if self
-            .ledger
-            .staged()
-            .is_some_and(|staged| staged.is_parts_fetched())
-            && root_block.pred_hash() == old_root_block.hash()
+        if self.ledger.staged().is_some_and(|staged| {
+            staged.is_parts_fetched()
+                || (staged.is_parts_request_live(time)
+                    && staged.target().snarked_ledger_hash == *root_block.snarked_ledger_hash())
+        }) && root_block.pred_hash() == old_root_block.hash()
         {
             // Optimization. Prevent changing staging ledger target,
             // if the new root block is the extension of the old one.
             // Since in such case, we can reuse the old reconstructed
             // staged ledger to reconstruct the new one.
+            //
+            // The same while a peer is still sending the parts, if the
+            // snarked ledger is the same (WEB-ROOT-RETARGET): the new root
+            // would fetch tens of megabytes again, and a slow link would
+            // start over with each block. OCaml's bootstrap retargets only
+            // while the root snarked ledger syncs, and fetches the staged
+            // ledger parts of the root it ended on, whatever the best tip
+            // does meanwhile. The blocks from that root on are then applied
+            // as with parts fetched. If the request ends without the parts,
+            // `LedgerRootRetarget` targets the current root.
+            // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/bootstrap_controller/bootstrap_controller.ml#L88-L93>
+            // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/bootstrap_controller/bootstrap_controller.ml#L443-L475>
             self.root_block_updates.push(old_root_block);
             return;
         }
@@ -136,6 +148,31 @@ impl TransitionFrontierSyncLedgerPending {
         self.root_block_updates = Default::default();
         self.ledger
             .update_target(time, SyncLedgerTarget::root(root_block));
+    }
+
+    /// Whether the staged ledger target was kept on an earlier root while its
+    /// parts were being fetched (`update_root_ledger_target`), and the request
+    /// for them has since failed or gone stale.
+    pub fn is_kept_root_parts_request_lost(&self, now: Timestamp) -> bool {
+        !self.root_block_updates.is_empty()
+            && self.ledger.staged().is_some_and(|staged| {
+                !staged.is_parts_fetched() && !staged.is_parts_request_live(now)
+            })
+    }
+
+    /// Targets the current root after the request for a kept root's parts
+    /// was lost, as a best tip update would have when the root moved:
+    /// the same snarked ledger, so the staged ledger parts only.
+    ///
+    /// A peer answers for a root it has retired too, from its root history,
+    /// but OCaml's bootstrap starts its cycle again when the staged ledger
+    /// download fails, instead of asking again, and so does this.
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/bootstrap_controller/bootstrap_controller.ml#L478-L508>
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/sync_handler/sync_handler.ml#L117-L167>
+    pub fn retarget_root_ledger(&mut self, time: Timestamp) {
+        self.root_block_updates = Default::default();
+        self.ledger
+            .update_target(time, SyncLedgerTarget::root(&self.root_block));
     }
 }
 

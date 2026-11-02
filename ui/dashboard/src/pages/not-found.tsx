@@ -8,7 +8,7 @@ import { Link } from "../app/router";
 
 export function NotFoundPage({ path }: { path: string }) {
   return (
-    <div>
+    <>
       <PageHeader title="No page here" />
       <EmptyState
         icon={<Compass />}
@@ -22,6 +22,6 @@ export function NotFoundPage({ path }: { path: string }) {
           </Button>
         }
       />
-    </div>
+    </>
   );
 }

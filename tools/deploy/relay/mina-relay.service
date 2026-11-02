@@ -52,9 +52,21 @@ RestrictSUIDSGID=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
 LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectProc=invisible
+UMask=0027
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
 CapabilityBoundingSet=
 AmbientCapabilities=
+# Measured on relay1: about 0.7 GiB and 15 tasks after a start. The limits
+# leave the 8 GiB host room for nginx, coturn and the system, and restart a
+# runaway node instead of exhausting the host's memory.
+MemoryHigh=4G
+MemoryMax=5G
+TasksMax=256
 
 [Install]
 WantedBy=multi-user.target

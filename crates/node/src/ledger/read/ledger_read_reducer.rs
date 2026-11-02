@@ -641,6 +641,7 @@ mod tests {
                 limits: Default::default(),
                 peer_discovery: false,
                 seed_only: false,
+                sharing: Default::default(),
                 meshsub: Default::default(),
                 catchup_rpc: Default::default(),
             },

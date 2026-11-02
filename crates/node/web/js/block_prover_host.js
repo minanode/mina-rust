@@ -179,8 +179,8 @@ export function pinnedWasm() {
 }
 
 // The pinned WASM's bytes, or an error: bytes that are not the page's are
-// never compiled. The realm's document embeds this function's source;
-// exported for its test (frontend/tests/block-prover-host.test.mjs).
+// never compiled. The realm calls it; exported for its test
+// (frontend/tests/block-prover-host.test.mjs).
 export async function verifiedWasm(pin, fetchFn = fetch) {
   const response = await fetchFn(pin.url);
   if (!response.ok) throw new Error("prover WASM " + pin.url + ": HTTP " + response.status);
@@ -193,10 +193,11 @@ export async function verifiedWasm(pin, fetchFn = fetch) {
   return bytes;
 }
 
-// The iframe's document. It marks its realm, wraps Worker so that it owns
-// every worker the prover starts, then imports the module: with a pinned
-// WASM, from bytes it has checked against the pin.
-function realmDocument(glueUrl, generation, origin, wasm) {
+// The iframe's document: the realm's constants, as data, and this module as
+// its script, so that the page's Content-Security-Policy needs no inline
+// script. The module finds the constants (runRealm, below). Exported for its
+// test.
+export function realmDocument(glueUrl, generation, origin, wasm) {
   const constants = JSON.stringify({
     glueUrl,
     generation,
@@ -205,159 +206,167 @@ function realmDocument(glueUrl, generation, origin, wasm) {
     MAX_REQUEST_BYTES,
     MAX_RESPONSE_BYTES,
   }).replace(/</g, "\\u003c");
+  const script = import.meta.url.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
   return `<!doctype html><meta charset="utf-8"><title>Mina block prover</title>
-<script type="module">
-const C = ${constants};
-globalThis.__MINA_BLOCK_PROVER_REALM__ = true;
-const post = (message, transfer = []) =>
-  parent.postMessage(message, C.origin, transfer);
-let dead = false;
-let stopping = false;
-function fail(reason) {
-  if (dead) return;
-  dead = true;
-  post({ op: "host-failed", reason });
+<script type="application/json" id="${REALM_CONFIG}">${constants}</script>
+<script type="module" src="${script}"></script>`;
 }
-const NativeWorker = globalThis.Worker;
-const owned = new Set();
-let spawned = 0;
-globalThis.Worker = class extends NativeWorker {
-  constructor(url, options = {}) {
-    // Read each option: wasm_thread's module-worker polyfill probes support
-    // with a non-enumerable "type" getter, which a spread skips, and then
-    // takes over Worker with classic workers that read a module URL from
-    // the first line of the name. So the tag goes at the end of the name.
-    const tag = "mina-block-prover-" + C.generation;
-    const name = options.name ? options.name + " " + tag : tag;
-    super(url, { type: options.type, credentials: options.credentials, name });
-    owned.add(this);
-    spawned++;
-    this.addEventListener("error", event => {
-      event.preventDefault();
-      if (!stopping) fail("prover worker error: " + event.message);
-    });
-    this.addEventListener("messageerror", () => {
-      if (!stopping) fail("prover worker message error");
-    });
+
+const REALM_CONFIG = "mina-block-prover-realm";
+
+// The realm's own code, run when this module is the iframe's script. It
+// marks its realm, wraps Worker so that it owns every worker the prover
+// starts, then imports the module: with a pinned WASM, from bytes it has
+// checked against the pin.
+function runRealm(C) {
+  globalThis.__MINA_BLOCK_PROVER_REALM__ = true;
+  const post = (message, transfer = []) =>
+    parent.postMessage(message, C.origin, transfer);
+  let dead = false;
+  let stopping = false;
+  function fail(reason) {
+    if (dead) return;
+    dead = true;
+    post({ op: "host-failed", reason });
   }
-  postMessage(...args) {
-    this.hasWork = true;
-    super.postMessage(...args);
-  }
-  terminate() {
-    owned.delete(this);
-    super.terminate();
-    // wasm_thread probes module support with an empty worker; only a
-    // worker that was given work can take a request down with it.
-    if (this.hasWork && !stopping) fail("prover worker terminated");
-  }
-};
-globalThis.stopBlockProverWorkers = () => {
-  stopping = true;
-  const count = owned.size;
-  for (const worker of owned) worker.terminate();
-  owned.clear();
-  return count;
-};
-globalThis.blockProverWorkerCounts = () => ({ owned: owned.size, spawned });
-// Removing the iframe unloads this document: stop the pool first.
-addEventListener("pagehide", () => {
-  globalThis.stopBlockProverWorkers();
-  fail("prover host unloaded");
-});
-addEventListener("error", event => fail("prover host error: " + event.message));
-addEventListener("unhandledrejection", event =>
-  fail("prover host rejection: " + event.reason),
-);
-${verifiedWasm}
-let glue;
-let ready = false;
-let busy = false;
-addEventListener("message", async event => {
-  if (event.source !== parent) return;
-  const { id, op } = event.data ?? {};
-  if (dead) return post({ id, error: "prover host failed", fatal: true });
-  if (busy) return post({ id, error: "prover host busy", fatal: false });
-  busy = true;
-  try {
-    if (op === "setup") {
-      const started = performance.now();
-      glue = await import(C.glueUrl);
-      let bytes;
-      try {
-        bytes = C.wasm ? await verifiedWasm(C.wasm) : undefined;
-      } catch (error) {
-        fail(String(error?.message ?? error));
-        return post({ id, error: String(error?.message ?? error), fatal: true });
-      }
-      const wasm = await glue.default(bytes ? { module_or_path: bytes } : undefined);
-      globalThis.blockProverMemory = wasm.memory;
-      const instantiateMs = performance.now() - started;
-      const report = JSON.parse(
-        await glue.block_prover_realm_setup(
-          event.data.network,
-          event.data.threads,
-          event.data.block,
-          event.data.work,
-        ),
-      );
-      report.instantiate_ms = instantiateMs;
-      report.linear_bytes = wasm.memory.buffer.byteLength;
-      post({ id, report: JSON.stringify(report) });
-    } else if (op === "install-key") {
-      const key = event.data.key;
-      if (!(key instanceof ArrayBuffer) || key.byteLength > ${MAX_KEY_BYTES})
-        throw new Error("invalid producer key message");
-      glue.block_prover_realm_install_key(new Uint8Array(key));
-      ready = true;
-      post({ id, ok: true });
-    } else if (op === "work-ready") {
-      // A host that proves only SNARK work has no key to install.
-      ready = true;
-      post({ id, ok: true });
-    } else if (op === "prove-work") {
-      if (!ready) throw new Error("prover host is not set up");
-      const buffer = event.data.buffer;
-      if (!(buffer instanceof ArrayBuffer) || buffer.byteLength > C.MAX_REQUEST_BYTES)
-        throw new Error("SNARK work request exceeds the size limit");
-      const response = await glue.block_prover_realm_prove_work(new Uint8Array(buffer));
-      if (response.byteLength > C.MAX_RESPONSE_BYTES) {
-        fail("SNARK work response exceeds the size limit");
-        return post({ id, error: "response exceeds the size limit", fatal: true });
-      }
-      const out = response.buffer.byteLength === response.byteLength
-        ? response.buffer
-        : response.slice().buffer;
-      post({ id, buffer: out, linearBytes: wasm_bytes() }, [out]);
-    } else if (op === "prove") {
-      if (!ready) throw new Error("prover host is not set up");
-      const buffer = event.data.buffer;
-      if (!(buffer instanceof ArrayBuffer) || buffer.byteLength > C.MAX_REQUEST_BYTES)
-        throw new Error("block prover request exceeds the size limit");
-      // The size is checked before this copy into the prover's memory.
-      const response = await glue.block_prover_realm_prove(new Uint8Array(buffer));
-      if (response.byteLength > C.MAX_RESPONSE_BYTES) {
-        fail("block prover response exceeds the size limit");
-        return post({ id, error: "response exceeds the size limit", fatal: true });
-      }
-      const out = response.buffer.byteLength === response.byteLength
-        ? response.buffer
-        : response.slice().buffer;
-      post({ id, buffer: out, linearBytes: wasm_bytes() }, [out]);
-    } else {
-      throw new Error("unknown prover host operation: " + op);
+  const NativeWorker = globalThis.Worker;
+  const owned = new Set();
+  let spawned = 0;
+  globalThis.Worker = class extends NativeWorker {
+    constructor(url, options = {}) {
+      // Read each option: wasm_thread's module-worker polyfill probes support
+      // with a non-enumerable "type" getter, which a spread skips, and then
+      // takes over Worker with classic workers that read a module URL from
+      // the first line of the name. So the tag goes at the end of the name.
+      const tag = "mina-block-prover-" + C.generation;
+      const name = options.name ? options.name + " " + tag : tag;
+      super(url, { type: options.type, credentials: options.credentials, name });
+      owned.add(this);
+      spawned++;
+      this.addEventListener("error", event => {
+        event.preventDefault();
+        if (!stopping) fail("prover worker error: " + event.message);
+      });
+      this.addEventListener("messageerror", () => {
+        if (!stopping) fail("prover worker message error");
+      });
     }
-  } catch (error) {
-    post({ id, error: String(error?.message ?? error), fatal: false });
-  } finally {
-    busy = false;
+    postMessage(...args) {
+      this.hasWork = true;
+      super.postMessage(...args);
+    }
+    terminate() {
+      owned.delete(this);
+      super.terminate();
+      // wasm_thread probes module support with an empty worker; only a
+      // worker that was given work can take a request down with it.
+      if (this.hasWork && !stopping) fail("prover worker terminated");
+    }
+  };
+  globalThis.stopBlockProverWorkers = () => {
+    stopping = true;
+    const count = owned.size;
+    for (const worker of owned) worker.terminate();
+    owned.clear();
+    return count;
+  };
+  globalThis.blockProverWorkerCounts = () => ({ owned: owned.size, spawned });
+  // Removing the iframe unloads this document: stop the pool first.
+  addEventListener("pagehide", () => {
+    globalThis.stopBlockProverWorkers();
+    fail("prover host unloaded");
+  });
+  addEventListener("error", event => fail("prover host error: " + event.message));
+  addEventListener("unhandledrejection", event =>
+    fail("prover host rejection: " + event.reason),
+  );
+  let glue;
+  let ready = false;
+  let busy = false;
+  addEventListener("message", async event => {
+    if (event.source !== parent) return;
+    const { id, op } = event.data ?? {};
+    if (dead) return post({ id, error: "prover host failed", fatal: true });
+    if (busy) return post({ id, error: "prover host busy", fatal: false });
+    busy = true;
+    try {
+      if (op === "setup") {
+        const started = performance.now();
+        glue = await import(C.glueUrl);
+        let bytes;
+        try {
+          bytes = C.wasm ? await verifiedWasm(C.wasm) : undefined;
+        } catch (error) {
+          fail(String(error?.message ?? error));
+          return post({ id, error: String(error?.message ?? error), fatal: true });
+        }
+        const wasm = await glue.default(bytes ? { module_or_path: bytes } : undefined);
+        globalThis.blockProverMemory = wasm.memory;
+        const instantiateMs = performance.now() - started;
+        const report = JSON.parse(
+          await glue.block_prover_realm_setup(
+            event.data.network,
+            event.data.threads,
+            event.data.block,
+            event.data.work,
+          ),
+        );
+        report.instantiate_ms = instantiateMs;
+        report.linear_bytes = wasm.memory.buffer.byteLength;
+        post({ id, report: JSON.stringify(report) });
+      } else if (op === "install-key") {
+        const key = event.data.key;
+        if (!(key instanceof ArrayBuffer) || key.byteLength > MAX_KEY_BYTES)
+          throw new Error("invalid producer key message");
+        glue.block_prover_realm_install_key(new Uint8Array(key));
+        ready = true;
+        post({ id, ok: true });
+      } else if (op === "work-ready") {
+        // A host that proves only SNARK work has no key to install.
+        ready = true;
+        post({ id, ok: true });
+      } else if (op === "prove-work") {
+        if (!ready) throw new Error("prover host is not set up");
+        const buffer = event.data.buffer;
+        if (!(buffer instanceof ArrayBuffer) || buffer.byteLength > C.MAX_REQUEST_BYTES)
+          throw new Error("SNARK work request exceeds the size limit");
+        const response = await glue.block_prover_realm_prove_work(new Uint8Array(buffer));
+        if (response.byteLength > C.MAX_RESPONSE_BYTES) {
+          fail("SNARK work response exceeds the size limit");
+          return post({ id, error: "response exceeds the size limit", fatal: true });
+        }
+        const out = response.buffer.byteLength === response.byteLength
+          ? response.buffer
+          : response.slice().buffer;
+        post({ id, buffer: out, linearBytes: wasm_bytes() }, [out]);
+      } else if (op === "prove") {
+        if (!ready) throw new Error("prover host is not set up");
+        const buffer = event.data.buffer;
+        if (!(buffer instanceof ArrayBuffer) || buffer.byteLength > C.MAX_REQUEST_BYTES)
+          throw new Error("block prover request exceeds the size limit");
+        // The size is checked before this copy into the prover's memory.
+        const response = await glue.block_prover_realm_prove(new Uint8Array(buffer));
+        if (response.byteLength > C.MAX_RESPONSE_BYTES) {
+          fail("block prover response exceeds the size limit");
+          return post({ id, error: "response exceeds the size limit", fatal: true });
+        }
+        const out = response.buffer.byteLength === response.byteLength
+          ? response.buffer
+          : response.slice().buffer;
+        post({ id, buffer: out, linearBytes: wasm_bytes() }, [out]);
+      } else {
+        throw new Error("unknown prover host operation: " + op);
+      }
+    } catch (error) {
+      post({ id, error: String(error?.message ?? error), fatal: false });
+    } finally {
+      busy = false;
+    }
+  });
+  function wasm_bytes() {
+    return globalThis.blockProverMemory?.buffer.byteLength ?? 0;
   }
-});
-function wasm_bytes() {
-  return globalThis.blockProverMemory?.buffer.byteLength ?? 0;
-}
-post({ op: "host-ready" });
-</script>`;
+  post({ op: "host-ready" });
 }
 
 class Host {
@@ -656,4 +665,12 @@ export function retireBlockProverHost(generation, reason) {
   const host = hosts.get(generation);
   if (!host) return Promise.resolve(0);
   return host.retire(reason);
+}
+
+// In the prover's iframe this module is the document's script: its constants
+// are there. Anywhere else (the page, workers, the realm's own import of the
+// glue) there are none, and importing it only defines the exports.
+{
+  const config = globalThis.document?.getElementById(REALM_CONFIG);
+  if (config && globalThis !== globalThis.top) runRealm(JSON.parse(config.textContent));
 }

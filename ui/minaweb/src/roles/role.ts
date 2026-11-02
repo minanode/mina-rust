@@ -5,7 +5,7 @@
  * or changing one starts the node again: the page reloads, and its store
  * brings the chain back. The choice is this tab's (sessionStorage), and
  * holds no private key: the worker needs only a public key, and the
- * producer's key crosses the restart encrypted (keys.ts, HANDOFF_KEY).
+ * tab's key crosses the restart encrypted (handoff.ts, restart.ts).
  *
  * Devnet only: on any other network the page has no roles, whatever the
  * storage says.
@@ -17,7 +17,13 @@ import { looksLikePublicKey, writeVerified } from "./keys";
 export type Role =
   | { kind: "viewer" }
   | { kind: "worker"; publicKey: string; fee: string }
-  | { kind: "producer"; publicKey: string };
+  | {
+      kind: "producer";
+      publicKey: string;
+      /** Where its coinbase goes, if not to its own key (`run`'s
+       * `coinbase_receiver`, the native `--coinbase-receiver`). */
+      coinbaseReceiver?: string;
+    };
 
 export type RoleKind = Role["kind"];
 
@@ -52,7 +58,19 @@ export function parseRole(text: string | null, network: string): Role {
       typeof r.publicKey === "string" &&
       looksLikePublicKey(r.publicKey)
     ) {
-      return { kind: "producer", publicKey: r.publicKey };
+      const receiver = r.coinbaseReceiver;
+      if (receiver === undefined) {
+        return { kind: "producer", publicKey: r.publicKey };
+      }
+      // A receiver that isn't a key starts no producer: its coinbase
+      // would otherwise go somewhere the visitor didn't choose.
+      if (typeof receiver === "string" && looksLikePublicKey(receiver)) {
+        return {
+          kind: "producer",
+          publicKey: r.publicKey,
+          coinbaseReceiver: receiver,
+        };
+      }
     }
   } catch {
     // Not a role of ours.
@@ -92,12 +110,14 @@ export function writeRole(role: Role) {
 
 export interface RunRoleArgs {
   blockProducer: string | null;
+  coinbaseReceiver: string | null;
   snarker: string | null;
   snarkerFee: string | null;
 }
 
 /** `run`'s role arguments. The producer's private key is passed only for
- * a producer role whose public key it matches. */
+ * a producer role whose public key it matches; its coinbase receiver is
+ * null unless it chose one. */
 export function runRoleArgs(
   role: Role,
   producer: { publicKey: string; privateKey: string } | null,
@@ -106,6 +126,7 @@ export function runRoleArgs(
     case "worker":
       return {
         blockProducer: null,
+        coinbaseReceiver: null,
         snarker: role.publicKey,
         snarkerFee: role.fee,
       };
@@ -115,29 +136,38 @@ export function runRoleArgs(
       }
       return {
         blockProducer: producer.privateKey,
+        coinbaseReceiver: role.coinbaseReceiver ?? null,
         snarker: null,
         snarkerFee: null,
       };
     case "viewer":
-      return { blockProducer: null, snarker: null, snarkerFee: null };
+      return {
+        blockProducer: null,
+        coinbaseReceiver: null,
+        snarker: null,
+        snarkerFee: null,
+      };
   }
 }
 
 /**
- * `run`'s options object, from the build alone: the role never changes
- * it. In particular it never turns on `peerDiscovery` (PR #173): the node
- * dials the build's seed relays only and takes no incoming connections,
- * whatever it does.
+ * `run`'s options object, from the build and the visitor's own choices:
+ * the role never changes it. It never turns on `peerDiscovery` (PR #173):
+ * the node dials the build's seed relays only. It takes no incoming
+ * connections either, unless the visitor turned sharing on
+ * (boot/sharing.ts): then it takes the browsers those relays introduce.
  */
 export function runOptions(
   frontierStore: boolean,
   iceServers: unknown[] | null,
   frontierStoreReset = false,
+  sharing = false,
 ): Record<string, unknown> {
   return {
     frontierStore,
     ...(frontierStoreReset ? { frontierStoreReset: true } : {}),
     ...(iceServers ? { iceServers } : {}),
+    ...(sharing ? { sharing: true } : {}),
   };
 }
 

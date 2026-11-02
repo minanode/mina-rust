@@ -1,9 +1,11 @@
 /**
  * The confirmation before a role change, which starts the node again by
- * reloading the page. When the tab holds a key that isn't saved in this
- * browser, the reload would lose it: the visitor carries it across
- * encrypted with a passphrase, or says plainly to restart without it. The
- * confirm button waits for one or the other.
+ * reloading the page. The tab's key crosses the reload by itself
+ * (roles/handoff.ts). Where the browser can't do that, the first attempt
+ * says so and nothing restarts; then a key that isn't saved in this
+ * browser would be lost, so the visitor carries it across encrypted with a
+ * passphrase, or says plainly to restart without it. The confirm button
+ * waits for one or the other.
  */
 
 import * as React from "react";
@@ -13,6 +15,7 @@ import { Button } from "@minanode/design-system/components/button";
 import { Input } from "@minanode/design-system/components/input";
 import { Label } from "@minanode/design-system/components/label";
 
+import { HandoffError, handoffSupported } from "../roles/handoff";
 import { MIN_PASSPHRASE, passphraseProblem } from "../roles/keys";
 import { useKeys } from "../roles/hooks";
 import { keyAtRisk, restartWithKey, type KeyChoice } from "../roles/restart";
@@ -36,20 +39,22 @@ export function RestartConfirm({
   restart?: typeof restartWithKey;
 }) {
   const { key, saved } = useKeys();
-  // The producer's own start carries its key with its own passphrase.
-  const atRisk = keyAtRisk(key, saved);
+  // Set once the key can't cross the reload by itself.
+  const [fallback, setFallback] = React.useState(() => !handoffSupported());
+  const atRisk = fallback && keyAtRisk(key, saved);
   const [mode, setMode] = React.useState<"carry" | "drop">("carry");
   const [passphrase, setPassphrase] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  const choice: KeyChoice | null = !atRisk
-    ? null
-    : mode === "drop"
-      ? { kind: "drop" }
-      : passphraseProblem(passphrase)
-        ? null
-        : { kind: "carry", passphrase };
+  const choice: KeyChoice | null =
+    !fallback || !key
+      ? null
+      : !atRisk || mode === "drop"
+        ? { kind: "drop" }
+        : passphraseProblem(passphrase)
+          ? null
+          : { kind: "carry", passphrase };
   const ready = !atRisk || choice !== null;
 
   return (
@@ -59,7 +64,7 @@ export function RestartConfirm({
       data-restart-confirm
       className="flex flex-col gap-3 rounded-lg border border-destructive/40 bg-destructive/8 p-4"
     >
-      <p className="text-sm text-foreground">{message}</p>
+      <div className="text-sm text-foreground">{message}</div>
       {atRisk ? (
         <div className="flex flex-col gap-3" data-key-at-risk>
           <p className="flex gap-2 text-sm text-foreground">
@@ -111,7 +116,7 @@ export function RestartConfirm({
             need it: without one, the key and anything it holds are lost.
           </label>
         </div>
-      ) : key ? (
+      ) : fallback && key ? (
         <p className="text-sm text-muted-foreground">
           This tab's key is saved in this browser: unlock it on the key screen
           after the restart.
@@ -133,8 +138,9 @@ export function RestartConfirm({
             setBusy(true);
             setError(null);
             try {
-              await restart(role, key, saved, choice);
+              await restart(role, key, choice);
             } catch (e) {
+              if (e instanceof HandoffError) setFallback(true);
               setError(e instanceof Error ? e.message : String(e));
               setBusy(false);
             }

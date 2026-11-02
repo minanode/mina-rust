@@ -21,6 +21,10 @@ pub enum P2pPeerAction {
         peer_id: PeerId,
         best_tip: ArcBlockWithHash,
     },
+    /// Part of a long message has come from a WebRTC peer, which is still
+    /// sending: see [`crate::channels::P2pChannelsState::last_received`].
+    #[action_event(level = trace)]
+    Receiving { peer_id: PeerId },
     /// Remove peer from state
     Remove { peer_id: PeerId },
     /// Our dial to `peer_id` at `addr` was answered by another peer id,
@@ -39,6 +43,7 @@ impl P2pPeerAction {
             Self::Discovered { peer_id, .. } => peer_id,
             Self::Ready { peer_id, .. } => peer_id,
             Self::BestTipUpdate { peer_id, .. } => peer_id,
+            Self::Receiving { peer_id } => peer_id,
             Self::Remove { peer_id } => peer_id,
             Self::Stale { peer_id, .. } => peer_id,
         }
@@ -82,6 +87,7 @@ impl redux::EnablingCondition<P2pState> for P2pPeerAction {
                 // best tip.
                 state.get_ready_peer(peer_id).is_some()
             }
+            P2pPeerAction::Receiving { peer_id } => state.get_ready_peer(peer_id).is_some(),
             P2pPeerAction::Remove { peer_id } => {
                 state.peers.len() > state.config.limits.min_peers_in_state()
                     && state.peers.contains_key(peer_id)

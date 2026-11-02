@@ -62,7 +62,9 @@
 //! operations. These curves are specifically designed for efficient
 //! recursive zero-knowledge proof composition.
 
+mod key_file;
 mod public_key;
 mod secret_key;
+pub use key_file::KeyFileError;
 pub use public_key::AccountPublicKey;
 pub use secret_key::AccountSecretKey;

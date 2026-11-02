@@ -1,5 +1,6 @@
-/** After a role change: the key that crossed the restart encrypted, in this
- * tab's sessionStorage, waiting for its passphrase to be held again. */
+/** After a role change in a browser that couldn't carry the key by itself
+ * (roles/handoff.ts): the key that crossed the restart encrypted with a
+ * passphrase, in this tab's sessionStorage, waiting for it. */
 
 import * as React from "react";
 import { KeyRound } from "lucide-react";

@@ -50,6 +50,9 @@ pub use peer::*;
 mod p2p_config;
 pub use p2p_config::*;
 
+pub mod sharing;
+pub use sharing::{P2pSharing, P2pSharingPeerLimits, P2pSharingRelayLimits};
+
 mod p2p_event;
 pub use p2p_event::*;
 

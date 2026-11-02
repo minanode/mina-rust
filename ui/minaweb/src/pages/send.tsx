@@ -54,7 +54,7 @@ import {
   type SentStage,
 } from "../roles/payment";
 import { isOpen, sentStore, Tracker } from "../roles/sent";
-import { DevnetOnly, FAUCET_URL, NeedKey, RolesGate } from "./roles-common";
+import { FAUCET_URL, NeedKey, RolesGate } from "./roles-common";
 
 const TRACK_MS = 10_000;
 
@@ -84,11 +84,10 @@ export function SendPage() {
       <PageHeader
         eyebrow="devnet"
         title="Send"
-        description="A payment from this tab's key. The node signs it here, in the WASM, and passes it to the network through its relay."
+        description="A payment from this tab's key."
       />
       <RolesGate>
         <div className="flex max-w-3xl flex-col gap-6">
-          <DevnetOnly />
           {key ? <SendForm /> : <NeedKey what="Sending" />}
           <SentList />
         </div>

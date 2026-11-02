@@ -11,8 +11,9 @@
 // says more than its source. A human or reviewer pass is still needed before
 // publishing.
 // 3. Built pages load nothing from another origin, and the only external links
-//    are to the explorer, release repository, local dashboard or Mina's own
-//    docs (plus metadata).
+//    are to the explorer, release repository, local dashboard, the web node
+//    (minaweb.org, or a downloaded one on 127.0.0.1:8080) or Mina's own docs
+//    (plus metadata).
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -24,6 +25,8 @@ const allowedLinkHosts = new Set([
   "minanode.org",
   "localhost:3000",
   "127.0.0.1:3000",
+  "127.0.0.1:8080",
+  "minaweb.org",
   "github.com",
   "docs.minaprotocol.com",
 ]);

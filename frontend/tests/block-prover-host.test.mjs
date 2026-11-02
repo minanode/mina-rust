@@ -3,11 +3,12 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import {
   pinnedWasm,
+  realmDocument,
   verifiedWasm,
 } from '../../crates/node/web/js/block_prover_host.js';
 
 // W1 fix round: the prover's iframe instantiates the WASM again; with a
-// pinned WASM it checks the bytes first. Its document embeds this function.
+// pinned WASM it checks the bytes first. Its realm calls this function.
 const bytes = new TextEncoder().encode('\0asm prover').buffer;
 const sha256 = createHash('sha256').update(Buffer.from(bytes)).digest('hex');
 const url = 'https://assets.minaweb.org/wasm/x.wasm';
@@ -148,4 +149,23 @@ test('queued commands cannot recreate a host after startup failure', async () =>
   } finally {
     globalThis.Worker = prior;
   }
+});
+
+// MINAWEB-CSP: the realm's document runs no inline script, which the page's
+// Content-Security-Policy (script-src 'self') would refuse. Its constants are
+// a JSON data block; its one script is this module, from its own URL.
+test('the realm document has no inline script', () => {
+  const wasm = { url: 'https://assets.example/x.wasm', sha256: 'a'.repeat(64) };
+  const html = realmDocument('https://site.example/glue.js</script>', 3, 'https://site.example', wasm);
+  const scripts = [...html.matchAll(/<script([^>]*)>([^]*?)<\/script>/g)];
+  assert.equal(scripts.length, 2);
+  const [config, module] = scripts;
+  assert.match(config[1], /type="application\/json"/);
+  const constants = JSON.parse(config[2]);
+  assert.equal(constants.glueUrl, 'https://site.example/glue.js</script>');
+  assert.equal(constants.generation, 3);
+  assert.deepEqual(constants.wasm, wasm);
+  assert.ok(!config[2].includes('<'), 'the data block cannot close its element');
+  assert.equal(module[1], ` type="module" src="${new URL('../../crates/node/web/js/block_prover_host.js', import.meta.url).href}"`);
+  assert.equal(module[2], '');
 });

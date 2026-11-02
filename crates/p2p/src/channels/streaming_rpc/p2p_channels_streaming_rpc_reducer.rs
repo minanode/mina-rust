@@ -26,6 +26,16 @@ impl P2pChannelsStreamingRpcState {
         let peer_id = *action.peer_id();
         let p2p_state = state_context.get_substate_mut()?;
 
+        // The staged ledger is a bootstrap's: a sharing browser serves it to
+        // at most `max_bootstraps` browsers at once (crate::sharing); beyond
+        // that, an empty answer.
+        let mut refused = false;
+        if let P2pChannelsStreamingRpcAction::RequestReceived { .. } = &action {
+            refused = !p2p_state.sharing_serves(&peer_id, meta.time());
+            if !refused {
+                p2p_state.sharing_record_served(peer_id, meta.time());
+            }
+        }
         // This channel is WebRTC-only; OCaml serving budgets apply to libp2p.
         let channels_state = &mut p2p_state
             .get_ready_peer_mut(&peer_id)
@@ -231,6 +241,21 @@ impl P2pChannelsStreamingRpcState {
                     progress: StagedLedgerPartsSendProgress::LedgerGetIdle { time: meta.time() }
                         .into(),
                 };
+                if refused {
+                    mina_core::debug!(meta.time();
+                        kind = "P2pSharingBootstrapRefused",
+                        summary = "serving two bootstraps already",
+                        peer_id = display(peer_id),
+                    );
+                    let dispatcher = state_context.into_dispatcher();
+                    dispatcher.push(P2pChannelsStreamingRpcAction::ResponsePending { peer_id, id });
+                    dispatcher.push(P2pChannelsStreamingRpcAction::ResponseSendInit {
+                        peer_id,
+                        id,
+                        response: None,
+                    });
+                    return Ok(());
+                }
                 // async ledger request will be triggered by `LedgerReadAction::FindTodos`.
                 Ok(())
             }

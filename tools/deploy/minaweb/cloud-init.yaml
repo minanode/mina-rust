@@ -1,0 +1,46 @@
+#cloud-config
+# First boot of a relay host (docs/release/MINAWEB.md, "Provisioning"), the
+# same for every relay. It installs every pending update and reboots if one
+# needs it, turns on automatic security updates with reboots at 04:00 UTC,
+# installs the packages and the libraries build-coturn.sh's coturn needs,
+# and disables the distribution's flush-on-stop nftables unit. Ubuntu's
+# coturn package is never installed: its 4.6.1 is the version
+# CVE-2026-68554 affects. coturn.service stays masked until the runbook
+# installs the kit's unit after both firewalls. It holds no secret and no
+# host name: the identity and TURN secret are made on the host, and the rest
+# of "Relay installation" runs there afterwards.
+bootcmd:
+  # Once per instance: the runbook unmasks coturn after both firewalls.
+  - [cloud-init-per, once, mask-coturn, systemctl, mask, coturn.service]
+package_update: true
+package_upgrade: true
+package_reboot_if_required: true
+packages:
+  - nginx
+  - certbot
+  - ufw
+  - nftables
+  - python3
+  - unattended-upgrades
+  # coturn 4.18.0's run-time libraries (build-coturn.sh, "needs" lines).
+  - libevent-core-2.1-7t64
+  - libevent-extra-2.1-7t64
+  - libevent-openssl-2.1-7t64
+  - libevent-pthreads-2.1-7t64
+  - libmicrohttpd12t64
+  - libssl3t64
+write_files:
+  - path: /etc/apt/apt.conf.d/52mina-relay
+    permissions: "0644"
+    content: |
+      // Copied from tools/deploy/minaweb/unattended-upgrades-relay.conf.
+      // Set a different Automatic-Reboot-Time on each relay.
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      Unattended-Upgrade::Automatic-Reboot "true";
+      Unattended-Upgrade::Automatic-Reboot-WithUsers "true";
+      Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+      Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+runcmd:
+  - [systemctl, disable, --now, nftables.service]

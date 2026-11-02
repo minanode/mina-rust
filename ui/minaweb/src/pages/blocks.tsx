@@ -16,6 +16,7 @@ import {
 import { EmptyState } from "@minanode/design-system/patterns/empty-state";
 import { Amount } from "@minanode/design-system/patterns/amount";
 import { Hash } from "@minanode/design-system/patterns/hash";
+import { ExternalLink } from "@minanode/design-system/patterns/external-link";
 import { PageHeader } from "@minanode/design-system/patterns/page-header";
 import { PageSection } from "@minanode/design-system/patterns/page-section";
 import { TimeAgo } from "@minanode/design-system/patterns/relative-time";
@@ -105,6 +106,10 @@ export const ARRIVAL: Record<string, string> = {
   bestTip: "Best tip",
   local: "Produced here",
 };
+
+/** The docs section on blocks the node did not check. */
+export const NOT_CHECKED_DOCS_URL =
+  "https://minanode.org/docs/web-node-connections/#not-checked";
 
 export const OUTCOME: Record<
   ReturnType<typeof receiptOutcome>,
@@ -404,7 +409,7 @@ function Received() {
   return (
     <PageSection
       title="Blocks received"
-      description="Every block this node received, highest first, with the checks it ran on each in this tab."
+      description="Highest first, with this tab's checks."
       aside={<PolledAge polled={checks} staleAfterMs={POLL_MS * 4} />}
     >
       <Loaded polled={checks} what="the block checks" rows={8}>
@@ -468,11 +473,6 @@ function Received() {
           )
         }
       </Loaded>
-      <p className="max-w-prose text-sm text-pretty text-muted-foreground">
-        Blocks from the bootstrap show Not checked. The node fetched them by
-        hash, back from a best tip whose proof it checked. Each block that
-        arrives after that has its own proof checked.
-      </p>
     </PageSection>
   );
 }
@@ -483,7 +483,14 @@ export function BlocksPage() {
       <PageHeader
         eyebrow="Chain"
         title="Blocks"
-        description="This node's best chain, and every block it received with the checks it ran in this tab."
+        description={
+          <>
+            The best chain, and the blocks this node received.{" "}
+            <ExternalLink href={NOT_CHECKED_DOCS_URL}>
+              Web node docs
+            </ExternalLink>
+          </>
+        }
       />
       <BlockSearch />
       <BestChain />

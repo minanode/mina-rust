@@ -467,6 +467,7 @@ impl Cluster {
                 enabled_channels: ChannelId::iter_all().collect(),
                 peer_discovery: testing_config.peer_discovery,
                 seed_only: false,
+                sharing: Default::default(),
                 timeouts: testing_config.timeouts,
                 limits: {
                     let limits =

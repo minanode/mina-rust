@@ -228,34 +228,44 @@ the subject of the private measurement; they do not link to unavailable files.
 
 - Page: home, Web node card, web build text and the web build's second metric.
 - Says: "The full node in a browser tab, with nothing to install." and "The same
-  Rust code, compiled to WebAssembly. It syncs mainnet, verifies proofs, and
+  Rust code, compiled to WebAssembly. It syncs the chain, verifies proofs, and
   signs and sends transactions over WebRTC." The metric says "No install. Runs
-  in a tab. Open the page and it syncs." The card's status is C83.
+  in a tab. Open the page, press Start and it syncs." The card's status is C83.
 - Sources: `coordinator: private pre-release evidence; Web node and web build`
-- Figures: `WebAssembly`, `full node in a browser tab`, `syncs mainnet`
-- Caveat kept: none needed; "over WebRTC" is C21. The web node is "Coming soon"
-  (C83).
+- Figures: `WebAssembly`, `full node in a browser tab`, `syncs the chain`
+- Caveat kept: "over WebRTC" is C21. "press Start" joined the metric on 1
+  November 2026: since PR #253 nothing loads until the visitor presses Start.
+  The public web node at minaweb.org runs on devnet (C83). "syncs mainnet"
+  became "syncs the chain" on 1 November 2026, at the owner's request.
 
-### C83 Web node coming soon
+### C83 Web node on minaweb.org
 
-- Page: home, Web node card ("Coming soon" badge, "It follows this native
-  release shortly.") and the Get started web node card's "Coming soon" badge.
-  The Get started card's repeat of "It follows this native release shortly." was
-  removed in the DOCS-STYLE pass (25 October 2026).
-- Says: "Coming soon"; "It follows this native release shortly."
-- Sources: `coordinator: DOCS-R web node status, 2026-10-25`,
-  `coordinator: private pre-release evidence; Web node coming soon`
+- Page: home, Web node card ("Public devnet" badge and a minaweb.org link) and
+  the Get started web node card ("Available" badge; "Open it in a browser tab,
+  or download it and run it yourself.", with links to minaweb.org and Run the
+  web node yourself).
+- Says: "Public devnet"; "Available"; the web node runs at minaweb.org and from
+  the downloadable web archive.
+- Sources: `coordinator: WEB-DOCS-0.21.0 launch copy, 2026-11-01`,
+  `coordinator: DOCS-R web node status, 2026-10-25`
 - Figures: none
-- Caveat kept: no date and no link; the web node's address is not live yet.
-  Before 25 October 2026 the card's badge said "Working".
+- Caveat kept: 0.21.0 copy, true only once minaweb.org and the 0.21.0 web
+  archive are published; deploy it with them, not with native 0.20.1. From 25
+  October to 1 November 2026 both cards said "Coming soon" and the home card
+  added "It follows this native release shortly."; before 25 October the home
+  badge said "Working".
 
 ### C24 Download
 
 - Page: home, web build, first metric.
-- Says: "A few MB. Download. WebAssembly, compressed."
-- Sources: `coordinator: private pre-release evidence; Download`
-- Figures: `3.1 MB`, `Brotli`, `not an uncompressed 3 MB WASM binary`
-- Caveat kept: 3.1 MB is the Brotli-compressed transfer, not the binary's size.
+- Says: "39 MB. Download. WebAssembly, about 6.5 MB compressed."
+- Sources: `coordinator: TEST-0210-VISITOR, 2026-11-02; download sizes`
+- Figures: `39.16 MB`, `6.47 MB`, `Brotli`
+- Caveat kept: 39 MB is the WASM unpacked, as the web node's start screen and
+  Start-up page show it; 6.5 MB is the Brotli transfer from minaweb.org,
+  measured on build 0543d52a6. Until 2 November 2026 the card said "A few MB.
+  WebAssembly, compressed.", from a 3.1 MB Brotli transfer of an earlier
+  build.
 
 ### C07 Devnet block made in a browser
 
@@ -285,8 +295,8 @@ the subject of the private measurement; they do not link to unavailable files.
 
 - Page: home, "Get started" and the four build cards.
 - Says: "Run 0.20.1 beta for devnet"; download the archive or run the Docker
-  image, then open the dashboard. The browser node is a separate build, marked
-  "Coming soon" (C83); the source card describes building from public source.
+  image, then open the dashboard. The web node card links to minaweb.org and the
+  web archive (C83); the source card describes building from public source.
 - Sources: `coordinator: DOCS-V launch copy, 2026-10-24`
 - Figures: `0.20.1`
 - Caveat kept: Planned public repository and release availability are unverified
@@ -325,6 +335,11 @@ uses private, coordinator-supplied endpoint measurements and live checks. Each
 claim below identifies its evidence source; these measurements are not
 independently validated by the public checker.
 
+The DOCS-IA writing pass (1 November 2026) reworded some claim sentences to the
+docs style: semicolons and mid-sentence colons became separate sentences, and
+some sentences were split. The quotes below follow the new wording. No figure,
+condition or caveat changed.
+
 ### C60 Platforms
 
 - Page: Docs overview, the lead; Requirements, the operating system and C
@@ -348,8 +363,8 @@ independently validated by the public checker.
 ### C62 Nothing else to install
 
 - Page: Requirements, the other software row.
-- Says: "None at run time: the devnet circuits and the dashboard are inside
-  mina. Installing needs the tools below".
+- Says: "None at run time. The devnet circuits and the dashboard are inside
+  mina. Installing needs the tools below."
 - Sources: `coordinator: private pre-release evidence; Nothing else to install`
 - Figures: `travel inside`, `embeds`, `on by default for the`
 - Caveat kept: devnet circuits, named.
@@ -365,9 +380,9 @@ independently validated by the public checker.
 ### C64 Full node memory
 
 - Page: Requirements.
-- Says: "Devnet full node, x86_64: about 360 to 380 MiB over 9 hours; peak 644
-  MiB. Mainnet full node, x86_64: about 1.2 GiB over 9 hours; peak 2.6 GiB. Full
-  node: 1 core and 2 GiB RAM to try; 2 cores and 4 GiB suggested."
+- Says: "Devnet full node, x86_64: about 360 to 380 MiB over 9 hours. Peak 644
+  MiB. Mainnet full node, x86_64: about 1.2 GiB over 9 hours. Peak 2.6 GiB. Full
+  node: 1 core and 2 GiB RAM to try. 2 cores and 4 GiB suggested."
 - Sources: `coordinator: RC7 soak RSS and VmHWM, 2026-10-28T07:4xZ`,
   `coordinator: RC7 release README minimums`
 - Figures: `356 MiB`, `379 MiB`, `644 MiB`, `1154 MiB`, `1180 MiB`, `2615 MiB`
@@ -379,9 +394,9 @@ independently validated by the public checker.
 ### C65 Raspberry Pi 4
 
 - Page: Requirements.
-- Says: "Raspberry Pi 4, 4 GB, ARM64. Devnet full node, two 3-hour runs: steady
-  mean 341 and 344 MiB, steady p95 364 and 368 MiB; peak 570 and 652 MiB while
-  catching up."
+- Says: "Raspberry Pi 4, 4 GB, ARM64. Devnet full node, two 3-hour runs. Steady
+  mean 341 and 344 MiB, steady 95th percentile 364 and 368 MiB. Peak 570 and 652
+  MiB while catching up."
 - Sources: `coordinator: MEM-ARM Pi 4 jemalloc runs 1 and 4, 2026-10-27`
 - Figures: `341`, `344 MiB`, `364`, `368 MiB`, `570`, `652 MiB`, `3-hour`
 - Caveat kept: the two jemalloc runs of five (the release allocator). Steady is
@@ -393,8 +408,8 @@ independently validated by the public checker.
 ### C66 SNARK worker memory
 
 - Page: Requirements.
-- Says: "Devnet node with SNARK worker: about 2.0 to 2.2 GiB over 9 hours; peak
-  2.6 GiB. SNARK worker: 4 cores and 8 GiB RAM to try; 8 cores and 16 GiB
+- Says: "Devnet node with SNARK worker: about 2.0 to 2.2 GiB over 9 hours. Peak
+  2.6 GiB. SNARK worker: 4 cores and 8 GiB RAM to try. 8 cores and 16 GiB
   suggested."
 - Sources: `coordinator: RC7 soak RSS and VmHWM, 2026-10-28T07:4xZ`,
   `coordinator: RC7 release README minimums`
@@ -405,8 +420,8 @@ independently validated by the public checker.
 ### C67 Block producer memory
 
 - Page: Requirements.
-- Says: "Devnet block producer: about 1.3 GiB over 9 hours; peak 2.7 GiB,
-  including the block prover. Block producer: 4 cores and 8 GiB RAM to try; 8
+- Says: "Devnet block producer: about 1.3 GiB over 9 hours. Peak 2.7 GiB,
+  including the block prover. Block producer: 4 cores and 8 GiB RAM to try. 8
   cores and 16 GiB suggested. A block must be proved within its 90-second slot."
 - Sources: `coordinator: RC7 soak RSS and VmHWM, 2026-10-28T07:4xZ`,
   `coordinator: RC7 release README minimums`,
@@ -420,7 +435,7 @@ independently validated by the public checker.
 - Page: Requirements.
 - Says: "Apple M4, Docker, ARM64. Devnet full node over 10 minutes synced:
   median 322 MiB, peak 370 MiB. Block producer: 1.14 to 1.20 GiB. SNARK worker:
-  1.05 GiB, 1.80 GiB once it loads the zkApp provers."
+  1.05 GiB, and 1.80 GiB once it loads the zkApp provers."
 - Sources:
   `coordinator: Mac install test of the RC6 image, Apple M4 Pro, OrbStack, 2026-10-27`
 - Figures: `322 MiB`, `370 MiB`, `10 minutes`, `1.14`, `1.20 GiB`, `1.05 GiB`,
@@ -490,7 +505,8 @@ independently validated by the public checker.
 
 ### C72 Worker fee and job selection
 
-- Page: SNARK worker, "Start it with flags" and "Job selection".
+- Page: Run a SNARK worker, "Start the worker with flags" and "How the worker
+  chooses a job".
 - Says: "The fee is in MINA, and the default is 0.1."; "By default it picks one
   of those jobs at random".
 - Sources:
@@ -500,12 +516,12 @@ independently validated by the public checker.
 
 ### C73 The fee rule
 
-- Page: SNARK worker, where the dashboard and the flags set the fee.
+- Page: Run a SNARK worker, where the dashboard and the flags set the fee.
 - Says: "If your key has no account on chain yet, nodes accept your work only
-  with a fee of at least 1 MINA, the account creation fee: a block that bought
-  it would pay the fee to a new account, which costs 1 MINA." The dashboard
-  refuses a lower fee for such a key; with `--run-snarker` the node starts and
-  warns once the first proof is refused.
+  with a fee of at least 1 MINA, the account creation fee. A block that bought
+  the work would pay the fee to a new account, and creating that account costs 1
+  MINA." The dashboard refuses a lower fee for such a key; with `--run-snarker`
+  the node starts and warns when the first proof is refused.
 - Sources: `coordinator: private pre-release evidence; The fee rule`,
   `coordinator: RC7-FIXES, OCaml snark_pool.ml prover check and transaction logic sub_account_creation_fee, 2026-10-27`
 - Figures: `1 MINA`
@@ -513,9 +529,9 @@ independently validated by the public checker.
 
 ### C74 Confirmed after 15 blocks
 
-- Page: SNARK worker, "Work bought by blocks".
-- Says: "Work is pending until 15 blocks are on top of its block, Mina's
-  recommended wait for a payment, and confirmed from then on."
+- Page: Run a SNARK worker, "Work that blocks bought".
+- Says: "Work is pending until 15 blocks are on top of its block, and confirmed
+  from then on. 15 blocks is Mina's recommended wait for a payment."
 - Sources:
   `coordinator: private pre-release evidence; Confirmed after 15 blocks`
 - Figures: `Confirmed from 15`, `recommended wait for a payment`
@@ -523,9 +539,9 @@ independently validated by the public checker.
 
 ### C75 Saved slot checks
 
-- Page: Block producer, "Saved slot checks".
-- Says: "The files hold no private key, but they do reveal your future winning
-  slots, so the node makes them readable by you only (mode 0600)."
+- Page: Produce blocks, "Saved slot checks".
+- Says: "The files hold no private key, but they reveal your future winning
+  slots, so the node makes them readable by you only, with mode 0600."
 - Sources: `coordinator: private pre-release evidence; Saved slot checks`
 - Figures: `vrf-evaluation`, `0600`, `reveal future`, `no key material`
 - Caveat kept: the warning itself.
@@ -533,7 +549,7 @@ independently validated by the public checker.
 ### C76 Known limitations
 
 - Page: Docs overview, "Known limitations".
-- Says: "Devnet only."; "Hard forks aren't handled yet: each one will need a new
+- Says: "Devnet only."; "Hard forks aren't handled yet. Each one will need a new
   release."; "Memory rises slowly on a node that runs for days."; "The browser
   node is a separate build from this native release." The DOCS-STYLE pass (25
   October 2026) removed "We're looking into it." from the memory item and "on
@@ -569,7 +585,7 @@ independently validated by the public checker.
 
 ### C94 Mainnet worker proof gate
 
-- Page: SNARK worker, introduction.
+- Page: Run a SNARK worker, introduction.
 - Says: "The 0.20.1 mainnet worker passed offline base, merge and zkApp proof
   tests with embedded circuits. Public mainnet work publication, purchases and
   fees remain untested."
@@ -686,7 +702,7 @@ the upstream code.
 
 ### C120 Uptime reports and schedule
 
-- Page: block producer, delegation program uptime.
+- Page: Produce blocks, delegation program uptime.
 - Says: 0.20.1 sends signed blocks and selected work; opt-in; five-slot
   schedule.
 - Sources: `coordinator: private uptime release-gate evidence (UPTIME-0201D)`
@@ -695,7 +711,7 @@ the upstream code.
 
 ### C121 Uptime circuit memory
 
-- Page: block producer, delegation program uptime.
+- Page: Produce blocks, delegation program uptime.
 - Says: allow about 560 MiB above a producer and about 700 MiB more for zkApps.
 - Sources: `coordinator: private uptime release-gate evidence (UPTIME-0201D)`
 - Figures: `560`, `700`
@@ -703,7 +719,7 @@ the upstream code.
 
 ### C122 Uptime zkApp limitation
 
-- Page: block producer, delegation program uptime.
+- Page: Produce blocks, delegation program uptime.
 - Says: both implementations preserve zero SOK and the verifier rejects it.
 - Sources: `coordinator: private uptime release-gate evidence (UPTIME-0201D)`
 - Figures: none.

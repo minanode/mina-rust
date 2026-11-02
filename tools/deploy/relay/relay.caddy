@@ -1,5 +1,10 @@
 # The relay's signalling over HTTPS, imported by the Caddyfile.
 #
+# For the local test stack and private deployments only, not for a public
+# relay: Caddy has no built-in rate or connection limits, which the public
+# kit's nginx include sets (../minaweb/relay.nginx.conf). The body cap below
+# matches that include's.
+#
 #   RELAY_DOMAIN     the relay's name (default relay.minaweb.org); a port
 #                    after it, as in relay.example.org:8443, serves there
 #   RELAY_HTTP_PORT  the node's HTTP port on this host, for the health
@@ -16,6 +21,9 @@
 	# checks go there. The node answers CORS itself, for any origin.
 	@signal path /mina/webrtc/signal /mina/webrtc/signal/*
 	handle @signal {
+		request_body {
+			max_size 128KiB
+		}
 		reverse_proxy 127.0.0.1:{$RELAY_SIGNAL_PORT:3001}
 	}
 	@health path /healthz /readyz

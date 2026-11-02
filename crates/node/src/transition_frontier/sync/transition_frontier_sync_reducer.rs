@@ -5,7 +5,8 @@ use mina_p2p_messages::v2::StateHash;
 
 use super::{
     ledger::{
-        snarked::TransitionFrontierSyncLedgerSnarkedState, SyncLedgerTarget, SyncLedgerTargetKind,
+        snarked::TransitionFrontierSyncLedgerSnarkedState,
+        staged::TransitionFrontierSyncLedgerStagedAction, SyncLedgerTarget, SyncLedgerTargetKind,
         TransitionFrontierSyncLedgerState,
     },
     PeerRpcState, TransitionFrontierRootSnarkedLedgerUpdates, TransitionFrontierSyncAction,
@@ -402,6 +403,17 @@ impl TransitionFrontierSyncState {
                         needed_protocol_states: std::mem::take(needed_protocol_states),
                     };
                 }
+            }
+            TransitionFrontierSyncAction::LedgerRootRetarget => {
+                let Self::RootLedgerPending(substate) = state else {
+                    return;
+                };
+                substate.retarget_root_ledger(meta.time());
+
+                // Dispatch
+                let dispatcher = state_context.into_dispatcher();
+                dispatcher.push(TransitionFrontierSyncLedgerStagedAction::PartsFetchPending);
+                dispatcher.push(TransitionFrontierSyncLedgerStagedAction::PartsPeerFetchInit);
             }
             TransitionFrontierSyncAction::BlocksPending => {
                 let Self::RootLedgerSuccess {

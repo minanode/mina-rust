@@ -1,4 +1,7 @@
 # Private CA; only loopback listeners. See the local test section of MINAWEB.md.
+# One relay, relay1.minaweb.test; the page fetches its ICE list from there.
+# MINAWEB_CSP: the release's Content-Security-Policy, its
+# browser/build-info.json's contentSecurityPolicy; unset, the page won't load.
 {
     admin off
     local_certs
@@ -17,11 +20,11 @@ minaweb.test:4274 {
         Cross-Origin-Embedder-Policy require-corp
         Cross-Origin-Resource-Policy same-origin
         X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        Content-Security-Policy "{$MINAWEB_CSP:default-src 'none'}"
+        X-Frame-Options DENY
+        Permissions-Policy "accelerometer=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), serial=(), usb=()"
         Cache-Control no-cache
-    }
-    handle /webnode-devnet/ice-servers.json {
-        header Cache-Control no-store
-        redir https://relay.minaweb.test/ice-servers.json 302
     }
     handle {
         try_files {path} /index.html
@@ -41,7 +44,7 @@ assets.minaweb.test:4275 {
         file_server
     }
 }
-relay.minaweb.test:4276 {
+relay1.minaweb.test:4276 {
     @signal path /mina/webrtc/signal /mina/webrtc/signal/*
     handle @signal {
         reverse_proxy 127.0.0.1:4272

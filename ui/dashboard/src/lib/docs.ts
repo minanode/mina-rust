@@ -11,13 +11,16 @@ export const DOCS_HOME = `${DOCS_SITE}/docs/`;
 /** Docs pages by their path under `/docs/` (with the static export's trailing
  * slash), and a section's id after `#`. `bugReports` is for the Report a
  * problem page; `overview`, `producer` and `worker` for the pages of those
- * names. */
+ * names, and `producer…` for sections of the producer's. */
 export const DOCS_PAGES = {
   graphql: "run-a-node/#graphql",
   http: "run-a-node/#http-api",
   bugReports: "bug-reports/",
   overview: "dashboard/",
   producer: "block-producer/",
+  producerExpectedWins: "block-producer/#expected-wins",
+  producerPage: "block-producer/#producer-page",
+  producerStakeCounts: "block-producer/#when-stake-counts",
   worker: "snark-worker/",
 } as const;
 

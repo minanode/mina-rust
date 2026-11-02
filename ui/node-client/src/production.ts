@@ -67,7 +67,7 @@ export type Outcome =
   | "missed";
 
 export type StageKey =
-  | "won"
+  | "scheduled"
   | "built"
   | "proofStart"
   | "proofEnd"
@@ -184,7 +184,7 @@ const LABELS: Record<Outcome, string> = {
 };
 
 const STAGES: { key: StageKey; label: string }[] = [
-  { key: "won", label: "Won (VRF)" },
+  { key: "scheduled", label: "Scheduled" },
   { key: "built", label: "Built" },
   { key: "proofStart", label: "Proof started" },
   { key: "proofEnd", label: "Proof done" },
@@ -196,7 +196,7 @@ const STAGES: { key: StageKey; label: string }[] = [
 function stageTime(a: Attempt, key: StageKey): number | null {
   const t = a.times;
   switch (key) {
-    case "won":
+    case "scheduled":
       return t.scheduled;
     case "built":
       return t.produced;

@@ -82,6 +82,8 @@ export type Role = {
   statusLabel: string;
   text: string;
   link?: { height: number };
+  /** An outside page the card opens, such as the web node's. */
+  site?: { href: string; label: string };
 };
 
 export const about = {
@@ -120,9 +122,10 @@ export const roles: Role[] = [
     id: "web-node",
     claim: "C11 C83",
     title: "Web node",
-    status: "pending",
-    statusLabel: "Coming soon",
-    text: "The full node in a browser tab, with nothing to install. It follows this native release shortly.",
+    status: "devnet",
+    statusLabel: "Public devnet",
+    text: "The full node in a browser tab, with nothing to install.",
+    site: { href: "https://minaweb.org", label: "minaweb.org" },
   },
 ];
 
@@ -170,20 +173,20 @@ export const builds: Build[] = [
     title: "A full node in a browser tab",
     body: {
       claim: "C11 C21",
-      text: "The same Rust code, compiled to WebAssembly. It syncs mainnet, verifies proofs, and signs and sends transactions over WebRTC.",
+      text: "The same Rust code, compiled to WebAssembly. It syncs the chain, verifies proofs, and signs and sends transactions over WebRTC.",
     },
     metrics: [
       {
         claim: "C24",
-        value: "A few MB",
+        value: "39 MB",
         label: "Download",
-        detail: "WebAssembly, compressed.",
+        detail: "WebAssembly, about 6.5 MB compressed.",
       },
       {
         claim: "C11",
         value: "No install",
         label: "Runs in a tab",
-        detail: "Open the page and it syncs.",
+        detail: "Open the page, press Start and it syncs.",
       },
       {
         claim: "C26 C07",
@@ -217,9 +220,13 @@ export const getStarted = {
     {
       claim: "C50 C83",
       title: "Web node",
-      status: "pending" as Status,
-      statusLabel: "Coming soon",
-      body: "The browser node is a separate build.",
+      status: "devnet" as Status,
+      statusLabel: "Available",
+      body: "Open it in a browser tab, or download it and run it yourself.",
+      links: [
+        { href: "https://minaweb.org", label: "minaweb.org" },
+        { href: "/docs/run-web-node/", label: "Run it yourself" },
+      ],
     },
     {
       claim: "C50",

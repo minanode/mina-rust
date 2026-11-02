@@ -26,7 +26,7 @@ use std::collections::BTreeSet;
 use discovery::P2pChannelsSignalingDiscoveryAction;
 
 impl crate::P2pState {
-    pub(super) fn webrtc_discovery_respond_with_availble_peers<Action, State>(
+    pub(crate) fn webrtc_discovery_respond_with_availble_peers<Action, State>(
         &self,
         dispatcher: &mut redux::Dispatcher<Action, State>,
         time: redux::Timestamp,
@@ -34,6 +34,10 @@ impl crate::P2pState {
         State: crate::P2pStateTrait,
         Action: crate::P2pActionTrait<State>,
     {
+        // A sharing browser introduces no one.
+        if !self.introduces() {
+            return;
+        }
         let (mut available_peers, requests) = self.ready_peers_iter().fold(
             (BTreeSet::new(), BTreeSet::new()),
             |(mut available, mut requests), (peer_id, peer)| {
@@ -58,6 +62,30 @@ impl crate::P2pState {
         for &requester in requests {
             if available_peers.is_empty() {
                 break;
+            }
+            // A sharing relay picks one target by its policy
+            // (crate::sharing).
+            if self.config.sharing.is_relay() {
+                let candidates = available_peers_ordered
+                    .iter()
+                    .filter(|target| available_peers.contains(*target))
+                    .map(|target| **target);
+                let Some(target_peer_id) = self.sharing_pick_target(&requester, candidates, time)
+                else {
+                    continue;
+                };
+                let Some(target_public_key) = target_peer_id.to_public_key().ok() else {
+                    continue;
+                };
+                let action = P2pChannelsSignalingDiscoveryAction::DiscoveredSend {
+                    peer_id: requester,
+                    target_public_key,
+                };
+                if redux::EnablingCondition::is_enabled(&action, self, time) {
+                    dispatcher.push(action);
+                    available_peers.remove(&target_peer_id);
+                }
+                continue;
             }
             for &&target_peer_id in &available_peers_ordered {
                 if target_peer_id == requester || !available_peers.contains(&target_peer_id) {

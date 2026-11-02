@@ -84,6 +84,7 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsSignalingExchangeAction {
             .config
             .enabled_channels
             .contains(&crate::channels::ChannelId::SignalingExchange)
+            || !state.signaling_allowed_with(self.peer_id())
         {
             return false;
         }
@@ -113,7 +114,7 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsSignalingExchangeAction {
                 })
             }
             P2pChannelsSignalingExchangeAction::RequestSend { peer_id } => {
-                !state.already_has_max_peers()
+                state.takes_introduced_offers()
                     && state.get_ready_peer(peer_id).is_some_and(|p| {
                         match &p.channels.signaling.exchange {
                             P2pChannelsSignalingExchangeState::Ready { local, .. } => matches!(

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Install the coturn UDP egress guard; run as root before coturn starts.
 
-Targets Ubuntu 24.04 coturn 4.6.1 and one public IPv4 on the host.
+Targets coturn 4.18.0 from build-coturn.sh on Ubuntu 24.04, and one public
+IPv4 on the host.
 Never flush the host ruleset. A failed atomic replacement retains old rules.
 """
 import argparse
@@ -32,11 +33,20 @@ def rules(turn, relay, uid):
     ip = str(ipaddress.IPv4Address(one(turn, "relay-ip")))
     if one(turn, "listening-ip") != ip or one(turn, "allowed-peer-ip") != ip:
         raise ValueError("only a single local public IPv4 is qualified")
-    for flag in ("no-tcp-relay", "no-rfc5780", "no-tls", "no-dtls", "use-auth-secret"):
+    for flag in ("no-tcp-relay", "no-tls", "use-auth-secret"):
         if one(turn, flag) != "":
             raise ValueError(f"require flag {flag}")
-    if "no-auth" in turn or "external-ip" in turn or "aux-server" in turn:
-        raise ValueError("unsupported coturn topology or authentication")
+    # Off by default in coturn 4.18: never turned on here.
+    for key in ("no-auth", "external-ip", "aux-server", "dtls", "cli", "rfc5780",
+                "software-attribute", "mobility", "prometheus", "web-admin",
+                "allow-loopback-peers", "server-relay", "alternate-server",
+                "tls-alternate-server", "tcp-proxy-port"):
+        if key in turn:
+            raise ValueError(f"unsupported coturn option {key}")
+    for key, most in (("user-quota", 64), ("total-quota", 4096),
+                      ("max-allocate-lifetime", 3600)):
+        if not 0 < int(one(turn, key)) <= most:
+            raise ValueError(f"{key} must be 1 to {most}")
     secret = one(turn, "static-auth-secret")
     if len(secret) < 32 or "<" in secret:
         raise ValueError("install the private TURN secret first")

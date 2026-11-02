@@ -589,6 +589,7 @@ fn fixture_status() -> mina_node::rpc::RpcNodeStatus {
             client_port: None,
             libp2p_port: Some(8302),
         },
+        frontier_store: None,
         block_producer: Some(crate::input_limits::tests::KEY.parse().unwrap()),
         coinbase_receiver: None,
     }

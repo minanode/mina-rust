@@ -6,7 +6,7 @@ import * as React from "react";
 import { usePoll, type Polled } from "@minanode/node-client/react";
 
 import { useBoot } from "../app/boot-context";
-import { keyStore, type KeyGlue } from "./keys";
+import { keyStore, type KeyFileGlue, type KeyGlue } from "./keys";
 import { RoleNode, type Account, type RoleNodeRpc } from "./node";
 
 export function useKeys() {
@@ -33,6 +33,19 @@ export function useKeyGlue(): KeyGlue | null {
     return null;
   }
   return glue as KeyGlue;
+}
+
+/** The WASM's key-file functions, when this build has them. */
+export function useKeyFileGlue(): KeyFileGlue | null {
+  const { glue } = useBoot();
+  if (
+    !glue ||
+    typeof glue.account_key_from_file !== "function" ||
+    typeof glue.account_key_to_file !== "function"
+  ) {
+    return null;
+  }
+  return glue as KeyFileGlue;
 }
 
 export const ACCOUNT_POLL_MS = 10_000;

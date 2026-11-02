@@ -12,11 +12,15 @@
 #   tools/regression/lock.sh build -- tools/regression/webnode/build.sh
 #
 # OUT (default $WORK/webnode/builds/<commit>-<network>) is replaced. Serve
-# OUT/browser, from that directory, with the headers the WASM threads need:
+# OUT/browser, from that directory, with the headers the WASM threads need
+# and the page's Content-Security-Policy (serve.json; serve.py sends the
+# same):
 #
 #   npx -y serve@14 -s . -l <port> -c serve.json
 #
 # Any port or host works: the seed list is a path on the page's own origin.
+# The node dials every relay in RELAY, and only those (PR 173), so a page
+# with two relays keeps following the chain while either one is down.
 # The page (ui/minaweb) starts the node when it opens. The Angular page
 # (UI=angular) starts it from /loading-web-node, "Start the web node".
 #
@@ -25,7 +29,10 @@
 #                minanode design system (ui/minaweb), or angular, the old
 #                Angular frontend (frontend/, --configuration webnode-local)
 #   NETWORK      mainnet (default) or devnet
-#   RELAY        required: your relay's reachable WebRTC multiaddr
+#   RELAY        required: your relays' reachable WebRTC multiaddrs, one or
+#                more, separated by commas or spaces. The page dials each one,
+#                lists them all in its seed list (peers.txt) and its
+#                Content-Security-Policy, and build-info.json's relays
 #   GENESIS      genesis config without ledgers (default
 #                $REPO/genesis_ledgers/mesa-<network>-without-ledgers.json)
 #   CONTROLS     UI=angular only. MINA_FRONTEND_CONTROLS: empty for a
@@ -44,9 +51,16 @@
 #                it with localStorage webnodeFrontierStore=on|off
 #   ICE_SERVERS  a JSON list of RTCIceServer (STUN and TURN servers) to ship
 #                as /webnode-<network>/ice-servers.json, which the page hands
-#                the web node at start (W1). Without it the node uses its
-#                built-in STUN servers. The file is public: see
-#                tools/deploy/relay/README.md on TURN credentials
+#                the web node at start (W1). Without it, or ICE_SERVERS_URLS,
+#                the node uses its built-in STUN servers. The file is public:
+#                see tools/deploy/relay/README.md on TURN credentials
+#   ICE_SERVERS_URLS  UI=minaweb only, instead of ICE_SERVERS: such lists the
+#                page fetches at start, http(s) URLs separated by commas or spaces, such as
+#                each relay's credential service
+#                (https://relay1.example.org/ice-servers.json). The page
+#                joins every list it gets and renews each one before its TURN
+#                credentials expire (tools/deploy/minaweb). Their origins go
+#                into the Content-Security-Policy
 #   CIRCUITS_URL where the WASM fetches circuit files (the verifier index
 #                caches here; a producer's or SNARK worker's prover circuits),
 #                compiled in as CIRCUIT_BLOBS_HTTP_PREFIX, for a host such as
@@ -72,6 +86,12 @@
 #                it checks the bytes before it runs them and refuses others.
 #                Default: the bundle's assets/webnode/pkg
 #   ALLOW_DIRTY  1 to build uncommitted changes; the stamp says -dirty
+#   CSP_CONNECT  UI=minaweb only: more origins, space-separated, the page may
+#                fetch from, for its Content-Security-Policy (csp.py), such as
+#                where the host redirects ice-servers.json. Each relay's
+#                signalling origin, the ICE_SERVERS_URLS origins and the
+#                WASM_URL and CIRCUITS_URL hosts are in it already. The policy goes into build-info.json and
+#                serve.json; a host's own headers take it from there
 #   WASM_FEATURES  cargo features for the WASM (mina-node-web), such as
 #                p2p-webrtc-ready-events; default none beyond its defaults
 #   CARGO_BUILD_JOBS  default 8
@@ -102,6 +122,7 @@ CONTROLS=${CONTROLS:-}
 NATIVE=${NATIVE-http://127.0.0.1:3200}
 FRONTIER_STORE=${FRONTIER_STORE:-$([[ $NETWORK == devnet ]] && echo on || echo off)}
 ICE_SERVERS=${ICE_SERVERS:-}
+ICE_SERVERS_URLS=${ICE_SERVERS_URLS:-}
 CIRCUITS_URL=${CIRCUITS_URL:-}
 CIRCUITS_URL=${CIRCUITS_URL%/}
 WASM_URL=${WASM_URL:-}
@@ -120,13 +141,46 @@ minaweb)
 angular) ;;
 *) die "UI is minaweb or angular, not $UI" ;;
 esac
-[[ -n $RELAY ]] || die "set RELAY to your reachable relay's WebRTC multiaddr (see the reproduction guide)"
-[[ $RELAY == /ip4/*/tcp/*/webrtc/http*/p2p/* || $RELAY == /ip6/*/tcp/*/webrtc/http*/p2p/* || $RELAY == /dns*/*/tcp/*/webrtc/http*/p2p/* ]] || die "RELAY must be a WebRTC multiaddr"
+[[ -n $RELAY ]] || die "set RELAY to your reachable relays' WebRTC multiaddrs (see the reproduction guide)"
+# One a line; the comma-separated form for the page's settings.
+if [[ $UI == minaweb ]]; then
+	RELAYS=$(python3 -B "$HERE/csp.py" relays "$RELAY") || die "RELAY must list WebRTC multiaddrs"
+else
+	# The Angular page has no policy, so an IPv6 relay is fine there.
+	RELAYS=$(sed 's/[, ]\+/\n/g' <<<"$RELAY" | sed '/^$/d')
+	while read -r r; do
+		[[ $r == /ip4/*/tcp/*/webrtc/http*/p2p/* || $r == /ip6/*/tcp/*/webrtc/http*/p2p/* || $r == /dns*/*/tcp/*/webrtc/http*/p2p/* ]] || die "RELAY must list WebRTC multiaddrs: $r"
+	done <<<"$RELAYS"
+	[[ -z $ICE_SERVERS_URLS ]] || die "ICE_SERVERS_URLS is for UI=minaweb"
+fi
+RELAY_CSV=$(paste -sd, <<<"$RELAYS")
 [[ -f $GENESIS ]] || die "no genesis config at $GENESIS (set GENESIS)"
 [[ $FRONTIER_STORE == on || $FRONTIER_STORE == off ]] || die "FRONTIER_STORE is on or off, not $FRONTIER_STORE"
 url_ok() { [[ -z $1 || $1 =~ ^https?://[A-Za-z0-9.:/_~%-]+$ ]]; }
 url_ok "$CIRCUITS_URL" || die "CIRCUITS_URL must be an http(s) URL without a query: $CIRCUITS_URL"
 url_ok "$WASM_URL" || die "WASM_URL must be an http(s) URL without a query: $WASM_URL"
+# A renewal holds expiring credentials only, so a static list can't join them.
+[[ -z $ICE_SERVERS || -z $ICE_SERVERS_URLS ]] || die "set ICE_SERVERS or ICE_SERVERS_URLS, not both"
+ICE_URLS=()
+for u in ${ICE_SERVERS_URLS//,/ }; do
+	if [[ -z $u ]] || ! url_ok "$u"; then
+		die "ICE_SERVERS_URLS must list http(s) URLs without a query: $u"
+	fi
+	ICE_URLS+=("$u")
+done
+
+# The page's Content-Security-Policy, from the origins it will fetch from:
+# every relay's signalling, the WASM's and circuits' hosts, the ICE server
+# lists' hosts, CSP_CONNECT. The Angular page has none.
+CSP=
+if [[ $UI == minaweb ]]; then
+	connect=() relays=()
+	for o in "${ICE_URLS[@]}" ${CSP_CONNECT:-}; do connect+=(--connect "$o"); done
+	while read -r r; do relays+=(--relay "$r"); done <<<"$RELAYS"
+	CSP=$(python3 -B "$HERE/csp.py" policy "${relays[@]}" \
+		${WASM_URL:+--wasm-url "$WASM_URL"} ${CIRCUITS_URL:+--circuits-url "$CIRCUITS_URL"} \
+		"${connect[@]}") || die "no Content-Security-Policy for these origins"
+fi
 
 # The commit. Untracked files count: a new source file changes the build.
 COMMIT=$(git -C "$REPO" rev-parse HEAD)
@@ -170,6 +224,8 @@ if [[ -n $ICE_SERVERS ]]; then
 		die "ICE_SERVERS $ICE_SERVERS is not a list the page can use"
 	ICE_URL=/webnode-$NETWORK/ice-servers.json
 fi
+# Every list the page fetches, comma-separated.
+PAGE_ICE_URLS=$(printf '%s\n' ${ICE_URL:+"$ICE_URL"} "${ICE_URLS[@]}" | sed '/^$/d' | paste -sd,)
 
 step "building $STAMP for $NETWORK into $OUT"
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/webnode-build.XXXXXX")
@@ -289,17 +345,24 @@ if [[ $UI == minaweb ]]; then
 	# The page checks the WASM's SHA-256 before it compiles it, wherever the
 	# WASM is served from.
 	step "page (ui/minaweb)"
+	# What every start loads besides the WASM, for the start screen's line:
+	# the glue and its snippets, the verifier indexes this build ships, the
+	# genesis config and the peer list (a line per relay).
+	START_BYTES=$(($(find "$STAGE/pkg" -type f -name '*.js' -exec cat {} + | wc -c) +
+		$(find "$CSTAGE" -type f -name '*_verifier_index.postcard' -exec cat {} + | wc -c) +
+		$(wc -c <"$GENESIS") + ${#RELAYS} + 1))
 	(
 		cd "$UI_DIR/minaweb"
 		MINAWEB_NETWORK=$NETWORK \
-			MINAWEB_RELAYS=$RELAY \
+			MINAWEB_RELAYS=$RELAY_CSV \
 			MINAWEB_SEED_URLS=/webnode-$NETWORK/peers.txt \
 			MINAWEB_GENESIS_URL=/webnode-$NETWORK/genesis.json \
-			MINAWEB_ICE_SERVERS_URL=$ICE_URL \
+			MINAWEB_ICE_SERVERS_URL=$PAGE_ICE_URLS \
 			MINAWEB_FRONTIER_STORE=$FRONTIER_STORE \
 			MINAWEB_WASM_URL=${WASM_URL:-/assets/webnode/pkg}/$WASM_NAME \
 			MINAWEB_WASM_SHA256=$WASM_SHA \
 			MINAWEB_WASM_BYTES=$(stat -c %s "$WASM") \
+			MINAWEB_START_BYTES=$START_BYTES \
 			MINAWEB_COMMIT=$STAMP \
 			npx vite build --outDir "$B" --emptyOutDir
 	)
@@ -313,7 +376,7 @@ else
 		npx ng build --configuration webnode-local --output-path "$STAGE/dist" \
 			--define MINA_WEBNODE_NETWORK="\"$NETWORK\"" \
 			--define MINA_WEBNODE_GENESIS_URL="\"/webnode-$NETWORK/genesis.json\"" \
-			--define MINA_WEBNODE_BOOTNODES="\"$RELAY\"" \
+			--define MINA_WEBNODE_BOOTNODES="\"$RELAY_CSV\"" \
 			--define MINA_WEBNODE_SEED_URLS="\"/webnode-$NETWORK/peers.txt\"" \
 			--define MINA_FRONTEND_COMMIT="\"$STAMP\"" \
 			--define MINA_FRONTEND_CONTROLS="\"$CONTROLS\"" \
@@ -336,9 +399,9 @@ rm -rf "$B/assets/webnode/pkg"
 cp -r "$STAGE/pkg" "$B/assets/webnode/pkg"
 mkdir -p "$B/webnode-$NETWORK"
 cp "$GENESIS" "$B/webnode-$NETWORK/genesis.json"
-echo "$RELAY" >"$B/webnode-$NETWORK/peers.txt"
+echo "$RELAYS" >"$B/webnode-$NETWORK/peers.txt"
 [[ -z $ICE_SERVERS ]] || cp "$ICE_SERVERS" "$B$ICE_URL"
-cp "$HERE/serve.json" "$B/"
+python3 -B "$HERE/csp.py" serve-json "$HERE/serve.json" "$CSP" >"$B/serve.json"
 # Files for other hosts, when the bundle doesn't carry them.
 UPLOAD=$STAGE/dist/upload
 if [[ -n $WASM_URL ]]; then
@@ -362,13 +425,14 @@ json.dump({
     "commit": "$COMMIT",
     "stamp": "$STAMP",
     "network": "$NETWORK",
-    "relay": "$RELAY",
+    "relays": "$RELAY_CSV".split(","),
     "seedList": "/webnode-$NETWORK/peers.txt",
     "genesis": {"path": "/webnode-$NETWORK/genesis.json", "sha256": "$(sha "$GENESIS")"},
     "controls": ("$CONTROLS" or "view-only") if "$UI" == "angular" else ("roles" if "$NETWORK" == "devnet" else "view-only"),
     "nativeNode": ("$NATIVE" or None) if "$UI" == "angular" else None,
     "frontierStore": "$FRONTIER_STORE" == "on",
-    "iceServers": "$ICE_URL" or None,
+    "iceServers": "$PAGE_ICE_URLS".split(",") if "$PAGE_ICE_URLS" else None,
+    "contentSecurityPolicy": "$CSP" or None,
     "circuitsUrl": "$CIRCUITS_URL" or "/assets/webnode/circuit-blobs",
     "circuitPins": "$PINS".count("="),
     "wasm": {"path": "${WASM_URL:-/assets/webnode/pkg}/$WASM_NAME", "sha256": "$(sha "$W")",

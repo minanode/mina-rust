@@ -4,9 +4,14 @@
 # threads; without it the node doesn't start. The hosts' default
 # Cache-Control (revalidate) suits every file here. A WASM on an asset host
 # (WASM_URL) gets its caching there.
+# build.sh puts the build's Content-Security-Policy (build-info.json,
+# made by ../../regression/webnode/csp.py) in place of the placeholder.
 /*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
   Cross-Origin-Resource-Policy: same-origin
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
+  Content-Security-Policy: @CONTENT_SECURITY_POLICY@
+  X-Frame-Options: DENY
+  Permissions-Policy: accelerometer=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), serial=(), usb=()

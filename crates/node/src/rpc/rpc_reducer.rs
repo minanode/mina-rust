@@ -210,6 +210,11 @@ impl RpcState {
                     .push(RpcEffectfulAction::P2pConnectionOutgoingSuccess { rpc_id: *rpc_id });
             }
             RpcAction::P2pConnectionIncomingInit { rpc_id, opts } => {
+                // The HTTP source address is for a sharing relay's limits
+                // only (mina_p2p::sharing): no request record keeps it, and
+                // only a sharing relay passes it on.
+                let mut opts = opts.clone();
+                let remote_ip = opts.remote_ip.take();
                 let rpc_state = RpcRequestState {
                     req: RpcRequest::P2pConnectionIncoming(opts.clone()),
                     status: RpcRequestStatus::Init { time: meta.time() },
@@ -219,11 +224,14 @@ impl RpcState {
 
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
                 let p2p = p2p_ready!(state.p2p, meta.time());
+                if p2p.config.sharing.is_relay() {
+                    opts.remote_ip = remote_ip;
+                }
 
-                match p2p.incoming_accept(opts.peer_id, &opts.offer) {
+                match p2p.incoming_accept(opts.peer_id, &opts.offer, &opts.signaling) {
                     Ok(_) => {
                         dispatcher.push(P2pConnectionIncomingAction::Init {
-                            opts: opts.clone(),
+                            opts,
                             rpc_id: Some(*rpc_id),
                         });
                         dispatcher

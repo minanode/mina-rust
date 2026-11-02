@@ -14,6 +14,24 @@ fn test_account_secret_key_bs58check_decode() {
     );
 }
 
+/// The bytes, and the text made from them, are the same as before the
+/// copies were wiped (WEB-HARDENING-1).
+#[test]
+fn test_account_secret_key_bytes_round_trip() {
+    let text = "EKFWgzXsoMYcP1Hnj7dBhsefxNucZ6wyz676Qg5uMFNzytXAi2Ww";
+    let parsed: AccountSecretKey = text.parse().unwrap();
+    // Base58check: the version byte (90), the prefix byte (1), the scalar.
+    let decoded = bs58::decode(text).with_check(Some(90)).into_vec().unwrap();
+    assert_eq!(&decoded[..2], &[90, 1]);
+    assert_eq!(parsed.to_bytes()[..], decoded[2..34]);
+    let back = AccountSecretKey::from_bytes(&parsed.to_bytes()).unwrap();
+    assert_eq!(back.to_string(), text);
+    assert_eq!(
+        back.public_key().to_string(),
+        "B62qjVQLxt9nYMWGn45mkgwYfcz8e8jvjNCBo11VKJb7vxDNwv5QLPS"
+    );
+}
+
 #[test]
 fn test_account_secret_key_display() {
     let parsed: AccountSecretKey = "EKFWgzXsoMYcP1Hnj7dBhsefxNucZ6wyz676Qg5uMFNzytXAi2Ww"

@@ -56,6 +56,21 @@ impl P2pDisconnectedState {
                     bug_condition!("Invalid state for: `P2pDisconnectionAction::Init`");
                     return Ok(());
                 };
+                // WebRTC peers are few (a web node's relays, a relay's
+                // browsers), so why we drop one is worth an info line on both
+                // ends. libp2p peers churn; theirs stay at debug.
+                if !peer.is_libp2p() && !reason.is_misbehaviour() {
+                    mina_core::info!(meta.time();
+                        kind = "P2pDisconnectionInit",
+                        summary = "disconnecting a WebRTC peer",
+                        peer_id = display(peer_id),
+                        reason = display(&reason),
+                        connected_for_secs = peer
+                            .status
+                            .as_ready()
+                            .map(|ready| ready.connected_for(meta.time()).as_secs()),
+                    );
+                }
                 peer.status = P2pPeerStatus::Disconnecting { time: meta.time() };
 
                 #[cfg(feature = "p2p-libp2p")]
@@ -86,6 +101,19 @@ impl P2pDisconnectedState {
                 Ok(())
             }
             P2pDisconnectionAction::PeerClosed { peer_id } => {
+                // The connection ended without our asking: the peer closed
+                // it, or the transport gave up on it.
+                if let Some(peer) = p2p_state.peers.get(&peer_id).filter(|p| !p.is_libp2p()) {
+                    mina_core::info!(meta.time();
+                        kind = "P2pPeerClosed",
+                        summary = "a WebRTC peer's connection closed",
+                        peer_id = display(peer_id),
+                        connected_for_secs = peer
+                            .status
+                            .as_ready()
+                            .map(|ready| ready.connected_for(meta.time()).as_secs()),
+                    );
+                }
                 let dispatcher = state_context.into_dispatcher();
                 dispatcher.push(P2pDisconnectionEffectfulAction::Init { peer_id });
                 Ok(())

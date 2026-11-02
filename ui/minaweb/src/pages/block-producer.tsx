@@ -2,7 +2,8 @@
  * The block producer: before it runs, the key's stake in this epoch's
  * staking ledger and the next, when stake delegated today would count
  * (from the node's own slot time and epoch length), what it costs the
- * device, and the passphrase that carries the key across the restart;
+ * device, the passphrase of a key saved here but not held, and the key
+ * its coinbase goes to if not its own;
  * while it runs, the dashboard's producer view: won slots, each attempt's
  * stages with its proof, and each block's fate.
  */
@@ -26,6 +27,7 @@ import {
 import { Input } from "@minanode/design-system/components/input";
 import { Label } from "@minanode/design-system/components/label";
 import { Amount } from "@minanode/design-system/patterns/amount";
+import { ExternalLink } from "@minanode/design-system/patterns/external-link";
 import { Hash } from "@minanode/design-system/patterns/hash";
 import { InlineConfirm } from "@minanode/design-system/patterns/inline-confirm";
 import { KeyValueList } from "@minanode/design-system/patterns/key-value-list";
@@ -48,32 +50,50 @@ import {
   stakeVerdict,
   type StakeVerdict,
 } from "../roles/epoch";
-import { useKeys, useRoleNode } from "../roles/hooks";
-import { MIN_PASSPHRASE, passphraseProblem } from "../roles/keys";
+import { HandoffError, handoffSupported } from "../roles/handoff";
+import { useKeyGlue, useKeys, useRoleNode } from "../roles/hooks";
+import {
+  keyStore,
+  looksLikePublicKey,
+  MIN_PASSPHRASE,
+  passphraseProblem,
+  type KeyGlue,
+} from "../roles/keys";
 import { restartWithKey } from "../roles/restart";
 import { VIEWER } from "../roles/role";
 import { RestartConfirm } from "./restart-confirm";
-import {
-  DevnetOnly,
-  NeedKey,
-  ONE_ROLE,
-  RoleCost,
-  RolesGate,
-} from "./roles-common";
+import { NeedKey, OneRole, RoleCost, RolesGate } from "./roles-common";
+
+/** The block producer's docs page. */
+export const PRODUCER_DOCS_URL = "https://minanode.org/docs/block-producer/";
 
 const STAKE_POLL_MS = 60_000;
 const STATS_POLL_MS = 10_000;
 
+/** A typed coinbase receiver: none when empty, else a public key that
+ * `run` takes (the node's own check, with its checksum). */
+export function coinbaseReceiver(
+  text: string,
+  glue: Pick<KeyGlue, "account_public_key_valid"> | null,
+): { receiver: string | null; problem: string | null } {
+  const receiver = text.trim();
+  if (!receiver) return { receiver: null, problem: null };
+  return looksLikePublicKey(receiver) &&
+    glue?.account_public_key_valid(receiver) === true
+    ? { receiver, problem: null }
+    : { receiver: null, problem: "Not a public key (B62…)." };
+}
+
 export function BlockProducerPage() {
   const boot = useBoot();
-  const { key } = useKeys();
+  const { key, saved } = useKeys();
   const running = boot.role.kind === "producer";
   return (
     <>
       <PageHeader
         eyebrow="devnet role"
         title="Block producer"
-        description="Produces blocks in this tab for the slots its key wins, and proves each one here. A key wins slots only with stake."
+        description="Produces and proves blocks in this tab for the slots its key wins."
         aside={
           running ? (
             <Signal tone="ok" pulse className="text-sm">
@@ -84,10 +104,9 @@ export function BlockProducerPage() {
       />
       <RolesGate>
         <div className="flex flex-col gap-6">
-          <DevnetOnly />
           {running ? (
             <Running />
-          ) : key ? (
+          ) : key || saved ? (
             <Setup />
           ) : (
             <NeedKey what="Producing blocks" />
@@ -136,9 +155,8 @@ function VerdictAlert({ verdict }: { verdict: StakeVerdict }) {
           <AlertTitle>This key will not produce blocks</AlertTitle>
           <AlertDescription>
             <p>
-              It has no stake in this epoch's staking ledger or the next. A key
-              with no stake never wins a slot, however long it runs. You can
-              still start it, to see the producer at work.
+              It has no stake in this epoch's staking ledger or the next. You
+              can still start it.
             </p>
           </AlertDescription>
         </Alert>
@@ -153,7 +171,7 @@ function VerdictAlert({ verdict }: { verdict: StakeVerdict }) {
               Its stake is in the next epoch ledger only: it can win slots from
               epoch {formatCount(verdict.epoch)}, in about{" "}
               {days(verdict.fromMs - Date.now())} ({utcDateTime(verdict.fromMs)}
-              ). Until then it will not produce.
+              ).
             </p>
           </AlertDescription>
         </Alert>
@@ -169,8 +187,7 @@ function VerdictAlert({ verdict }: { verdict: StakeVerdict }) {
               {verdict.expectedPerEpoch < 10
                 ? verdict.expectedPerEpoch.toFixed(1)
                 : formatCount(Math.round(verdict.expectedPerEpoch))}{" "}
-              won slots an epoch. Each needs the tab open and a block proof in
-              time.
+              won slots an epoch.
             </p>
           </AlertDescription>
         </Alert>
@@ -221,7 +238,6 @@ function StakeFacts({ publicKey }: { publicKey: string }) {
             value: s ? formatHeight(s.bestTipHeight) : "–",
           },
         ]}
-        footer="Its own balance and its delegators', in each epoch ledger of the node's best tip."
       />
       <KeyValueList
         title="When delegated stake counts"
@@ -259,9 +275,9 @@ function StakeFacts({ publicKey }: { publicKey: string }) {
           },
         ]}
         footer={
-          c
-            ? `A delegation counts only after the epoch transitions twice: stake delegated in epoch ${formatCount(c.clock.epoch)} enters the next epoch ledger at the change to epoch ${formatCount(c.clock.epoch + 1)}, which becomes the staking ledger at the change to epoch ${formatCount(c.clock.delegationEpoch)} (${utcDateTime(c.clock.delegationCountsFromMs)}). That is the earliest: the node takes the snarked ledger at the change, so a delegation in one of the epoch's last blocks can wait an epoch more.`
-            : "From the node's consensus constants and its current slot."
+          <ExternalLink href={PRODUCER_DOCS_URL}>
+            Block producer docs
+          </ExternalLink>
         }
       />
     </div>
@@ -270,29 +286,70 @@ function StakeFacts({ publicKey }: { publicKey: string }) {
 
 function Setup() {
   const boot = useBoot();
+  const glue = useKeyGlue();
   const { key, saved } = useKeys();
   const [passphrase, setPassphrase] = React.useState("");
+  const [typedReceiver, setTypedReceiver] = React.useState("");
   const [confirming, setConfirming] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
-  if (!key) return null;
-  const problem = passphraseProblem(passphrase);
+  // Set once the key can't cross the restart by itself: it then crosses
+  // encrypted with a passphrase typed here.
+  const [fallback, setFallback] = React.useState(() => !handoffSupported());
+  const publicKey = key?.publicKey ?? saved?.publicKey;
+  if (!publicKey) return null;
+  // Saved in this browser, not held: its passphrase unlocks it first.
+  const locked = !key;
+  const receiver = coinbaseReceiver(typedReceiver, glue);
+  const problem =
+    receiver.problem ??
+    (locked
+      ? passphrase
+        ? null
+        : "Type the saved key's passphrase."
+      : fallback
+        ? passphraseProblem(passphrase)
+        : null);
   const switching = boot.role.kind === "worker";
 
   async function start() {
-    if (!key) return;
+    // The field can change while the confirmation is open: its hint then
+    // says what is wrong.
+    if (receiver.problem) {
+      setConfirming(false);
+      return;
+    }
     setBusy(true);
+    setError(null);
     try {
-      // The key crosses the restart encrypted, in this tab only; the boot
-      // deletes it once it is unlocked. Refused if storage won't keep it.
+      let held = key;
+      if (!held) {
+        await keyStore.unlockSaved(passphrase, glue ?? undefined);
+        setPassphrase("");
+        held = keyStore.getSnapshot().key;
+        if (!held) throw new Error("The saved key didn't unlock.");
+        // The restart then needs a passphrase of its own.
+        if (fallback) {
+          setBusy(false);
+          setConfirming(false);
+          return;
+        }
+      }
       await restartWithKey(
-        { kind: "producer", publicKey: key.publicKey },
-        key,
-        saved,
-        { kind: "carry", passphrase },
+        {
+          kind: "producer",
+          publicKey: held.publicKey,
+          ...(receiver.receiver ? { coinbaseReceiver: receiver.receiver } : {}),
+        },
+        held,
+        fallback ? { kind: "carry", passphrase } : null,
       );
       setPassphrase("");
     } catch (e) {
+      if (e instanceof HandoffError) {
+        setFallback(true);
+        setConfirming(false);
+      }
       setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
     }
@@ -305,9 +362,10 @@ function Setup() {
           <CardHeader>
             <CardTitle>Start the block producer</CardTitle>
             <CardDescription>
-              The node starts again with this key as its producer. The key
-              crosses the restart encrypted with a passphrase you type now, in
-              this tab only, and you type it again once the node restarts.
+              The node starts again with this key as its producer.
+              {fallback && !locked
+                ? " The key crosses the restart encrypted with a passphrase you type now, in this tab only, and you type it again once the node restarts."
+                : null}
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
@@ -315,24 +373,66 @@ function Setup() {
               <span className="text-sm font-medium text-foreground">
                 Producer key
               </span>
-              <Hash value={key.publicKey} label="producer key" />
+              <Hash value={publicKey} label="producer key" />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="producer-passphrase">
-                Passphrase for the restart
+              <Label htmlFor="producer-coinbase-receiver">
+                Coinbase receiver (optional)
               </Label>
               <Input
-                id="producer-passphrase"
-                type="password"
-                autoComplete="new-password"
-                value={passphrase}
-                onChange={e => setPassphrase(e.target.value)}
+                id="producer-coinbase-receiver"
+                value={typedReceiver}
+                onChange={e => setTypedReceiver(e.target.value)}
+                placeholder="B62…"
+                className="font-mono"
+                spellCheck={false}
+                autoComplete="off"
+                aria-invalid={receiver.problem ? true : undefined}
+                aria-describedby="producer-coinbase-receiver-hint"
               />
-              <p className="text-sm text-muted-foreground">
-                At least {MIN_PASSPHRASE} characters.
+              <p
+                id="producer-coinbase-receiver-hint"
+                className={
+                  receiver.problem
+                    ? "text-sm text-destructive"
+                    : "text-sm text-muted-foreground"
+                }
+              >
+                {receiver.problem ?? "Empty: the producer key receives it."}
               </p>
             </div>
-            <p className="text-sm text-muted-foreground">{ONE_ROLE}</p>
+            {locked ? (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="producer-saved-passphrase">
+                  Saved key's passphrase
+                </Label>
+                <Input
+                  id="producer-saved-passphrase"
+                  type="password"
+                  autoComplete="current-password"
+                  value={passphrase}
+                  onChange={e => setPassphrase(e.target.value)}
+                  aria-invalid={error ? true : undefined}
+                />
+              </div>
+            ) : fallback ? (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="producer-passphrase">
+                  Passphrase for the restart
+                </Label>
+                <Input
+                  id="producer-passphrase"
+                  type="password"
+                  autoComplete="new-password"
+                  value={passphrase}
+                  onChange={e => setPassphrase(e.target.value)}
+                />
+                <p className="text-sm text-muted-foreground">
+                  At least {MIN_PASSPHRASE} characters.
+                </p>
+              </div>
+            ) : null}
+            <OneRole />
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
             {confirming ? (
               <InlineConfirm
@@ -346,7 +446,7 @@ function Setup() {
                   switching ? "Stop the worker and produce" : "Start producing"
                 }
                 busy={busy}
-                busyLabel="Encrypting…"
+                busyLabel={locked ? "Unlocking…" : "Restarting…"}
                 onConfirm={() => void start()}
                 onCancel={() => setConfirming(false)}
               />
@@ -366,7 +466,7 @@ function Setup() {
         </Card>
         <RoleCost kind="producer" />
       </div>
-      <StakeFacts publicKey={key.publicKey} />
+      <StakeFacts publicKey={publicKey} />
     </div>
   );
 }

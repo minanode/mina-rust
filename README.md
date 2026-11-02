@@ -14,11 +14,11 @@ Documentation: **[minanode.org](https://minanode.org)**.
 
 ## Status
 
-Release 0.20.0 runs on Mina devnet. It follows the chain, produces blocks and
+Release 0.20.1 runs on Mina devnet. It follows the chain, produces blocks and
 runs a SNARK worker. Mainnet support comes later, and the web node is coming
 soon.
 
-See the [0.20.0 release notes](docs/release/0.20.0.md), including the known
+See the [0.20.1 release notes](docs/release/0.20.1.md), including the known
 issues, and the [CHANGELOG](CHANGELOG.md).
 
 ## Quick start
@@ -30,8 +30,8 @@ The full steps are in the [quickstart](https://minanode.org/docs/quickstart/).
    ```sh
    # Choose x86_64 or arm64 for your Linux CPU.
    arch=x86_64
-   url=https://github.com/minanode/mina-rust/releases/download/v0.20.0
-   curl -fLO "$url/mina-0.20.0-linux-$arch.tar.gz" &&
+   url=https://github.com/minanode/mina-rust/releases/download/v0.20.1
+   curl -fLO "$url/mina-0.20.1-linux-$arch.tar.gz" &&
    curl --fail-early -fLO "$url/SHA256SUMS" \
      -O "$url/SHA256SUMS.sig" -O https://minanode.org/allowed_signers &&
    ssh-keygen -Y verify -f allowed_signers \
@@ -46,9 +46,9 @@ The full steps are in the [quickstart](https://minanode.org/docs/quickstart/).
 2. Unpack and run:
 
    ```sh
-   mkdir mina-0.20.0
-   tar -xzf "mina-0.20.0-linux-$arch.tar.gz" -C mina-0.20.0
-   cd mina-0.20.0
+   mkdir mina-0.20.1
+   tar -xzf "mina-0.20.1-linux-$arch.tar.gz" -C mina-0.20.1
+   cd mina-0.20.1
    ./mina node --network devnet
    ```
 
@@ -84,13 +84,13 @@ and are not supported. The arm64 build has been run on a Raspberry Pi 4; a
 Raspberry Pi 5 has not been tested yet, in particular with its default 16
 KiB-page kernel.
 
-There are no native macOS or Windows builds for 0.20.0. Building from source on
+There are no native macOS or Windows builds for 0.20.1. Building from source on
 macOS may work, but it is not tested. On macOS and Windows, run the Docker image
 with Docker Desktop.
 
 ## Docker
 
-The image `ghcr.io/minanode/mina-rust:0.20.0`, for linux/amd64 and linux/arm64,
+The image `ghcr.io/minanode/mina-rust:0.20.1`, for linux/amd64 and linux/arm64,
 holds the same `mina` as the release archives and is built from them. To run a
 devnet node with its state in `~/mina-state` and the dashboard at
 <http://localhost:3000>:
@@ -101,7 +101,7 @@ docker run -d --name mina --restart unless-stopped \
   --user "$(id -u):$(id -g)" \
   -p 127.0.0.1:3000:3000 -p 8302:8302 \
   -v ~/mina-state:/data \
-  ghcr.io/minanode/mina-rust:0.20.0
+  ghcr.io/minanode/mina-rust:0.20.1
 ```
 
 Keep the dashboard port on `127.0.0.1`. [docker-compose.yml](docker-compose.yml)

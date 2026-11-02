@@ -36,9 +36,12 @@ impl P2pConnectionIncomingState {
         let time = meta.time();
         let peer_id = *action.peer_id();
         let p2p_state = state_context.get_substate_mut()?;
-        if p2p_state.config.seed_only && matches!(action, P2pConnectionIncomingAction::Init { .. })
-        {
-            return Ok(());
+        if let P2pConnectionIncomingAction::Init { opts, .. } = &action {
+            if p2p_state.config.seed_only
+                && !p2p_state.sharing_accepts_incoming(&opts.signaling, &opts.offer.sdp)
+            {
+                return Ok(());
+            }
         }
         let my_id = p2p_state.my_id();
 
@@ -72,6 +75,23 @@ impl P2pConnectionIncomingState {
                         offer: opts.offer.clone(),
                         rpc_id,
                     }));
+                if let Some(ip) = opts.remote_ip {
+                    p2p_state.sharing_record_address(peer_id, ip);
+                }
+                // The WebRTC stack gets the sharing policy's copy of an
+                // introduced browser's description; the state keeps the
+                // original, which the authentication hashes.
+                let relayed = matches!(opts.signaling, IncomingSignalingMethod::P2p { .. });
+                let mut opts = opts;
+                match p2p_state.sharing_stack_sdp(relayed, &opts.offer.sdp) {
+                    Ok(Some(sdp)) => opts.offer.sdp = sdp,
+                    Ok(None) => {}
+                    Err(refusal) => {
+                        bug_condition!("incoming offer accepted past the SDP policy: {refusal}");
+                        return Ok(());
+                    }
+                }
+                opts.remote_ip = None;
 
                 let dispatcher = state_context.into_dispatcher();
                 dispatcher.push(P2pConnectionIncomingEffectfulAction::Init { opts });

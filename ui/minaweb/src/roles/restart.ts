@@ -1,13 +1,22 @@
 /**
  * Every role change starts the node again by reloading the page, and a
- * reload empties the tab's memory. So a key held only there would be lost.
- * `restartWithKey` is the one way the page restarts: a key not saved in
- * this browser either crosses the reload encrypted with a passphrase (in
- * this tab's sessionStorage, as the producer's does), or the visitor says
- * plainly to restart without it. Anything else is refused, and so is a
- * reload whose encrypted copy or role didn't reach storage.
+ * reload empties the tab's memory. `restartWithKey` is the one way the
+ * page restarts. The key the tab holds crosses the reload by itself
+ * (handoff.ts) and is held again after it, with no passphrase. Where the
+ * browser can't do that, it throws HandoffError without reloading, and the
+ * page falls back to a choice: carry the key encrypted with a passphrase
+ * (in this tab's sessionStorage), or, for a key saved here or one the
+ * visitor lets go, restart without it. A reload whose key or role didn't
+ * reach storage is refused.
  */
 
+import {
+  clearAutostart,
+  markAutostartVerified,
+  replaceWithNonce,
+  type Go,
+} from "../boot/autostart";
+import { carryHeld, discardHandoff } from "./handoff";
 import {
   encryptKey,
   HANDOFF_KEY,
@@ -18,10 +27,11 @@ import {
 } from "./keys";
 import { writeRole, type Role } from "./role";
 
+/** Only where the key can't cross the reload by itself. */
 export type KeyChoice =
   /** Carry it across, encrypted with this passphrase. */
   | { kind: "carry"; passphrase: string }
-  /** Restart without it: the visitor has a backup, or doesn't need it. */
+  /** Restart without it: it is saved here, or the visitor lets it go. */
   | { kind: "drop" };
 
 /** The tab holds a key that a reload would lose: it isn't saved here. */
@@ -32,29 +42,30 @@ export function keyAtRisk(
   return key !== null && saved?.publicKey !== key.publicKey;
 }
 
-export const KEY_CHOICE_NEEDED =
-  "This tab's key isn't saved: carry it across the restart with a passphrase, or confirm restarting without it.";
-
 /**
- * Keeps what the restart needs, then reloads. Throws, without reloading,
- * if the key would be lost unasked, or if storage refuses its copy or the
- * role.
+ * Keeps what the restart needs, then reloads. With no choice, the held key
+ * crosses by itself, or HandoffError is thrown. Throws, without reloading,
+ * if storage refuses the key's copy, the start nonce or the role.
  */
 export async function restartWithKey(
   role: Role,
   key: HeldKey | null,
-  saved: EncryptedKey | null,
   choice: KeyChoice | null,
-  reload: () => void = () => location.reload(),
+  go: Go = replaceWithNonce,
+  carry: (key: HeldKey) => Promise<void> = carryHeld,
+  discard: () => Promise<void> = discardHandoff,
 ) {
-  // The producer needs its key at the start: it is always carried.
+  // The producer needs its key at the start.
   const producer = role.kind === "producer";
   if (producer && key?.publicKey !== role.publicKey) {
     throw new Error("The producer's key isn't the one this tab holds.");
   }
-  if (key && (producer || keyAtRisk(key, saved))) {
-    if (!choice) throw new Error(KEY_CHOICE_NEEDED);
-    if (choice.kind === "drop") {
+  let carried = false;
+  if (key) {
+    if (choice === null) {
+      await carry(key);
+      carried = true;
+    } else if (choice.kind === "drop") {
       if (producer)
         throw new Error("The producer needs its key across the restart.");
     } else {
@@ -67,6 +78,17 @@ export async function restartWithKey(
       }
     }
   }
-  writeRole(role);
-  reload();
+  // The node starts again by itself after the navigation, with no start
+  // screen (a producer would stall on it): a restart whose nonce or role
+  // doesn't reach storage doesn't happen.
+  let nonce: string;
+  try {
+    nonce = markAutostartVerified();
+    writeRole(role);
+  } catch (error) {
+    clearAutostart();
+    if (carried) await discard();
+    throw error;
+  }
+  go(nonce);
 }

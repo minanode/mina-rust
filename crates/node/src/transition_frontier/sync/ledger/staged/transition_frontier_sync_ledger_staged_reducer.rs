@@ -8,7 +8,10 @@ use crate::p2p::{
 use mina_p2p_messages::{hash::MinaHash, list::List, v2};
 use rand::prelude::*;
 
-use crate::ledger::write::{LedgerWriteAction, LedgerWriteRequest};
+use crate::{
+    ledger::write::{LedgerWriteAction, LedgerWriteRequest},
+    transition_frontier::sync::TransitionFrontierSyncAction,
+};
 
 use super::{
     PeerStagedLedgerPartsFetchState, StagedLedgerAuxAndPendingCoinbasesValidated,
@@ -35,6 +38,16 @@ impl TransitionFrontierSyncLedgerStagedState {
             }
             TransitionFrontierSyncLedgerStagedAction::PartsPeerFetchInit => {
                 let (dispatcher, global_state) = state_context.into_dispatcher_and_state();
+                // The request for a root kept as the target after the root
+                // moved ended without the parts: ask for the current root's
+                // instead (WEB-ROOT-RETARGET).
+                if dispatcher.push_if_enabled(
+                    TransitionFrontierSyncAction::LedgerRootRetarget,
+                    global_state,
+                    meta.time(),
+                ) {
+                    return;
+                }
                 let Some((p2p, target_best_tip, staged_ledger, fetch_attempts)) =
                     None.or_else(|| {
                         let staged = global_state.transition_frontier.sync.ledger()?.staged()?;
@@ -106,6 +119,18 @@ impl TransitionFrontierSyncLedgerStagedState {
 
                 let block_hash = staged_ledger.target().staged.block_hash.clone();
                 peers.shuffle(&mut global_state.pseudo_rng());
+                // The staged ledger is tens of megabytes in one request: ask
+                // the nearest WebRTC peer first (`plan_sync_peers`,
+                // WEB-NEAREST-RELAY). libp2p peers keep their places.
+                let peers = p2p
+                    .plan_sync_peers(
+                        peers.into_iter().map(|(peer_id, rpc_id, order)| {
+                            (*peer_id, (peer_id, rpc_id, order), 1)
+                        }),
+                        meta.time(),
+                    )
+                    .into_ordered()
+                    .map(|(peer, _)| peer);
 
                 for (&peer_id, rpc_id, _) in peers {
                     let enqueued = if p2p.is_libp2p_peer(&peer_id) {
@@ -272,6 +297,9 @@ impl TransitionFrontierSyncLedgerStagedState {
                         },
                     );
                 } else {
+                    // `P2pSyncPeerStats::record_rejected`: it ranks as near
+                    // no longer.
+                    dispatcher.push(P2pChannelsRpcAction::SyncAnswerRejected { peer_id: *sender });
                     dispatcher.push(TransitionFrontierSyncLedgerStagedAction::PartsPeerFetchInit);
                 }
             }

@@ -29,7 +29,7 @@ import { BlockContents } from "minanode-dashboard/components/block-contents";
 import { Loaded } from "minanode-dashboard/components/states";
 
 import { Link } from "../app/router";
-import { ARRIVAL, linkClass, OUTCOME } from "./blocks";
+import { ARRIVAL, linkClass, NOT_CHECKED_DOCS_URL, OUTCOME } from "./blocks";
 
 const CHECK: Record<Check["status"], string> = {
   passed: "Passed",
@@ -83,9 +83,13 @@ function NodeCheck({ hash }: { hash: string }) {
               </Signal>
             }
             footer={
-              receipt.proof.status === "notRun"
-                ? "The node fetched this block by hash in its bootstrap, back from a best tip whose proof it checked. It didn't check this block's own proof."
-                : "Checked in this tab, by the node's own verifier."
+              receipt.proof.status === "notRun" ? (
+                <ExternalLink href={NOT_CHECKED_DOCS_URL}>
+                  Web node docs
+                </ExternalLink>
+              ) : (
+                "Checked in this tab, by the node's own verifier."
+              )
             }
             rows={[
               { label: "Block proof", value: checkValue(receipt.proof) },

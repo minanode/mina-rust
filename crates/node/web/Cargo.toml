@@ -47,6 +47,7 @@ web-sys = { workspace = true, features = [
   "FileSystemSyncAccessHandle",
   "StorageManager",
 ] }
+zeroize = { workspace = true }
 
 [features]
 default = ["p2p-webrtc"]

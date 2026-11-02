@@ -56,3 +56,30 @@ and `cargo fmt`, clippy, taplo, prettier and the whitespace checks skip
   burst and 41 times the per-queue byte burst. Accounting includes copied
   payloads plus a 64-byte allowance per item; it does not bound total process
   RSS.
+
+## wasm_thread
+
+The web node's threads. Kept in the tree, as rustrtc is, so that the web node
+page runs under a Content-Security-Policy without `'unsafe-eval'`
+(`tools/regression/webnode/csp.py`). Wired in and skipped by the formatters and
+checks the same way.
+
+- Upstream: https://github.com/chemicstry/wasm_thread, MIT or Apache-2.0
+  (`wasm_thread/LICENSE-MIT`, `wasm_thread/LICENSE-APACHE`).
+- Version: 0.3.3 from crates.io, the `.crate` with SHA-256
+  `b7516db7f32decdadb1c3b8deb1b7d78b9df7606c5cc2f6241737c2ab3a0258e`, built from
+  upstream commit `7ec48686bb1a0d9bd42cf16e46622746e4d12ab3`
+  (`wasm_thread/.cargo_vcs_info.json`).
+- Kept: `src/`, the published `Cargo.toml` (and `Cargo.toml.orig`), the
+  licences, `README.md`. Left out: the package's examples, tests, CI and build
+  scripts, which the library doesn't use.
+- Our change, one commit on top of the published sources: no `eval`. The global
+  scope comes from `js_sys::global()` instead of `eval("self")`; the glue's URL,
+  which each worker imports, from its `import.meta.url` instead of a stack trace
+  of an evaluated script; and the module-worker polyfill, evaluated on every
+  spawn, is gone, as every browser with shared WASM memory has module workers.
+  Each worker still starts from a `blob:` script, which the policy allows in
+  `worker-src`.
+- Tested in the browser only: the web node page boots and starts its prover's
+  threads under the policy with no violation (`minaweb-check.mjs`,
+  `minaweb-roles-check.mjs` with `CSP_REPORTS`).

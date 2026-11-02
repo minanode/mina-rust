@@ -424,6 +424,18 @@ fn render(
         "Work credited to the configured worker key in successfully applied blocks.",
         snapshot.snark_worker_proofs_sold
     );
+    metric!(
+        "mina_webrtc_sharing_introductions_total",
+        "counter",
+        "Sharing browsers introduced to each other (--webrtc-sharing-relay).",
+        snapshot.sharing_introductions
+    );
+    metric!(
+        "mina_webrtc_sharing_introductions_refused_total",
+        "counter",
+        "Sharing browsers' introduction requests left waiting at a limit.",
+        snapshot.sharing_introductions_refused
+    );
     if let (Some(fetched), Some(estimated)) =
         (snapshot.ledger_sync_fetched, snapshot.ledger_sync_estimated)
     {
@@ -519,6 +531,8 @@ mod tests {
             snark_worker_proofs_sold: 5,
             ledger_sync_fetched: Some(33),
             ledger_sync_estimated: Some(100),
+            sharing_introductions: 12,
+            sharing_introductions_refused: 1,
         };
         let text = render(&snapshot, Some(4096), Some(2048), &BuildEnv::get());
         for (name, expected) in [
@@ -549,6 +563,8 @@ mod tests {
             ("mina_snark_worker_proofs_sold_total", "5"),
             ("mina_ledger_sync_fetched", "33"),
             ("mina_ledger_sync_estimated", "100"),
+            ("mina_webrtc_sharing_introductions_total", "12"),
+            ("mina_webrtc_sharing_introductions_refused_total", "1"),
             ("mina_process_resident_memory_bytes", "4096"),
             ("mina_store_size_bytes", "2048"),
             ("mina_uptime_seconds", "77"),
@@ -623,6 +639,8 @@ mod tests {
                 snark_worker_proofs_sold: 0,
                 ledger_sync_fetched: None,
                 ledger_sync_estimated: None,
+                sharing_introductions: 0,
+                sharing_introductions_refused: 0,
             };
             (*responder).send(response).unwrap();
         });

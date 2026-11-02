@@ -364,7 +364,7 @@ export function AppPatterns() {
 
       <Subsection
         title="Stage bar and timeline"
-        description="StageBar puts the stages of one run on a window of time: the window lit on a track, spans for stages that took time, dots for moments, ticks below. It is one image to assistive tech, named by label, so say there what it shows and give the figures in words too. Timeline lists the same stages in order, each with a dot for how it went (done, under way, stopped, not reached, to come), the state in words, its time and a line of detail."
+        description="StageBar puts the stages of one run on a window of time: the window lit on a track, spans for stages that took time, dots for moments, ticks below. It is one image to assistive tech, named by label, so say there what it shows and give the figures in words too. Timeline lists the same stages in order, each with a dot for how it went (done, under way, stopped, not reached, waiting), the state in words, its time and a line of detail."
       >
         <ThemePair>
           <StageSamples />

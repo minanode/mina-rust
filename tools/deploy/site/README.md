@@ -14,7 +14,7 @@ from an ordinary site:
   a block producer or SNARK worker also loads the prover circuits (devnet: 24
   files, 130 MB in all, the largest 23 MB).
 - **HTTPS everywhere.** A page served over HTTPS can only call HTTPS URLs: the
-  relay's signalling is `/dns4/relay.minaweb.org/tcp/443/webrtc/https/...`
+  relays' signalling is `/dns4/relay1.minaweb.org/tcp/443/webrtc/https/...`
   ([`../relay`](../relay/README.md)).
 
 **GitHub Pages can't serve the site:** it sends no custom headers, so the page
@@ -28,37 +28,43 @@ Cloudflare services are free at this size (Pages: unlimited requests and
 bandwidth; R2: no egress fees, 10 GB stored free) and keep the site up when the
 VPS is down. Netlify, or Caddy on the VPS, are alternatives below.
 
-| File                       | For                                                                          |
-| -------------------------- | ---------------------------------------------------------------------------- |
-| `build.sh`                 | builds the public devnet bundle: relay over HTTPS, asset host, ICE servers   |
-| `_headers`                 | Cloudflare Pages and Netlify: COOP, COEP, CORP on every file                 |
-| `_redirects`               | Netlify only: the frontend's routes to `index.html`                          |
-| `r2-cors.json`             | the R2 bucket's CORS policy                                                  |
-| `ice-servers.example.json` | the shape of the page's STUN and TURN list (the real one holds the password) |
-| `site.caddy`               | the site from Caddy instead, with the same headers                           |
+| File                       | For                                                                        |
+| -------------------------- | -------------------------------------------------------------------------- |
+| `build.sh`                 | builds the public devnet bundle: relay over HTTPS, asset host, ICE servers |
+| `_headers`                 | Cloudflare Pages and Netlify: COOP, COEP, CORP, CSP on every file          |
+| `_redirects`               | Netlify only: the frontend's routes to `index.html`                        |
+| `r2-cors.json`             | the R2 bucket's CORS policy                                                |
+| `ice-servers.example.json` | a static STUN and TURN list, a TURN per relay, for the test stack only     |
+| `site.caddy`               | the site from Caddy instead, with the same headers                         |
 
 ## Build
 
 On the build machine, with a merged commit checked out, its own Cargo target
-directory and the relay's peer id
+directory and each relay's peer id
 ([`../relay`](../relay/README.md#the-peer-id)):
 
 ```bash
-cp tools/deploy/site/ice-servers.example.json /path/outside/git/ice-servers.json
-$EDITOR /path/outside/git/ice-servers.json      # the TURN password, or drop TURN
 tools/regression/lock.sh build -- env CARGO_BUILD_JOBS=8 nice -n 10 \
-    CARGO_TARGET_DIR=$PWD/target-web RELAY_PEER_ID=12D3KooW... \
-    ICE_SERVERS=/path/outside/git/ice-servers.json \
+    CARGO_TARGET_DIR=$PWD/target-web \
+    RELAYS="relay1.minaweb.org=12D3KooW... relay2.minaweb.org=12D3KooW..." \
+    ICE_SERVERS_URLS=https://relay1.minaweb.org/ice-servers.json,https://relay2.minaweb.org/ice-servers.json \
     tools/deploy/site/build.sh
 ```
+
+The page fetches its STUN and TURN servers, with expiring credentials, from each
+relay's credential service (`docs/release/MINAWEB.md`). `ICE_SERVERS`, a static
+list such as `ice-servers.example.json`, is for the local test stack: its TURN
+password would be public.
 
 `make build-webnode-public` runs the same script (with the same environment). It
 prints where the bundle is (`OUT`, by default
 `.work/webnode/builds/<commit>-devnet-public`): `OUT/browser` is the site and
 `OUT/upload` the files for the asset host. `OUT/browser/build-info.json` names
-the commit, the relay, the asset host and the WASM's digest. Settings, all with
-minaweb.org defaults, are at the top of `build.sh`: `RELAY_DOMAIN`, `ASSETS_URL`
-(`https://assets.minaweb.org`), `HOSTING` (`pages`, `netlify` or `caddy`).
+the commit, the relays, the asset host and the WASM's digest. Settings are at
+the top of `build.sh`: `RELAYS` (each relay as `NAME=PEER_ID`; one relay may
+still set `RELAY_PEER_ID` and `RELAY_DOMAIN`), `ASSETS_URL`
+(`https://assets.minaweb.org`), `HOSTING` (`pages`, `netlify` or `caddy`). The
+page dials every relay, so it keeps syncing while one is down.
 
 The ICE servers name the VPS by its IPv4 address, not a host name: R9 measured
 Chrome taking 40 s to give up on a STUN host name's IPv6 address on a host with
@@ -68,9 +74,16 @@ delays every connection by 3 s. For the same reason the list holds only servers
 that answer: the node's built-in list, used without `ICE_SERVERS`, has two dead
 ones.
 
-Two files in the site can change without a rebuild: `webnode-devnet/peers.txt`
-(the relay's address) and `webnode-devnet/ice-servers.json` (STUN and TURN). The
-page reads both at start.
+One file in the site can change without a rebuild: `webnode-devnet/peers.txt`
+(the relays' addresses), which the page reads at start; with `ICE_SERVERS`,
+`webnode-devnet/ice-servers.json` too. A relay on another origin also needs a
+rebuild: the page's Content-Security-Policy names each relay's signalling
+origin, and the node dials only the relays the page lists.
+
+The build makes that policy from `RELAYS`, `RELAY_PORT`, `ASSETS_URL`,
+`WASM_URL` and `CIRCUITS_URL`, and writes it into `build-info.json`
+(`contentSecurityPolicy`) and `_headers`. `../../regression/webnode/csp.py`
+explains each source. For Caddy, set `SITE_CSP` to it (`site.caddy`).
 
 ## Cloudflare Pages
 
@@ -147,7 +160,7 @@ curl -s https://minaweb.org/build-info.json
 Then open https://minaweb.org/loading-web-node, start the node, and in the
 browser's console `crossOriginIsolated` is `true`; the network tab shows the
 WASM and the verifier caches from `assets.minaweb.org` with status 200, and the
-signalling requests to `relay.minaweb.org`.
+signalling requests to each relay.
 
 ## Netlify instead
 

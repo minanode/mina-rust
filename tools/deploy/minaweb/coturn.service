@@ -1,0 +1,66 @@
+# coturn for the relay, built by build-coturn.sh and installed in
+# /opt/coturn/current (MINAWEB.md, "Expiring TURN credentials"). Install as
+# /etc/systemd/system/coturn.service. It replaces the Ubuntu coturn package,
+# which must not be installed: its 4.6.1 acts on unsigned attributes after
+# MESSAGE-INTEGRITY (CVE-2026-68554).
+
+[Unit]
+Description=coturn TURN and STUN for the Mina relay
+After=network.target
+# The egress guard comes first, at boot and on every start. Stopping the
+# guard stops coturn; the guard's rules stay installed.
+Requires=mina-turn-egress.service
+BindsTo=mina-turn-egress.service
+After=mina-turn-egress.service
+
+[Service]
+Type=exec
+# Socket UID must be turnserver from creation, before binding any socket:
+# the guard matches it.
+User=turnserver
+Group=turnserver
+# Revalidate and restore the guard before every start, including restarts.
+# "+" runs it as root, outside the sandbox below.
+ExecStartPre=+/usr/bin/python3 /opt/mina-relay/current/turn-egress.py
+ExecStart=/opt/coturn/current/bin/turnserver -c /etc/turnserver.conf --pidfile=
+Restart=on-failure
+RestartSec=5s
+
+# Hardening. coturn binds 3478 (no privilege needed), reads its config and
+# opens UDP and TCP sockets; it writes nothing on disk (log-file=stdout).
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+UMask=0077
+# Netlink lists the interfaces at start.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# Measured at 12 MiB and 9 tasks on relay1. 400 allocations need about one
+# file descriptor each, plus listeners.
+MemoryHigh=192M
+MemoryMax=256M
+TasksMax=64
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

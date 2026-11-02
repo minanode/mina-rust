@@ -1,7 +1,6 @@
 /** Block production: `GET /stats/block_producer` (null without a producer). */
 
 import { arr, nanosToMs, num, obj, str } from "./json";
-import type { Tone } from "./sync";
 
 export interface WonSlot {
   slotTimeMs: number | null;
@@ -185,63 +184,6 @@ export function parseProducerStats(raw: unknown): ProducerStats | null {
     vrf: evaluated !== null && total !== null ? { evaluated, total } : null,
     vrfEpochs: vrfEpochs(s.vrf_stats),
   };
-}
-
-const discardReasons: Record<string, string> = {
-  BestTipStakingLedgerDifferent: "the best tip's staking ledger changed",
-  BestTipGlobalSlotHigher: "the best tip is past the slot",
-  BestTipSuperior: "a better block won the slot",
-  ProofVerificationFailed: "its proof didn't verify",
-  ProofGenerationFailed: "its proof couldn't be made",
-  WonSlotExpired: "the slot ended before the block was started",
-};
-
-export interface AttemptView {
-  label: string;
-  tone: Tone;
-  detail: string | null;
-}
-
-export function attemptView(a: Attempt): AttemptView {
-  switch (a.status) {
-    case "Missed":
-      return {
-        label: "Missed",
-        tone: "warn",
-        detail: "the slot passed after a restart without another attempt",
-      };
-    case "Scheduled":
-      return { label: "Scheduled", tone: "info", detail: null };
-    case "Committed":
-      return {
-        label: "Committed",
-        tone: "info",
-        detail: "waiting for confirmations",
-      };
-    case "Canonical":
-      return {
-        label: "Canonical",
-        tone: "ok",
-        detail:
-          a.confirmations !== null ? `${a.confirmations} confirmations` : null,
-      };
-    case "Orphaned":
-      return {
-        label: "Orphaned",
-        tone: "warn",
-        detail: "another block took its place",
-      };
-    case "Discarded":
-      return {
-        label: "Discarded",
-        tone: "warn",
-        detail: a.discardReason
-          ? (discardReasons[a.discardReason] ?? a.discardReason)
-          : null,
-      };
-    default:
-      return { label: "Producing", tone: "info", detail: a.status };
-  }
 }
 
 /** A won slot ahead; `scheduled` once the node has scheduled its attempt. */

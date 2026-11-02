@@ -604,6 +604,8 @@ fn metrics_snapshot(sync_phase: &str) -> RpcMetricsGetResponse {
         snark_worker_proofs_sold: 0,
         ledger_sync_fetched: None,
         ledger_sync_estimated: None,
+        sharing_introductions: 0,
+        sharing_introductions_refused: 0,
     }
 }
 
@@ -2120,6 +2122,7 @@ fn producer_status(
             client_port: None,
             libp2p_port: None,
         },
+        frontier_store: None,
         block_producer: producer.map(|key| key.parse().unwrap()),
         coinbase_receiver: producer.map(|key| key.parse().unwrap()),
         next_block_production,

@@ -1,5 +1,6 @@
-/** At a block producer's restart: the passphrase that decrypts its key, or
- * a start without producing. */
+/** At a block producer's restart, where the browser couldn't carry its key
+ * by itself (roles/handoff.ts): the passphrase that decrypts it, or a start
+ * without producing. */
 
 import * as React from "react";
 import { KeyRound } from "lucide-react";

@@ -31,6 +31,7 @@ const pendingSigners = "release@minanode.org ssh-ed25519 RELEASE_KEY_PENDING\n";
 const composeFiles = [
   "docker-compose.yml",
   "docker-compose.block-producer.yml",
+  "docker-compose.relay.yml",
 ];
 
 function fixture(run) {

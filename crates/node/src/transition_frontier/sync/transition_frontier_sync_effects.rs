@@ -140,6 +140,7 @@ impl TransitionFrontierSyncAction {
             TransitionFrontierSyncAction::LedgerRootSuccess => {
                 store.dispatch(TransitionFrontierSyncAction::BlocksPending);
             }
+            TransitionFrontierSyncAction::LedgerRootRetarget => {}
             TransitionFrontierSyncAction::BlocksPending => {
                 if !store.dispatch(TransitionFrontierSyncAction::BlocksSuccess) {
                     store.dispatch(TransitionFrontierSyncAction::BlocksPeersQuery);
@@ -153,7 +154,7 @@ impl TransitionFrontierSyncAction {
                 let mut peer_ids = p2p
                     .ready_peers_iter()
                     .filter(|(id, p)| {
-                        p.channels.rpc.can_send_request()
+                        p.channels.can_send_sync_request()
                             && store
                                 .state()
                                 .transition_frontier
@@ -175,6 +176,19 @@ impl TransitionFrontierSyncAction {
                 // Unfailed peers first, then the least recently failed. Keep
                 // the existing connection preference only as a tie breaker.
                 peer_ids.sort_by(|(_, t1, e1), (_, t2, e2)| e1.cmp(e2).then_with(|| t2.cmp(t1)));
+                // Near WebRTC peers first, far ones after with one request at
+                // a time (`plan_sync_peers`, WEB-NEAREST-RELAY). libp2p peers
+                // keep their places and room.
+                let p2p = &store.state().p2p;
+                let plan = p2p.plan_sync_peers(
+                    peer_ids.iter().map(|(peer_id, _, _)| {
+                        let room = p2p
+                            .get_ready_peer(peer_id)
+                            .map_or(0, |p| p.channels.sync_request_room());
+                        (*peer_id, *peer_id, room)
+                    }),
+                    meta.time(),
+                );
 
                 let mut retry_hashes = store
                     .state()
@@ -184,26 +198,52 @@ impl TransitionFrontierSyncAction {
                     .collect::<Vec<_>>();
                 retry_hashes.reverse();
 
-                for (peer_id, _, _) in peer_ids {
-                    if let Some(hash) = retry_hashes.last() {
-                        if store.dispatch(TransitionFrontierSyncAction::BlocksPeerQueryRetry {
-                            peer_id,
-                            hash: hash.clone(),
-                        }) {
-                            retry_hashes.pop();
+                // A WebRTC peer takes several requests at once
+                // (`P2pRpcPipeline`): go round the peers while one takes
+                // another. A libp2p peer takes one, as before.
+                let (mut peer_ids, mut far) = (plan.first, plan.then);
+                loop {
+                    let mut sent = false;
+                    for (peer_id, room) in peer_ids.iter_mut() {
+                        if *room == 0 {
                             continue;
                         }
-                    }
-
-                    match store.state().transition_frontier.sync.blocks_fetch_next() {
-                        Some(hash) => {
-                            store.dispatch(TransitionFrontierSyncAction::BlocksPeerQueryInit {
+                        let peer_id = *peer_id;
+                        if let Some(hash) = retry_hashes.last() {
+                            if store.dispatch(TransitionFrontierSyncAction::BlocksPeerQueryRetry {
                                 peer_id,
-                                hash,
-                            });
+                                hash: hash.clone(),
+                            }) {
+                                retry_hashes.pop();
+                                *room = room.saturating_sub(1);
+                                sent = true;
+                                continue;
+                            }
                         }
-                        None if retry_hashes.is_empty() => break,
-                        None => {}
+
+                        match store.state().transition_frontier.sync.blocks_fetch_next() {
+                            Some(hash) => {
+                                if store.dispatch(
+                                    TransitionFrontierSyncAction::BlocksPeerQueryInit {
+                                        peer_id,
+                                        hash,
+                                    },
+                                ) {
+                                    *room = room.saturating_sub(1);
+                                    sent = true;
+                                }
+                            }
+                            None if retry_hashes.is_empty() => break,
+                            None => {}
+                        }
+                    }
+                    if !sent {
+                        // The near peers are full: the far ones get what is
+                        // left.
+                        if far.is_empty() {
+                            break;
+                        }
+                        peer_ids = std::mem::take(&mut far);
                     }
                 }
             }

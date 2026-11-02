@@ -18,13 +18,17 @@ for (const missing of ["isolation", "integrity"]) {
         module.exports.launch = async () => ({
           createBrowserContext: async () => {
             const number = ++contextNumber;
+            let started = false;
             return {
               close: async () => fs.writeFileSync(process.env.OUT + '/context-' + number + '-closed', ''),
               newPage: async () => ({
                 setViewport: async () => {}, on: () => {}, setRequestInterception: async () => {},
+                evaluateOnNewDocument: async () => {},
                 goto: async () => {},
+                // The start screen until Start is clicked.
+                click: async selector => { if (selector === '[data-action="start-node"]') started = true; },
                 evaluate: async fn => fn.toString().includes('dataset.boot')
-                  ? (process.env.MISSING === 'integrity' && number === 1 ? 'failed:isolation' : 'start') : 'failure text',
+                  ? (!started ? 'choose' : process.env.MISSING === 'integrity' && number === 1 ? 'failed:isolation' : 'start') : 'failure text',
                 screenshot: async ({ path }) => fs.writeFileSync(path, 'screenshot fixture'),
               }),
             };
@@ -33,8 +37,14 @@ for (const missing of ["isolation", "integrity"]) {
         });
       `);
       const preload = join(root, "clock.mjs");
+      // The served page and build-info.json, with the policy the check
+      // compares (csp-violations.mjs servedPolicy); no network.
       writeFileSync(preload, `let now = Date.now(); Date.now = () => now += 121000;
-        const timer = globalThis.setTimeout; globalThis.setTimeout = fn => timer(fn, 0);`);
+        const timer = globalThis.setTimeout; globalThis.setTimeout = fn => timer(fn, 0);
+        const policy = "default-src 'none'";
+        globalThis.fetch = async url => String(url).endsWith("/build-info.json")
+          ? new Response(JSON.stringify({ contentSecurityPolicy: policy }))
+          : new Response("<html></html>", { headers: { "content-security-policy": policy, "x-frame-options": "DENY" } });`);
       const out = join(root, "out");
       const result = spawnSync(process.execPath, ["--import", preload, new URL("./minaweb-check.mjs", import.meta.url).pathname], {
         env: { ...process.env, OUT: out, BASE: "https://example.org", CHROME: "fixture", PROFILE_DIR: join(root, "profile"), PUPPETEER_DIR: root, MISSING: missing },

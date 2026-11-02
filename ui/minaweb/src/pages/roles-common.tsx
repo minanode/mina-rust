@@ -10,6 +10,7 @@ import {
 } from "@minanode/design-system/components/alert";
 import { Button } from "@minanode/design-system/components/button";
 import { EmptyState } from "@minanode/design-system/patterns/empty-state";
+import { ExternalLink } from "@minanode/design-system/patterns/external-link";
 import { KeyValueList } from "@minanode/design-system/patterns/key-value-list";
 
 import { Link } from "../app/router";
@@ -19,21 +20,11 @@ import {
   deviceMemoryGb,
   lowMemoryWarning,
   ROLE_COSTS,
-  SWITCH_PEAK_BYTES,
 } from "../roles/resources";
 import { rolesAllowed } from "../roles/role";
 
 /** The devnet faucet: a link only, the page never calls it. */
 export const FAUCET_URL = "https://faucet.minaprotocol.com/";
-
-/** The plain statement every key and role screen makes. */
-export function DevnetOnly() {
-  return (
-    <p className="text-sm text-pretty text-muted-foreground">
-      Devnet only: this page has no mainnet mode. Devnet MINA has no value.
-    </p>
-  );
-}
 
 /** On a build for another network, the role screens say so and stop. */
 export function RolesGate({ children }: { children: React.ReactNode }) {
@@ -94,7 +85,6 @@ export function RoleCost({ kind }: { kind: "worker" | "producer" }) {
                 : `${reported >= 8 ? "8 GB or more" : `${reported} GB`} of memory`,
           },
         ]}
-        footer={`Measured in headless Chrome on devnet, node and prover together. Starting or stopping a role starts the node again: for about 30 s the tab also holds the old node's memory, up to about ${(SWITCH_PEAK_BYTES / GIB).toFixed(1)} GiB. The tab must stay open: closing it stops the role.`}
       />
       {warning ? (
         <Alert variant="caution" data-low-memory>
@@ -111,4 +101,18 @@ export function RoleCost({ kind }: { kind: "worker" | "producer" }) {
 
 /** The one-role rule, said the same way on both role screens. */
 export const ONE_ROLE =
-  "A web node runs the SNARK worker or the block producer, not both: a SNARK proof can't be stopped for a block proof, which could then miss its slot. Choosing one stops the other.";
+  "A web node runs the SNARK worker or the block producer, not both. Choosing one stops the other.";
+
+/** The docs section on the one-role rule. */
+export const ONE_ROLE_DOCS_URL =
+  "https://minanode.org/docs/web-node-connections/#one-role-per-tab";
+
+/** The one-role rule with its docs link. */
+export function OneRole() {
+  return (
+    <p className="text-sm text-muted-foreground" data-one-role>
+      {ONE_ROLE}{" "}
+      <ExternalLink href={ONE_ROLE_DOCS_URL}>Web node docs</ExternalLink>
+    </p>
+  );
+}

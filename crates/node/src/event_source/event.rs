@@ -55,6 +55,7 @@ impl Event {
                     ChannelId::Rpc => "P2pChannelReceived(Rpc)",
                     ChannelId::StreamingRpc => "P2pChannelReceived(StreamingRpc)",
                 },
+                P2pChannelEvent::Receiving(..) => "P2pChannelReceiving",
                 P2pChannelEvent::Closed(..) => "P2pChannelClosed",
             },
             Self::P2p(P2pEvent::MioEvent(_)) => "P2pMio",

@@ -7,6 +7,7 @@
  * at 8 GB, and absent outside Chromium.
  */
 
+import { formatBytes } from "../boot/failures";
 import type { RoleKind } from "./role";
 
 export interface RoleCost {
@@ -47,6 +48,10 @@ export const ROLE_COSTS: Record<Exclude<RoleKind, "viewer">, RoleCost> = {
   },
 };
 
+/** The tab's peak memory following the chain with no role, in bytes: 1.34
+ * GiB, the viewer's peak in the same runs (MINAWEB-P2-WRITE-roles.md). */
+export const VIEWER_PEAK_BYTES = Math.round(1.34 * GIB);
+
 /** A role change starts the node again; for about 30 s the tab still
  * holds the old node's memory too: 4.07 GiB measured stopping the worker. */
 export const SWITCH_PEAK_BYTES = 4_365_904_896;
@@ -71,4 +76,27 @@ export function lowMemoryWarning(
     Math.max(ROLE_COSTS[kind].peakBytes, SWITCH_PEAK_BYTES) / GIB
   ).toFixed(1);
   return `This device reports about ${reportedGb} GB of memory. The ${kind === "worker" ? "SNARK worker" : "block producer"} peaks at about ${peak} GiB in this tab, with its start, so the browser may stop the tab, or the device may slow down. You can still start it.`;
+}
+
+/** The start screen's line: the node's WASM and the role's prover circuits,
+ * which Start downloads, and the tab's memory at its peak, for the role the
+ * tab will start with. The WASM's size is the build's, unpacked, as the
+ * Start-up page shows it. Without it the line says no number. */
+export function startCost(kind: RoleKind, wasmBytes: number | null): string {
+  const role = kind === "viewer" ? null : ROLE_COSTS[kind];
+  const peak = ((role?.peakBytes ?? VIEWER_PEAK_BYTES) / GIB).toFixed(1);
+  const as =
+    kind === "worker"
+      ? " as a SNARK worker"
+      : kind === "producer"
+        ? " as a block producer"
+        : "";
+  const node =
+    wasmBytes === null
+      ? "the node"
+      : `the node (${formatBytes(wasmBytes)} of WebAssembly)`;
+  const circuits = role
+    ? ` and ${formatBytes(role.circuitBytes)} of prover files`
+    : "";
+  return `Starting it${as} downloads ${node}${circuits}. It uses about ${peak} GiB of memory.`;
 }

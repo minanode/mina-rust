@@ -16,14 +16,15 @@ use crate::{
         AccountQuery, AccountSlim, ActionStatsQuery, ActionStatsResponse, CurrentMessageProgress,
         MessagesStats, NodeHeartbeat, ProducedBlockInfo, RootLedgerSyncProgress,
         RootStagedLedgerSyncProgress, RpcAction, RpcBlockProducerStats, RpcMessageProgressResponse,
-        RpcNextBlockProduction, RpcNodeStatus, RpcNodeStatusLedger, RpcNodeStatusNetworkInfo,
-        RpcNodeStatusResources, RpcNodeStatusTransactionPool, RpcNodeStatusTransitionFrontier,
-        RpcNodeStatusTransitionFrontierBlockSummary, RpcNodeStatusTransitionFrontierSync,
-        RpcRequestExtraData, RpcScanStateSummary, RpcScanStateSummaryBlock,
-        RpcScanStateSummaryBlockTransaction, RpcScanStateSummaryBlockTransactionKind,
-        RpcScanStateSummaryScanStateJob, RpcSnarkPoolJobFull, RpcSnarkPoolJobSnarkWork,
-        RpcSnarkPoolJobSummary, RpcSnarkerJobCommitResponse, RpcSnarkerJobSpecResponse,
-        RpcTransactionInjectResponse, TransactionStatus,
+        RpcNextBlockProduction, RpcNodeStatus, RpcNodeStatusFrontierStore, RpcNodeStatusLedger,
+        RpcNodeStatusNetworkInfo, RpcNodeStatusResources, RpcNodeStatusTransactionPool,
+        RpcNodeStatusTransitionFrontier, RpcNodeStatusTransitionFrontierBlockSummary,
+        RpcNodeStatusTransitionFrontierSync, RpcRequestExtraData, RpcScanStateSummary,
+        RpcScanStateSummaryBlock, RpcScanStateSummaryBlockTransaction,
+        RpcScanStateSummaryBlockTransactionKind, RpcScanStateSummaryScanStateJob,
+        RpcSnarkPoolJobFull, RpcSnarkPoolJobSnarkWork, RpcSnarkPoolJobSummary,
+        RpcSnarkerJobCommitResponse, RpcSnarkerJobSpecResponse, RpcTransactionInjectResponse,
+        TransactionStatus,
     },
     snark_pool::SnarkPoolAction,
     transition_frontier::sync::{
@@ -261,6 +262,14 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
                 snark_worker_proofs_sold: state.external_snark_worker.0.proofs_sold,
                 ledger_sync_fetched,
                 ledger_sync_estimated,
+                sharing_introductions: state
+                    .p2p
+                    .ready()
+                    .map_or(0, |p2p| p2p.sharing_relay.introduced_total),
+                sharing_introductions_refused: state
+                    .p2p
+                    .ready()
+                    .map_or(0, |p2p| p2p.sharing_relay.refused_total),
             };
             let _ = store.service.respond_metrics_get(rpc_id, response);
         }
@@ -1451,8 +1460,33 @@ fn compute_node_status<S: Service>(store: &mut Store<S>) -> RpcNodeStatus {
         },
         service_queues: store.service.queues(),
         network_info,
+        frontier_store: frontier_store_status(state),
     };
     status
+}
+
+/// The frontier store for `/status`: `None` when the config has it off.
+fn frontier_store_status(state: &crate::State) -> Option<RpcNodeStatusFrontierStore> {
+    use crate::transition_frontier::persist::TransitionFrontierPersistState as Persist;
+
+    let frontier = &state.transition_frontier;
+    if !frontier.config.persist.enabled {
+        return None;
+    }
+    let mut status = RpcNodeStatusFrontierStore {
+        open: false,
+        unavailable: None,
+        locked: false,
+    };
+    match &frontier.persist {
+        Persist::Disabled { reason } => {
+            status.locked = *reason == crate::persist::PersistError::Locked.to_string();
+            status.unavailable = Some(reason.clone());
+        }
+        Persist::Idle | Persist::OpenPending { .. } => {}
+        Persist::Ready(_) => status.open = true,
+    }
+    Some(status)
 }
 
 /// The producer records the timing and its source consensus point together.

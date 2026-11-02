@@ -19,7 +19,8 @@
 //   BASE          the frontend's origin, e.g. http://localhost:4210 (required)
 //   PAGE          the path to open (default /loading-web-node)
 //   BUTTON        the button that starts the node (default "Start Non BP")
-//   AUTOSTART     1 for minaweb, which starts without a button
+//   AUTOSTART     1 for a page that starts without a button; minaweb has a
+//                 start screen: set BUTTON="Start the web node in this tab"
 //   MIN_SYNC_HEIGHT minimum tip height for UNTIL_SYNCED (default 0); set to
 //                 the relay's tip minus one to exclude initial genesis sync
 //   EVERY_MS      the sampling interval (default 30000)
@@ -55,7 +56,8 @@
 //   run.log       what it prints: `<s>s rss=<MB>MB wasm=[<MB>]MB status={...}
 //                 rtc={...}`, rtc being the page's WebRTC connections: how
 //                 many are open, the MB received and sent over all it made,
-//                 and the local and remote candidate types of each open one
+//                 the local and remote candidate types of each open one, and
+//                 the MB received over each, by remote port (rx_by_port)
 //   console.log   the page's console, each line prefixed with seconds since
 //                 the page was opened, and the status and URL of each
 //                 response from another origin
@@ -311,28 +313,37 @@ try {
       .evaluate(() => (self.__wasmMemories ?? []).map((m) => Math.round(m.buffer.byteLength / 2 ** 20)))
       .catch(() => null);
     const rtc = await page
-      .evaluate(async () => {
-        const result = { open: 0, rx_mb: 0, tx_mb: 0, pairs: [] };
-        for (const pc of self.__rtcPeers ?? []) {
+      .evaluate(async (detail) => {
+        const result = { open: 0, rx_mb: 0, tx_mb: 0, pairs: [], rx_by_port: {} };
+        if (detail) result.sctp = [];
+        const peers = self.__rtcPeers ?? [];
+        for (const [i, pc] of peers.entries()) {
           const stats = await pc.getStats().catch(() => null);
           if (!stats) continue;
           const byId = new Map([...stats.values()].map((s) => [s.id, s]));
           for (const s of stats.values()) {
+            if (detail && ["sctp-transport", "data-channel"].includes(s.type)) {
+              result.sctp.push(s);
+            }
             if (s.type !== "transport") continue;
             result.rx_mb += (s.bytesReceived ?? 0) / 2 ** 20;
             result.tx_mb += (s.bytesSent ?? 0) / 2 ** 20;
             const pair = byId.get(s.selectedCandidatePairId);
+            const remote = pair && byId.get(pair.remoteCandidateId);
+            // MB received over each connection, by the remote port (one
+            // per relay), or by connection number once it has no pair.
+            const key = remote?.port ?? `pc${i}`;
+            result.rx_by_port[key] = Math.round(((result.rx_by_port[key] ?? 0) + (s.bytesReceived ?? 0) / 2 ** 20) * 10) / 10;
             if (pc.connectionState !== "connected" || !pair) continue;
             result.open++;
             const local = byId.get(pair.localCandidateId);
-            const remote = byId.get(pair.remoteCandidateId);
             result.pairs.push(`${local?.candidateType}>${remote?.candidateType}:${remote?.address}:${remote?.port}`);
           }
         }
         result.rx_mb = Math.round(result.rx_mb * 10) / 10;
         result.tx_mb = Math.round(result.tx_mb * 10) / 10;
         return result;
-      })
+      }, process.env.SCTP_STATS === "1")
       .catch((e) => ({ error: e.message }));
     log(
       `${elapsed()} rss=${browserRss()}MB wasm=${JSON.stringify(wasm)}MB status=${JSON.stringify(status)?.slice(0, 400)} rtc=${JSON.stringify(rtc)}`,

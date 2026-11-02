@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     best_tip::P2pChannelsBestTipState,
-    rpc::{P2pChannelsRpcState, P2pRpcId},
+    rpc::{P2pChannelsRpcState, P2pRpcId, P2pRpcPipeline, P2pRpcRequest, P2pSyncPeerStats},
     signaling::{
         discovery::P2pChannelsSignalingDiscoveryState, exchange::P2pChannelsSignalingExchangeState,
         P2pChannelsSignalingState,
@@ -24,9 +24,22 @@ pub struct P2pChannelsState {
     pub snark: P2pChannelsSnarkState,
     pub snark_job_commitment: P2pChannelsSnarkJobCommitmentState,
     pub rpc: P2pChannelsRpcState,
+    /// Ledger queries sent while `rpc`'s request slot is taken (WebRTC).
+    #[serde(default)]
+    pub rpc_pipeline: P2pRpcPipeline,
+    /// How a WebRTC peer answers our sync requests, to rank it for the
+    /// sync's bulk requests (`plan_sync_peers`).
+    #[serde(default)]
+    pub sync_stats: P2pSyncPeerStats,
     pub streaming_rpc: P2pChannelsStreamingRpcState,
 
     pub(super) next_local_rpc_id: P2pRpcId,
+    /// When a WebRTC peer last sent us anything, on any channel: a whole
+    /// message, or part of one too long for a chunk. Our requests to it time
+    /// out on silence, not on slowness: a far peer's answer can sit behind
+    /// megabytes it is still sending us, on a link that does a few hundred
+    /// kilobytes a second (WEB-FAR-RELAY-LOOP).
+    pub last_received: redux::Timestamp,
 }
 
 impl P2pChannelsState {
@@ -64,17 +77,75 @@ impl P2pChannelsState {
                 false => P2pChannelsRpcState::Disabled,
                 true => P2pChannelsRpcState::Enabled,
             },
+            rpc_pipeline: Default::default(),
+            sync_stats: Default::default(),
             streaming_rpc: match enabled_channels.contains(&ChannelId::StreamingRpc) {
                 false => P2pChannelsStreamingRpcState::Disabled,
                 true => P2pChannelsStreamingRpcState::Enabled,
             },
 
             next_local_rpc_id: 0,
+            last_received: redux::Timestamp::ZERO,
         }
     }
 
     pub fn next_local_rpc_id(&self) -> P2pRpcId {
         self.next_local_rpc_id
+    }
+
+    /// Whether a sync request, a ledger query or a block, may go to the peer
+    /// now: in the RPC channel's request slot, or pipelined behind it
+    /// ([`P2pRpcPipeline`]).
+    pub fn can_send_sync_request(&self) -> bool {
+        self.rpc.can_send_request() || self.rpc_pipeline.has_room(&self.rpc)
+    }
+
+    /// How many more sync requests the peer takes now: one in a free slot,
+    /// and for a WebRTC peer as many as the pipeline has room for.
+    pub fn sync_request_room(&self) -> usize {
+        let slot = usize::from(self.rpc.can_send_request());
+        if !self.rpc_pipeline.enabled {
+            return slot;
+        }
+        let unanswered = self.unanswered_rpc_ids().count();
+        let room = super::rpc::MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS.saturating_sub(unanswered);
+        if slot == 0 && !self.rpc_pipeline.has_room(&self.rpc) {
+            0
+        } else {
+            room
+        }
+    }
+
+    /// Whether `request` may go to the peer now.
+    pub fn can_send_rpc(&self, request: &P2pRpcRequest) -> bool {
+        self.rpc.can_send_request()
+            || (P2pRpcPipeline::takes(request) && self.rpc_pipeline.has_room(&self.rpc))
+    }
+
+    /// Whether `id` is one of our requests the peer hasn't answered.
+    pub fn is_rpc_unanswered(&self, id: P2pRpcId) -> bool {
+        self.rpc
+            .unanswered_local_rpc()
+            .is_some_and(|(rpc_id, _)| rpc_id == id)
+            || self.rpc_pipeline.get(id).is_some()
+    }
+
+    /// Our requests the peer hasn't answered, in the slot and the pipeline.
+    pub fn unanswered_rpc_ids(&self) -> impl Iterator<Item = P2pRpcId> + '_ {
+        self.rpc
+            .unanswered_local_rpc()
+            .map(|(id, _)| id)
+            .into_iter()
+            .chain(self.rpc_pipeline.requests.iter().map(|r| r.id))
+    }
+
+    /// What we asked in request `id`, just answered.
+    pub fn rpc_responded_request(&self, id: P2pRpcId) -> Option<&P2pRpcRequest> {
+        self.rpc
+            .local_responded_request()
+            .filter(|(rpc_id, _)| *rpc_id == id)
+            .map(|(_, request)| request)
+            .or_else(|| self.rpc_pipeline.responded_request(id))
     }
 
     pub fn rpc_remote_last_responded(&self) -> redux::Timestamp {

@@ -53,7 +53,12 @@ pub async fn run(listener: tokio::net::TcpListener, rpc_sender: RpcSender) -> st
         signaling_url = %format!("http://{address}/mina/webrtc/signal"),
         "WebRTC signaling listener ready; publish its reachable host and port (HTTPS through a TLS proxy)"
     );
-    axum::serve(listener, router(rpc_sender)).await
+    // Connection addresses: a sharing relay limits introductions per address.
+    axum::serve(
+        listener,
+        router(rpc_sender).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
 }
 
 #[cfg(test)]

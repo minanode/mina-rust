@@ -55,9 +55,7 @@ fn get_rpc_request<'a>(state: &'a State, peer_id: &PeerId, id: u64) -> Option<&'
     state
         .p2p
         .get_ready_peer(peer_id)
-        .and_then(|s| s.channels.rpc.local_responded_request())
-        .filter(|(rpc_id, _)| *rpc_id == id)
-        .map(|(_, req)| req)
+        .and_then(|s| s.channels.rpc_responded_request(id))
 }
 
 fn bounded_completed_snarks<'a>(
@@ -676,6 +674,7 @@ impl crate::State {
             };
             if !matches_query {
                 let error = PeerLedgerQueryError::InvalidResponse;
+                dispatcher.push(P2pChannelsRpcAction::SyncAnswerRejected { peer_id });
                 dispatcher.push(match query {
                     Query::NumAccounts => {
                         TransitionFrontierSyncLedgerSnarkedAction::PeerQueryNumAccountsError {
@@ -810,6 +809,7 @@ impl crate::State {
                             },
                         );
                     } else {
+                        dispatcher.push(P2pChannelsRpcAction::SyncAnswerRejected { peer_id });
                         dispatcher.push(
                             TransitionFrontierSyncLedgerSnarkedAction::PeerQueryAddressError {
                                 peer_id,
@@ -855,8 +855,15 @@ impl crate::State {
             Some(P2pRpcResponse::Block(block)) => {
                 let Ok(block) = BlockWithHash::try_new(block.clone()) else {
                     mina_core::error!(meta.time(); "P2pRpcResponse::Block: invalid block");
+                    dispatcher.push(P2pChannelsRpcAction::SyncAnswerRejected { peer_id });
                     return;
                 };
+                // Not the block asked for: the sync won't take it
+                // (`BlocksPeerQuerySuccess`), and its quick answer must not
+                // rank the peer as near.
+                if matches!(request, Some(P2pRpcRequest::Block(asked)) if asked != block.hash()) {
+                    dispatcher.push(P2pChannelsRpcAction::SyncAnswerRejected { peer_id });
+                }
                 // The hash we asked for covers the protocol state alone. As
                 // OCaml's catch-up does, check the rest of the header and the
                 // body here, so that another peer is asked for the block
@@ -873,10 +880,14 @@ impl crate::State {
                     mina_core::warn!(meta.time();
                         kind = "P2pRpcResponseBlockInvalid",
                         summary = format!("block {} from {peer_id}: {error:?}", block.hash()));
+                    let error = PeerBlockFetchError::from_block_check(error);
+                    if matches!(error, PeerBlockFetchError::Invalid(_)) {
+                        dispatcher.push(P2pChannelsRpcAction::SyncAnswerRejected { peer_id });
+                    }
                     dispatcher.push(TransitionFrontierSyncAction::BlocksPeerQueryError {
                         peer_id,
                         rpc_id: id,
-                        error: PeerBlockFetchError::from_block_check(error),
+                        error,
                     });
                     return;
                 }

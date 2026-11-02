@@ -4,6 +4,7 @@ node_modules/
 
 # Vendored crates, kept as published
 vendor/rustrtc/
+vendor/wasm_thread/
 
 # Build outputs
 target/

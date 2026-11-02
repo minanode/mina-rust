@@ -24,8 +24,8 @@ in a new directory. No node data or identity keys are retained there.
 For Docker, pull the documented image first, then use:
 
 ```sh
-docker pull ghcr.io/minanode/mina-rust:0.20.0
-tools/demo/fresh-sync.sh --docker ghcr.io/minanode/mina-rust:0.20.0 --keep
+docker pull ghcr.io/minanode/mina-rust:0.20.1
+tools/demo/fresh-sync.sh --docker ghcr.io/minanode/mina-rust:0.20.1 --keep
 ```
 
 The runner resolves the image to its local ID before starting. It follows the

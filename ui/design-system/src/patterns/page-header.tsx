@@ -24,7 +24,7 @@ function PageHeader({
   return (
     <div
       data-slot="page-header"
-      className="flex flex-col gap-4 pb-6 md:flex-row md:items-end md:justify-between"
+      className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between"
     >
       <div className="flex max-w-prose flex-col gap-2">
         {eyebrow ? <Eyebrow>{eyebrow}</Eyebrow> : null}

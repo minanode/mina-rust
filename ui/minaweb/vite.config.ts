@@ -31,6 +31,19 @@ function buildInfo(): Record<string, unknown> | null {
   return JSON.parse(readFileSync(file, "utf8"));
 }
 
+/** The release this page is built for: the workspace's version in the
+ * repository's Cargo.toml, the version the node's own build_env reports. */
+function workspaceVersion(): string | null {
+  const file = resolve(import.meta.dirname, "../../Cargo.toml");
+  if (!existsSync(file)) return null;
+  const section = readFileSync(file, "utf8").split(
+    /^\[workspace\.package\]$/m,
+  )[1];
+  return (
+    section?.split(/^\[/m)[0].match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? null
+  );
+}
+
 // The unit tests compile no page, so they need no web node.
 const config = process.env.VITEST
   ? null
@@ -168,6 +181,7 @@ export default defineConfig({
   define: {
     __MINAWEB_CONFIG__: JSON.stringify(config),
     __MINAWEB_LOCAL__: process.env.MINAWEB_LOCAL === "1",
+    __MINAWEB_VERSION__: JSON.stringify(workspaceVersion()),
   },
   build: {
     outDir: "dist",

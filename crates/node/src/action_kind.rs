@@ -248,6 +248,7 @@ pub enum ActionKind {
     P2pChannelsRpcResponsePending,
     P2pChannelsRpcResponseReceived,
     P2pChannelsRpcResponseSend,
+    P2pChannelsRpcSyncAnswerRejected,
     P2pChannelsRpcTimeout,
     P2pChannelsSignalingDiscoveryAnswerDecrypted,
     P2pChannelsSignalingDiscoveryAnswerReceived,
@@ -502,6 +503,7 @@ pub enum ActionKind {
     P2pPeerBestTipUpdate,
     P2pPeerDiscovered,
     P2pPeerReady,
+    P2pPeerReceiving,
     P2pPeerRemove,
     P2pPeerStale,
     RpcActionStatsGet,
@@ -811,6 +813,7 @@ pub enum ActionKind {
     TransitionFrontierSyncLedgerNextEpochPending,
     TransitionFrontierSyncLedgerNextEpochSuccess,
     TransitionFrontierSyncLedgerRootPending,
+    TransitionFrontierSyncLedgerRootRetarget,
     TransitionFrontierSyncLedgerRootSuccess,
     TransitionFrontierSyncLedgerStakingPending,
     TransitionFrontierSyncLedgerStakingSuccess,
@@ -870,7 +873,7 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    pub const COUNT: u16 = 739;
+    pub const COUNT: u16 = 742;
 }
 
 impl std::fmt::Display for ActionKind {
@@ -1511,6 +1514,7 @@ impl ActionKindGet for P2pPeerAction {
             Self::Discovered { .. } => ActionKind::P2pPeerDiscovered,
             Self::Ready { .. } => ActionKind::P2pPeerReady,
             Self::BestTipUpdate { .. } => ActionKind::P2pPeerBestTipUpdate,
+            Self::Receiving { .. } => ActionKind::P2pPeerReceiving,
             Self::Remove { .. } => ActionKind::P2pPeerRemove,
             Self::Stale { .. } => ActionKind::P2pPeerStale,
         }
@@ -1752,6 +1756,7 @@ impl ActionKindGet for TransitionFrontierSyncAction {
             }
             Self::LedgerRootPending => ActionKind::TransitionFrontierSyncLedgerRootPending,
             Self::LedgerRootSuccess => ActionKind::TransitionFrontierSyncLedgerRootSuccess,
+            Self::LedgerRootRetarget => ActionKind::TransitionFrontierSyncLedgerRootRetarget,
             Self::BlocksPending => ActionKind::TransitionFrontierSyncBlocksPending,
             Self::BlocksPeersQuery => ActionKind::TransitionFrontierSyncBlocksPeersQuery,
             Self::BlocksPeerQueryInit { .. } => {
@@ -2153,6 +2158,7 @@ impl ActionKindGet for P2pChannelsRpcAction {
             Self::RequestReceived { .. } => ActionKind::P2pChannelsRpcRequestReceived,
             Self::ResponsePending { .. } => ActionKind::P2pChannelsRpcResponsePending,
             Self::ResponseSend { .. } => ActionKind::P2pChannelsRpcResponseSend,
+            Self::SyncAnswerRejected { .. } => ActionKind::P2pChannelsRpcSyncAnswerRejected,
         }
     }
 }

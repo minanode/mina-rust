@@ -3,6 +3,10 @@
 #
 #   sudo SSH_FROM=<your address or range> ./firewall.sh
 #
+# SSH_FROM is required: the script refuses to run without it rather than
+# open SSH to everyone. To allow every address on purpose, pass
+# SSH_FROM=0.0.0.0/0.
+#
 # Open: SSH; 80 and 443 for Caddy (ACME, HTTPS signalling, HTTP/3); the
 # node's libp2p port, so devnet peers can dial in; its WebRTC UDP ports
 # (relay.env WEBRTC_UDP_PORTS), which browsers connect to; TURN and STUN on
@@ -16,18 +20,14 @@
 # first. Keep a console open (the provider's web console) in case SSH is cut.
 set -euo pipefail
 
-SSH_FROM=${SSH_FROM:-any}
+: "${SSH_FROM:?set SSH_FROM to the address or range that may use SSH}"
 MINA_LIBP2P_PORT=${MINA_LIBP2P_PORT:-8302}
 WEBRTC_UDP_PORTS=${WEBRTC_UDP_PORTS:-40000-40999}
 TURN_PORT=${TURN_PORT:-3478}
 
 ufw default deny incoming
 ufw default allow outgoing
-if [[ $SSH_FROM == any ]]; then
-	ufw allow 22/tcp comment 'ssh'
-else
-	ufw allow from "$SSH_FROM" to any port 22 proto tcp comment 'ssh'
-fi
+ufw allow from "$SSH_FROM" to any port 22 proto tcp comment 'ssh'
 ufw allow 80/tcp comment 'caddy: ACME and redirect'
 ufw allow 443/tcp comment 'caddy: HTTPS signalling'
 ufw allow 443/udp comment 'caddy: HTTP/3'

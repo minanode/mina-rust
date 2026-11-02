@@ -3,9 +3,11 @@
 //! - `GET /mina/webrtc/signal/{offer}` - Handle WebRTC signaling (GET with base58 encoded offer)
 //! - `POST /mina/webrtc/signal` - Handle WebRTC signaling (POST with JSON offer)
 
+use std::net::{IpAddr, SocketAddr};
+
 use axum::{
-    extract::{Path, State},
-    http::StatusCode,
+    extract::{ConnectInfo, FromRequestParts, Path, State},
+    http::{request::Parts, HeaderMap, StatusCode},
     Json,
 };
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -47,6 +49,7 @@ pub fn routes() -> OpenApiRouter<AppState> {
 )]
 async fn signal_get(
     State(state): State<AppState>,
+    ClientIp(remote_ip): ClientIp,
     Path(offer): Path<String>,
 ) -> (StatusCode, Json<P2pConnectionResponse>) {
     // TODO(axum-migration): Returns 400 for both bad base58 AND bad JSON schema inside.
@@ -62,7 +65,7 @@ async fn signal_get(
             StatusCode::BAD_REQUEST,
             Json(P2pConnectionResponse::SignalDecryptionFailed),
         ),
-        Some(crate::input_limits::Offer(offer)) => handle_offer(state, offer).await,
+        Some(crate::input_limits::Offer(offer)) => handle_offer(state, offer, remote_ip).await,
     }
 }
 
@@ -81,18 +84,20 @@ async fn signal_get(
 )]
 async fn signal_post(
     State(state): State<AppState>,
+    ClientIp(remote_ip): ClientIp,
     AssumeJson(offer): AssumeJson<crate::input_limits::Offer>,
 ) -> (StatusCode, Json<P2pConnectionResponse>) {
     // TODO(axum-migration): Malformed JSON returns 422 (axum default) vs warp's 400.
     // Both are framework defaults, not explicit choices. 422 is arguably more correct
     // (valid JSON, wrong schema = "unprocessable entity"). Noted for awareness.
-    handle_offer(state, offer.0).await
+    handle_offer(state, offer.0, remote_ip).await
 }
 
 /// Shared handler for processing WebRTC offers.
 async fn handle_offer(
     state: AppState,
     offer: Box<webrtc::Offer>,
+    remote_ip: Option<IpAddr>,
 ) -> (StatusCode, Json<P2pConnectionResponse>) {
     let mut rx = state
         .rpc_sender()
@@ -102,6 +107,7 @@ async fn handle_offer(
                 peer_id: PeerId::from_public_key(offer.identity_pub_key.clone()),
                 signaling: IncomingSignalingMethod::Http,
                 offer,
+                remote_ip,
             }),
         )
         .await;
@@ -129,6 +135,83 @@ async fn handle_offer(
     }
 }
 
+/// The address an offer came from, for a sharing relay's per-address
+/// limits: the TCP peer's, or, when that is a proxy on this host (loopback),
+/// the address the proxy appended last to `X-Forwarded-For`. None when the
+/// server doesn't record connection addresses. Any local process counts as
+/// the proxy: a relay host runs nothing else (docs/release/MINAWEB.md,
+/// "Browser sharing").
+struct ClientIp(Option<IpAddr>);
+
+impl<S: Send + Sync> FromRequestParts<S> for ClientIp {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
+        let peer = parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|info| info.0.ip());
+        Ok(Self(client_ip(peer, &parts.headers)))
+    }
+}
+
+fn client_ip(peer: Option<IpAddr>, headers: &HeaderMap) -> Option<IpAddr> {
+    let peer = peer?.to_canonical();
+    if !peer.is_loopback() {
+        return Some(peer);
+    }
+    let forwarded = headers
+        .get_all("x-forwarded-for")
+        .iter()
+        .next_back()
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.rsplit(',').next())
+        .and_then(|value| value.trim().parse::<IpAddr>().ok());
+    Some(forwarded.unwrap_or(peer).to_canonical())
+}
+
+#[cfg(test)]
+mod client_ip_tests {
+    use super::*;
+
+    fn forwarded(values: &[&str]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for value in values {
+            headers.append("x-forwarded-for", value.parse().unwrap());
+        }
+        headers
+    }
+
+    #[test]
+    fn a_public_peer_is_its_own_address_whatever_it_claims() {
+        let peer = "203.0.113.7".parse().ok();
+        assert_eq!(client_ip(peer, &forwarded(&["198.51.100.1"])), peer);
+        assert_eq!(client_ip(None, &forwarded(&["198.51.100.1"])), None);
+    }
+
+    #[test]
+    fn a_local_proxy_passes_the_address_it_appended_last() {
+        let local = "127.0.0.1".parse().ok();
+        assert_eq!(
+            client_ip(local, &forwarded(&["10.0.0.1, 198.51.100.1"])),
+            "198.51.100.1".parse().ok()
+        );
+        assert_eq!(
+            client_ip(local, &forwarded(&["10.0.0.1", "2001:db8::1"])),
+            "2001:db8::1".parse().ok()
+        );
+        assert_eq!(
+            client_ip(
+                "::ffff:127.0.0.1".parse().ok(),
+                &forwarded(&["::ffff:198.51.100.1"])
+            ),
+            "198.51.100.1".parse().ok()
+        );
+        assert_eq!(client_ip(local, &forwarded(&["junk"])), local);
+        assert_eq!(client_ip(local, &HeaderMap::new()), local);
+    }
+}
+
 #[cfg(test)]
 mod input_tests {
     use super::*;
@@ -143,7 +226,8 @@ mod input_tests {
         for len in [limits::OFFER_BASE58 + 1, 65_000] {
             let input = "z".repeat(len);
             let start = Instant::now();
-            let (status, Json(response)) = signal_get(State(state.clone()), Path(input)).await;
+            let (status, Json(response)) =
+                signal_get(State(state.clone()), ClientIp(None), Path(input)).await;
             let elapsed = start.elapsed();
             assert_eq!(status, StatusCode::BAD_REQUEST);
             assert!(matches!(

@@ -98,7 +98,7 @@ function Strip({ strip }: { strip: BlockStrip }) {
     >
       <div className="flex items-baseline justify-between gap-3">
         <span className="text-sm text-foreground">
-          {strip.waiting ? "The frontier, to come" : "The frontier"}
+          {strip.waiting ? "The frontier, waiting" : "The frontier"}
         </span>
         <span className="font-mono text-xs text-muted-foreground tabular-nums">
           {strip.waiting

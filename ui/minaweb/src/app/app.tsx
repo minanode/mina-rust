@@ -4,7 +4,6 @@ import {
   NodeClientProvider,
   NodeStatusProvider,
 } from "@minanode/node-client/react";
-import { PeersPage } from "minanode-dashboard/pages/peers";
 
 import { BlockProducerPage } from "../pages/block-producer";
 import { BootPage } from "../pages/boot";
@@ -17,10 +16,12 @@ import { SendPage } from "../pages/send";
 import { SnarkWorkerPage } from "../pages/snark-worker";
 import { NotFoundPage } from "../pages/not-found";
 import { OverviewPage } from "../pages/overview";
-import { useBoot } from "./boot-context";
+import { PeersPage } from "../pages/peers";
+import { autostart, startNode, useBoot } from "./boot-context";
 import { BootScreen } from "./boot-screen";
 import { matchRoute, usePathname, type Route } from "./router";
 import { Shell } from "./shell";
+import { StartScreen } from "./start-screen";
 
 const titles: Record<Route["page"], string> = {
   overview: "Overview",
@@ -68,6 +69,21 @@ function Page({ route }: { route: Route }) {
 
 export function App() {
   const boot = useBoot();
+  // Nothing downloads until the visitor starts the node, or the page
+  // reloaded to start it again (boot/autostart.ts).
+  const [started, setStarted] = React.useState(autostart);
+  const clicked = React.useRef(false);
+  React.useEffect(() => {
+    if (!started) return;
+    // For the headless checks: past the start screen, before the first step.
+    document.documentElement.dataset.boot = "starting";
+    startNode();
+    // Start's button is gone: focus the boot screen's heading instead.
+    if (clicked.current) {
+      clicked.current = false;
+      document.getElementById("page-title")?.focus({ preventScroll: true });
+    }
+  }, [started]);
   const pathname = usePathname();
   const route = matchRoute(pathname);
   const [opened, setOpened] = React.useState(false);
@@ -85,6 +101,17 @@ export function App() {
     document.getElementById("page-title")?.focus({ preventScroll: true });
   }, [pathname]);
 
+  if (!started) {
+    return (
+      <StartScreen
+        role={boot.role}
+        onStart={() => {
+          clicked.current = true;
+          setStarted(true);
+        }}
+      />
+    );
+  }
   if (!inShell || !boot.client) {
     return <BootScreen boot={boot} onOpen={() => setOpened(true)} />;
   }

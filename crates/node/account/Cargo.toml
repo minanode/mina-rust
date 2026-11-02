@@ -22,6 +22,7 @@ serde_json = { workspace = true, features = [
 ] }
 thiserror = { workspace = true }
 utoipa = { workspace = true, optional = true }
+zeroize = { workspace = true }
 
 [features]
 openapi = ["dep:utoipa"]

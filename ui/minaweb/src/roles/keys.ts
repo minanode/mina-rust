@@ -1,11 +1,12 @@
 /**
  * The page's account key: made in this browser or imported, held in this
- * tab's memory only. It is written to storage only encrypted with a
- * passphrase the visitor chooses: in this browser's localStorage if they
- * ask the page to remember it, and in this tab's sessionStorage for the one
- * restart that starts the block producer. Nothing here logs it, puts it in
- * a URL or sends it anywhere: it goes to the node's signer and to `run`
- * only, in this page.
+ * tab's memory. It is written to storage only encrypted: across a role
+ * change's reload with a one-time key the page can't read out
+ * (handoff.ts); with a passphrase the visitor chooses in this browser's
+ * localStorage if they ask the page to remember it; and, where the browser
+ * can't do the first, with a passphrase in this tab's sessionStorage for
+ * one restart. Nothing here logs it, puts it in a URL or sends it
+ * anywhere: it goes to the node's signer and to `run` only, in this page.
  *
  * The encryption is WebCrypto's: PBKDF2-SHA-256 (600,000 iterations, a
  * random 16-byte salt) derives an AES-256-GCM key, with a random 12-byte IV,
@@ -18,6 +19,13 @@ export interface KeyGlue {
   generate_account_key(): unknown;
   account_public_key(privateKey: string): string;
   account_public_key_valid(publicKey: string): boolean;
+}
+
+/** The WASM's key-file functions (MINAWEB-KEYFILE-IMPORT), in builds that
+ * have them. Both run Argon2i on a thread of their own, off the page's. */
+export interface KeyFileGlue {
+  account_key_from_file(file: string, password: string): Promise<unknown>;
+  account_key_to_file(privateKey: string, password: string): Promise<string>;
 }
 
 export interface HeldKey {
@@ -37,10 +45,19 @@ export interface EncryptedKey {
 }
 
 export const ITERATIONS = 600_000;
+/** The iteration counts a stored record may ask for. The page has always
+ * written ITERATIONS. Below the floor a record isn't read; above the
+ * ceiling it is refused before any derivation, so it can't tie up an
+ * unlock. */
+export const MIN_ITERATIONS = 100_000;
+export const MAX_ITERATIONS = 2 * ITERATIONS;
+const TOO_MANY_ITERATIONS =
+  "This saved key asks for more PBKDF2 iterations than the page allows.";
 export const MIN_PASSPHRASE = 10;
 /** localStorage: the key the visitor asked this browser to remember. */
 export const SAVED_KEY = "minaweb.key";
-/** sessionStorage: the producer's key across its restart, then deleted. */
+/** sessionStorage: the key across a restart, under a passphrase, where
+ * the browser can't carry it by itself (handoff.ts); then deleted. */
 export const HANDOFF_KEY = "minaweb.producer-key";
 
 const PUBLIC_KEY = /^B62[1-9A-HJ-NP-Za-km-z]{52}$/;
@@ -98,6 +115,91 @@ export function importKey(glue: KeyGlue, text: string): HeldKey {
     throw new Error("That isn't a valid Mina private key: its checksum fails.");
   }
   return { publicKey, privateKey, origin: "imported" };
+}
+
+/** A Mina key file is about 270 bytes; anything far larger isn't one. */
+export const KEY_FILE_MAX_BYTES = 16 * 1024;
+
+/** The page's text for each of the WASM's key-file error codes
+ * (crates/node/account/src/key_file.rs). */
+export const KEY_FILE_ERRORS: Record<string, string> = {
+  "wrong-password": "Wrong password, or the file is damaged.",
+  "not-a-key-file": "That isn't a Mina encrypted key file.",
+  unsupported:
+    "That key file's encryption isn't supported: the page reads xsalsa20poly1305 with argon2i.",
+  "not-an-account-key":
+    "That key file holds another kind of key, such as a libp2p key, not an account key.",
+  "too-expensive":
+    "That key file asks for more memory to decrypt than this page allows (256 MiB).",
+};
+
+/** Problems the page can name before the WASM sees the text. */
+export function keyFileTextProblem(text: string): string | null {
+  const value = text.trim();
+  if (!value) return "Choose the key file, or paste its contents.";
+  if (value.length > KEY_FILE_MAX_BYTES)
+    return KEY_FILE_ERRORS["not-a-key-file"];
+  if (looksLikePublicKey(value)) {
+    return "That is the public key (the .pub file). Choose the key file itself.";
+  }
+  if (looksLikePrivateKey(value)) {
+    return "That is a raw private key, not a key file. Import it under Private key.";
+  }
+  return null;
+}
+
+/** The account key in a Mina encrypted key file, decrypted in the WASM.
+ * Errors name the cause only, never what was pasted or typed. */
+export async function importKeyFile(
+  glue: KeyFileGlue,
+  text: string,
+  password: string,
+): Promise<HeldKey> {
+  const problem = keyFileTextProblem(text);
+  if (problem) throw new Error(problem);
+  if (!password) throw new Error("Type the key file's password.");
+  let pair: { publicKey?: unknown; privateKey?: unknown } | null;
+  try {
+    pair = (await glue.account_key_from_file(text.trim(), password)) as {
+      publicKey?: unknown;
+      privateKey?: unknown;
+    } | null;
+  } catch (e) {
+    const code = e instanceof Error ? e.message : "";
+    throw new Error(
+      KEY_FILE_ERRORS[code] ?? "The page couldn't read that key file.",
+    );
+  }
+  if (
+    !pair ||
+    typeof pair.publicKey !== "string" ||
+    typeof pair.privateKey !== "string" ||
+    !looksLikePublicKey(pair.publicKey) ||
+    !looksLikePrivateKey(pair.privateKey)
+  ) {
+    throw new Error("The page couldn't read that key file.");
+  }
+  return {
+    publicKey: pair.publicKey,
+    privateKey: pair.privateKey,
+    origin: "imported",
+  };
+}
+
+/** The held key as a Mina encrypted key file's text (OCaml's format and
+ * default cost), under a password the visitor chooses. */
+export async function exportKeyFile(
+  glue: KeyFileGlue,
+  key: HeldKey,
+  password: string,
+): Promise<string> {
+  const problem = passphraseProblem(password);
+  if (problem) throw new Error(problem);
+  try {
+    return await glue.account_key_to_file(key.privateKey, password);
+  } catch {
+    throw new Error("The page couldn't make the key file.");
+  }
 }
 
 const encoder = new TextEncoder();
@@ -175,6 +277,7 @@ export async function decryptKey(
   passphrase: string,
   glue?: Pick<KeyGlue, "account_public_key">,
 ): Promise<HeldKey> {
+  if (record.iterations > MAX_ITERATIONS) throw new Error(TOO_MANY_ITERATIONS);
   let privateKey: string;
   try {
     const aes = await deriveKey(
@@ -195,10 +298,27 @@ export async function decryptKey(
   } catch {
     throw new Error("Wrong passphrase.");
   }
-  if (glue && glue.account_public_key(privateKey) !== record.publicKey) {
+  const key: HeldKey = {
+    publicKey: record.publicKey,
+    privateKey,
+    origin: "imported",
+  };
+  if (glue && !keyMatches(glue, key)) {
     throw new Error("The saved key doesn't match its public key.");
   }
-  return { publicKey: record.publicKey, privateKey, origin: "imported" };
+  return key;
+}
+
+/** Whether a key's private key derives its public key, in the WASM. */
+export function keyMatches(
+  glue: Pick<KeyGlue, "account_public_key">,
+  key: Pick<HeldKey, "publicKey" | "privateKey">,
+): boolean {
+  try {
+    return glue.account_public_key(key.privateKey) === key.publicKey;
+  } catch {
+    return false;
+  }
 }
 
 export function parseEncryptedKey(text: string | null): EncryptedKey | null {
@@ -211,7 +331,8 @@ export function parseEncryptedKey(text: string | null): EncryptedKey | null {
       typeof r.publicKey === "string" &&
       looksLikePublicKey(r.publicKey) &&
       typeof r.iterations === "number" &&
-      r.iterations >= 100_000 &&
+      Number.isInteger(r.iterations) &&
+      r.iterations >= MIN_ITERATIONS &&
       typeof r.salt === "string" &&
       typeof r.iv === "string" &&
       typeof r.ciphertext === "string"
@@ -337,9 +458,19 @@ export class KeyStore {
     this.changed();
   }
 
-  async unlockSaved(passphrase: string, glue: KeyGlue) {
+  async unlockSaved(
+    passphrase: string,
+    glue?: Pick<KeyGlue, "account_public_key">,
+  ) {
     if (!this.saved) throw new Error("No saved key.");
     this.hold(await decryptKey(this.saved, passphrase, glue));
+  }
+
+  /** Drops the held key unless its private key derives its public key:
+   * for a key carried across a reload, checked once the WASM is there, as
+   * an unlocked one is (decryptKey). */
+  dropIfMismatched(glue: Pick<KeyGlue, "account_public_key">) {
+    if (this.key && !keyMatches(glue, this.key)) this.forget();
   }
 
   deleteSaved() {

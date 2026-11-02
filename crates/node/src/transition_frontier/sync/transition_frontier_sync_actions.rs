@@ -69,6 +69,10 @@ pub enum TransitionFrontierSyncAction {
     /// Transition frontier Root Ledger sync was successful
     #[action_event(level = info)]
     LedgerRootSuccess,
+    /// The request for the staged ledger parts of a root kept as the target
+    /// after the root moved failed or went stale: target the current root
+    #[action_event(level = info)]
+    LedgerRootRetarget,
     BlocksPending,
     BlocksPeersQuery,
     BlocksPeerQueryInit {
@@ -284,13 +288,18 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncAction {
                     }
                 )
             ),
+            TransitionFrontierSyncAction::LedgerRootRetarget => matches!(
+                &state.transition_frontier.sync,
+                TransitionFrontierSyncState::RootLedgerPending(substate)
+                    if substate.is_kept_root_parts_request_lost(time)
+            ),
             TransitionFrontierSyncAction::BlocksPending => matches!(
                 state.transition_frontier.sync,
                 TransitionFrontierSyncState::RootLedgerSuccess { .. }
             ),
             TransitionFrontierSyncAction::BlocksPeersQuery => {
                 let peers_available = state.p2p.ready_peers_iter().any(|(id, p)| {
-                    p.channels.rpc.can_send_request()
+                    p.channels.can_send_sync_request()
                         && state.transition_frontier.block_peer_query_ready(id, time)
                 });
                 let sync = &state.transition_frontier.sync;
@@ -308,7 +317,7 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncAction {
                 let check_peer_available = state
                     .p2p
                     .get_ready_peer(peer_id)
-                    .is_some_and(|p| p.channels.rpc.can_send_request());
+                    .is_some_and(|p| p.channels.can_send_sync_request());
 
                 check_next_hash
                     && check_peer_available
@@ -327,7 +336,7 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncAction {
                 let check_peer_available = state
                     .p2p
                     .get_ready_peer(peer_id)
-                    .is_some_and(|p| p.channels.rpc.can_send_request());
+                    .is_some_and(|p| p.channels.can_send_sync_request());
 
                 check_next_hash
                     && check_peer_available

@@ -19,6 +19,9 @@ pub use p2p_channels_service::*;
 
 mod p2p_channels_effectful_effects;
 
+mod request_timeout;
+pub use request_timeout::*;
+
 use binprot::{BinProtRead, BinProtWrite};
 use binprot_derive::{BinProtRead, BinProtWrite};
 use derive_more::From;
@@ -218,6 +221,14 @@ impl crate::P2pState {
         // exhaustive matching so that we don't miss any channels.
         for id in self.config.enabled_channels.iter().copied() {
             if self.peers.get(&peer_id).is_some_and(|p| p.is_libp2p()) && !id.supported_by_libp2p()
+            {
+                continue;
+            }
+            // A sharing browser opens the signalling channels to its seeds only.
+            if matches!(
+                id,
+                ChannelId::SignalingDiscovery | ChannelId::SignalingExchange
+            ) && !self.signaling_allowed_with(&peer_id)
             {
                 continue;
             }

@@ -40,6 +40,56 @@ export function createWebrtcConnection(config) {
   return connection;
 }
 
+// The peer each connection is with, for webrtcPeerStats.
+const peerIds = new WeakMap();
+
+export function labelWebrtcConnection(connection, peerId) {
+  peerIds.set(connection, peerId);
+}
+
+/** The route, round-trip time and bytes of a connection's selected
+ * candidate pair. Only candidate types leave here: never an address. */
+function routeStats(report) {
+  let transport, pair;
+  report.forEach(stat => {
+    if (stat.type === "transport" && stat.selectedCandidatePairId) transport = stat;
+  });
+  pair = transport && report.get(transport.selectedCandidatePairId);
+  if (!pair) report.forEach(stat => {
+    if (stat.type === "candidate-pair" && (stat.selected || (stat.nominated && stat.state === "succeeded"))) pair ??= stat;
+  });
+  const local = pair && report.get(pair.localCandidateId);
+  const remote = pair && report.get(pair.remoteCandidateId);
+  const number = value => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const rtt = number(pair?.currentRoundTripTime);
+  return {
+    localType: local?.candidateType ?? null,
+    remoteType: remote?.candidateType ?? null,
+    rttMs: rtt === null ? null : rtt * 1000,
+    bytesSent: number(transport?.bytesSent ?? pair?.bytesSent),
+    bytesReceived: number(transport?.bytesReceived ?? pair?.bytesReceived),
+  };
+}
+
+/** Each open connection's peer and route (MINAWEB-PEERS-PAGE). */
+export async function webrtcPeerStats() {
+  const open = [];
+  for (const ref of connections) {
+    const connection = ref.deref();
+    if (!connection || connection.signalingState === "closed") {
+      connections.delete(ref);
+      continue;
+    }
+    const peerId = peerIds.get(connection);
+    if (peerId && connection.connectionState === "connected") open.push([peerId, connection]);
+  }
+  const stats = await Promise.all(open.map(async ([peerId, connection]) => {
+    try { return { peerId, ...routeStats(await connection.getStats()) }; }
+    catch { return null; }
+  }));
+  return stats.filter(Boolean);
+}
+
 /** Supported RFC 7064/7065 ICE URLs; keep ice-url-cases.json in sync. */
 export function validIceUrl(value) {
   if (typeof value !== "string" || /\s/.test(value)) return false;

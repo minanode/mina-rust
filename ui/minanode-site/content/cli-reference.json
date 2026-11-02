@@ -762,11 +762,11 @@
               "global": false
             },
             {
-              "id": "node--webrtc-signaling-relay",
-              "syntax": "--webrtc-signaling-relay",
+              "id": "node--webrtc-sharing-relay",
+              "syntax": "--webrtc-sharing-relay",
               "aliases": [],
               "help": [
-                "Allow peers to discover each other and exchange WebRTC offers through this node. Exposes connecting peers' addresses to each other; leave off on public browser relays. Direct HTTP signaling is always available."
+                "Introduce web nodes that turned on sharing with other browsers to each other, within limits per peer key, per address and in total, an hour. Two pages introduced see each other's IP address; pages that didn't turn sharing on are never introduced. Peers use this node for introductions only."
               ],
               "default": null,
               "env": null,

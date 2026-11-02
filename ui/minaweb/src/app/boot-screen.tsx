@@ -24,8 +24,10 @@ import {
   type BootSnapshot,
   type Step,
 } from "../boot/boot";
+import { reloadAndStart } from "../boot/autostart";
 import { formatBytes } from "../boot/failures";
 import { CONFIG } from "../config";
+import { buildLabel } from "../version";
 import { ROLE_LABELS, writeRole, VIEWER } from "../roles/role";
 import { bootActions } from "./boot-context";
 import { ProducerUnlock } from "./producer-unlock";
@@ -185,7 +187,7 @@ export function BootFailureAlert({ boot }: { boot: BootSnapshot }) {
               variant="outline"
               size="sm"
               className="w-fit"
-              onClick={() => window.location.reload()}
+              onClick={() => reloadAndStart()}
             >
               <RefreshCw aria-hidden />
               Reload the page
@@ -198,7 +200,7 @@ export function BootFailureAlert({ boot }: { boot: BootSnapshot }) {
                 className="w-fit"
                 onClick={() => {
                   writeRole(VIEWER);
-                  window.location.reload();
+                  reloadAndStart();
                 }}
               >
                 Start without the {ROLE_LABELS[boot.role.kind].toLowerCase()}
@@ -245,9 +247,10 @@ export function BootScreen({
             A Mina node in this tab
           </h1>
           <p className="text-pretty text-muted-foreground">
-            The page downloads the node{size ? ` (${formatBytes(size)})` : ""}{" "}
-            and starts it here. It connects to the network and checks each new
-            block's proof itself.
+            The page downloads the node
+            {size ? ` (${formatBytes(size)} of WebAssembly)` : ""} and starts it
+            here. It connects to the network and checks each new block's proof
+            itself.
             {boot.role.kind === "viewer"
               ? " It holds no key until you make or import one."
               : ` This tab runs it as a ${ROLE_LABELS[boot.role.kind].toLowerCase()}.`}
@@ -280,7 +283,7 @@ export function BootScreen({
         ) : null}
       </main>
       <footer className="px-6 py-5 font-mono text-xs text-muted-foreground">
-        {CONFIG.commit ? `build ${CONFIG.commit.slice(0, 12)}` : null}
+        {buildLabel(CONFIG.commit)}
       </footer>
     </div>
   );

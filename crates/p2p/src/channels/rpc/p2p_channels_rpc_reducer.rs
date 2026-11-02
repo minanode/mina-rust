@@ -1,7 +1,7 @@
 use super::{
-    P2pChannelsRpcAction, P2pChannelsRpcState, P2pRpcLocalState, P2pRpcRemotePendingRequestState,
-    P2pRpcRemoteState, P2pRpcRequest, P2pRpcResponse, RpcChannelMsg,
-    MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS,
+    P2pChannelsRpcAction, P2pChannelsRpcState, P2pRpcLocalState, P2pRpcPipeline, P2pRpcPipelined,
+    P2pRpcRemotePendingRequestState, P2pRpcRemoteState, P2pRpcRequest, P2pRpcResponse,
+    RpcChannelMsg, MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS,
 };
 use crate::{
     channels::{ChannelId, ChannelMsg, MsgId, P2pChannelsEffectfulAction},
@@ -52,6 +52,18 @@ impl P2pChannelsRpcState {
                 }
             }
         }
+        // A sharing browser serves bootstraps to at most `max_bootstraps`
+        // browsers at once, counted from the requests it serves
+        // (crate::sharing); beyond that, an empty answer.
+        let mut refused = false;
+        if let P2pChannelsRpcAction::RequestReceived { request, .. } = &action {
+            if crate::sharing::is_bootstrap_request(request) {
+                refused = !p2p_state.sharing_serves(&peer_id, meta.time());
+                if !refused {
+                    p2p_state.sharing_record_served(peer_id, meta.time());
+                }
+            }
+        }
         // OCaml serving budgets are charged only on the libp2p wire path.
         // WebRTC keeps its existing per-peer pending-request cap.
         let peer_state = &mut p2p_state
@@ -61,6 +73,8 @@ impl P2pChannelsRpcState {
 
         let next_local_rpc_id = &mut peer_state.next_local_rpc_id;
         let rpc_state = &mut peer_state.rpc;
+        let pipeline = &mut peer_state.rpc_pipeline;
+        let sync_stats = &mut peer_state.sync_stats;
 
         match action {
             P2pChannelsRpcAction::Init { .. } => {
@@ -94,6 +108,7 @@ impl P2pChannelsRpcState {
                         last_responded: redux::Timestamp::ZERO,
                     },
                 };
+                *pipeline = P2pRpcPipeline::for_peer(is_libp2p);
 
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
                 let p2p_state: &P2pState = state.substate()?;
@@ -117,11 +132,22 @@ impl P2pChannelsRpcState {
                     return Ok(());
                 };
                 *next_local_rpc_id += 1;
-                *local = P2pRpcLocalState::Requested {
-                    time: meta.time(),
-                    id,
-                    request: request.clone(),
-                };
+                if local.can_send_request() {
+                    *local = P2pRpcLocalState::Requested {
+                        time: meta.time(),
+                        id,
+                        request: request.clone(),
+                    };
+                } else {
+                    // The slot is taken: a sync request to a WebRTC peer
+                    // (enabling condition, `P2pRpcPipeline::has_room`).
+                    pipeline.requests.push(P2pRpcPipelined {
+                        sent: meta.time(),
+                        id,
+                        request: request.clone(),
+                        timed_out: None,
+                    });
+                }
 
                 let dispatcher = state_context.into_dispatcher();
 
@@ -162,11 +188,47 @@ impl P2pChannelsRpcState {
                     );
                     return Ok(());
                 };
+                // A pipelined request times out as the slot's does: retried
+                // elsewhere the first time, the peer dropped the second.
+                if let Some(pipelined) = pipeline.get_mut(id) {
+                    if pipelined.timed_out.is_some() {
+                        let kind = pipelined.request.kind();
+                        let dispatcher = state_context.into_dispatcher();
+                        dispatcher.push(P2pDisconnectionAction::Init {
+                            peer_id,
+                            reason: P2pDisconnectionReason::TransitionFrontierRpcTimeout(kind),
+                        });
+                        return Ok(());
+                    }
+                    mina_core::warn!(meta.time();
+                        kind = "P2pChannelsRpcTimeout",
+                        summary = format!(
+                            "{:?} request timed out, retrying it elsewhere",
+                            pipelined.request.kind()
+                        ),
+                        peer_id = display(peer_id),
+                        pipelined = true,
+                    );
+                    // Its send time stays: the second timeout counts from it.
+                    pipelined.timed_out = Some(meta.time());
+                    sync_stats.record_timeout(meta.time());
+
+                    let (dispatcher, state) = state_context.into_dispatcher_and_state();
+                    let p2p_state: &P2pState = state.substate()?;
+                    if let Some(callback) = &p2p_state.callbacks.on_p2p_channels_rpc_timeout {
+                        dispatcher.push_callback(callback.clone(), (peer_id, id));
+                    }
+                    return Ok(());
+                }
                 match local {
                     // The first timeout: the request is given up on and
                     // retried elsewhere, but the peer is kept, as a slow
                     // answer is no reason to lose a peer.
-                    P2pRpcLocalState::Requested { request, .. } => {
+                    P2pRpcLocalState::Requested {
+                        time: sent,
+                        request,
+                        ..
+                    } => {
                         mina_core::warn!(meta.time();
                             kind = "P2pChannelsRpcTimeout",
                             summary = format!(
@@ -175,8 +237,12 @@ impl P2pChannelsRpcState {
                             ),
                             peer_id = display(peer_id),
                         );
+                        if !is_libp2p && P2pRpcPipeline::takes(request) {
+                            sync_stats.record_timeout(meta.time());
+                        }
                         *local = P2pRpcLocalState::TimedOut {
                             time: meta.time(),
+                            sent: *sent,
                             id,
                             request: std::mem::take(request),
                         };
@@ -220,20 +286,49 @@ impl P2pChannelsRpcState {
                     );
                     return Ok(());
                 };
-                let (P2pRpcLocalState::Requested { id, request, .. }
-                | P2pRpcLocalState::TimedOut { id, request, .. }) = local
-                else {
-                    bug_condition!(
-                        "Invalid state for `P2pChannelsRpcAction::ResponseReceived`, state: {:?}",
-                        rpc_state
-                    );
-                    return Ok(());
+                // A WebRTC peer's answer to a ledger query or block, of the
+                // kind asked for, times the peer for the sync
+                // (`plan_sync_peers`). An empty answer, such as a sharing
+                // browser's refusal, an error or another kind doesn't
+                // (`sync_answer_matches`).
+                let ranked_sent = |sent: redux::Timestamp, request: &P2pRpcRequest| {
+                    (!is_libp2p
+                        && response
+                            .as_deref()
+                            .is_some_and(|r| super::sync_answer_matches(request, r)))
+                    .then_some(sent)
                 };
-                *local = P2pRpcLocalState::Responded {
-                    time: meta.time(),
-                    id: *id,
-                    request: std::mem::take(request),
+                let answered_sent = if let Some(pipelined) = pipeline.get(rpc_id) {
+                    let answered_sent = ranked_sent(pipelined.sent, &pipelined.request);
+                    pipeline.answer(rpc_id);
+                    answered_sent
+                } else {
+                    let (P2pRpcLocalState::Requested {
+                        id,
+                        request,
+                        time: sent,
+                    }
+                    | P2pRpcLocalState::TimedOut {
+                        id, request, sent, ..
+                    }) = local
+                    else {
+                        bug_condition!(
+                            "Invalid state for `P2pChannelsRpcAction::ResponseReceived`, state: {:?}",
+                            rpc_state
+                        );
+                        return Ok(());
+                    };
+                    let answered_sent = ranked_sent(*sent, request);
+                    *local = P2pRpcLocalState::Responded {
+                        time: meta.time(),
+                        id: *id,
+                        request: std::mem::take(request),
+                    };
+                    answered_sent
                 };
+                if let Some(sent) = answered_sent {
+                    sync_stats.record_answer(sent, meta.time());
+                }
 
                 if !is_libp2p {
                     if let Some(P2pRpcResponse::Transaction(tx)) = response.as_deref() {
@@ -292,7 +387,14 @@ impl P2pChannelsRpcState {
                     }),
                     _ => None,
                 };
-                if invalid_query.is_some() {
+                if invalid_query.is_some() || refused {
+                    if refused {
+                        mina_core::debug!(meta.time();
+                            kind = "P2pSharingBootstrapRefused",
+                            summary = "serving two bootstraps already",
+                            peer_id = display(peer_id),
+                        );
+                    }
                     dispatcher.push(P2pChannelsRpcAction::ResponseSend {
                         peer_id,
                         id,
@@ -316,6 +418,10 @@ impl P2pChannelsRpcState {
                 if let Some(req) = remote.pending_requests.iter_mut().find(|r| r.id == id) {
                     req.is_pending = true;
                 }
+                Ok(())
+            }
+            P2pChannelsRpcAction::SyncAnswerRejected { .. } => {
+                sync_stats.record_rejected(meta.time());
                 Ok(())
             }
             P2pChannelsRpcAction::ResponseSend { id, response, .. } => {

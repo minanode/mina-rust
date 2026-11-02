@@ -72,10 +72,17 @@ def main():
     version = tomllib.loads((REPO / "Cargo.toml").read_text())["workspace"]["package"]["version"]
     if args.version != version:
         parser.error("archive version differs from workspace version")
+    # One relay or more, separated by commas or spaces (no other white space:
+    # a newline is refused, as in relay-cases.json); the page dials each.
     try:
-        relay = server.relay_address(os.environ.get("RELAY", ""))
+        relays = [server.relay_address(r) for r in re.split(r"[ ,]+", os.environ.get("RELAY", "")) if r]
+        if not relays:
+            server.relay_address("")
     except argparse.ArgumentTypeError as error:
         parser.error(f"set RELAY: {error}")
+    if len(set(relays)) != len(relays):
+        parser.error("set RELAY: a relay is listed twice")
+    relay = ",".join(relays)
     if git("status", "--porcelain"):
         parser.error("release build requires a clean checkout")
     if shutil.disk_usage(REPO).free < 55 * 1024**3:
@@ -115,7 +122,7 @@ def main():
             if path.suffix in (".br", ".gz", ".zst"):
                 path.unlink()
         (bundle / "browser/serve.json").unlink()
-        (bundle / "browser/local-relay.json").write_text(json.dumps({"relays": [relay]}) + "\n")
+        (bundle / "browser/local-relay.json").write_text(json.dumps({"relays": relays}) + "\n")
         shutil.copyfile(HERE / "serve-web.py", bundle / "serve.py")
         shutil.copyfile(HERE / "WEB-README.md", bundle / "README.md")
         notices = HERE / "web-licenses"
@@ -131,7 +138,7 @@ def main():
         files = [{"path": p.relative_to(bundle).as_posix(), "bytes": p.stat().st_size,
                   "sha256": server.sha(p)} for p in sorted(bundle.rglob("*")) if p.is_file()]
         manifest = {"schema": 1, "version": args.version, "commit": commit,
-                    "network": "devnet", "relay": relay, "provers": "included",
+                    "network": "devnet", "relays": relays, "provers": "included",
                     "build": json.loads((bundle / "browser/build-info.json").read_text()), "files": files}
         (bundle / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         (bundle / "SHA256SUMS").write_text("".join(f"{f['sha256']}  {f['path']}\n" for f in files)

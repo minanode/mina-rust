@@ -31,6 +31,7 @@ use crate::{
             P2pConnectionErrorResponse, P2pConnectionResponse,
         },
         disconnection::{P2pDisconnectionAction, P2pDisconnectionReason},
+        peer::P2pPeerAction,
         P2pChannelEvent,
     },
     rpc::{RpcAction, RpcRequest},
@@ -308,6 +309,9 @@ pub fn event_source_effects<S: Service>(store: &mut Store<S>, action: EventSourc
                             store.dispatch(P2pChannelsMessageReceivedAction { peer_id, message });
                         }
                     },
+                    P2pChannelEvent::Receiving(peer_id, _) => {
+                        store.dispatch(P2pPeerAction::Receiving { peer_id });
+                    }
                     P2pChannelEvent::Closed(peer_id, chan_id) => {
                         let reason = P2pDisconnectionReason::P2pChannelClosed(chan_id);
                         store.dispatch(P2pDisconnectionAction::Init { peer_id, reason });

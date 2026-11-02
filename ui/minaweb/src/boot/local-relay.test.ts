@@ -25,8 +25,22 @@ test("local relay replaces all compiled seed sources", async () => {
   });
 });
 
+test("two local relays are both dialled", async () => {
+  const second = relay.replace("8303", "8304");
+  vi.stubGlobal(
+    "fetch",
+    vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ relays: [relay, second] })),
+      ),
+  );
+  expect((await localRelayConfig(config)).relays).toEqual([relay, second]);
+});
+
 test.each([
   {},
+  { relays: [relay, "bad"] },
   { relays: [] },
   { relays: ["bad"] },
   { relays: [relay, relay] },

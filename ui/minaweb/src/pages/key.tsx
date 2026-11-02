@@ -31,20 +31,35 @@ import { Hash } from "@minanode/design-system/patterns/hash";
 import { InlineConfirm } from "@minanode/design-system/patterns/inline-confirm";
 import { KeyValueList } from "@minanode/design-system/patterns/key-value-list";
 import { PageHeader } from "@minanode/design-system/patterns/page-header";
+import { SegmentedControl } from "@minanode/design-system/patterns/segmented-control";
 import { formatCount, formatMina } from "@minanode/node-client";
 
 import { useBoot } from "../app/boot-context";
 import {
+  exportKeyFile,
   generateKey,
   importKey,
+  importKeyFile,
+  KEY_FILE_MAX_BYTES,
   keyStore,
   MIN_PASSPHRASE,
   passphraseProblem,
+  type HeldKey,
+  type KeyFileGlue,
   type KeyGlue,
 } from "../roles/keys";
-import { useAccount, useKeyGlue, useKeys } from "../roles/hooks";
+import {
+  useAccount,
+  useKeyFileGlue,
+  useKeyGlue,
+  useKeys,
+} from "../roles/hooks";
 import { ROLE_LABELS } from "../roles/role";
-import { DevnetOnly, FAUCET_URL, RolesGate } from "./roles-common";
+import { FAUCET_URL, RolesGate } from "./roles-common";
+
+/** The docs section on the key: where it is made, kept and sent. */
+export const KEY_DOCS_URL =
+  "https://minanode.org/docs/web-node-connections/#your-key";
 
 export function KeyPage() {
   const glue = useKeyGlue();
@@ -54,11 +69,15 @@ export function KeyPage() {
       <PageHeader
         eyebrow="devnet"
         title="Your key"
-        description="A devnet account key for this tab: to receive devnet MINA, send payments, and run the SNARK worker or the block producer. It stays in this tab's memory unless you save it encrypted."
+        description={
+          <>
+            A devnet account key for this tab.{" "}
+            <ExternalLink href={KEY_DOCS_URL}>Web node docs</ExternalLink>
+          </>
+        }
       />
       <RolesGate>
         <div className="flex max-w-3xl flex-col gap-6">
-          <DevnetOnly />
           {!glue ? (
             <Alert variant="caution">
               <ShieldAlert aria-hidden />
@@ -91,8 +110,7 @@ function NoKey({ glue, hasSaved }: { glue: KeyGlue; hasSaved: boolean }) {
             Generate a new key
           </CardTitle>
           <CardDescription>
-            Made in this browser from its random number generator. Nothing is
-            sent anywhere. Back it up before you close the tab, or it is gone.
+            Back it up before you close the tab, or it is gone.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
@@ -197,10 +215,10 @@ function UnlockSaved({ glue }: { glue: KeyGlue }) {
 }
 
 function ImportKey({ glue }: { glue: KeyGlue }) {
+  const fileGlue = useKeyFileGlue();
   const [open, setOpen] = React.useState(false);
   const [understood, setUnderstood] = React.useState(false);
-  const [text, setText] = React.useState("");
-  const [error, setError] = React.useState<string | null>(null);
+  const [kind, setKind] = React.useState<"raw" | "file">("raw");
   if (!open) {
     return (
       <div>
@@ -210,6 +228,7 @@ function ImportKey({ glue }: { glue: KeyGlue }) {
       </div>
     );
   }
+  const close = () => setOpen(false);
   return (
     <Card>
       <CardHeader>
@@ -237,52 +256,202 @@ function ImportKey({ glue }: { glue: KeyGlue }) {
           />
           This key holds no mainnet MINA, and I made it for devnet.
         </label>
-        <form
-          className="flex flex-col gap-3"
-          onSubmit={event => {
-            event.preventDefault();
-            try {
-              keyStore.hold(importKey(glue, text));
-              setText("");
-              setError(null);
-            } catch (e) {
-              setError(e instanceof Error ? e.message : String(e));
-            }
-          }}
-        >
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="import-key">Private key (EK…)</Label>
-            <Textarea
-              id="import-key"
-              value={text}
-              disabled={!understood}
-              onChange={e => setText(e.target.value)}
-              autoComplete="off"
-              spellCheck={false}
-              rows={2}
-              className="font-mono"
-              aria-invalid={error ? true : undefined}
-            />
-            {error ? <p className="text-sm text-destructive">{error}</p> : null}
-          </div>
-          <div className="flex gap-2">
-            <Button type="submit" disabled={!understood || !text.trim()}>
-              Import
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => {
-                setOpen(false);
-                setText("");
-              }}
-            >
-              Cancel
-            </Button>
-          </div>
-        </form>
+        {fileGlue ? (
+          <SegmentedControl
+            label="What to import"
+            options={[
+              { value: "raw", label: "Private key" },
+              { value: "file", label: "Key file" },
+            ]}
+            value={kind}
+            onValueChange={setKind}
+          />
+        ) : null}
+        {kind === "file" && fileGlue ? (
+          <ImportKeyFile
+            glue={fileGlue}
+            understood={understood}
+            onCancel={close}
+          />
+        ) : (
+          <ImportRawKey glue={glue} understood={understood} onCancel={close} />
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+function ImportRawKey({
+  glue,
+  understood,
+  onCancel,
+}: {
+  glue: KeyGlue;
+  understood: boolean;
+  onCancel: () => void;
+}) {
+  const [text, setText] = React.useState("");
+  const [error, setError] = React.useState<string | null>(null);
+  return (
+    <form
+      className="flex flex-col gap-3"
+      onSubmit={event => {
+        event.preventDefault();
+        if (!understood) return;
+        try {
+          keyStore.hold(importKey(glue, text));
+          setText("");
+          setError(null);
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e));
+        }
+      }}
+    >
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="import-key">Private key (EK…)</Label>
+        <Textarea
+          id="import-key"
+          value={text}
+          disabled={!understood}
+          onChange={e => setText(e.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+          rows={2}
+          className="font-mono"
+          aria-invalid={error ? true : undefined}
+        />
+        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+      </div>
+      <div className="flex gap-2">
+        <Button type="submit" disabled={!understood || !text.trim()}>
+          Import
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={() => {
+            setText("");
+            onCancel();
+          }}
+        >
+          Cancel
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+/** A Mina encrypted key file (OCaml's, or `mina wallet generate`'s),
+ * picked or pasted, and its password. The WASM decrypts it off the page's
+ * thread; the private key goes to the key store only. */
+function ImportKeyFile({
+  glue,
+  understood,
+  onCancel,
+}: {
+  glue: KeyFileGlue;
+  understood: boolean;
+  onCancel: () => void;
+}) {
+  const [text, setText] = React.useState("");
+  const [password, setPassword] = React.useState("");
+  const [error, setError] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const disabled = !understood || busy;
+  return (
+    <form
+      className="flex flex-col gap-3"
+      data-import-key-file
+      onSubmit={async event => {
+        event.preventDefault();
+        if (!understood) return;
+        setBusy(true);
+        try {
+          const key = await importKeyFile(glue, text, password);
+          setText("");
+          setError(null);
+          keyStore.hold(key);
+        } catch (e) {
+          setError(e instanceof Error ? e.message : String(e));
+        } finally {
+          setPassword("");
+          setBusy(false);
+        }
+      }}
+    >
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="import-key-file">Key file</Label>
+        <Input
+          id="import-key-file"
+          type="file"
+          disabled={disabled}
+          className="h-auto"
+          onChange={async e => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (!file) return;
+            if (file.size > KEY_FILE_MAX_BYTES) {
+              setError("That isn't a Mina encrypted key file.");
+              return;
+            }
+            try {
+              setText(await file.text());
+              setError(null);
+            } catch {
+              setError("The browser couldn't read that file.");
+            }
+          }}
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="import-key-file-text">Or paste its contents</Label>
+        <Textarea
+          id="import-key-file-text"
+          value={text}
+          disabled={disabled}
+          onChange={e => setText(e.target.value)}
+          autoComplete="off"
+          spellCheck={false}
+          rows={4}
+          className="font-mono text-xs"
+          placeholder='{"box_primitive":"xsalsa20poly1305",…}'
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="import-key-file-password">Password</Label>
+        <Input
+          id="import-key-file-password"
+          type="password"
+          autoComplete="off"
+          value={password}
+          disabled={disabled}
+          onChange={e => setPassword(e.target.value)}
+          aria-invalid={error ? true : undefined}
+        />
+        {error ? (
+          <p className="text-sm text-destructive" data-import-key-file-error>
+            {error}
+          </p>
+        ) : null}
+      </div>
+      <div className="flex gap-2">
+        <Button type="submit" disabled={disabled || !text.trim() || !password}>
+          {busy ? "Decrypting…" : "Decrypt and import"}
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          disabled={busy}
+          onClick={() => {
+            setText("");
+            setPassword("");
+            onCancel();
+          }}
+        >
+          Cancel
+        </Button>
+      </div>
+    </form>
   );
 }
 
@@ -290,6 +459,7 @@ function HeldKeyView({ glue }: { glue: KeyGlue }) {
   const { key, saved } = useKeys();
   const boot = useBoot();
   const account = useAccount(key?.publicKey ?? null);
+  const fileGlue = useKeyFileGlue();
   const [confirmForget, setConfirmForget] = React.useState(false);
   if (!key) return null;
   void glue;
@@ -371,6 +541,7 @@ function HeldKeyView({ glue }: { glue: KeyGlue }) {
         generated={key.origin === "generated"}
       />
       <SaveEncrypted savedHere={saved?.publicKey === key.publicKey} />
+      {fileGlue ? <ExportKeyFile glue={fileGlue} heldKey={key} /> : null}
 
       <div className="flex flex-col gap-3">
         <div>
@@ -461,6 +632,7 @@ function SaveEncrypted({ savedHere }: { savedHere: boolean }) {
   const [again, setAgain] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
   if (savedHere) {
     return (
       <Alert variant="brand">
@@ -471,15 +643,28 @@ function SaveEncrypted({ savedHere }: { savedHere: boolean }) {
             Its encrypted copy stays here until you delete it. The passphrase
             unlocks it in a new tab.
           </p>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="mt-2 w-fit"
-            onClick={() => keyStore.deleteSaved()}
-          >
-            Delete the saved copy
-          </Button>
+          {confirmDelete ? (
+            <InlineConfirm
+              label="Confirm deleting the saved copy"
+              message="This deletes the encrypted copy from this browser. The key stays in this tab until you close it."
+              confirmLabel="Delete it"
+              onConfirm={() => {
+                keyStore.deleteSaved();
+                setConfirmDelete(false);
+              }}
+              onCancel={() => setConfirmDelete(false)}
+            />
+          ) : (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-2 w-fit"
+              onClick={() => setConfirmDelete(true)}
+            >
+              Delete the saved copy
+            </Button>
+          )}
         </AlertDescription>
       </Alert>
     );
@@ -490,9 +675,7 @@ function SaveEncrypted({ savedHere }: { savedHere: boolean }) {
       <CardHeader>
         <CardTitle>Save it in this browser (optional)</CardTitle>
         <CardDescription>
-          Encrypted with a passphrase you choose (PBKDF2 and AES-GCM, in the
-          browser), in this browser's storage. Never unencrypted. Anyone with
-          this device and the passphrase can use it.
+          Anyone with this device and the passphrase can use it.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -555,4 +738,110 @@ function SaveEncrypted({ savedHere }: { savedHere: boolean }) {
       </CardContent>
     </Card>
   );
+}
+
+/** The held key as a Mina encrypted key file, for a native node: made in
+ * the WASM under a password the visitor chooses, then downloaded. */
+function ExportKeyFile({
+  glue,
+  heldKey,
+}: {
+  glue: KeyFileGlue;
+  heldKey: HeldKey;
+}) {
+  const [password, setPassword] = React.useState("");
+  const [again, setAgain] = React.useState("");
+  const [error, setError] = React.useState<string | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const [done, setDone] = React.useState(false);
+  const problem = passphraseProblem(password);
+  return (
+    <Card data-export-key-file>
+      <CardHeader>
+        <CardTitle>Export a key file (optional)</CardTitle>
+        <CardDescription>
+          A Mina encrypted key file, the format a native node reads, under a
+          password you choose.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form
+          className="flex flex-col gap-3"
+          onSubmit={async event => {
+            event.preventDefault();
+            if (password !== again) {
+              setError("The two passwords differ.");
+              return;
+            }
+            setBusy(true);
+            setDone(false);
+            try {
+              const text = await exportKeyFile(glue, heldKey, password);
+              download(`mina-key-${heldKey.publicKey.slice(-8)}`, text);
+              setError(null);
+              setDone(true);
+              setPassword("");
+              setAgain("");
+            } catch (e) {
+              setError(e instanceof Error ? e.message : String(e));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="export-password">Password</Label>
+              <Input
+                id="export-password"
+                type="password"
+                autoComplete="new-password"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="export-again">The same again</Label>
+              <Input
+                id="export-again"
+                type="password"
+                autoComplete="new-password"
+                value={again}
+                onChange={e => setAgain(e.target.value)}
+              />
+            </div>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            At least {MIN_PASSPHRASE} characters.
+          </p>
+          {error ? <p className="text-sm text-destructive">{error}</p> : null}
+          {done ? (
+            <p className="text-sm text-muted-foreground" data-export-done>
+              Downloaded. Run <code>chmod 600</code> on it before a native node
+              reads it.
+            </p>
+          ) : null}
+          <Button
+            type="submit"
+            variant="outline"
+            className="w-fit"
+            disabled={busy || problem !== null || !again}
+          >
+            {busy ? "Encrypting…" : "Download key file"}
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+function download(name: string, text: string) {
+  const url = URL.createObjectURL(
+    new Blob([text], { type: "application/octet-stream" }),
+  );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }

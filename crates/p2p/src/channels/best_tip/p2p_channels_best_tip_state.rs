@@ -33,4 +33,12 @@ impl P2pChannelsBestTipState {
     pub fn is_ready(&self) -> bool {
         matches!(self, Self::Ready { .. })
     }
+
+    /// The best tip we last sent this peer: ours, then.
+    pub fn last_sent(&self) -> Option<&ArcBlockWithHash> {
+        match self {
+            Self::Ready { last_sent, .. } => last_sent.as_ref(),
+            _ => None,
+        }
+    }
 }

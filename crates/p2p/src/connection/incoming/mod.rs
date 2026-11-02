@@ -11,11 +11,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::{connection::RejectionReason, webrtc, P2pState, PeerId};
 
-#[derive(Serialize, Deserialize, Eq, PartialEq, Debug, Clone)]
+#[derive(Serialize, Deserialize, Eq, PartialEq, Clone)]
 pub struct P2pConnectionIncomingInitOpts {
     pub peer_id: PeerId,
     pub signaling: IncomingSignalingMethod,
     pub offer: Box<webrtc::Offer>,
+    /// The address the HTTP signalling request came from, for a sharing
+    /// relay's limits (crate::sharing). None for relayed offers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_ip: Option<std::net::IpAddr>,
+}
+
+/// The source address stays out of debug output, and with it every log of
+/// these options (an incoming connection's trace events).
+impl std::fmt::Debug for P2pConnectionIncomingInitOpts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("P2pConnectionIncomingInitOpts")
+            .field("peer_id", &self.peer_id)
+            .field("signaling", &self.signaling)
+            .field("offer", &self.offer)
+            .field(
+                "remote_ip",
+                &self.remote_ip.map(|_| format_args!("<redacted>")),
+            )
+            .finish()
+    }
 }
 
 // TODO(binier): maybe move to `crate::webrtc`?
@@ -32,9 +52,11 @@ impl P2pState {
         &self,
         peer_id: PeerId,
         offer: &webrtc::Offer,
+        signaling: &IncomingSignalingMethod,
     ) -> Result<(), RejectionReason> {
-        // Seed-only browser nodes have no inbound connection capacity.
-        if self.config.seed_only {
+        // Seed-only browser nodes have no inbound connection capacity, except
+        // a sharing browser's for the browsers its seeds introduce.
+        if self.config.seed_only && !self.sharing_accepts_incoming(signaling, &offer.sdp) {
             return Err(RejectionReason::PeerCapacityFull);
         }
 

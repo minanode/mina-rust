@@ -123,7 +123,12 @@ pub async fn run_on_listener(
              start with --allow-worker-control to turn those pages off and have it"
         );
     }
-    axum::serve(listener, app).await
+    // Connection addresses: a sharing relay limits introductions per address.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
 }
 
 async fn bind_http_listener(addr: IpAddr, port: u16) -> std::io::Result<TcpListener> {
@@ -247,10 +252,12 @@ pub fn router(rpc_sender: RpcSender, options: HttpServerOptions) -> axum::Router
 
     let trace_layer = TraceLayer::new_for_http()
         .make_span_with(|request: &axum::http::Request<_>| {
-            if request.uri().path().starts_with(SIGNAL_OFFER_PATH) {
-                tracing::debug!(uri = %request.uri(), "WebRTC signalling request");
-            }
             let uri = logged_uri(request.uri());
+            if let Some(offer) = request.uri().path().strip_prefix(SIGNAL_OFFER_PATH) {
+                // The path carries the encoded SDP offer and with it the
+                // browser's ICE addresses: log only its length.
+                tracing::debug!(uri = %uri, offer_len = offer.len(), "WebRTC signalling request");
+            }
             tracing::info_span!("http_request", method = %request.method(), uri = %uri)
         })
         .on_response(

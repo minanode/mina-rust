@@ -8,7 +8,7 @@ use crate::{
     },
     connection::{
         outgoing::{P2pConnectionOutgoingAction, P2pConnectionOutgoingInitOpts},
-        P2pConnectionErrorResponse, P2pConnectionResponse,
+        P2pConnectionErrorResponse, P2pConnectionResponse, RejectionReason,
     },
     webrtc::SignalingMethod,
     P2pState,
@@ -35,6 +35,7 @@ impl P2pChannelsSignalingDiscoveryState {
             .config
             .enabled_channels
             .contains(&ChannelId::SignalingDiscovery)
+            || !p2p_state.signaling_allowed_with(action.peer_id())
         {
             return Ok(());
         }
@@ -107,6 +108,12 @@ impl P2pChannelsSignalingDiscoveryState {
 
                 *local = SignalingDiscoveryState::DiscoveryRequested { time: meta.time() };
 
+                if p2p_state.config.sharing.is_relay() {
+                    if let Err(refusal) = p2p_state.sharing_requester_check(&peer_id, meta.time()) {
+                        p2p_state.sharing_record_refusal(peer_id, refusal, meta.time());
+                    }
+                }
+
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
                 let state: &P2pState = state.substate()?;
                 state.webrtc_discovery_respond_with_availble_peers(dispatcher, meta.time());
@@ -127,6 +134,11 @@ impl P2pChannelsSignalingDiscoveryState {
                     time: meta.time(),
                     target_public_key: target_public_key.clone(),
                 };
+                p2p_state.sharing_record_introduction(
+                    peer_id,
+                    target_public_key.peer_id(),
+                    meta.time(),
+                );
 
                 let dispatcher = state_context.into_dispatcher();
 
@@ -420,7 +432,20 @@ impl P2pChannelsSignalingDiscoveryState {
                 *remote = SignalingDiscoveryState::Answered { time: meta.time() };
 
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
+                let p2p_state: &P2pState = state.substate()?;
                 match answer {
+                    // A sharing browser refuses an introduced description
+                    // whose candidates its policy drops (crate::sharing::sdp).
+                    P2pConnectionResponse::Accepted(answer)
+                        if p2p_state.sharing_stack_sdp(true, &answer.sdp).is_err() =>
+                    {
+                        dispatcher.push(P2pConnectionOutgoingAction::AnswerRecvError {
+                            peer_id: target_public_key.peer_id(),
+                            error: P2pConnectionErrorResponse::Rejected(
+                                RejectionReason::UnacceptableSdp,
+                            ),
+                        })
+                    }
                     P2pConnectionResponse::Accepted(answer) => {
                         dispatcher.push(P2pConnectionOutgoingAction::AnswerRecvSuccess {
                             peer_id: target_public_key.peer_id(),

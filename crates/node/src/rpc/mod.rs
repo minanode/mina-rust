@@ -574,6 +574,12 @@ pub struct RpcMetricsGetResponse {
     pub snark_worker_proofs_sold: u64,
     pub ledger_sync_fetched: Option<u64>,
     pub ledger_sync_estimated: Option<u64>,
+    /// A sharing relay's introductions, and requests left waiting at a limit
+    /// (mina_p2p::sharing).
+    #[serde(default)]
+    pub sharing_introductions: u64,
+    #[serde(default)]
+    pub sharing_introductions_refused: u64,
 }
 pub type RpcHeartbeatGetResponse = Option<SignedNodeHeartbeat>;
 pub type RpcReportingSnapshotGetResponse = RpcReportingSnapshot;
@@ -859,6 +865,8 @@ pub struct RpcNodeStatus {
     pub service_queues: Queues,
     /// Network configuration information.
     pub network_info: RpcNodeStatusNetworkInfo,
+    /// The frontier store; `None` when the config has it off.
+    pub frontier_store: Option<RpcNodeStatusFrontierStore>,
     /// Block producer public key, if configured.
     pub block_producer: Option<AccountPublicKey>,
     /// Coinbase receiver public key, if configured.
@@ -923,6 +931,18 @@ impl RpcConsensusSlot {
             end_time_ms: start_time_ms.checked_add(slot_duration_ms)?,
         })
     }
+}
+
+/// The frontier store, in short: whether this run can use it.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct RpcNodeStatusFrontierStore {
+    /// The store is open in this run.
+    pub open: bool,
+    /// Why the store is off for this run, if it is.
+    pub unavailable: Option<String>,
+    /// Another process, or another browser tab, holds the store's lock.
+    pub locked: bool,
 }
 
 /// Network configuration information for the node.

@@ -32,6 +32,7 @@ import { Link } from "../app/router";
 import { formatBytes } from "../boot/failures";
 import { CONFIG } from "../config";
 import { parseMemoryStats } from "../lib/memory";
+import { storeLabel, storeState } from "../lib/store";
 
 const MEMORY_POLL_MS = 5_000;
 
@@ -186,7 +187,7 @@ export function OverviewPage() {
               ),
             },
           ]}
-          footer="Since the node started in this tab. It checks the proofs here, not on a server."
+          footer="Since the node started in this tab."
         />
         <KeyValueList
           title="This node"
@@ -242,14 +243,13 @@ export function OverviewPage() {
             },
             {
               label: "Frontier store",
-              value: boot.frontierStore ? "On" : "Off",
+              value: (
+                <span data-frontier-store-status>
+                  {storeLabel(storeState(boot.frontierStore, s?.frontierStore))}
+                </span>
+              ),
             },
           ]}
-          footer={
-            boot.frontierStore
-              ? "The store keeps the node's ledgers and blocks in this browser, so a reload starts from them. Start-up has a reset that deletes it."
-              : "Without the store, a reload syncs from the network again."
-          }
         />
       </div>
     </>

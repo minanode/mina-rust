@@ -17,14 +17,15 @@ use std::{
 
 use rustrtc::{
     transports::datachannel::{DataChannel, DataChannelConfig, DataChannelEvent, MESSAGE_OVERHEAD},
-    IceCredentialType, IceServer, PeerConnection, PeerConnectionState, RtcConfiguration, SdpType,
-    SessionDescription,
+    IceCredentialType, IceServer, PeerConnection, PeerConnectionState, RtcConfiguration,
+    SctpLinkStats, SdpType, SessionDescription,
 };
 use tokio::{sync::watch, task::spawn_local};
 
 use crate::{
     connection::P2pConnectionResponse,
     webrtc::{Answer, Offer, WebrtcConfig},
+    PeerId,
 };
 
 use super::{OnConnectionStateChangeHdlrFn, RTCChannelConfig, RTCConfig};
@@ -32,6 +33,16 @@ use super::{OnConnectionStateChangeHdlrFn, RTCChannelConfig, RTCConfig};
 pub type Result<T> = std::result::Result<T, rustrtc::RtcError>;
 
 const ICE_DISCONNECT: Duration = Duration::from_secs(4);
+/// The least SCTP retransmission timeout, RFC 9260's RTO.Min. rustrtc's 200 ms
+/// floor is below a browser's delayed SACK (up to 200 ms) plus a far peer's
+/// round trip: a SACK held back for the last packet of an answer came after
+/// the timer, which then fired, halved the congestion window and
+/// retransmitted what had arrived. From a relay 160 ms away that happened
+/// about every 0.7 s, held the window at 5 to 17 KB and the download at
+/// 0.1 MB/s (WEB-RELAY-RTT-THROUGHPUT). Lost data is still resent sooner:
+/// gap reports start fast retransmit, and a tail loss probe goes after
+/// 2 round trips (at least half this).
+const SCTP_RTO_MIN: Duration = Duration::from_secs(1);
 const ICE_FAILED: Duration = Duration::from_secs(6);
 const ICE_DISCONNECT_GRACE: Duration = Duration::from_secs(1);
 /// Messages kept for a channel before its `on_message` is registered, at
@@ -39,6 +50,8 @@ const ICE_DISCONNECT_GRACE: Duration = Duration::from_secs(1);
 /// connection is closed. rustrtc bounds what its own queues hold the same way
 /// (4 MiB unread per association).
 const MAX_PENDING_BYTES: usize = 4 * 1024 * 1024;
+/// How often a connection's SCTP counters are logged, at debug.
+const LINK_STATS_EVERY: Duration = Duration::from_secs(10);
 
 pub type RTCConnectionState = PeerConnectionState;
 
@@ -124,6 +137,7 @@ impl RTCConnection {
             // Our channels are all negotiated: a channel the peer opens in
             // band is refused, and its data dropped.
             accept_remote_data_channels: false,
+            sctp_rto_min: SCTP_RTO_MIN,
             ..Default::default()
         };
         if let Some((min, max)) = api.udp_ports {
@@ -210,6 +224,65 @@ impl RTCConnection {
 
     pub async fn close(self) {
         self.0.close();
+    }
+
+    /// Logs the association's SCTP counters every 10 s at debug, and the
+    /// last ones at info once `ended` resolves, so that the operator of a
+    /// relay can see how a browser's connection went: its round trip, its
+    /// retransmissions and the windows that bound what was in flight.
+    pub fn log_link_stats(&self, peer_id: PeerId, ended: impl Future<Output = ()> + 'static) {
+        let pc = self.0.clone();
+        spawn_local(async move {
+            let mut ended = std::pin::pin!(ended);
+            let mut last: Option<SctpLinkStats> = None;
+            loop {
+                tokio::select! {
+                    _ = &mut ended => break,
+                    _ = tokio::time::sleep(LINK_STATS_EVERY) => {}
+                }
+                let Some(stats) = pc.sctp_link_stats() else {
+                    continue;
+                };
+                let sent = stats.bytes_sent - last.map_or(0, |l| l.bytes_sent);
+                mina_core::debug!(mina_core::log::system_time();
+                    kind = "WebRtcLinkStats",
+                    peer_id = display(peer_id),
+                    sent_kib_per_s = sent / 1024 / LINK_STATS_EVERY.as_secs(),
+                    srtt_ms = stats.srtt.as_millis() as u64,
+                    rto_ms = stats.rto.as_millis() as u64,
+                    retransmissions = stats.retransmissions,
+                    fast_retransmits = stats.fast_retransmits,
+                    t3_expiries = stats.t3_expiries,
+                    sack_gap_blocks = stats.sack_gap_blocks,
+                    cwnd = stats.cwnd,
+                    ssthresh = stats.ssthresh,
+                    flight = stats.flight,
+                    queued = stats.queued,
+                    peer_rwnd = stats.peer_rwnd,
+                );
+                last = Some(stats);
+            }
+            let Some(stats) = pc.sctp_link_stats().or(last) else {
+                return;
+            };
+            mina_core::info!(mina_core::log::system_time();
+                kind = "WebRtcLinkClosed",
+                summary = "a WebRTC connection ended",
+                peer_id = display(peer_id),
+                duration_secs = stats.duration.as_secs(),
+                sent_mib = stats.bytes_sent / (1024 * 1024),
+                received_mib = stats.bytes_received / (1024 * 1024),
+                srtt_ms = stats.srtt.as_millis() as u64,
+                retransmissions = stats.retransmissions,
+                fast_retransmits = stats.fast_retransmits,
+                t3_expiries = stats.t3_expiries,
+                sack_gap_blocks = stats.sack_gap_blocks,
+                cwnd = stats.cwnd,
+                flight = stats.flight,
+                queued = stats.queued,
+                peer_rwnd = stats.peer_rwnd,
+            );
+        });
     }
 }
 

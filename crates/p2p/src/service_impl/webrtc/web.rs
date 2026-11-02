@@ -30,6 +30,12 @@ extern "C" {
     fn create_webrtc_connection(config: &RtcConfiguration) -> Result<RtcPeerConnection>;
     #[wasm_bindgen(catch, js_name = updateWebrtcIceServers)]
     pub fn update_webrtc_ice_servers(servers: &JsValue) -> Result<()>;
+    #[wasm_bindgen(js_name = labelWebrtcConnection)]
+    fn label_webrtc_connection(connection: &RtcPeerConnection, peer_id: &str);
+    /// Each open connection's peer, ICE candidate types, round-trip time
+    /// and bytes, from the browser's `getStats`: a promise of an array.
+    #[wasm_bindgen(js_name = webrtcPeerStats)]
+    pub fn webrtc_peer_stats() -> js_sys::Promise;
 }
 
 pub type Result<T> = std::result::Result<T, JsValue>;
@@ -74,6 +80,11 @@ impl RTCConnection {
         INIT.call_once(schedule_periodic_webrtc_cleanup);
 
         create_webrtc_connection(&config.into()).map(|v| Self(v.into(), true))
+    }
+
+    /// Name the peer, so [`webrtc_peer_stats`] can say whose stats they are.
+    pub fn label_peer(&self, peer_id: &str) {
+        label_webrtc_connection(&self.0, peer_id);
     }
 
     pub fn is_main(&self) -> bool {

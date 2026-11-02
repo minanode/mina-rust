@@ -7,6 +7,7 @@ use mina_signer::{keypair::KeypairError, seckey::SecKeyError, CompressedPubKey, 
 use rand::{rngs::StdRng, CryptoRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use std::{fmt, fs, io, path::Path, str::FromStr};
+use zeroize::Zeroizing;
 
 #[derive(Clone)]
 pub struct AccountSecretKey(Keypair);
@@ -55,8 +56,8 @@ impl AccountSecretKey {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, KeypairError> {
-        let mut bytes: [u8; 32] = match bytes.try_into() {
-            Ok(bytes) => bytes,
+        let mut bytes: Zeroizing<[u8; 32]> = match bytes.try_into() {
+            Ok(bytes) => Zeroizing::new(bytes),
             Err(_) => return Err(KeypairError::SecretKey(SecKeyError::SecretKeyLength)),
         };
 
@@ -66,11 +67,16 @@ impl AccountSecretKey {
         Ok(Self(Keypair::from_bytes(&bytes[..])?))
     }
 
+    /// The secret scalar's bytes. The intermediate copies are wiped; the
+    /// caller wipes the result (`Zeroizing`) where it matters.
     pub fn to_bytes(&self) -> [u8; 32] {
         // TODO(binier): refactor
-        let mut bytes = hex::decode(self.0.to_hex()).unwrap();
+        let hex = Zeroizing::new(self.0.to_hex());
+        let mut bytes = Zeroizing::new(hex::decode(&*hex).unwrap());
         bytes.reverse();
-        bytes.try_into().unwrap()
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&bytes);
+        out
     }
 
     pub fn public_key(&self) -> AccountPublicKey {
@@ -102,7 +108,7 @@ impl AccountSecretKey {
         encrypted: &EncryptedSecretKeyFile,
         password: &str,
     ) -> Result<Self, EncryptionError> {
-        let decrypted: Vec<u8> = Self::try_decrypt(encrypted, password)?;
+        let decrypted = Zeroizing::new(Self::try_decrypt(encrypted, password)?);
         if decrypted.len() != 33 || decrypted.first() != Some(&Self::SECRET_KEY_PREFIX_BYTE) {
             return Err(EncryptionError::InvalidFormat(
                 "invalid account key length or version",
@@ -123,7 +129,7 @@ impl AccountSecretKey {
         path: impl AsRef<Path>,
         password: &str,
     ) -> Result<(), EncryptionError> {
-        let encrypted = Self::try_encrypt(&self.to_bytes(), password)?;
+        let encrypted = Self::try_encrypt(&*Zeroizing::new(self.to_bytes()), password)?;
 
         let mut options = fs::OpenOptions::new();
         options.write(true).create_new(true);
@@ -164,11 +170,11 @@ impl FromStr for AccountSecretKey {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut bytes = [0u8; 38];
+        let mut bytes = Zeroizing::new([0u8; 38]);
 
         let size = bs58::decode(s)
             .with_check(Some(Self::BASE58_CHECK_VERSION))
-            .into(&mut bytes)?;
+            .into(&mut bytes[..])?;
         if size != 34 {
             return Err(bs58::decode::Error::BufferTooSmall.into());
         }
@@ -180,13 +186,17 @@ impl FromStr for AccountSecretKey {
 impl fmt::Display for AccountSecretKey {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         // TODO: implement to_bytes for Keypair, and remove this ugly workaround
-        let hex = self.0.to_hex();
-        let mut bytes = hex::decode(hex).expect("to_hex should return hex string");
-        bytes.reverse();
-        bytes.insert(0, 1);
-        let s = bs58::encode(&bytes)
-            .with_check_version(Self::BASE58_CHECK_VERSION)
-            .into_string();
+        // Each copy of the secret here is wiped when dropped.
+        let hex = Zeroizing::new(self.0.to_hex());
+        let scalar = Zeroizing::new(hex::decode(&*hex).expect("to_hex should return hex string"));
+        let mut bytes = Zeroizing::new(Vec::<u8>::with_capacity(33));
+        bytes.push(1);
+        bytes.extend(scalar.iter().rev());
+        let s = Zeroizing::new(
+            bs58::encode(&bytes[..])
+                .with_check_version(Self::BASE58_CHECK_VERSION)
+                .into_string(),
+        );
         f.write_str(&s)
     }
 }

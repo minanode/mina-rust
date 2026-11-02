@@ -55,6 +55,9 @@ thread_local! { static TRACE: RefCell<Vec<P2pAction>> = const { RefCell::new(Vec
 #[path = "recovery/yamux_limits.rs"]
 mod yamux_limits;
 
+#[path = "recovery/sharing.rs"]
+mod sharing;
+
 struct State(P2pState);
 #[derive(Debug)]
 enum Action {
@@ -197,6 +200,7 @@ fn state(seeds: &[u8]) -> State {
             limits: Default::default(),
             peer_discovery: true,
             seed_only: false,
+            sharing: Default::default(),
             meshsub: P2pMeshsubConfig::default(),
             catchup_rpc: Default::default(),
         },
@@ -1397,6 +1401,7 @@ fn native_direct_http_signaling_survives_but_browser_rejects_incoming() {
             peer_id: peer(1),
             signaling: IncomingSignalingMethod::Http,
             offer: Box::new(offer),
+            remote_ip: None,
         },
         rpc_id: None,
     };

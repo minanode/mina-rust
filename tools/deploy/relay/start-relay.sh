@@ -24,7 +24,13 @@
 #   WEBRTC_NAT_IP     --webrtc-nat-ip: the public address, when the
 #                     interface has a private one behind a 1:1 NAT
 #   EXTERNAL_IP       --libp2p-external-ip: the public address, for gossip
-#   EXTRA_ARGS        more node flags, split on spaces
+#   SHARING_RELAY     on: --webrtc-sharing-relay, introduce web nodes that
+#                     turned sharing on to each other, within its limits
+#                     (MINAWEB.md, "Browser sharing"); off or empty (default):
+#                     introduce no one
+#   EXTRA_ARGS        more node flags, split on spaces; never
+#                     --webrtc-sharing-relay (use SHARING_RELAY) or the
+#                     0.20.1 release's --webrtc-signaling-relay
 set -euo pipefail
 
 die() {
@@ -36,10 +42,20 @@ die() {
 here=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 mina=${MINA:-$here/mina}
 [[ -x $mina ]] || die "$mina is not executable"
-# Public relays require the opt-in signalling relay behavior added after 0.20.0.
+# 0.20.0 relays signalling between all its peers: it is not a public relay.
+# The 0.20.1 release has --webrtc-signaling-relay. Later builds have only
+# --webrtc-sharing-relay.
 help=$("$mina" node --help)
-[[ $help == *--webrtc-signaling-relay* ]] || die "build main with PR 173 (or a qualified 0.20.1); 0.20.0 is not a public relay"
-[[ ${EXTRA_ARGS:-} != *--webrtc-signaling-relay* ]] || die "public relay must not forward visitor signalling"
+[[ $help == *--webrtc-sharing-relay* || $help == *--webrtc-signaling-relay* ]] || die "use the 0.20.1 release or a build of main; 0.20.0 is not a public relay"
+[[ ${EXTRA_ARGS:-} != *--webrtc-signaling-relay* ]] || die "remove --webrtc-signaling-relay from EXTRA_ARGS: it introduces every peer to every other. SHARING_RELAY=on introduces only pages that turned sharing on"
+# Browser sharing has one switch, SHARING_RELAY, so that a review of
+# relay.env sees it.
+[[ ${EXTRA_ARGS:-} != *--webrtc-sharing-relay* ]] || die "set SHARING_RELAY=on instead of passing --webrtc-sharing-relay"
+case ${SHARING_RELAY:-off} in
+on) [[ $help == *--webrtc-sharing-relay* ]] || die "SHARING_RELAY=on needs a build with --webrtc-sharing-relay (MINAWEB-OPT-IN-SHARING)" ;;
+off | "") ;;
+*) die "SHARING_RELAY is on or off, not $SHARING_RELAY" ;;
+esac
 
 key=$CREDENTIALS_DIRECTORY/p2p_key
 [[ -s $key ]] || die "no libp2p key in the p2p_key credential"
@@ -63,6 +79,7 @@ args=(
 [[ -z ${WEBRTC_UDP_PORTS:-} ]] || args+=(--webrtc-udp-ports "$WEBRTC_UDP_PORTS")
 [[ -z ${WEBRTC_NAT_IP:-} ]] || args+=(--webrtc-nat-ip "$WEBRTC_NAT_IP")
 [[ -z ${EXTERNAL_IP:-} ]] || args+=(--libp2p-external-ip "$EXTERNAL_IP")
+[[ ${SHARING_RELAY:-off} != on ]] || args+=(--webrtc-sharing-relay)
 # shellcheck disable=SC2206 # EXTRA_ARGS is a list of flags.
 args+=(${EXTRA_ARGS:-})
 exec "$mina" "${args[@]}"

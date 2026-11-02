@@ -4,6 +4,7 @@ exclude = [
   "**/target/**",
   "**/.git/**",
   "vendor/rustrtc/**",
+  "vendor/wasm_thread/**",
 ]
 
 [formatting]

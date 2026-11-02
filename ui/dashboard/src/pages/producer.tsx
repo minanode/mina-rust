@@ -84,8 +84,6 @@ export function ProducerPage() {
         title="Block producer"
         description={
           <>
-            Whether this node produces blocks, the slots it won, and what became
-            of each: its stages against the slot, the outcome, and the totals.
             Read-only.{" "}
             <ExternalLink href={docsUrl("producer")}>
               Block producer docs
@@ -239,15 +237,6 @@ function Facts({
               ]
             : []),
         ]}
-        footer={
-          workerOn ? (
-            <>
-              The worker on this node takes no new job in the minutes before a
-              won slot (<Code>--snarker-block-first-lead</Code>, 7 min by
-              default), so the block has the machine to itself.
-            </>
-          ) : undefined
-        }
       />
       <KeyValueList
         title="This epoch"
@@ -323,10 +312,10 @@ function Summary({
       title="Summary"
       description={
         scope === "epoch"
-          ? `Epoch ${formatCount(epoch)}: the won slots that have come, what became of them, and how long their blocks took.`
+          ? `Epoch ${formatCount(epoch)}.`
           : kept
-            ? `Every won slot the node keeps, from ${utcDateTime(sum.sinceMs)}${beforeRestart ? ", from before its latest restart" : ""}.`
-            : "Every won slot the node keeps."
+            ? `From ${utcDateTime(sum.sinceMs)}${beforeRestart ? ", before the latest restart" : ""}.`
+            : undefined
       }
       aside={
         <SegmentedControl
@@ -433,10 +422,7 @@ function verdict(e: EpochExpectation): string {
 function Expectations({ stats }: { stats: ProducerStats }) {
   const rows = epochExpectations(stats.vrfEpochs);
   return (
-    <PageSection
-      title="Expected against found"
-      description="How many slots this key should win for its stake, against how many the node found. Each slot is a draw, so the count varies by chance: it lands in the 95% range 95 times in 100. A count outside it is unusual, not proof of a fault; with few wins expected, the range says little."
-    >
+    <PageSection title="Expected against found">
       {!reportsStake(stats.vrfEpochs) || rows.length === 0 ? (
         <EmptyState
           title="Not reported by this node"
@@ -513,12 +499,6 @@ function Expectations({ stats }: { stats: ProducerStats }) {
                 ))}
             </TableBody>
           </Table>
-          <p className="text-xs text-muted-foreground">
-            A slot is won with the chance 1 − (1/4)^s, s being the key's share
-            of the epoch's staking ledger (Mina's active slot coefficient, 3/4);
-            the wins to expect are that times the slots checked, and the range
-            comes from the binomial distribution.
-          </p>
         </>
       )}
     </PageSection>
@@ -528,11 +508,7 @@ function Expectations({ stats }: { stats: ProducerStats }) {
 function SlotsAhead({ ahead }: { ahead: UpcomingSlot[] }) {
   const { shown, hidden, toggle } = useShowAll(ahead, "soonest");
   return (
-    <PageSection
-      title="Won slots ahead"
-      description="Slots this node won and will produce in, soonest first. Scheduled: the node has its attempt ready and waits for the slot."
-      aside={toggle}
-    >
+    <PageSection title="Won slots ahead" aside={toggle}>
       {ahead.length === 0 ? (
         <EmptyState
           title="No won slot ahead"
@@ -635,11 +611,7 @@ function Attempts({
   const domain = barDomain(reports, slotMs);
   const { shown, toggle } = useShowAll(reports, "newest");
   return (
-    <PageSection
-      title="Won slots"
-      description={`Newest first: what became of each, and when each stage happened against its ${seconds(slotMs)} slot, from the slot's start.`}
-      aside={toggle}
-    >
+    <PageSection title="Won slots" aside={toggle}>
       {reports.length === 0 ? (
         <EmptyState
           title="No won slot has come yet"
@@ -664,6 +636,14 @@ function Attempts({
         </>
       )}
     </PageSection>
+  );
+}
+
+function sameUtcDay(a: number, b: number | null): boolean {
+  return (
+    b !== null &&
+    new Date(a).toISOString().slice(0, 10) ===
+      new Date(b).toISOString().slice(0, 10)
   );
 }
 
@@ -862,11 +842,19 @@ function AttemptDetail({
   const slot = formatCount(a.wonSlot.globalSlot);
   const steps: TimelineStep[] = r.stages.map(s => ({
     label: s.label,
-    time: s.offsetMs !== null ? formatOffset(s.offsetMs) : undefined,
-    detail:
-      s.key === "won" && s.atMs !== null
-        ? `scheduled ${utcDateTime(s.atMs)}`
-        : s.detail,
+    // Scheduled can be hours before the slot: its clock time, with the
+    // date when that differs from the slot's.
+    time:
+      s.key === "scheduled"
+        ? s.atMs !== null
+          ? sameUtcDay(s.atMs, r.slotStartMs)
+            ? utcTime(s.atMs)
+            : utcDateTime(s.atMs)
+          : undefined
+        : s.offsetMs !== null
+          ? formatOffset(s.offsetMs)
+          : undefined,
+    detail: s.detail,
     state: s.state,
   }));
   const ended = r.ended;

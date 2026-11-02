@@ -30,27 +30,27 @@ export default function RunPage() {
     <DocsPage
       slug="run-a-node"
       title="Run a node"
-      lead="Start the node, and it joins devnet as a full node."
+      lead="Start the node as a devnet full node, keep it running, and fix common problems. The sections after Troubleshooting describe the node's files, ports, and APIs."
     >
-      <DocSection id="start" title="Start it">
+      <DocSection id="start" title="Start the node">
         <CodeBlock code="mina node --network devnet" label="start command" />
         <Prose>
           <p>
-            The node finds peers, syncs, then follows the tip of the chain.
-            Watch it in the dashboard at <C>http://127.0.0.1:3000</C>. Stop it
-            with Ctrl-C.
+            The node finds peers, syncs, and then follows the tip of the chain.
+            Watch it in the dashboard at <C>http://127.0.0.1:3000</C>. To stop
+            it, press Ctrl-C.
           </p>
           <p>
-            The node runs in the foreground: it stops when you close the
-            terminal or log out. To keep it running, and start it again after a
+            The node runs in the foreground, so it stops when you close the
+            terminal or log out. To keep it running and start it again after a
             reboot, <DocLink href="#service">run it in the background</DocLink>{" "}
             as a service.
           </p>
           <p>
             On a server, open the dashboard through an{" "}
-            <DocLink href="/docs/dashboard/#on-a-server">SSH tunnel</DocLink>.{" "}
-            <C>mina node status</C> reports the node&apos;s state from another
-            shell.
+            <DocLink href="/docs/dashboard/#on-a-server">SSH tunnel</DocLink>.
+            From another shell, <C>mina node status</C> reports the node&apos;s
+            state.
           </p>
           <p>
             The <DocLink href="/docs/cli/#node">CLI reference</DocLink> lists
@@ -94,6 +94,174 @@ python3 tools/demo/sync-matrix.py --network devnet --runs 5 \\
           />
         </DocSection>
       )}
+
+      <DocSection id="service" title="Run in the background">
+        <Prose>
+          <p>
+            With systemd, a user service keeps the node running after you log
+            out, and starts it again after a reboot. The service runs the binary
+            from <DocLink href="/docs/install/#run">Install</DocLink>. It uses
+            the same work directory, <C>~/.mina</C>, and the same dashboard
+            port, 3000, as the foreground command, so it keeps any chain you
+            have already synced.
+          </p>
+          <ol>
+            <li>If a node runs in a terminal, stop it with Ctrl-C.</li>
+            <li>
+              Create the unit&apos;s directory with{" "}
+              <C>mkdir -p ~/.config/systemd/user</C>.
+            </li>
+            <li>
+              Save this unit as <C>~/.config/systemd/user/minanode.service</C>.
+              The name keeps it apart from the OCaml package&apos;s{" "}
+              <C>mina.service</C>.
+            </li>
+          </ol>
+        </Prose>
+        <CodeBlock
+          code={`[Unit]
+Description=Mina devnet node
+
+[Service]
+ExecStart=%h/.local/bin/mina node --network devnet \\
+  --disable-filesystem-logging
+Restart=on-failure
+
+[Install]
+WantedBy=default.target`}
+          label="systemd user unit"
+        />
+        <Prose>
+          <p>
+            With <C>--disable-filesystem-logging</C>, the logs go to the journal
+            instead of <C>mina.log</C>. Everything else is the foreground
+            default. Start the service and follow its log:
+          </p>
+        </Prose>
+        <CodeBlock
+          code={`systemctl --user daemon-reload
+systemctl --user enable --now minanode.service
+loginctl enable-linger "$USER"
+journalctl --user -u minanode.service -f`}
+          label="start the service and follow its log"
+        />
+        <Prose>
+          <p>
+            Linger keeps your user service manager running after logout, and
+            starts it at boot. If <C>loginctl</C> refuses to enable linger, ask
+            the server administrator to enable it for your account.
+          </p>
+          <p>
+            The dashboard stays at <C>http://127.0.0.1:3000</C>. On a server,
+            use the{" "}
+            <DocLink href="/docs/dashboard/#on-a-server">SSH tunnel</DocLink>.
+            To stop the service, run{" "}
+            <C>systemctl --user stop minanode.service</C>. For a bug report,
+            take the log from the journal:
+          </p>
+        </Prose>
+        <CodeBlock
+          code={`mina node status
+journalctl --user -u minanode.service | mina report --log -`}
+          label="service status and report"
+        />
+      </DocSection>
+
+      <DocSection id="troubleshooting" title="Troubleshooting">
+        <Prose>
+          <h3>Sync seems stuck</h3>
+          <p>The sync state names the phase the node is in:</p>
+          <ul>
+            <li>Starting: the node has not reported a phase yet.</li>
+            <li>Connecting: no peer has connected.</li>
+            <li>Listening: peers have connected but have not sent a tip.</li>
+            <li>Bootstrap: the node fetches ledgers and blocks.</li>
+            <li>Catchup: the node applies blocks to reach the tip.</li>
+            <li>Synced: the node has caught up.</li>
+          </ul>
+          <p>
+            Before the first Synced, warnings such as <C>Ledger unavailable</C>{" "}
+            or <C>TransactionPoolFetchAccountsFailed</C> are normal. The
+            transaction pool asks for accounts before the ledger is ready. If
+            the warnings continue after Synced, collect a report.
+          </p>
+          <p>
+            Some other log lines are harmless. A first start logs{" "}
+            <C>no ledger to copy for sync, starting from an empty one</C> and a
+            stray <C>[-] no FUZZER conf specified</C> line. Kad warnings such as{" "}
+            <C>Skipping updates to Kad entry multiaddress list</C> can repeat at
+            any time. A producer key with no stake logs{" "}
+            <C>Empty delegator table</C>.
+          </p>
+          <p>
+            Before you restart the node, check the peer count, the target
+            height, and the progress in the log. Ledger downloads take time, and
+            a quiet network can leave the tip unchanged. If peers advance but
+            your node makes no progress, or it repeats errors, collect a report
+            before you delete any data. If you changed the work directory or the
+            HTTP port, change them in these commands too.
+          </p>
+        </Prose>
+        <CodeBlock
+          code={`mina node status --node http://127.0.0.1:3000
+mina report -d ~/.mina --node http://127.0.0.1:3000 \\
+  -m "Sync stopped progressing" --output report.md`}
+          label="check sync and save a report"
+        />
+        <Prose>
+          <p>
+            Review the report, then follow{" "}
+            <DocLink href="/docs/bug-reports/">Report a bug</DocLink>.
+          </p>
+          <h3>The dashboard does not open on a server</h3>
+          <p>
+            The HTTP port listens on 127.0.0.1 by default. Use an{" "}
+            <DocLink href="/docs/dashboard/#on-a-server">SSH tunnel</DocLink> to
+            the node&apos;s HTTP port.
+          </p>
+          <h3>Port already in use</h3>
+          <p>
+            If the HTTP listener or the WebRTC signaling listener cannot bind,
+            the node stops at startup. The error names the flag and the port. An
+            enabled <C>--webrtc-signal-port</C> needs a port of its own when its
+            listening address overlaps <C>--http-addr</C>. A wildcard address
+            such as <C>0.0.0.0</C> overlaps <C>127.0.0.1</C> too.
+          </p>
+          <p>
+            Choose an unused HTTP port with <C>--port</C> and an unused peer
+            port with <C>--libp2p-port</C>. Then change the dashboard URL, the
+            tunnel, and the status command to match. For a second node, also use
+            a separate work directory. Do not stop another service to free its
+            port.
+          </p>
+        </Prose>
+        <CodeBlock
+          code={`mina node --network devnet -d ~/.mina-second \\
+  --port 3010 --libp2p-port 8312`}
+          label="node with separate ports and data"
+        />
+        <Prose>
+          <h3>Command not found, or another mina</h3>
+          <p>
+            Run the installed binary by its full path. Then add its directory to
+            PATH in this shell, and in your shell startup file for later shells.
+          </p>
+          <p>
+            If <C>mina --version</C> prints anything but this release&apos;s{" "}
+            <C>mina</C> line, another program called <C>mina</C> comes first on
+            PATH. The OCaml node is one example. <C>command -v mina</C> shows
+            which one runs. Put <C>~/.local/bin</C> first, as below, or use the
+            full path.
+          </p>
+        </Prose>
+        <CodeBlock
+          code={`~/.local/bin/mina --version
+export PATH="$HOME/.local/bin:$PATH"
+command -v mina
+mina --version`}
+          label="check the install and set PATH"
+        />
+      </DocSection>
 
       <DocSection id="work-directory" title="The work directory">
         <Prose>
@@ -145,8 +313,8 @@ python3 tools/demo/sync-matrix.py --network devnet --runs 5 \\
         />
         <Prose>
           <p>
-            The verifier index cache, built at the first start, is in{" "}
-            <C>~/.mina/circuit-blobs/</C> whatever the work directory.
+            The node builds the verifier index cache at the first start, in{" "}
+            <C>~/.mina/circuit-blobs/</C>, whatever the work directory.
           </p>
         </Prose>
       </DocSection>
@@ -155,14 +323,14 @@ python3 tools/demo/sync-matrix.py --network devnet --runs 5 \\
         <KeyValueList title="Default ports" rows={claimedRows(run.ports)} />
         <Prose>
           <p>
-            The HTTP port listens on <C>127.0.0.1</C> only by default.{" "}
-            <C>--http-addr</C> (or <C>MINA_HTTP_ADDR</C>) sets another listening
-            address, such as a private interface, and <C>--http-addr 0.0.0.0</C>{" "}
-            listens on all IPv4 interfaces. Before changing it, read{" "}
+            By default, the HTTP port listens on <C>127.0.0.1</C> only.{" "}
+            <C>--http-addr</C>, or <C>MINA_HTTP_ADDR</C>, sets another listening
+            address, such as a private interface. <C>--http-addr 0.0.0.0</C>{" "}
+            listens on all IPv4 interfaces. Before you change it, read{" "}
             <DocLink href="/docs/dashboard/#on-a-server">
-              viewing it on a server
+              Open it on a server
             </DocLink>
-            . The peer port is separate and may be open to other nodes.
+            . The peer port is separate, and other nodes can reach it.
           </p>
         </Prose>
       </DocSection>
@@ -170,16 +338,21 @@ python3 tools/demo/sync-matrix.py --network devnet --runs 5 \\
       <DocSection id="restarts" title="Saved state and restarts">
         <Prose>
           <p>
-            The node saves the chain state as it goes, and a restart picks up
-            from it instead of syncing from the start. The first save comes a
-            few seconds after the node first syncs, then one every 30 minutes;
-            the log says <C>checkpoint written</C> each time. A node stopped
-            before its first save syncs from the start again. It checks the
-            saved state first: if the state is too old or fails a check, the
-            node syncs afresh and says why in its log. If restoring it crashes
-            the node three times, the node deletes it. A stop during a restore
-            (Ctrl-C,{" "}
-            <C>systemctl stop</C>, <C>docker stop</C>) doesn&apos;t count.
+            The node saves the chain state as it runs. A restart picks up from
+            the saved state instead of syncing from the start.
+          </p>
+          <p>
+            The first save comes a few seconds after the node first syncs, then
+            one every 30 minutes. The log says <C>checkpoint written</C> each
+            time. A node stopped before its first save syncs from the start
+            again.
+          </p>
+          <p>
+            At a restart, the node checks the saved state first. If the state is
+            too old or fails a check, the node syncs afresh and says why in its
+            log. If restoring the state crashes the node three times, the node
+            deletes it. A stop during a restore does not count as a crash,
+            whether by Ctrl-C, <C>systemctl stop</C>, or <C>docker stop</C>.
           </p>
           <p>
             <C>--no-frontier-store</C> turns saving off.
@@ -191,14 +364,15 @@ python3 tools/demo/sync-matrix.py --network devnet --runs 5 \\
         <Prose>
           <p>
             The SNARK pool caches proofs on disk in <C>proof-cache/</C> under
-            the work directory. Disk use varies with the pool. Files are freed
-            when their last reference is dropped; a restart clears old cache
-            files. Do not share a work directory between running nodes.
+            the work directory. Disk use varies with the pool. The node frees a
+            file when it drops the last reference to it, and a restart clears
+            old cache files. Running nodes must not share a work directory.
           </p>
           <p>
             <C>--no-proof-cache</C> keeps those proofs in memory instead. A
-            block producer keeps them in memory unless started with{" "}
-            <C>--proof-cache</C>. To inspect cache files, bytes and errors:
+            block producer keeps them in memory unless it starts with{" "}
+            <C>--proof-cache</C>. This request shows the cache&apos;s files,
+            bytes, and errors:
           </p>
         </Prose>
         <CodeBlock
@@ -207,167 +381,13 @@ python3 tools/demo/sync-matrix.py --network devnet --runs 5 \\
         />
       </DocSection>
 
-      <DocSection id="service" title="Run in the background">
-        <Prose>
-          <p>
-            With systemd, a user service keeps the node running after you log
-            out and starts it again after a reboot. It runs the binary from{" "}
-            <DocLink href="/docs/install/#run">the install page</DocLink> with
-            the same work directory (<C>~/.mina</C>) and dashboard port (3000)
-            as the foreground command, so it keeps any chain you have already
-            synced. Stop a node running in a terminal first, with Ctrl-C.
-          </p>
-          <p>
-            Create its directory with <C>mkdir -p ~/.config/systemd/user</C>,
-            then save this as <C>~/.config/systemd/user/minanode.service</C>.
-            The name keeps it apart from the OCaml package&apos;s{" "}
-            <C>mina.service</C>.
-          </p>
-        </Prose>
-        <CodeBlock
-          code={`[Unit]
-Description=Mina devnet node
-
-[Service]
-ExecStart=%h/.local/bin/mina node --network devnet \\
-  --disable-filesystem-logging
-Restart=on-failure
-
-[Install]
-WantedBy=default.target`}
-          label="systemd user unit"
-        />
-        <Prose>
-          <p>
-            <C>--disable-filesystem-logging</C> leaves the logs to the journal
-            instead of <C>mina.log</C>. Everything else is the foreground
-            default.
-          </p>
-        </Prose>
-        <CodeBlock
-          code={`systemctl --user daemon-reload
-systemctl --user enable --now minanode.service
-loginctl enable-linger "$USER"
-journalctl --user -u minanode.service -f`}
-          label="start the service and follow its log"
-        />
-        <Prose>
-          <p>
-            Linger keeps your user service manager running after logout and
-            starts it at boot. If enabling linger is refused, ask the server
-            administrator to enable it for your account.
-          </p>
-          <p>
-            The dashboard stays at <C>http://127.0.0.1:3000</C>; on a server,
-            use the{" "}
-            <DocLink href="/docs/dashboard/#on-a-server">SSH tunnel</DocLink>.
-            Stop the service with <C>systemctl --user stop minanode.service</C>. For
-            a bug report, take the log from the journal:
-          </p>
-        </Prose>
-        <CodeBlock
-          code={`mina node status
-journalctl --user -u minanode.service | mina report --log -`}
-          label="service status and report"
-        />
-      </DocSection>
-
-      <DocSection id="troubleshooting" title="Troubleshooting">
-        <Prose>
-          <h3>Sync seems stuck</h3>
-          <p>
-            Connecting means no peer has connected. Listening means peers have
-            connected but have not sent a tip. Bootstrap fetches ledgers and
-            blocks. Catchup applies blocks to reach the tip. Synced means the
-            node has caught up. Starting means it has not reported a phase yet.
-          </p>
-          <p>
-            Warnings such as <C>Ledger unavailable</C> or{" "}
-            <C>TransactionPoolFetchAccountsFailed</C> before the first Synced
-            are normal: the transaction pool asks for accounts before the
-            ledger is ready. If they keep coming after Synced, collect a report.
-            A first start also logs{" "}
-            <C>no ledger to copy for sync, starting from an empty one</C> and a
-            stray <C>[-] no FUZZER conf specified</C> line. Kad warnings such as{" "}
-            <C>Skipping updates to Kad entry multiaddress list</C> can repeat at
-            any time, and a producer key with no stake logs{" "}
-            <C>Empty delegator table</C>. All of these are harmless.
-          </p>
-          <p>
-            Check the peer count, target height and log progress before
-            restarting. Ledger downloads take time, and a quiet network may
-            leave the tip unchanged. If peers advance but your node makes no
-            progress, or it repeats errors, collect a report before deleting
-            data. Replace the directory and URL below if you changed them.
-          </p>
-        </Prose>
-        <CodeBlock
-          code={`mina node status --node http://127.0.0.1:3000
-mina report -d ~/.mina --node http://127.0.0.1:3000 \\
-  -m "Sync stopped progressing" --output report.md`}
-          label="check sync and save a report"
-        />
-        <Prose>
-          <p>
-            Review the report, then follow{" "}
-            <DocLink href="/docs/bug-reports/">reporting a bug</DocLink>.
-          </p>
-          <h3>The dashboard will not open on a server</h3>
-          <p>
-            HTTP listens on 127.0.0.1 by default. Use an{" "}
-            <DocLink href="/docs/dashboard/#on-a-server">SSH tunnel</DocLink> to
-            the node&apos;s HTTP port.
-          </p>
-          <h3>Port already in use</h3>
-          <p>
-            The node stops startup if its operator HTTP or signaling listener
-            cannot bind, and the error names the flag and port. An enabled{" "}
-            <C>--webrtc-signal-port</C> must use a different port when its
-            listening address overlaps <C>--http-addr</C>. A wildcard address
-            such as <C>0.0.0.0</C> also overlaps <C>127.0.0.1</C>.
-          </p>
-          <p>
-            Choose an unused HTTP port with <C>--port</C> and an unused peer
-            port with <C>--libp2p-port</C>. Update the dashboard URL, tunnel and
-            status command to match. For a second node, also use a separate work
-            directory. Do not stop another service to free its port.
-          </p>
-        </Prose>
-        <CodeBlock
-          code={`mina node --network devnet -d ~/.mina-second \\
-  --port 3010 --libp2p-port 8312`}
-          label="node with separate ports and data"
-        />
-        <Prose>
-          <h3>Command not found, or another mina</h3>
-          <p>
-            Try the installed binary by its full path. Add its directory to PATH
-            in this shell, and in your shell startup file for later shells.
-          </p>
-          <p>
-            If <C>mina --version</C> prints anything but this release&apos;s{" "}
-            <C>mina</C> line, another program called <C>mina</C>, such as the
-            OCaml node, comes first on PATH. <C>command -v mina</C> shows which
-            one runs. Put <C>~/.local/bin</C> first, as below, or use the full
-            path.
-          </p>
-        </Prose>
-        <CodeBlock
-          code={`~/.local/bin/mina --version
-export PATH="$HOME/.local/bin:$PATH"
-command -v mina
-mina --version`}
-          label="check the install and set PATH"
-        />
-      </DocSection>
-
       <DocSection id="logs" title="Logs">
         <Prose>
           <p data-claim={run.logs.claim}>{run.logs.text}</p>
           <p>
-            <C>--log-level debug</C> logs more detail. The user service logs to
-            the journal (see{" "}
-            <DocLink href="#service">run in the background</DocLink>).
+            <C>--log-level debug</C> logs more detail. The user service in{" "}
+            <DocLink href="#service">Run in the background</DocLink> logs to the
+            journal.
           </p>
         </Prose>
       </DocSection>
@@ -376,29 +396,30 @@ mina --version`}
         <Prose>
           <p>
             The node answers GraphQL queries at <C>/graphql</C> on its HTTP
-            port, for wallets, explorers and scripts. The dashboard&apos;s
+            port, for wallets, explorers, and scripts. The dashboard&apos;s
             GraphQL page shows the address and an example to copy.
           </p>
         </Prose>
         <CodeBlock code={query} label="GraphQL query with curl" />
         <Prose>
           <p>
-            Sending transactions (<C>sendPayment</C>, <C>sendDelegation</C>,{" "}
-            <C>sendZkapp</C>) is off unless you start the node with{" "}
-            <C>--enable-tx-submission</C>. Turn it on only for a node whose HTTP
-            port only you can reach.
+            The mutations that send transactions, <C>sendPayment</C>,{" "}
+            <C>sendDelegation</C>, and <C>sendZkapp</C>, are off unless the node
+            starts with <C>--enable-tx-submission</C>. Turn them on only for a
+            node whose HTTP port only you can reach.
           </p>
           <p>
-            A request may carry up to 1.25 MiB of body and of query text, and up
-            to 24,576 tokens. That admits the largest zkApp command Mesa accepts
-            (15 proofs) as o1js builds it, inline in the mutation. A valid
-            command padded with many empty events can still exceed the limits.
-            The node admits bodies over 256 KiB one at a time. Another large
-            body waits up to 30 s, then gets HTTP 503.
+            A request can carry up to 1.25 MiB of body and of query text, and up
+            to 24,576 tokens. These limits admit the largest zkApp command that
+            Mesa accepts, with 15 proofs, as o1js builds it inline in the
+            mutation. A valid command padded with many empty events can still
+            exceed the limits. The node admits bodies over 256 KiB one at a
+            time. Another large body waits up to 30 s, then gets HTTP 503.
           </p>
           <p>
-            <C>--public-graphql</C> keeps the earlier limits (256 KiB of body,
-            64 KiB of query text and 8,192 tokens) and refuses mutations.
+            <C>--public-graphql</C> keeps the earlier limits and refuses
+            mutations. The earlier limits are 256 KiB of body, 64 KiB of query
+            text, and 8,192 tokens.
           </p>
         </Prose>
       </DocSection>
@@ -406,18 +427,18 @@ mina --version`}
       <DocSection id="http-api" title="HTTP API">
         <Prose>
           <p>
-            <C>GET /status</C> answers with the node&apos;s sync state, best tip
-            and peers as JSON, and <C>GET /build_env</C> with its build. The
-            dashboard&apos;s Status page shows both, and <C>mina node status</C>{" "}
-            sums them up.
+            <C>GET /status</C> answers with the node&apos;s sync state, best
+            tip, and peers as JSON. <C>GET /build_env</C> answers with its
+            build. The dashboard&apos;s Status page shows both, and{" "}
+            <C>mina node status</C> sums them up.
           </p>
           <p>
             Light clients read the best tip and account Merkle paths from{" "}
-            <C>/light/*</C>: see{" "}
+            <C>/light/*</C>, as{" "}
             <DocLink href="/docs/light-endpoints/">
-              light client endpoints
-            </DocLink>
-            .
+              Light client endpoints
+            </DocLink>{" "}
+            describes.
           </p>
         </Prose>
       </DocSection>

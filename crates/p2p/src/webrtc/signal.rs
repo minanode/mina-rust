@@ -67,7 +67,7 @@ use super::{ConnectionAuth, Host};
 /// ```text
 /// Peer A creates Offer -> Signaling Method -> Peer B validates Offer
 /// ```
-#[derive(Serialize, Deserialize, Eq, PartialEq, Debug, Clone, MallocSizeOf)]
+#[derive(Serialize, Deserialize, Eq, PartialEq, Clone, MallocSizeOf)]
 pub struct Offer {
     /// Session Description Protocol (SDP) data describing the WebRTC connection
     /// capabilities, including media formats, network information, and ICE candidates.
@@ -121,7 +121,7 @@ pub struct Offer {
 /// ```text
 /// Peer B receives Offer -> Validates -> Creates Answer -> Peer A receives Answer
 /// ```
-#[derive(Serialize, Deserialize, Eq, PartialEq, Debug, Clone, MallocSizeOf)]
+#[derive(Serialize, Deserialize, Eq, PartialEq, Clone, MallocSizeOf)]
 pub struct Answer {
     /// Session Description Protocol (SDP) data from the answering peer
     /// describing their WebRTC connection capabilities and network information.
@@ -218,6 +218,12 @@ pub enum RejectionReason {
     /// Not considered a "bad" rejection.
     #[error("self connection detected")]
     ConnectingToSelf,
+
+    /// A sharing browser's policy refuses the description of a browser its
+    /// relay introduced: no candidate it may check, or malformed
+    /// (`crate::sharing::sdp`). Considered a "bad" rejection.
+    #[error("the description's candidates are not allowed")]
+    UnacceptableSdp,
 }
 
 /// Response to a WebRTC connection offer.
@@ -294,6 +300,39 @@ fn sdp_hash(sdp: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(sdp);
     hasher.finalize().into()
+}
+
+/// The SDP holds the peer's network addresses: debug output, and with it
+/// every log of an offer, gives its length only.
+struct RedactedSdp<'a>(&'a str);
+
+impl std::fmt::Debug for RedactedSdp<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<{} bytes>", self.0.len())
+    }
+}
+
+impl std::fmt::Debug for Offer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Offer")
+            .field("sdp", &RedactedSdp(&self.sdp))
+            .field("chain_id", &self.chain_id)
+            .field("identity_pub_key", &self.identity_pub_key)
+            .field("target_peer_id", &self.target_peer_id)
+            .field("host", &self.host)
+            .field("listen_port", &self.listen_port)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for Answer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Answer")
+            .field("sdp", &RedactedSdp(&self.sdp))
+            .field("identity_pub_key", &self.identity_pub_key)
+            .field("target_peer_id", &self.target_peer_id)
+            .finish()
+    }
 }
 
 impl Offer {
@@ -381,6 +420,7 @@ impl RejectionReason {
             Self::PeerCapacityFull => false,
             Self::AlreadyConnected => true,
             Self::ConnectingToSelf => false,
+            Self::UnacceptableSdp => true,
         }
     }
 }

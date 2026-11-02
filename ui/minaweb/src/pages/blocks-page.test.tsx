@@ -58,9 +58,12 @@ vi.mock("@minanode/node-client/react", () => ({
     polled(answer(query)),
   useVerificationOf: () => polled({ receipts: [] }),
   useNodeStatus: () => ({ status: polled(null) }),
+  useNodeClient: () => ({ baseUrl: "http://node" }),
+  usePoll: () => polled({ receipts: [] }),
 }));
 
-const { BestChain, chainPage } = await import("./blocks");
+const { BestChain, BlocksPage, chainPage, NOT_CHECKED_DOCS_URL } =
+  await import("./blocks");
 
 afterEach(cleanup);
 
@@ -114,4 +117,10 @@ test("chainPage tells an expired page from an unsynced node", () => {
   expect(chainPage(null, { headers: [] })).toBe("empty");
   expect(chainPage(130, { headers: [] })).toBe("expired");
   expect(chainPage(130, { headers: [1] })).toBe("list");
+});
+
+test("the page links the docs on blocks it did not check", () => {
+  render(<BlocksPage />);
+  const link = screen.getByRole("link", { name: /Web node docs/ });
+  expect(link.getAttribute("href")).toBe(NOT_CHECKED_DOCS_URL);
 });

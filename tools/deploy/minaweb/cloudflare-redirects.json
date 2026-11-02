@@ -1,0 +1,19 @@
+{
+  "description": "minaweb.org redirects",
+  "rules": [
+    {
+      "description": "minaweb: www to the canonical origin",
+      "expression": "(http.host eq \"www.minaweb.org\")",
+      "action": "redirect",
+      "action_parameters": {
+        "from_value": {
+          "status_code": 301,
+          "target_url": {
+            "expression": "concat(\"https://minaweb.org\", http.request.uri.path)"
+          },
+          "preserve_query_string": true
+        }
+      }
+    }
+  ]
+}

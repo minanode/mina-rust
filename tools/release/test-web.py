@@ -21,6 +21,10 @@ spec = importlib.util.spec_from_file_location("serve_web", Path(__file__).with_n
 web = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(web)
 RELAY = "/ip4/127.0.0.1/tcp/8303/webrtc/http/p2p/12D3KooWGdtdRfzSWjTNnCabYQkCqjXiAkcBx9JvpgpfCMFWJsgQ"
+spec = importlib.util.spec_from_file_location(
+    "csp", Path(__file__).resolve().parents[1] / "regression/webnode/csp.py")
+csp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(csp)
 
 
 class BundleTest(unittest.TestCase):
@@ -36,7 +40,8 @@ class BundleTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
             files.append({"path": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()})
-        self.manifest = {"schema": 1, "network": "devnet", "relay": RELAY, "files": files}
+        self.manifest = {"schema": 1, "network": "devnet", "relay": RELAY, "files": files,
+                         "build": {"contentSecurityPolicy": csp.policy([RELAY])}}
         self.save()
 
     def save(self):
@@ -100,6 +105,12 @@ class BundleTest(unittest.TestCase):
             self.assertEqual(json.loads(body), {"relays": [override]})
             self.assertEqual(headers["Cross-Origin-Opener-Policy"], "same-origin")
             self.assertEqual(headers["Cross-Origin-Embedder-Policy"], "require-corp")
+            # The build's policy, naming the relay in use instead of its own.
+            for path in ("/", "/key", "/local-relay.json"):
+                page = get(path)[1]
+                self.assertEqual(page["Content-Security-Policy"], csp.policy([override]))
+                self.assertEqual(page["X-Frame-Options"], csp.X_FRAME_OPTIONS)
+                self.assertEqual(page["Permissions-Policy"], csp.PERMISSIONS_POLICY)
             self.assertEqual(get("/node.wasm")[1]["Content-Type"], "application/wasm")
             for route in ("/blocks/test", "/accounts/test", "/key", "/send",
                           "/snark-worker", "/block-producer"):
@@ -113,6 +124,70 @@ class BundleTest(unittest.TestCase):
             server.shutdown()
             thread.join()
             server.server_close()
+
+
+    def test_policy_follows_the_relay(self):
+        cases = json.loads(Path(__file__).with_name("relay-cases.json").read_text())
+        for relay in cases["valid"]:
+            with self.subTest(relay=relay):
+                if relay.startswith("/ip6/"):
+                    with self.assertRaises(ValueError):
+                        web.page_policy(self.manifest, relay)
+                else:
+                    self.assertEqual(web.page_policy(self.manifest, relay), csp.policy([relay]))
+        for broken in ({}, {"contentSecurityPolicy": None},
+                       {"contentSecurityPolicy": csp.policy([RELAY.replace("8303", "9")])}):
+            with self.subTest(build=broken), self.assertRaises(ValueError):
+                web.page_policy({**self.manifest, "build": broken}, RELAY)
+
+    def test_two_relays(self):
+        second = "/dns4/relay2.example.org/tcp/443/webrtc/https/p2p/12D3KooWRhfZ3wQKx4LWJp4xc45UYoT6UqASoLKgpx1bE52MjSLd"
+        built = {**self.manifest, "relays": [RELAY, second],
+                 "build": {"contentSecurityPolicy": csp.policy([RELAY, second], "https://assets.example.org/w")}}
+        del built["relay"]
+        self.assertEqual(web.bundle_relays(built), [RELAY, second])
+        # Its own relays, others in their place, or one: always the policy
+        # the build would have made for them.
+        for relays in ([RELAY, second], [second], [RELAY.replace("8303", "8304"), RELAY.replace("8303", "8305")]):
+            with self.subTest(relays=relays):
+                self.assertEqual(web.page_policy(built, relays),
+                                 csp.policy(relays, "https://assets.example.org/w"))
+        self.assertEqual(web.page_policy(self.manifest, [RELAY, second]), csp.policy([RELAY, second]))
+        broken = {**built, "build": {"contentSecurityPolicy": csp.policy([RELAY])}}
+        with self.assertRaisesRegex(ValueError, "does not name its relays"):
+            web.page_policy(broken, [RELAY])
+        overrides = [RELAY.replace("8303", "8304"), RELAY.replace("8303", "8305")]
+        server = ThreadingHTTPServer(("127.0.0.1", 0), http.client.HTTPConnection)
+        port = server.server_port
+        server.RequestHandlerClass = web.handler(self.root, web.verify(self.root), overrides, port)
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port)
+            conn.request("GET", "/local-relay.json")
+            response = conn.getresponse()
+            self.assertEqual(json.loads(response.read()), {"relays": overrides})
+            self.assertEqual(response.getheader("Content-Security-Policy"), csp.policy(overrides))
+            conn.close()
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+
+    def test_cli_takes_several_relays(self):
+        script = str(Path(__file__).with_name("serve-web.py"))
+        copy = self.root / "serve-web.py"
+        copy.write_text(Path(script).read_text())
+        self.manifest["files"].append({"path": "serve-web.py", "bytes": copy.stat().st_size, "sha256": web.sha(copy)})
+        self.save()
+        two = ["--relay", RELAY, "--relay", RELAY.replace("8303", "8304")]
+        result = subprocess.run([sys.executable, "-B", str(copy), *two, "--verify-only"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = subprocess.run([sys.executable, "-B", str(copy), "--relay", RELAY, "--relay", RELAY,
+                                 "--port", "1"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("given twice", result.stderr)
 
 
 class ReleaseTest(unittest.TestCase):

@@ -164,6 +164,7 @@ pub fn transition_frontier_effects<S: crate::Service>(
                     }
                 }
                 TransitionFrontierSyncAction::LedgerRootSuccess => {}
+                TransitionFrontierSyncAction::LedgerRootRetarget => {}
                 TransitionFrontierSyncAction::BlocksPending => {
                     if let Some(stats) = store.service.stats() {
                         if let TransitionFrontierSyncState::BlocksPending { chain, .. } =

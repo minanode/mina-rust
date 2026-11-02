@@ -99,6 +99,7 @@ pub(crate) fn fresh_state() -> State {
             limits: P2pLimits::default(),
             peer_discovery: false,
             seed_only: false,
+            sharing: Default::default(),
             meshsub: P2pMeshsubConfig::default(),
             catchup_rpc: Default::default(),
         },

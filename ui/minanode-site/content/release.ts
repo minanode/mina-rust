@@ -1,7 +1,7 @@
 import { siteOrigin } from "@/lib/origin";
 
 /** Packaging candidate; publication is a separate owner action. */
-export const candidateVersion = "0.20.1";
+export const candidateVersion = "0.21.0";
 
 /**
  * Published release only. Keep version, download URLs and Docker digest together.
@@ -17,6 +17,15 @@ export const release = {
   /** The Docker image index digest, as the release notes list it. */
   dockerDigest:
     "sha256:294443ace7947cba00050da2ddcb858071df9a9535d99846ce39ad13f7f12322",
+};
+
+/** The web node's release, 0.21.0: minaweb.org and the web archive. It is
+ * versioned apart from the native release above; the archive is a 0.21.0
+ * release asset. */
+export const webRelease = {
+  version: "0.21.0",
+  downloadUrl:
+    "https://github.com/minanode/mina-rust/releases/download/v0.21.0",
 };
 
 export function archiveName(arch: string) {

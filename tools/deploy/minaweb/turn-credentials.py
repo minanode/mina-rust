@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Loopback-only credential issuer behind nginx. Never log TURN credentials."""
+"""Loopback-only credential issuer behind nginx. Never log TURN credentials.
+
+Every request from one client address (an IPv4 address or an IPv6 /64) in one
+12-hour window gets the same username, so coturn's user-quota caps the TURN
+allocations of each address, however many times it asks. The username is
+EXPIRY:TOKEN, coturn's REST form: TOKEN is an HMAC of the address and expiry
+under the TURN secret, so it does not reveal the address. A credential expires
+12 to 24 hours after it is issued.
+"""
 import base64
 import hashlib
 import hmac
@@ -8,13 +16,27 @@ import ipaddress
 import json
 import os
 from pathlib import Path
-import secrets
 import time
 
+WINDOW = 12 * 3600
 
-def credentials(secret, address, now=None):
-    expiry = int(time.time() if now is None else now) + 86400
-    username = f"{expiry}:{secrets.token_hex(12)}"
+
+def client_key(client):
+    """The address a quota belongs to: IPv4 as is, IPv6 by its /64."""
+    ip = ipaddress.ip_address(client)
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    if ip.version == 6:
+        return str(ipaddress.IPv6Network((ip, 64), strict=False))
+    return str(ip)
+
+
+def credentials(secret, address, client, now=None):
+    now = int(time.time() if now is None else now)
+    expiry = (now // WINDOW + 2) * WINDOW
+    token = hmac.digest(secret, f"mina-turn-user\0{expiry}\0{client_key(client)}".encode(),
+                        hashlib.sha256)[:12].hex()
+    username = f"{expiry}:{token}"
     password = base64.b64encode(hmac.digest(secret, username.encode(), hashlib.sha1)).decode()
     return [{"urls": [f"stun:{address}:3478"]},
             {"urls": [f"turn:{address}:3478?transport=udp",
@@ -33,7 +55,17 @@ def main():
             if self.path != "/ice-servers.json":
                 self.send_error(404)
                 return
-            payload = json.dumps(credentials(secret, address)).encode()
+            # The service listens on loopback only. nginx replaces the header
+            # with the visitor's address; a local request without it counts
+            # as the loopback address.
+            forwarded = self.headers.get_all("X-Forwarded-For") or []
+            client = (forwarded[-1].split(",")[-1].strip() if forwarded
+                      else self.client_address[0])
+            try:
+                payload = json.dumps(credentials(secret, address, client)).encode()
+            except ValueError:
+                self.send_error(400)
+                return
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))

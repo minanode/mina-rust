@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { createNodeClient } from "@minanode/node-client";
@@ -93,6 +99,39 @@ test("after a restart, the last run's scheduled slot is labelled as such", async
   expect(within(list).queryByText("Scheduled")).toBeNull();
 });
 
+test("a won slot's stages start with when it was scheduled, as a clock time", async () => {
+  // Slot 62,736 was scheduled at 02:00:01 UTC, 24 min before it began.
+  renderPage();
+  await screen.findByRole("heading", { name: "Won slots" });
+  fireEvent.click(screen.getByRole("button", { name: /slot 62,736$/ }));
+  const stages = screen.getByRole("list", {
+    name: "Stages of slot 62,736, from the slot's start",
+  });
+  const first = within(stages).getAllByRole("listitem")[0];
+  expect(first.textContent).toBe("Scheduled02:00:01 UTC");
+  expect(within(stages).queryByText(/Won \(VRF\)|before/)).toBeNull();
+});
+
+test("a slot scheduled the day before shows the date too", async () => {
+  const canonical = recorded.attempts.find(
+    a => a.won_slot.global_slot === 62736,
+  )!;
+  // 2026-10-23 22:00:00 UTC.
+  const dayBefore = {
+    ...canonical,
+    times: { ...canonical.times, scheduled: 1_792_792_800_000_000_000 },
+  };
+  renderPage({ producer: { ...recorded, attempts: [dayBefore] } });
+  await screen.findByRole("heading", { name: "Won slots" });
+  fireEvent.click(screen.getByRole("button", { name: /slot 62,736$/ }));
+  const stages = screen.getByRole("list", {
+    name: "Stages of slot 62,736, from the slot's start",
+  });
+  expect(within(stages).getAllByRole("listitem")[0].textContent).toBe(
+    "Scheduled2026-10-23 22:00 UTC",
+  );
+});
+
 test("expected wins from a stake past 2^53 nanomina, in whole MINA", async () => {
   const total = 1_200_000_000_000_000_000;
   renderPage({
@@ -126,6 +165,12 @@ test("expected wins from a stake past 2^53 nanomina, in whole MINA", async () =>
   expect(
     within(table).getByText("within the range; too few wins expected to judge"),
   ).toBeTruthy();
+  // How the range is worked out is in the docs the header links, not on
+  // the page.
+  expect(
+    within(table).queryByRole("link", { name: /How the range is worked out/ }),
+  ).toBeNull();
+  expect(screen.queryByText(/binomial/)).toBeNull();
 });
 
 test("a worker paused for our block says so, with its page", async () => {

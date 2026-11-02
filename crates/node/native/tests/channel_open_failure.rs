@@ -74,6 +74,7 @@ fn opened_error_crosses_event_boundary_and_settles_once() {
             limits: Default::default(),
             peer_discovery: false,
             seed_only: false,
+            sharing: Default::default(),
             meshsub: Default::default(),
             catchup_rpc: Default::default(),
         },

@@ -9,6 +9,163 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Web node**: sharing with other browsers, off by default: a switch on the
+  Peers page, behind a warning that other visitors and modified pages get your
+  IP address and that it uses your upload. A sharing page still dials only its
+  relays, takes at most 4 browsers they introduce, serves at most 2 bootstraps
+  at once (counted from the requests it serves), checks only their public
+  addresses and mDNS names, and introduces no one. `--webrtc-sharing-relay`
+  introduces only pages that turned it on, within limits per peer key, per
+  address and in total; `start-relay.sh` keeps it off unless
+  `SHARING_RELAY=on` (PR #261).
+- **Web node**: import a Mina encrypted key file (the JSON OCaml and `mina
+  wallet generate` write) on the key screen: pick the file or paste it, and
+  type its password. The WASM decrypts it off the page's thread, behind the
+  same real-funds warning as a raw key. A held key can also be downloaded as a
+  key file for a native node (PR #263).
+
+- **Web node**: an optional coinbase receiver on the block producer's start
+  card, checked by the node's own key check and carried across the role
+  change's restart to `run()`, as the native `--coinbase-receiver`. The
+  producer pages keep labels, values and status; how stake counts and how the
+  expected wins are worked out move to the block producer docs. The slot
+  detail and slot rows get the styles the web node's stylesheet missed
+  (PR #259).
+- **Documentation**: the minanode.org docs navigation shows its pages in five
+  groups (Get started, Native node, Node roles, Web node, and Reference and
+  help), on desktop and mobile and on the docs home. Every docs page is
+  revised to the technical-writing and unslop guides, with no URL, section id
+  or fact changed. How the web node connects is now titled How the web node
+  works (PR #260).
+- **Documentation**: web node launch docs for 0.21.0. minanode.org publishes
+  Run the web node yourself, How the web node connects, Run a relay and the
+  Docker relay section. The connections page covers sync from the nearest
+  relay, the Not checked label, one role per tab and opt-in sharing. Run a
+  relay covers `--webrtc-sharing-relay` and keeps Caddy to a private relay.
+  The block producer page covers key-file import and export in the web node.
+  The home and Get started web node cards link to minaweb.org, the web archive
+  has its own 0.21.0 release metadata, and new 0.21.0 release notes list what
+  the release ships (PR #258).
+
+- **Web node**: a Peers page of its own: one row per relay in the build's
+  list, connected or not, with whether the link is direct or through TURN, its
+  round trip, data in and out, best tip and since when; sharing with other
+  browsers shown as off; and a hidden minanode.org docs page, "How the web
+  node connects", that it links to. The route, round trip and bytes come from
+  the page's own WebRTC connections, without addresses (PR #256).
+
+- **Web node**: serve the web node page under a strict Content-Security-Policy
+  made from each build's origins (no inline script, no eval, no framing), with
+  X-Frame-Options and a Permissions-Policy, from every host and the web
+  archive; the launch gate checks the exact policy and the browser checks fail
+  on any violation. wasm_thread is vendored without eval (PR #251).
+
+### Changed
+
+- **WebRTC**: remove `--webrtc-signaling-relay`, which introduced every peer to
+  every other. `--webrtc-sharing-relay` introduces only pages that turned
+  sharing on, within limits. Direct HTTP signalling is unchanged.
+  `start-relay.sh` accepts the 0.20.1 release or a build of main, and refuses
+  the old flag in `EXTRA_ARGS` (PR #268).
+- **Deployment**: relay2.minaweb.org runs in Hetzner hel1, installed from the
+  runbook on a fresh host with sharing on; its peer ID is in the runbook and
+  `release.env.example`. The runbook's `hcloud` command now creates relays
+  without IPv6, behind the shared firewall and with protection, and its TLS
+  step installs the nginx reload hook for renewals (PR #275).
+- **Dashboard**: the first stage of a won slot reads "Scheduled" with its
+  clock time, in place of "Won (VRF)" and an offset from the slot. It times
+  when the producer picked the slot as its next attempt, not the VRF
+  evaluation. The web node shows the same (PR #274).
+- **Web node**: docs links name the docs page ("Block producer docs", "Web
+  node docs"), one per page. The Blocks page, an unchecked block and the
+  one-role rule link their web node docs sections. "Start-up" on the Overview
+  links to that page, and the Pool card reads "Senders with several pending"
+  (PR #272).
+- **Web node**: hardening from the security reviews of sharing and key
+  handling. The page refuses a saved key that asks for more than 1,200,000
+  PBKDF2 iterations, checks that a key carried across a role change derives
+  its public key, and asks before deleting the saved copy of a held key. The
+  WASM wipes passwords, private keys and Argon2i key material when it drops
+  them. The Caddy relay include caps signalling bodies at 128 KiB and is for
+  private relays only, and MINAWEB.md says the relay trusts
+  `X-Forwarded-For` from any local process (PR #271).
+- **Relay kit**: relays run coturn 4.18.0 built by `build-coturn.sh` from a
+  pinned tarball instead of Ubuntu's 4.6.1 (CVE-2026-68554), in a systemd
+  sandbox, with a TURN probe that checks its guards. TURN usernames are one
+  per address, so `user-quota` caps each address. The journal is the only
+  system log (7 days), SSH is key-only, nginx sends HSTS, and new hosts
+  upgrade at first boot and reboot for security updates. `firewall.sh` needs
+  `SSH_FROM`, and MINAWEB.md has one procedure to turn sharing on (PR #266).
+- **Web node**: ledger queries, block requests and the staged ledger go to the
+  nearest relay first, ranked by how fast each answers; far relays get one
+  request at a time, and take over when the nearest one times out, stalls,
+  drops or sends an answer that fails its checks. A page with a 14 ms and a
+  190 ms relay synced in 58 to 69 s, instead of 62 to 181 s. libp2p peers keep
+  their order (PR #265).
+- **Deployment**: the minaweb kit takes a list of relays (two at launch, in
+  Hetzner fsn1 and hel1): the page dials every one and fetches expiring TURN
+  credentials from each relay's own service, renewing each list on its own;
+  the Content-Security-Policy, the archive's `--relay`, the launch check (per
+  relay, with a `--relay-only` mode) and the runbook (scriptable per-host
+  steps, nginx only) follow. One relay still works as before (PR #255).
+- **Web node**: open minaweb.org on a start screen (start the node in this tab,
+  or download and run it yourself) instead of downloading and starting the
+  node at once; before Start the page loads only its own files. A reload the
+  page makes for a role change, the store's reset or a retry starts the node
+  straight away; the browser checks assert the rule (PR #253).
+- **Web node**: keep the tab's key across role restarts with no passphrase,
+  carried under a one-time non-extractable WebCrypto key in IndexedDB and
+  consumed at the next load; a key saved in the browser but locked asks once
+  for its own passphrase, and the passphrase screens remain only as a fallback
+  (PR #252).
+
+### Fixed
+
+- **Web node**: a second tab of the same browser, which can't open the
+  frontier store the first tab holds, now says so: one caution banner, and the
+  Overview and Start-up show the store as not available in this tab, with no
+  reset until the node says the store is open. The node's `/status` gains a
+  `frontier_store` field with the store's availability for this. The page
+  gives the WASM's size one way (39.2 MB of WebAssembly, with the measured
+  compressed size on Start-up), shows the release version on the start
+  screen, and opens the run-it-yourself docs in a new tab. Store and key
+  explanations move to the How the web node works docs (PR #290).
+- **Web node**: the SNARK worker card always has a fee-recipient field. It
+  starts with the key held or saved in the tab and takes any other public key.
+  A recipient with an account on chain can ask any fee, so a fresh key no
+  longer blocks the worker at 0.004 MINA. Under the 1 MINA account creation
+  fee, a recipient with no account keeps Start disabled, with one line and a
+  link to the SNARK worker docs, which now cover the fee recipient (PR #286).
+- **Documentation**: the README and Docker guides name the published 0.20.1
+  release. The minaweb runbook records the Cloudflare token scope, the pages.dev
+  Bulk Redirect and its rule, the edge Cache Rule and the rule that stops the
+  RUM beacon. The 0.21.0 notes add the TURN port limit and the funded-payment
+  result (PR #287).
+- **WebRTC**: pace SCTP DATA bursts while preserving permitted cwnd overbooking,
+  prevent repeated fast retransmits of the same TSN, cancel acknowledged queued
+  resends, and honor tail-loss probe deadlines. Add recovery and browser
+  receive-drop diagnostics
+  (PR #264).
+
+- **Sync**: a bootstrap whose root moves one block while a peer is still sending
+  the root's staged ledger parts keeps that root, if the snarked ledger is the
+  same, instead of fetching the 35 to 40 MiB of parts again for each block. As
+  in OCaml's bootstrap, the blocks after it are applied once the staged ledger
+  is rebuilt. If the request fails, the sync targets the current root
+  (PR #269).
+- **Web node**: a web node far from its relay (150 to 250 ms) bootstraps. The
+  relay's SCTP retransmission timer no longer fires on a browser's delayed SACK
+  (RTO floor 1 s, RFC 9260) and its fast-recovery threshold follows the send
+  window; the web node pipelines ledger and block requests to a WebRTC peer,
+  five at once; and a WebRTC request times out on silence, not slowness, so a
+  slow relay is not dropped mid-download. At 160 ms a bootstrap that had not
+  finished in 20 minutes takes 4 to 8. WebRTC disconnection reasons are logged
+  at info (PR #257).
+
+## [0.20.1] - 2026-11-02
+
+### Added
+
 - **GraphQL**: add OCaml 4.0.4 pool, bootstrap and scan-state status queries,
   with source-derived schema tests and private-only access. The versioned
   precomputed archive mutation reports the upstream unconfigured-archive error
@@ -164,7 +321,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   worker registrations and every fetch header form; answer role chain reads
   before the first tip
   (PR #215).
-
 
 - **Block producer**: handle terminal-epoch startup and finish VRF evaluation
   without overflow at the maximum protocol slot. Keep early next-epoch
@@ -447,7 +603,6 @@ public PRs. Upstream PR links elsewhere are unchanged.
 - **CLI** Removed `-web-node-secrets` flag from `mina misc mina-key-pair`
   ([#1917](https://github.com/o1-labs/mina-rust/issues/1971))
 
-
 ## [0.18.1] - 2025-11-20
 
 ### Added
@@ -640,7 +795,6 @@ public PRs. Upstream PR links elsewhere are unchanged.
 - Update the CI and code to compare with the latest release 3.2.0-beta2-939b08d
   ([#1285](https://github.com/o1-labs/openmina/pull/1285))
 
-
 ### Added
 
 - **Documentation**: Add instructions to update the OCaml node dependencies.
@@ -744,7 +898,6 @@ public PRs. Upstream PR links elsewhere are unchanged.
   together with **documentation**: instructions for developers,
   and test the installation commands in CI.
 
-
 ## [0.16.0] - 2025-04-04
 
 ### Added
@@ -773,7 +926,6 @@ public PRs. Upstream PR links elsewhere are unchanged.
   - `pooledUserCommands` query.
   - `pooledZkappCommands` query.
   - Various other partially implemented queries expanded to ensure compatibility with the OCaml node.
-
 
 ### Changed
 

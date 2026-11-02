@@ -106,6 +106,17 @@ impl TransitionFrontierSyncLedgerStagedState {
         !matches!(self, Self::PartsFetchPending { .. })
     }
 
+    /// Whether a peer still has a request for the parts that may bring them:
+    /// neither failed nor stale. Only one is sent at a time
+    /// (`PartsPeerFetchInit`).
+    pub fn is_parts_request_live(&self, now: Timestamp) -> bool {
+        self.fetch_attempts().is_some_and(|attempts| {
+            attempts
+                .values()
+                .any(|attempt| !attempt.is_failed_or_stale(now))
+        })
+    }
+
     pub fn target_with_parts(
         &self,
     ) -> Option<(

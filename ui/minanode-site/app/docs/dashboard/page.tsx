@@ -25,17 +25,17 @@ const pages = [
   {
     label: "Overview",
     value:
-      "Sync state, best tip, peers, the saved-state restore and the node's roles",
+      "Sync state, best tip, peers, the saved-state restore, and the node's roles",
   },
   {
     label: "SNARK worker",
     value:
-      "The worker's state, its start, stop and fee, and the work blocks bought",
+      "The worker's state, its start, stop, and fee, and the work that blocks bought",
   },
   {
     label: "Block producer",
     value:
-      "The producer key, won slots ahead, what became of each won slot and its stages, and the totals",
+      "The producer key, the won slots ahead, what became of each won slot and its stages, and the totals",
   },
   {
     label: "Blocks",
@@ -58,7 +58,7 @@ const pages = [
   { label: "GraphQL", value: "The GraphQL address, with an example to copy" },
   {
     label: "Report a problem",
-    value: "A bug report to copy, download or open as a GitHub issue",
+    value: "A bug report to copy, download, or open as a GitHub issue",
   },
 ];
 
@@ -69,8 +69,8 @@ export default function DashboardPage() {
       title="The dashboard"
       lead={
         <>
-          The node serves its own dashboard on its HTTP port. On the machine it
-          runs on, open <C>http://127.0.0.1:3000</C>.
+          The node serves its own dashboard on its HTTP port. On the machine
+          that runs the node, open <C>http://127.0.0.1:3000</C>.
         </>
       }
     >
@@ -84,21 +84,21 @@ export default function DashboardPage() {
         <Prose>
           <p>
             Use <C>127.0.0.1</C> rather than <C>localhost</C>. The node listens
-            on IPv4 only, and a browser may try <C>localhost</C> as IPv6{" "}
-            <C>::1</C> first. Another program on port 3000 there then answers in
-            its place, with no error from either.
+            on IPv4 only, and a browser can try <C>localhost</C> as IPv6{" "}
+            <C>::1</C> first. If another program listens on port 3000 there, it
+            answers in the node&apos;s place, and neither shows an error.
           </p>
           <p>
             The pages read only this node, and nothing loads from elsewhere.{" "}
-            <C>--no-dashboard</C> turns the dashboard off; the API stays on.
+            <C>--no-dashboard</C> turns the dashboard off. The API stays on.
           </p>
           <p>
             While the worker is off, the SNARK worker page&apos;s fee field
-            starts at the lowest fee on offer in the pool, or 0.1 MINA if there
-            is none. A key with no account on chain needs a fee of at least 1
-            MINA (
-            <DocLink href="/docs/snark-worker/#fee-rule">the rule</DocLink>), so
-            raise it for a new key.
+            starts at the lowest fee on offer in the pool, or at 0.1 MINA if
+            there is none. A key with no account on chain needs a fee of at
+            least 1 MINA, so raise the fee for a new key.{" "}
+            <DocLink href="/docs/snark-worker/#fee-rule">The fee rule</DocLink>{" "}
+            explains why.
           </p>
         </Prose>
       </DocSection>
@@ -135,37 +135,38 @@ export default function DashboardPage() {
         />
       </DocSection>
 
-      <DocSection id="on-a-server" title="Viewing it on a server">
+      <DocSection id="on-a-server" title="Open it on a server">
         <Prose>
           <p>
             Don&apos;t open the node&apos;s HTTP port to the internet. Reach the
-            dashboard through an SSH tunnel instead: on your own computer, run
+            dashboard through an SSH tunnel instead. On your own computer, run
+            this command:
           </p>
         </Prose>
         <CodeBlock code={sshTunnel} label="SSH tunnel command" />
         <Prose>
           <p>
-            and open <C>http://127.0.0.1:3000</C>. The tunnel stays up until you
-            press Ctrl-C. Worker control works through it, because your browser
-            sees the dashboard at a loopback address.
+            Then open <C>http://127.0.0.1:3000</C>. The tunnel stays up until
+            you press Ctrl-C. Worker control works through the tunnel, because
+            your browser sees the dashboard at a loopback address.
           </p>
           <p>
-            If port 3000 is taken on your computer, forward another local port,
-            as in{" "}
-            <C>{sshTunnel.replace("-L 3000", "-L 127.0.0.1:3010")}</C>
-            , and open <C>http://127.0.0.1:3010</C>. When the local port is
-            taken, <C>ssh</C> prints a bind error and exits, because of{" "}
-            <C>ExitOnForwardFailure=yes</C>.
+            If port 3000 is taken on your computer, <C>ssh</C> prints a bind
+            error and exits, because of <C>ExitOnForwardFailure=yes</C>. Forward
+            another local port instead, as in{" "}
+            <C>{sshTunnel.replace("-L 3000", "-L 127.0.0.1:3010")}</C>, and open{" "}
+            <C>http://127.0.0.1:3010</C>.
           </p>
           <p>{dashboard.tunnelNote}</p>
+          <h3>Over a private network</h3>
           <p>{dashboard.remoteNote}</p>
           <p>
-            For example, use <C>--http-addr 192.0.2.103</C> and open the
-            dashboard at <C>http://192.0.2.103:3000</C>.
+            For example, start the node with <C>--http-addr 192.0.2.103</C> and
+            open the dashboard at <C>http://192.0.2.103:3000</C>.
           </p>
           <p>
-            To open it at a hostname instead of an IP address, start the node
-            with <C>--http-cors-origin http://NAME:3000</C>.
+            To open the dashboard at a hostname instead of an IP address, start
+            the node with <C>--http-cors-origin http://NAME:3000</C>.
           </p>
           <p>{dashboard.tailscaleNote}</p>
         </Prose>
@@ -177,9 +178,9 @@ export default function DashboardPage() {
             together with <C>--public-graphql</C>.
           </p>
           <p>
-            A change is taken only from pages of this machine, from the
-            node&apos;s own dashboard opened at an IP address, and from origins
-            you list with <C>--worker-control-origin</C>.
+            The node takes a change only from three kinds of page: pages of this
+            machine, its own dashboard opened at an IP address, and origins you
+            list with <C>--worker-control-origin</C>.
           </p>
         </Caution>
       </DocSection>

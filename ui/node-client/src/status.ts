@@ -60,6 +60,27 @@ export interface NodeStatus {
   /** The next won slot, once the VRF evaluator has found one. */
   nextWonSlot: ConsensusSlot | null;
   libp2pPort: number | null;
+  /** The frontier store; null when it is off, or from nodes before 0.21.0. */
+  frontierStore?: FrontierStore | null;
+}
+
+export interface FrontierStore {
+  /** The store is open in this run. */
+  open: boolean;
+  /** Why the store is off for this run; null while it opens or is open. */
+  unavailable: string | null;
+  /** Another process, or another tab of this browser, holds the store. */
+  locked: boolean;
+}
+
+function frontierStore(value: unknown): FrontierStore | null {
+  const f = obj(value);
+  if (!f) return null;
+  return {
+    open: bool(f.open) ?? false,
+    unavailable: str(f.unavailable),
+    locked: bool(f.locked) ?? false,
+  };
 }
 
 function tip(value: unknown): TipSummary | null {
@@ -145,6 +166,7 @@ export function parseStatus(raw: unknown): NodeStatus {
     coinbaseReceiver: str(s.coinbase_receiver),
     nextWonSlot: slot(obj(s.next_block_production)?.next_won_slot),
     libp2pPort: num(obj(s.network_info)?.libp2p_port),
+    frontierStore: frontierStore(s.frontier_store),
   };
 }
 

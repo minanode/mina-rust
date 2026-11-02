@@ -10,10 +10,10 @@ description: Pinned source build, local dashboard and status checks for Mesa.
 [Build from source](https://minanode.org/docs/build-from-source/) guide. This
 page remains a record of the older mainnet rehearsal workflow.
 
-For the planned 0.20.0 Linux devnet archive, see the
-[release guide](release-020.md). This page builds the source and focuses on a
-mainnet follower rehearsal; its 32 GB RAM and 60 GB disk budget is for that
-source workflow, not the release binary's runtime minimum.
+For the published Linux archives, see
+[install](https://minanode.org/docs/install/). This page builds the source and
+focuses on a mainnet follower rehearsal; its 32 GB RAM and 60 GB disk budget is
+for that source workflow, not the release binary's runtime minimum.
 
 Do not use the older Berkeley Docker images or upstream release binaries for
 this Mesa recipe. This community fork is experimental; syncing is not a claim of

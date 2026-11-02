@@ -49,6 +49,14 @@ export function Roles() {
                     Block {role.link.height}
                   </ExternalLink>
                 ) : null}
+                {role.site ? (
+                  <ExternalLink
+                    href={role.site.href}
+                    className="mt-auto font-mono text-xs"
+                  >
+                    {role.site.label}
+                  </ExternalLink>
+                ) : null}
               </li>
             );
           })}

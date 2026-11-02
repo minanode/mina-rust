@@ -103,6 +103,13 @@ pub struct P2pState {
     #[serde(default)]
     pub dial_backoff: P2pDialBackoff,
 
+    /// A sharing relay's introductions (MINAWEB-OPT-IN-SHARING).
+    #[serde(default)]
+    pub sharing_relay: crate::sharing::P2pSharingRelayState,
+    /// When we last served each WebRTC peer a bootstrap request, sharing.
+    #[serde(default)]
+    pub sharing_served: BTreeMap<PeerId, redux::Timestamp>,
+
     pub callbacks: P2pCallbacks,
 }
 
@@ -168,6 +175,9 @@ impl P2pState {
             completed_snarks_requests: Default::default(),
 
             dial_backoff: Default::default(),
+
+            sharing_relay: Default::default(),
+            sharing_served: Default::default(),
 
             callbacks,
         }
@@ -734,6 +744,37 @@ impl P2pState {
         self.peers.get(peer_id).is_some_and(|p| p.is_libp2p())
     }
 
+    /// Ranks `peers`, each an item standing for a peer, with the room it
+    /// has, for the sync's bulk requests, against every ready WebRTC peer
+    /// ([`crate::channels::rpc::plan_sync_peers`]).
+    pub fn plan_sync_peers<T>(
+        &self,
+        peers: impl IntoIterator<Item = (PeerId, T, usize)>,
+        now: Timestamp,
+    ) -> crate::channels::rpc::P2pSyncPeerPlan<T> {
+        use crate::channels::rpc::{P2pSyncPeerCandidate, P2pSyncPeerScore};
+        let mut ids = std::collections::BTreeSet::new();
+        let candidates = peers
+            .into_iter()
+            .map(|(peer_id, item, room)| {
+                ids.insert(peer_id);
+                let channels = self.get_ready_peer(&peer_id).map(|p| &p.channels);
+                P2pSyncPeerCandidate {
+                    item,
+                    score: channels.map_or(P2pSyncPeerScore::Unranked, |c| c.sync_peer_score(now)),
+                    room,
+                    unanswered: channels.map_or(0, |c| c.unanswered_rpc_count()),
+                }
+            })
+            .collect();
+        let others = self
+            .ready_peers_iter()
+            .filter(|(id, p)| !ids.contains(*id) && p.channels.rpc_pipeline.enabled)
+            .map(|(_, p)| p.channels.sync_peer_score(now))
+            .collect::<Vec<_>>();
+        crate::channels::rpc::plan_sync_peers(candidates, &others)
+    }
+
     /// The IP of our libp2p connection to `peer_id`, if there is one.
     pub fn libp2p_peer_ip(&self, peer_id: &PeerId) -> Option<std::net::IpAddr> {
         self.network
@@ -769,16 +810,45 @@ impl P2pState {
                 .allows(peer_id, self.libp2p_peer_ip(peer_id), now)
     }
 
+    /// When a WebRTC peer last sent us anything, which our requests to it
+    /// time out from; `None` for a libp2p peer, whose requests keep the plain
+    /// timeout ([`crate::channels::request_timed_out`]).
+    pub fn webrtc_last_received(&self, peer_id: &PeerId) -> Option<redux::Timestamp> {
+        let peer = self.peers.get(peer_id).filter(|p| !p.is_libp2p())?;
+        Some(peer.status.as_ready()?.channels.last_received)
+    }
+
     pub fn is_peer_rpc_timed_out(
         &self,
         peer_id: &PeerId,
         rpc_id: P2pRpcId,
         now: redux::Timestamp,
     ) -> bool {
+        let last_received = self.webrtc_last_received(peer_id);
         self.get_ready_peer(peer_id).is_some_and(|p| {
             p.channels
                 .rpc
-                .is_timed_out(rpc_id, now, &self.config.timeouts)
+                .is_timed_out(rpc_id, now, &self.config.timeouts, last_received)
+                || p.channels.rpc_pipeline.get(rpc_id).is_some_and(|r| {
+                    r.request
+                        .kind()
+                        .timeout(&self.config.timeouts)
+                        .is_some_and(|timeout| match r.timed_out {
+                            None => crate::channels::request_timed_out(
+                                r.sent,
+                                timeout,
+                                now,
+                                last_received,
+                            ),
+                            Some(timed_out_at) => crate::channels::timed_out_request_expired(
+                                r.sent,
+                                timed_out_at,
+                                timeout,
+                                now,
+                                last_received,
+                            ),
+                        })
+                })
         })
     }
 
@@ -788,10 +858,11 @@ impl P2pState {
         rpc_id: P2pStreamingRpcId,
         now: redux::Timestamp,
     ) -> bool {
+        let last_received = self.webrtc_last_received(peer_id);
         self.get_ready_peer(peer_id).is_some_and(|p| {
             p.channels
                 .streaming_rpc
-                .is_timed_out(rpc_id, now, &self.config.timeouts)
+                .is_timed_out(rpc_id, now, &self.config.timeouts, last_received)
         })
     }
 
@@ -799,17 +870,21 @@ impl P2pState {
         let config = &self.config.timeouts;
         self.ready_peers_iter()
             .flat_map(|(peer_id, s)| {
-                let pending_rpc = s.channels.rpc.unanswered_local_rpc().map(|(id, _)| id);
+                let last_received = self.webrtc_last_received(peer_id);
                 let pending_streaming_rpc = s.channels.streaming_rpc.pending_local_rpc_id();
-                IntoIterator::into_iter([
-                    pending_rpc
-                        .filter(|id| s.channels.rpc.is_timed_out(*id, now, config))
-                        .map(|id| (*peer_id, id, false)),
-                    pending_streaming_rpc
-                        .filter(|id| s.channels.streaming_rpc.is_timed_out(*id, now, config))
-                        .map(|id| (*peer_id, id, true)),
-                ])
-                .flatten()
+                let rpcs = s
+                    .channels
+                    .unanswered_rpc_ids()
+                    .filter(|id| self.is_peer_rpc_timed_out(peer_id, *id, now))
+                    .map(|id| (*peer_id, id, false));
+                let streaming = pending_streaming_rpc
+                    .filter(|id| {
+                        s.channels
+                            .streaming_rpc
+                            .is_timed_out(*id, now, config, last_received)
+                    })
+                    .map(|id| (*peer_id, id, true));
+                rpcs.chain(streaming).collect::<Vec<_>>()
             })
             .collect()
     }
@@ -821,11 +896,12 @@ impl P2pState {
         self.ready_peers_iter()
             .filter_map(|(peer_id, s)| {
                 let rpc_id = s.channels.streaming_rpc.pending_local_rpc_id()?;
-                if !s
-                    .channels
-                    .streaming_rpc
-                    .is_timed_out(rpc_id, now, &self.config.timeouts)
-                {
+                if !s.channels.streaming_rpc.is_timed_out(
+                    rpc_id,
+                    now,
+                    &self.config.timeouts,
+                    self.webrtc_last_received(peer_id),
+                ) {
                     return None;
                 }
 
@@ -1272,6 +1348,7 @@ mod dial_backoff_tests {
             limits: Default::default(),
             peer_discovery: false,
             seed_only: false,
+            sharing: Default::default(),
             meshsub: P2pMeshsubConfig::default(),
             catchup_rpc: Default::default(),
         };

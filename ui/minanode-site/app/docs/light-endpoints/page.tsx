@@ -9,7 +9,7 @@ import { lightEndpoints } from "@/content/docs";
 export const metadata: Metadata = {
   title: "Light client endpoints",
   description:
-    "Read the best tip and account Merkle paths from a minanode node, with their limits and errors, and verify them.",
+    "The light client endpoints of a minanode node: the best tip and account Merkle paths, their limits and errors, and how to verify them.",
   alternates: { canonical: "/docs/light-endpoints/" },
 };
 
@@ -60,11 +60,11 @@ export default function LightEndpointsPage() {
         <Prose>
           <p>
             The endpoints are on the node&apos;s HTTP port, with the dashboard
-            and API, and need no flag. They follow <C>--http-addr</C>, which is{" "}
-            <C>127.0.0.1</C> by default. Before you open the port to other
+            and the API, and need no flag. They follow <C>--http-addr</C>, which
+            is <C>127.0.0.1</C> by default. Before you open the port to other
             machines, read{" "}
             <DocLink href="/docs/dashboard/#on-a-server">
-              viewing it on a server
+              Open it on a server
             </DocLink>
             .
           </p>
@@ -74,8 +74,8 @@ export default function LightEndpointsPage() {
             below.
           </p>
           <p>
-            The examples use <C>curl</C> and <C>jq</C>, and these two shell
-            variables: a devnet account and the node&apos;s address.
+            The examples use <C>curl</C> and <C>jq</C>. They also use two shell
+            variables, for a devnet account and the node&apos;s address:
           </p>
         </Prose>
         <CodeBlock code={setAccount} label="set the account and node" />
@@ -84,10 +84,11 @@ export default function LightEndpointsPage() {
       <DocSection id="best-tip" title="GET /light/best-tip">
         <Prose>
           <p>
-            The best tip as a light client verifies it: the tip&apos;s header
-            (its protocol state and proof), the root&apos;s protocol state, and
-            the state body hashes that link the root to the tip. It carries no
-            block bodies. The root is the oldest block the node keeps, 290
+            The best tip, in the form a light client verifies. The answer holds
+            three values: the tip&apos;s header, the root&apos;s protocol state,
+            and the state body hashes that link the root to the tip. The header
+            is the tip&apos;s protocol state and proof. The answer carries no
+            block bodies. The root is the oldest block that the node keeps, 290
             blocks behind the tip.
           </p>
           <p>
@@ -111,7 +112,7 @@ export default function LightEndpointsPage() {
             },
             {
               term: "genesis_state_hash",
-              text: "The genesis state hash the tip carries. Compare it with the one you pin.",
+              text: "The genesis state hash that the tip carries. Compare it with the one you pin.",
             },
             {
               term: "global_slot_since_genesis",
@@ -123,11 +124,11 @@ export default function LightEndpointsPage() {
             },
             {
               term: "header",
-              text: "Base64 of the tip header's binprot: protocol state, proof and protocol versions.",
+              text: "Base64 of the tip header's binprot, which holds the protocol state, the proof, and the protocol versions.",
             },
             {
               term: "root",
-              text: "The root's state_hash, height and protocol_state (base64 binprot).",
+              text: "The root's state_hash, height, and protocol_state. The protocol_state is base64 binprot.",
             },
             {
               term: "body_hashes, body_hash_count",
@@ -154,9 +155,9 @@ export default function LightEndpointsPage() {
         <Prose>
           <p>
             One account in a named ledger of a best-chain block, with its index,
-            leaf hash and Merkle path. The answer names the ledger hash the path
-            folds to, where that hash sits in the block&apos;s protocol state,
-            and the block.
+            leaf hash, and Merkle path. The answer names the ledger hash that
+            the path folds to, where that hash sits in the block&apos;s protocol
+            state, and the block.
           </p>
         </Prose>
         <Terms
@@ -198,7 +199,7 @@ export default function LightEndpointsPage() {
             },
             {
               term: "block",
-              text: "The state_hash, height and global_slot_since_genesis of the block whose ledger was read.",
+              text: "The state_hash, height, and global_slot_since_genesis of the block whose ledger the node read.",
             },
             {
               term: "public_key, token_id, index",
@@ -210,7 +211,7 @@ export default function LightEndpointsPage() {
             },
             {
               term: "merkle_path",
-              text: "35 elements, leaf first. left set means the node is a left child and left holds its sibling's hash; right means the reverse.",
+              text: "35 elements, leaf first. If left is set, the node is a left child, and left holds its sibling's hash. If right is set, the reverse holds.",
             },
             {
               term: "account",
@@ -218,7 +219,7 @@ export default function LightEndpointsPage() {
             },
             {
               term: "summary",
-              text: "Balance in nanomina, nonce, delegate and whether it has a zkApp: convenience copies.",
+              text: "Convenience copies of the balance in nanomina, the nonce, the delegate, and whether the account has a zkApp.",
             },
             {
               term: "trust",
@@ -253,7 +254,7 @@ export default function LightEndpointsPage() {
                   <C>
                     blockchain_state.staged_ledger_hash.non_snark.ledger_hash
                   </C>
-                  . The block producer commits to it, and the block proof does
+                  . The block producer commits to it, but the block proof does
                   not check it.
                 </>
               ),
@@ -262,8 +263,8 @@ export default function LightEndpointsPage() {
               term: "snarked",
               text: (
                 <>
-                  The root only. At the tip the answer is{" "}
-                  <C>ledger_unavailable</C> with a <C>hint</C>: ask again with{" "}
+                  The root only. At the tip, the answer is{" "}
+                  <C>ledger_unavailable</C> with a <C>hint</C> to ask again with{" "}
                   <C>block</C> set to <C>root.state_hash</C> from{" "}
                   <C>/light/best-tip</C>. The hash is at{" "}
                   <C>
@@ -308,8 +309,8 @@ export default function LightEndpointsPage() {
           </p>
           <p>
             Every new block moves the root. Take the root from a fresh{" "}
-            <C>/light/best-tip</C>: a root one block old may already answer{" "}
-            <C>block_not_in_best_chain</C>.
+            <C>/light/best-tip</C>, because a root one block old can already
+            answer <C>block_not_in_best_chain</C>.
           </p>
         </Prose>
       </DocSection>
@@ -326,19 +327,19 @@ export default function LightEndpointsPage() {
           items={[
             {
               term: "bad_request",
-              text: "400. A bad key, token, block hash, ledger or format, or no ledger. The request does not reach the node.",
+              text: "400. A bad key, token, block hash, ledger, or format, or no ledger. The request does not reach the node.",
             },
             {
               term: "not_synced",
-              text: "503. The node has no best tip, or is bootstrapping. Catch-up of new blocks does not count.",
+              text: "503. The node has no best tip, or is bootstrapping. Catchup of new blocks does not count as bootstrapping.",
             },
             {
               term: "block_not_in_best_chain",
-              text: "404. The block given is not in the best chain, for example because the root moved past it.",
+              text: "404. The block in the request is not in the best chain. For example, the root moved past it.",
             },
             {
               term: "account_not_found",
-              text: "404. No such account in that ledger. A Merkle path cannot prove absence, so this is the node's word only.",
+              text: "404. No such account in that ledger. A Merkle path cannot prove absence, so this answer rests on the node's word only.",
             },
             {
               term: "ledger_unavailable",
@@ -374,8 +375,8 @@ export default function LightEndpointsPage() {
         />
         <Prose>
           <p>
-            The best tip is encoded once per tip and root. Concurrent requests
-            wait for that encoding instead of starting their own.
+            The node encodes the best tip once for each tip and root. Concurrent
+            requests wait for that encoding instead of starting their own.
           </p>
         </Prose>
       </DocSection>
@@ -384,8 +385,8 @@ export default function LightEndpointsPage() {
         <Prose>
           <p>
             Two GraphQL fields give the same paths, in OCaml&apos;s names and
-            shapes, at <C>/graphql</C> on the HTTP port. Both are under the same
-            limits as <C>/light/*</C>. When those are full, they answer the
+            shapes, at <C>/graphql</C> on the HTTP port. Both share the limits
+            of <C>/light/*</C>. When the limits are full, they answer with the
             GraphQL error <C>too many light requests in flight</C>.
           </p>
           <ul>
@@ -393,19 +394,19 @@ export default function LightEndpointsPage() {
               <C>
                 account(publicKey, token) &#123; index leafHash merklePath
                 &#125;
-              </C>
-              : the path in the best tip&apos;s staged ledger. All three come
-              from one read of one ledger snapshot. They are null while the node
-              bootstraps.
+              </C>{" "}
+              gives the path in the best tip&apos;s staged ledger. All three
+              fields come from one read of one ledger snapshot. They are null
+              while the node bootstraps.
             </li>
             <li>
               <C>
                 encodedSnarkedLedgerAccountMembership(accountInfos, stateHash)
-              </C>
-              : each account as base64 binprot, with its path in the snarked
+              </C>{" "}
+              gives each account as base64 binprot, with its path in the snarked
               ledger of the best-chain block <C>stateHash</C>. Use the
-              root&apos;s state hash. OCaml has no cap on <C>accountInfos</C>;
-              this node takes at most 32.
+              root&apos;s state hash. OCaml has no cap on <C>accountInfos</C>,
+              but this node takes at most 32.
             </li>
           </ul>
         </Prose>
@@ -420,6 +421,7 @@ export default function LightEndpointsPage() {
         <Prose>
           <p>
             Every value comes from one node, so check it before you rely on it.
+            The checks run in this order:
           </p>
           <ol>
             <li>
@@ -447,28 +449,29 @@ export default function LightEndpointsPage() {
           </ol>
           <p>
             If any check fails, discard the answer. A node that lies cannot make
-            a path verify: it can only refuse, or answer for another block,
+            a path verify. It can only refuse, or answer for another block,
             which the last check catches.
           </p>
           <p>
-            Two limits remain. <C>account_not_found</C> is not provable. One
-            node&apos;s best tip is not proof of the best chain: ask several
-            nodes, compare their headers with Mina&apos;s fork choice rule, and
-            check the tip&apos;s slot against the clock.
+            Two limits remain. First, <C>account_not_found</C> is not provable.
+            Second, one node&apos;s best tip is not proof of the best chain. To
+            check it, ask several nodes, compare their headers with Mina&apos;s
+            fork choice rule, and check the tip&apos;s slot against the clock.
           </p>
           <p>
             The repository&apos;s <C>tools/light-probe</C> runs these checks
-            against a node. Run it in a checkout of the repository: it reads
-            devnet&apos;s verification key from the checkout&apos;s{" "}
+            against a node. Run it in a checkout of the repository, because it
+            reads devnet&apos;s verification key from the checkout&apos;s{" "}
             <C>data/vk/</C>.
           </p>
         </Prose>
         <CodeBlock code={probe} label="verify a node's answers" />
         <Prose>
           <p>
-            It verifies the tip, the body hashes, the account in each ledger
-            (the snarked one at the root), and the GraphQL staged path. It
-            reports a ledger the node does not hold as not verified.
+            The probe verifies the tip, the body hashes, the account in each
+            ledger, and the GraphQL staged path. It reads the snarked ledger at
+            the root. It reports a ledger that the node does not hold as not
+            verified.
           </p>
         </Prose>
       </DocSection>

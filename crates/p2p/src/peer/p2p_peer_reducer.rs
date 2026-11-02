@@ -118,6 +118,12 @@ impl P2pPeerState {
                 }
                 Ok(())
             }
+            P2pPeerAction::Receiving { peer_id } => {
+                if let Some(peer) = p2p_state.get_ready_peer_mut(&peer_id) {
+                    peer.channels.last_received = meta.time();
+                }
+                Ok(())
+            }
             P2pPeerAction::Remove { peer_id } => {
                 if p2p_state.peers.remove(&peer_id).is_none() {
                     bug_condition!(

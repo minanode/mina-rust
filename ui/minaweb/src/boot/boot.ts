@@ -16,8 +16,14 @@ import {
   type WebNodeRpc,
 } from "@minanode/node-client";
 
+import { reloadAndStart } from "./autostart";
 import type { BuildConfig } from "./build-config";
-import { BootError, downloadWasm, type DownloadProgress } from "./download";
+import {
+  BootError,
+  compressedSize,
+  downloadWasm,
+  type DownloadProgress,
+} from "./download";
 import {
   checkPage,
   formatBytes,
@@ -25,7 +31,12 @@ import {
   pageFacts,
   type BootFailure,
 } from "./failures";
-import { loadIceServers, renewIceServers } from "./ice";
+import {
+  admitIceLists,
+  joinIceServers,
+  loadEachIceServers,
+  renewEachIceServers,
+} from "./ice";
 import {
   blockStrip,
   ledgerStepSentence,
@@ -33,6 +44,7 @@ import {
   stripSentence,
   type LedgerMemory,
 } from "./progress";
+import { takeHandoff } from "../roles/handoff";
 import {
   decryptKey,
   HANDOFF_KEY,
@@ -40,8 +52,10 @@ import {
   readStored,
   removeStored,
   type HeldKey,
+  type KeyFileGlue,
   type KeyGlue,
 } from "../roles/keys";
+import { readSharing } from "./sharing";
 import {
   readRole,
   rolesAllowed,
@@ -54,7 +68,7 @@ import {
 } from "../roles/role";
 
 /** The WASM glue that wasm-bindgen writes (mina_node_web.js). */
-export interface WebNodeGlue extends Partial<KeyGlue> {
+export interface WebNodeGlue extends Partial<KeyGlue>, Partial<KeyFileGlue> {
   default(init: {
     module_or_path: BufferSource;
     memory: WebAssembly.Memory;
@@ -65,7 +79,7 @@ export interface WebNodeGlue extends Partial<KeyGlue> {
     seeds: string[],
     genesisUrl: string | null,
     network: string,
-    coinbaseReceiver: null,
+    coinbaseReceiver: string | null,
     snarker: string | null,
     snarkerFee: string | null,
     options: Record<string, unknown>,
@@ -73,15 +87,12 @@ export interface WebNodeGlue extends Partial<KeyGlue> {
   build_env(): unknown;
   memory_stats?(): unknown;
   update_ice_servers?(servers: import("./ice").IceServer[]): void;
+  /** Each open WebRTC connection's peer, route, round trip and bytes. */
+  webrtc_peer_stats?(): Promise<unknown>;
 }
 
 export type StepId =
-  | "check"
-  | "download"
-  | "start"
-  | "connect"
-  | "ledgers"
-  | "blocks";
+  "check" | "download" | "start" | "connect" | "ledgers" | "blocks";
 
 export type StepState = "done" | "current" | "stopped" | "skipped" | "pending";
 
@@ -109,6 +120,8 @@ export interface BootSnapshot {
   frontierStore: boolean;
   /** This run started by deleting the store. */
   frontierStoreReset: boolean;
+  /** This run shares with other browsers (boot/sharing.ts). */
+  sharing: boolean;
   /** The sync's progress while it runs, from `/stats/sync/progress`. */
   progress: SyncProgress | null;
   /** Each ledger's last counts while it synced. */
@@ -229,7 +242,7 @@ export function resetFrontierStore() {
     // Without sessionStorage there is nothing to carry the request.
     return false;
   }
-  window.location.reload();
+  reloadAndStart();
   return true;
 }
 
@@ -276,6 +289,8 @@ export class Boot {
   private started = false;
   private keyWaiter: ((key: HeldKey | null) => void) | null = null;
   private glueRef: WebNodeGlue | null = null;
+  /** The key a role change carried, taken at the page's load. */
+  private carried: Promise<HeldKey | null> | null = null;
 
   constructor(private readonly config: BuildConfig) {
     this.snapshot = {
@@ -295,6 +310,7 @@ export class Boot {
       synced: false,
       frontierStore: config.frontierStore,
       frontierStoreReset: false,
+      sharing: readSharing(),
       progress: null,
       ledgerMemory: {},
       startPart: 0,
@@ -330,6 +346,7 @@ export class Boot {
       synced: this.snapshot.synced,
       frontierStore: this.snapshot.frontierStore,
       frontierStoreReset: this.snapshot.frontierStoreReset,
+      sharing: this.snapshot.sharing,
       progress: this.snapshot.progress,
       startPart: this.snapshot.startPart,
       connect: this.snapshot.connect,
@@ -369,6 +386,12 @@ export class Boot {
     console.error(`minaweb: ${failure.title}: ${failure.detail}`);
   }
 
+  /** The carried key the page took at its load (autostart.ts loadGate),
+   * for the boot to hold instead of taking it again. */
+  useCarried(carried: Promise<HeldKey | null> | null) {
+    this.carried = carried;
+  }
+
   /** Runs the boot, once. */
   start() {
     if (this.started) return;
@@ -390,6 +413,11 @@ export class Boot {
 
   private async run() {
     const { config } = this;
+    // The key a role change carried across the reload, before anything
+    // else: both its copies are deleted here, whether it comes back or not.
+    // The page's load took it already if it saw one.
+    const carried = await (this.carried ?? takeHandoff()).catch(() => null);
+    if (carried) keyStore.hold(carried);
 
     this.step("check", { state: "current" });
     const problem = checkPage(pageFacts());
@@ -412,10 +440,20 @@ export class Boot {
             : formatBytes(download.received),
       });
     });
-    this.step("download", {
-      state: "done",
-      detail: `${formatBytes(bytes.byteLength)} in ${seconds(Date.now() - began)}, SHA-256 checked.`,
-    });
+    const took = seconds(Date.now() - began);
+    const downloaded = (compressed: number | null) =>
+      `${formatBytes(bytes.byteLength)}${compressed !== null ? ` (${formatBytes(compressed)} compressed)` : ""} in ${took}, SHA-256 checked.`;
+    this.step("download", { state: "done", detail: downloaded(null) });
+    // The browser may add the download's resource timing a moment after
+    // the body is read: look for it now and twice more.
+    for (const ms of [0, 500, 2_000]) {
+      setTimeout(() => {
+        const compressed = compressedSize(config.wasm.url, bytes.byteLength);
+        if (compressed !== null) {
+          this.step("download", { detail: downloaded(compressed) });
+        }
+      }, ms);
+    }
 
     this.set({ startPart: 0 });
     this.step("start", {
@@ -451,6 +489,12 @@ export class Boot {
         hint: "A current desktop browser with a few GB of free memory runs it.",
       });
     }
+    // The take checked the carried key's format only; the WASM can now
+    // check that it derives its public key.
+    const derive = glue.account_public_key;
+    if (carried && derive) {
+      keyStore.dropIfMismatched({ account_public_key: k => derive(k) });
+    }
 
     const roleArgs = await this.roleArguments();
 
@@ -459,12 +503,18 @@ export class Boot {
     const base = location.href;
     const genesisUrl = new URL(config.genesisUrl, base).href;
     await this.checkFile(genesisUrl, "genesis config");
-    const iceServers = await loadIceServers(config.iceServersUrl, base);
-    if (config.iceServersUrl && glue.update_ice_servers) {
-      const stopRenewal = renewIceServers(
-        config.iceServersUrl,
+    // A list from each relay's credential service, joined, each admitted only
+    // if it meets the node's renewal contract; none: the node's built-in STUN
+    // servers.
+    const iceLists = admitIceLists(
+      await loadEachIceServers(config.iceServersUrls, base),
+    );
+    const iceServers = iceLists.some(Boolean) ? joinIceServers(iceLists) : null;
+    if (config.iceServersUrls.length && glue.update_ice_servers) {
+      const stopRenewal = renewEachIceServers(
+        config.iceServersUrls,
         base,
-        iceServers,
+        iceLists,
         servers => glue.update_ice_servers!(servers),
       );
       window.addEventListener("pagehide", event => {
@@ -477,7 +527,8 @@ export class Boot {
     );
     const resetAsked = takeResetRequest();
     const frontierStoreReset = frontierStore && resetAsked;
-    this.set({ frontierStore, frontierStoreReset });
+    const sharing = readSharing();
+    this.set({ frontierStore, frontierStoreReset, sharing });
 
     this.set({ startPart: 2 });
     const role = this.snapshot.role;
@@ -498,10 +549,10 @@ export class Boot {
         config.relays,
         genesisUrl,
         config.network,
-        null,
+        roleArgs.coinbaseReceiver,
         roleArgs.snarker,
         roleArgs.snarkerFee,
-        runOptions(frontierStore, iceServers, frontierStoreReset),
+        runOptions(frontierStore, iceServers, frontierStoreReset, sharing),
       );
     } catch (error) {
       throw new BootError({
@@ -526,15 +577,18 @@ export class Boot {
   }
 
   /**
-   * `run`'s role arguments. A producer's key crosses the restart only
-   * encrypted, in this tab's sessionStorage: the boot waits here for its
-   * passphrase, then deletes the record. Without the record, or if the
-   * visitor declines, the node starts without a role, and the record stays
-   * for the shell to offer.
+   * `run`'s role arguments. A producer's key is the one the tab held
+   * before the restart (handoff.ts). Where the browser couldn't carry it
+   * that way, it crossed encrypted with a passphrase, in this tab's
+   * sessionStorage: the boot waits here for the passphrase, then deletes
+   * the record. Without either, or if the visitor declines, the node starts
+   * without a role, and the record stays for the shell to offer.
    */
   private async roleArguments(): Promise<RunRoleArgs> {
     const role = this.snapshot.role;
     if (role.kind !== "producer") return runRoleArgs(role, null);
+    const held = keyStore.getSnapshot().key;
+    if (held?.publicKey === role.publicKey) return runRoleArgs(role, held);
     const record = readStored("session", HANDOFF_KEY);
     let key: HeldKey | null = null;
     if (record && record.publicKey === role.publicKey) {

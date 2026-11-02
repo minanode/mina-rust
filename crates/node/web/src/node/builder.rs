@@ -6,7 +6,7 @@ use mina_node::{
     core::{consensus::ConsensusConstants, constants::constraint_constants},
     p2p::{
         channels::ChannelId, connection::outgoing::P2pConnectionOutgoingInitOpts,
-        identity::SecretKey as P2pSecretKey, P2pLimits, P2pMeshsubConfig, P2pTimeouts,
+        identity::SecretKey as P2pSecretKey, P2pLimits, P2pMeshsubConfig, P2pSharing, P2pTimeouts,
     },
     snark::{get_srs, BlockVerifier, TransactionVerifier, VerifierSRS},
     transition_frontier::{genesis::GenesisConfig, persist::TransitionFrontierPersistConfig},
@@ -26,6 +26,7 @@ pub struct NodeBuilder {
     p2p_sec_key: Option<P2pSecretKey>,
     p2p_is_seed: bool,
     p2p_no_discovery: bool,
+    p2p_sharing: bool,
     p2p_is_started: bool,
     initial_peers: Vec<P2pConnectionOutgoingInitOpts>,
     block_producer: Option<BlockProducerConfig>,
@@ -47,6 +48,7 @@ impl NodeBuilder {
             p2p_sec_key: None,
             p2p_is_seed: false,
             p2p_no_discovery: true,
+            p2p_sharing: false,
             p2p_is_started: false,
             initial_peers: Vec::new(),
             block_producer: None,
@@ -87,6 +89,15 @@ impl NodeBuilder {
     /// to other peers. The public demo must leave this disabled.
     pub fn p2p_peer_discovery(&mut self) -> &mut Self {
         self.p2p_no_discovery = false;
+        self
+    }
+
+    /// Share with the browsers the seeds introduce, within the sharing limits
+    /// (`mina_p2p::sharing`), still dialling only the seeds. The visitor's
+    /// choice: it shows other visitors their address. No effect with
+    /// [`Self::p2p_peer_discovery`].
+    pub fn p2p_sharing(&mut self) -> &mut Self {
+        self.p2p_sharing = true;
         self
     }
 
@@ -299,6 +310,8 @@ impl NodeBuilder {
             .daemon
             .unwrap_or(mina_node::daemon_json::Daemon::DEFAULT);
         let p2p_sec_key = self.p2p_sec_key.unwrap_or_else(P2pSecretKey::rand);
+        // Sharing applies to the seed-only node only.
+        let sharing = self.p2p_sharing && self.p2p_no_discovery;
         let initial_peers =
             if self.initial_peers.is_empty() && !self.p2p_is_seed && !self.p2p_no_discovery {
                 default_peers()
@@ -352,13 +365,18 @@ impl NodeBuilder {
                 identity_pub_key: p2p_sec_key.public_key(),
                 initial_peers,
                 external_addrs: vec![],
-                enabled_channels: if self.p2p_no_discovery {
+                enabled_channels: if self.p2p_no_discovery && !sharing {
                     ChannelId::without_signaling().collect()
                 } else {
                     ChannelId::iter_all().collect()
                 },
-                peer_discovery: !self.p2p_no_discovery,
+                peer_discovery: !self.p2p_no_discovery || sharing,
                 seed_only: self.p2p_no_discovery,
+                sharing: if sharing {
+                    P2pSharing::peer()
+                } else {
+                    P2pSharing::Off
+                },
                 meshsub: P2pMeshsubConfig {
                     initial_time: Duration::ZERO,
                     ..Default::default()

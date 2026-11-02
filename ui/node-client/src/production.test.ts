@@ -62,6 +62,9 @@ test("each recorded attempt has its outcome in words", () => {
 test("a canonical block's stages, against its slot", () => {
   const r = bySlot(62736);
   expect(r.stages.map(s => s.state)).toEqual(Array(7).fill("done"));
+  // The first stage is when the producer scheduled the attempt, not the
+  // VRF evaluation.
+  expect(r.stages[0]).toMatchObject({ key: "scheduled", label: "Scheduled" });
   const offset = Object.fromEntries(
     r.stages.map(s => [s.key, Math.round((s.offsetMs ?? NaN) / 100) / 10]),
   );

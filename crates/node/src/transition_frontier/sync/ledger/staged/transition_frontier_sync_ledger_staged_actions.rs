@@ -31,6 +31,7 @@ pub enum TransitionFrontierSyncLedgerStagedAction {
         peer_id: PeerId,
         rpc_id: P2pRpcId,
     },
+    #[action_event(level = warn, fields(display(peer_id), rpc_id, debug(error)))]
     PartsPeerFetchError {
         peer_id: PeerId,
         rpc_id: P2pRpcId,

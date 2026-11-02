@@ -15,10 +15,11 @@ const CONFIG: BuildConfig = {
   relays: ["/ip4/192.0.2.1/tcp/3000/webrtc/http/p2p/12D3KooWExample"],
   seedUrls: [],
   genesisUrl: "/genesis.json",
-  iceServersUrl: null,
+  iceServersUrls: [],
   frontierStore: false,
   glueUrl: "/glue.js",
   wasm: { url: "/node.wasm", sha256: "00", bytes: null },
+  startBytes: null,
   commit: null,
 };
 

@@ -210,3 +210,76 @@ export function renewIceServers(
     document.removeEventListener("visibilitychange", wake);
   };
 }
+
+/** The servers of several lists, each relay's, as one list for the node. A
+ * TURN URL whose credential has expired is left out: the node refuses a
+ * renewal holding one, and a relay whose issuer is down keeps its last list
+ * here until a fetch succeeds again. */
+export function joinIceServers(
+  lists: (IceServer[] | null)[],
+  now = Date.now(),
+): IceServer[] {
+  return lists.flatMap(servers =>
+    (servers ?? []).flatMap(server => {
+      const match = /^(\d+):/.exec(server.username ?? "");
+      const urls =
+        match && Number(match[1]) * 1000 <= now
+          ? server.urls.filter(url => !/^turns?:/.test(url))
+          : server.urls;
+      return urls.length ? [{ ...server, urls }] : [];
+    }),
+  );
+}
+
+/** The lists that may enter a join. With several issuers, a list must meet
+ * the renewal contract the node's transport enforces on every update
+ * (validIceRenewal: usable, expiring TURN credentials). One that doesn't, or
+ * failed, is held out as null: the node refuses a whole update holding it,
+ * so one misbehaving issuer would otherwise block every other issuer's
+ * renewals. renewEachIceServers retries a held-out issuer on its own backoff.
+ * A single list is taken as it is, so a static file keeps working. */
+export function admitIceLists(
+  lists: (IceServer[] | null)[],
+): (IceServer[] | null)[] {
+  if (lists.length <= 1) return lists;
+  return lists.map(list => (list && validIceRenewal(list) ? list : null));
+}
+
+/** Each list at `urls`, fetched together; null for one that failed. */
+export function loadEachIceServers(
+  urls: string[],
+  base: string,
+  load = loadIceServers,
+): Promise<(IceServer[] | null)[]> {
+  return Promise.all(urls.map(url => load(url, base)));
+}
+
+/** Renew each list on its own schedule (renewIceServers) and hand the node
+ * all of them joined, so one relay's issuer being down or misbehaving delays
+ * only its own credentials. Only admitted lists (admitIceLists) enter the
+ * join, at start and at every renewal, which renewIceServers validates the
+ * same way; a failed update keeps every issuer's last good list. */
+export function renewEachIceServers(
+  urls: string[],
+  base: string,
+  initial: (IceServer[] | null)[],
+  apply: (servers: IceServer[]) => void,
+  load = loadIceServers,
+): () => void {
+  const current = admitIceLists(urls.map((_, index) => initial[index] ?? null));
+  const stops = urls.map((url, index) =>
+    renewIceServers(
+      url,
+      base,
+      current[index],
+      fresh => {
+        const next = [...current];
+        next[index] = fresh;
+        apply(joinIceServers(next));
+        current[index] = fresh;
+      },
+      load,
+    ),
+  );
+  return () => stops.forEach(stop => stop());
+}

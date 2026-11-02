@@ -44,6 +44,13 @@ impl P2pChannelsState {
 
         match action {
             P2pChannelsAction::MessageReceived(action) => {
+                let mut state_context = state_context;
+                if let Some(peer) = state_context
+                    .get_substate_mut()?
+                    .get_ready_peer_mut(&action.peer_id)
+                {
+                    peer.channels.last_received = meta.time();
+                }
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
                 Self::dispatch_message(meta.with_action(action), dispatcher, state)
             }

@@ -37,6 +37,27 @@ function sentSize(response: Response): number | null {
   return Number.isFinite(length) && length > 0 ? length : null;
 }
 
+/** The compressed size the server sent `url` at, from the browser's
+ * resource timing; null when the browser doesn't say, or the body wasn't
+ * compressed. */
+export function compressedSize(
+  url: string,
+  bytes: number,
+  timing:
+    | Pick<Performance, "getEntriesByName">
+    | undefined = globalThis.performance,
+): number | null {
+  try {
+    const href = new URL(url, globalThis.location?.href).href;
+    const entries = timing?.getEntriesByName(href, "resource") ?? [];
+    const last = entries.at(-1) as PerformanceResourceTiming | undefined;
+    const size = last?.encodedBodySize ?? 0;
+    return size > 0 && size < bytes ? size : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function downloadWasm(
   wasm: { url: string; sha256: string; bytes: number | null },
   onProgress: (progress: DownloadProgress) => void,

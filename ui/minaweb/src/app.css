@@ -4,4 +4,6 @@
 
 @source "./";
 @source "../../dashboard/src/pages/peers.tsx";
+@source "../../dashboard/src/pages/producer.tsx";
+@source "../../dashboard/src/pages/worker.tsx";
 @source "../../dashboard/src/components/";

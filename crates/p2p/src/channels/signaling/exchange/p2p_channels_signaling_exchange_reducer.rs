@@ -10,7 +10,7 @@ use crate::{
         incoming::{
             IncomingSignalingMethod, P2pConnectionIncomingAction, P2pConnectionIncomingInitOpts,
         },
-        P2pConnectionResponse,
+        P2pConnectionResponse, RejectionReason,
     },
     P2pState,
 };
@@ -36,6 +36,7 @@ impl P2pChannelsSignalingExchangeState {
             .config
             .enabled_channels
             .contains(&ChannelId::SignalingExchange)
+            || !p2p_state.signaling_allowed_with(action.peer_id())
         {
             return Ok(());
         }
@@ -139,8 +140,15 @@ impl P2pChannelsSignalingExchangeState {
                         relay_peer_id: peer_id,
                     },
                     offer: offer.clone().into(),
+                    remote_ip: None,
                 };
-                match state.incoming_accept(opts.peer_id, &opts.offer) {
+                // A sharing browser refuses an introduced description whose
+                // candidates its policy drops (crate::sharing::sdp).
+                let accept = match state.sharing_stack_sdp(true, &opts.offer.sdp) {
+                    Err(_) => Err(RejectionReason::UnacceptableSdp),
+                    Ok(_) => state.incoming_accept(opts.peer_id, &opts.offer, &opts.signaling),
+                };
+                match accept {
                     Ok(_) => {
                         dispatcher.push(P2pConnectionIncomingAction::Init { opts, rpc_id: None });
                     }

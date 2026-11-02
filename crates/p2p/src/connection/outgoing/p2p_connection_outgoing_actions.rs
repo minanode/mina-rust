@@ -100,7 +100,8 @@ impl redux::EnablingCondition<P2pState> for P2pConnectionOutgoingAction {
             // A dial the RPC asked for (`rpc_id`) is the operator's, and is
             // not held back by the backoff.
             P2pConnectionOutgoingAction::Init { opts, rpc_id, .. } => {
-                state.config.allows_dial(opts) && !state.already_has_min_peers() &&
+                state.config.allows_dial(opts) && state.sharing_allows_dial(opts) &&
+                !state.already_has_min_peers() &&
                 &state.my_id() != opts.peer_id() &&
                 state
                     .peers
@@ -161,12 +162,14 @@ impl redux::EnablingCondition<P2pState> for P2pConnectionOutgoingAction {
                 .is_some_and( |peer| matches!(&peer.status, P2pPeerStatus::Connecting(P2pConnectionState::Outgoing(
                         P2pConnectionOutgoingState::AnswerRecvPending { .. },
                     )))),
-            P2pConnectionOutgoingAction::AnswerRecvSuccess { peer_id, .. } => state
+            // A sharing browser takes an introduced browser's answer only if
+            // its SDP policy does (crate::sharing::sdp).
+            P2pConnectionOutgoingAction::AnswerRecvSuccess { peer_id, answer } => state
                 .peers
                 .get(peer_id)
                 .is_some_and( |peer| matches!(&peer.status, P2pPeerStatus::Connecting(P2pConnectionState::Outgoing(
-                        P2pConnectionOutgoingState::AnswerRecvPending { .. },
-                    )))),
+                        P2pConnectionOutgoingState::AnswerRecvPending { opts, .. },
+                    )) if state.sharing_stack_sdp(opts.webrtc_p2p_relay_peer_id().is_some(), &answer.sdp).is_ok())),
             P2pConnectionOutgoingAction::FinalizePending { peer_id } => state
                 .peers
                 .get(peer_id)

@@ -3,7 +3,7 @@ mod ready;
 #[cfg(target_arch = "wasm32")]
 mod web;
 #[cfg(target_arch = "wasm32")]
-pub use web::update_webrtc_ice_servers;
+pub use web::{update_webrtc_ice_servers, webrtc_peer_stats};
 #[cfg(all(not(target_arch = "wasm32"), feature = "p2p-webrtc-cpp"))]
 mod webrtc_cpp;
 #[cfg(all(
@@ -388,6 +388,8 @@ async fn peer_start(
     };
     let fut = async {
         let mut pc = RTCConnection::create(&api, config).await?;
+        #[cfg(target_arch = "wasm32")]
+        pc.label_peer(&peer_id.to_string());
         let main_channel = pc
             .channel_create(RTCChannelConfig {
                 label: "",
@@ -749,6 +751,10 @@ struct MsgReassembler {
     failed: bool,
 }
 
+/// How often, at most, a channel reports a long message still arriving
+/// ([`P2pChannelEvent::Receiving`]).
+const RECEIVING_EVERY: Duration = Duration::from_millis(500);
+
 impl MsgReassembler {
     fn new(chan_id: ChannelId) -> Self {
         Self {
@@ -757,6 +763,13 @@ impl MsgReassembler {
             len: 0,
             failed: false,
         }
+    }
+
+    /// Whether part of a message has come and the rest hasn't. A message's
+    /// length prefix never spans chunks ([`process_msg`]), so a partial
+    /// message always has bytes in `buf`.
+    fn in_progress(&self) -> bool {
+        !self.failed && !self.buf.is_empty()
     }
 
     fn feed(
@@ -1094,6 +1107,17 @@ async fn peer_loop(
     );
     let mut opening = std::collections::BTreeSet::new();
 
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        not(feature = "p2p-webrtc-rs"),
+        not(feature = "p2p-webrtc-cpp")
+    ))]
+    {
+        // `failure` is cancelled when the connection's task ends.
+        let failure = failure.clone();
+        pc.log_link_stats(peer_id, async move { failure.wait().await });
+    }
+
     while matches!(pc.connection_state(), RTCConnectionState::Connected) {
         let (cmd, _tracker) = tokio::select! {
             cmd = cmd_receiver.recv() => match cmd {
@@ -1222,6 +1246,8 @@ async fn peer_loop(
                     let event_sender_clone = event_sender.clone();
                     let receive_failure = failure.clone();
 
+                    let mut progress_sent = redux::Timestamp::ZERO;
+
                     chan.on_message(move |data| {
                         if !receive_failure.is_failed() {
                             reassembler.feed(data, |res| {
@@ -1230,6 +1256,21 @@ async fn peer_loop(
                                 )
                                 .is_some()
                             });
+                            // A long message is still coming. Say so, now
+                            // and then, so that our requests to the peer time
+                            // out on silence, not on slowness.
+                            if reassembler.in_progress() {
+                                let now = mina_core::log::system_time();
+                                if now
+                                    .checked_sub(progress_sent)
+                                    .is_none_or(|since| since >= RECEIVING_EVERY)
+                                {
+                                    progress_sent = now;
+                                    let _ = event_sender_clone(
+                                        P2pChannelEvent::Receiving(peer_id, chan_id).into(),
+                                    );
+                                }
+                            }
                         }
                         #[cfg(not(all(not(target_arch = "wasm32"), feature = "p2p-webrtc-cpp")))]
                         std::future::ready(())

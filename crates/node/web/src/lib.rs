@@ -14,7 +14,10 @@ pub use block_prover::{
 mod frontier_store;
 
 mod keys;
-pub use keys::{account_public_key, account_public_key_valid, generate_account_key};
+pub use keys::{
+    account_key_from_file, account_key_to_file, account_public_key, account_public_key_valid,
+    generate_account_key,
+};
 
 mod memory;
 pub use memory::memory_stats;
@@ -55,6 +58,14 @@ pub fn update_ice_servers(servers: JsValue) -> Result<(), JsError> {
     )
     .map_err(|_| JsError::new("invalid ICE renewal configuration"))?;
     Ok(())
+}
+
+/// Each open WebRTC connection's peer, ICE route (candidate types), round
+/// trip time and bytes, for the page's Peers screen. Read on the main
+/// thread, where the connections are; addresses are never included.
+#[wasm_bindgen]
+pub fn webrtc_peer_stats() -> js_sys::Promise {
+    mina_node::p2p::service_impl::webrtc::webrtc_peer_stats()
 }
 
 /// Automatically run after wasm is loaded.
@@ -120,6 +131,9 @@ struct RunOptions {
     /// Experimental unrestricted peering. Off by default: only the supplied
     /// seed relays are dialled, with no incoming peer-to-peer signaling.
     peer_discovery: bool,
+    /// Share with other browsers that the seed relays introduce, within the
+    /// sharing limits (MINAWEB-OPT-IN-SHARING). Off by default.
+    sharing: bool,
     /// Keep a frontier store in this browser's Origin Private File System,
     /// and restore from it at the next start instead of downloading the
     /// ledgers again (I5e). Off unless set.
@@ -212,6 +226,12 @@ impl RunOptions {
 ///     default. Enables peer discovery and peer-to-peer signaling; peers can
 ///     learn each other's network addresses. Otherwise only the supplied seed
 ///     relay addresses are dialled and incoming connections are refused.
+///   - `sharing` (boolean): share with other browsers, off by default. The
+///     node still dials only the supplied seed relays. It asks them to
+///     introduce it to other browsers that turned sharing on, and accepts the
+///     browsers they introduce, up to 4, at most 2 of them syncing from it at
+///     once. Those browsers learn its IP addresses. Ignored with
+///     `peerDiscovery`.
 ///   - `frontierStore` (boolean): keep the node's verified ledgers and blocks
 ///     in this browser's Origin Private File System and, at the next start,
 ///     restore from them with every check instead of downloading them again.
@@ -391,6 +411,8 @@ async fn setup_node(
 
     if options.peer_discovery {
         node_builder.p2p_peer_discovery();
+    } else if options.sharing {
+        node_builder.p2p_sharing();
     }
 
     // TODO(binier): refactor

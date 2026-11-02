@@ -24,6 +24,10 @@ Tools to measure a change against recorded baselines and reproduce the checks:
   [`devnet_replay_subset.rs`](../block-replay/tests/devnet_replay_subset.rs),
   replays Mesa devnet's first blocks from genesis and recent ones from a node's
   root in about a minute. The bucket has lost the blocks in between.
+- [`webnode/far-relay-netem.sh`](webnode/far-relay-netem.sh) bootstraps a web
+  node from a relay on the same machine with a far relay's round trip added on
+  loopback (`tc netem`), and summarises the time to Synced, the throughput and
+  any lost relay connection with its reason.
 - [Devnet: a relay and a web node](#devnet-a-relay-and-a-web-node):
   [`devnet/`](devnet) runs a native devnet node or relay under a watchdog that
   records its health, and builds a web node that bootstraps devnet through it.

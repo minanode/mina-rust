@@ -90,6 +90,11 @@ pub enum P2pChannelEvent {
     Opened(PeerId, ChannelId, Result<(), String>),
     Sent(PeerId, ChannelId, MsgId, Result<(), String>),
     Received(PeerId, Result<Box<ChannelMsg>, String>),
+    /// Part of a message too long for one chunk has arrived on the channel:
+    /// the peer is sending, however slowly. Sent at most twice a second per
+    /// channel, while the message is incomplete.
+    #[from(ignore)]
+    Receiving(PeerId, ChannelId),
     Closed(PeerId, ChannelId),
 }
 
@@ -157,6 +162,9 @@ impl fmt::Display for P2pChannelEvent {
             }
             Self::Closed(peer_id, chan_id) => {
                 write!(f, "Closed, {peer_id}, {chan_id:?}")
+            }
+            Self::Receiving(peer_id, chan_id) => {
+                write!(f, "Receiving, {peer_id}, {chan_id:?}")
             }
             Self::Sent(peer_id, chan_id, msg_id, res) => {
                 write!(

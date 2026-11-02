@@ -6,7 +6,7 @@ use crate::{
     connection::P2pConnectionResponse,
     identity::PublicKey,
     webrtc::{EncryptedAnswer, EncryptedOffer, Offer},
-    P2pState, PeerId,
+    P2pSharing, P2pState, PeerId,
 };
 
 use super::{P2pChannelsSignalingDiscoveryState, SignalingDiscoveryState};
@@ -104,6 +104,7 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsSignalingDiscoveryAction 
             .config
             .enabled_channels
             .contains(&crate::channels::ChannelId::SignalingDiscovery)
+            || !state.signaling_allowed_with(self.peer_id())
         {
             return false;
         }
@@ -133,24 +134,27 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsSignalingDiscoveryAction 
                 })
             }
             P2pChannelsSignalingDiscoveryAction::RequestSend { peer_id } => {
-                state.get_ready_peer(peer_id).is_some_and(|p| {
-                    match &p.channels.signaling.discovery {
-                        P2pChannelsSignalingDiscoveryState::Ready { local, .. } => {
-                            match local {
-                                SignalingDiscoveryState::WaitingForRequest { .. } => true,
-                                SignalingDiscoveryState::DiscoveredRejected { time, .. }
-                                | SignalingDiscoveryState::Answered { time, .. } => {
-                                    // Allow one discovery request per minute.
-                                    // TODO(binier): make configurable
-                                    now.checked_sub(*time)
-                                        .is_some_and(|dur| dur.as_secs() >= 60)
+                state.introduces()
+                    && state.get_ready_peer(peer_id).is_some_and(|p| {
+                        match &p.channels.signaling.discovery {
+                            P2pChannelsSignalingDiscoveryState::Ready { local, .. } => {
+                                match local {
+                                    SignalingDiscoveryState::WaitingForRequest { .. } => true,
+                                    SignalingDiscoveryState::DiscoveredRejected {
+                                        time, ..
+                                    }
+                                    | SignalingDiscoveryState::Answered { time, .. } => {
+                                        // Allow one discovery request per minute.
+                                        // TODO(binier): make configurable
+                                        now.checked_sub(*time)
+                                            .is_some_and(|dur| dur.as_secs() >= 60)
+                                    }
+                                    _ => false,
                                 }
-                                _ => false,
                             }
+                            _ => false,
                         }
-                        _ => false,
-                    }
-                })
+                    })
             }
             P2pChannelsSignalingDiscoveryAction::DiscoveryRequestReceived { peer_id, .. } => state
                 .get_ready_peer(peer_id)
@@ -178,11 +182,19 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsSignalingDiscoveryAction 
                     state.get_ready_peer(&target_peer_id).is_some_and(|p| {
                         p.channels.signaling.sent_discovered_peer_id() == Some(*peer_id)
                     });
+                let sharing_allows = match state.config.sharing {
+                    P2pSharing::Off => true,
+                    P2pSharing::Peer(_) => false,
+                    P2pSharing::Relay(_) => state
+                        .sharing_introduction_check(peer_id, &target_peer_id, now)
+                        .is_ok(),
+                };
                 has_peer_requested_discovery
                     && !target_peer_already_discovering_them
                     && state.ready_peers_iter().all(|(_, p)| {
                         p.channels.signaling.sent_discovered_peer_id() != Some(target_peer_id)
                     })
+                    && sharing_allows
             }
             P2pChannelsSignalingDiscoveryAction::DiscoveredRejectReceived { peer_id, .. } => state
                 .get_ready_peer(peer_id)
@@ -219,10 +231,18 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsSignalingDiscoveryAction 
                     ),
                     _ => false,
                 }),
-            // TODO(binier): constrain interval between these requests
-            // to handle malicious peers.
+            // TODO: pace the remote's asks (`RequestReceived` above takes
+            // one straight after the last ended), so a malicious seed can't
+            // cycle us through introductions. A sharing relay never answers
+            // here (`wants_introduction`). Its own side is already paced:
+            // a requester's Discover is expected only after the relay asks
+            // (`DiscoveryRequestReceived` needs local `Requested`, and an
+            // unexpected message disconnects the peer), and `RequestSend`
+            // waits 60 s after an ask ends. Pacing this side needs a
+            // tolerance, or an honest peer that asks a little early is
+            // disconnected.
             P2pChannelsSignalingDiscoveryAction::DiscoveryRequestSend { peer_id, .. } => {
-                !state.already_has_min_peers()
+                state.wants_introduction()
                     && state.get_ready_peer(peer_id).is_some_and(|p| {
                         match &p.channels.signaling.discovery {
                             P2pChannelsSignalingDiscoveryState::Ready { remote, .. } => {

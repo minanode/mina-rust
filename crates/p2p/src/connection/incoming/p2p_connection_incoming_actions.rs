@@ -101,9 +101,9 @@ impl P2pConnectionIncomingAction {
 impl redux::EnablingCondition<P2pState> for P2pConnectionIncomingAction {
     fn is_enabled(&self, state: &P2pState, time: redux::Timestamp) -> bool {
         match self {
-            P2pConnectionIncomingAction::Init { opts, .. } => {
-                state.incoming_accept(opts.peer_id, &opts.offer).is_ok()
-            }
+            P2pConnectionIncomingAction::Init { opts, .. } => state
+                .incoming_accept(opts.peer_id, &opts.offer, &opts.signaling)
+                .is_ok(),
             P2pConnectionIncomingAction::AnswerSdpCreatePending { peer_id } => {
                 state.peers.get(peer_id).is_some_and(|peer| {
                     matches!(

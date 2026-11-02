@@ -1,7 +1,12 @@
 use crate::{
     channels::{
-        rpc::P2pChannelsRpcAction, signaling::discovery::P2pChannelsSignalingDiscoveryAction,
-        streaming_rpc::P2pChannelsStreamingRpcAction, P2pChannelsState,
+        rpc::P2pChannelsRpcAction,
+        signaling::{
+            discovery::P2pChannelsSignalingDiscoveryAction,
+            exchange::P2pChannelsSignalingExchangeAction,
+        },
+        streaming_rpc::P2pChannelsStreamingRpcAction,
+        P2pChannelsState,
     },
     connection::{
         incoming::P2pConnectionIncomingAction, outgoing::P2pConnectionOutgoingAction,
@@ -112,6 +117,7 @@ impl P2pState {
         state_context
             .get_substate_mut()?
             .restore_seed_dial_opts(time);
+        state_context.get_substate_mut()?.sharing_prune(time);
         let (dispatcher, state) = state_context.into_dispatcher_and_state();
         let state: &P2pState = state.substate()?;
 
@@ -273,6 +279,23 @@ impl P2pState {
         {
             dispatcher.push(P2pChannelsSignalingDiscoveryAction::RequestSend { peer_id });
             dispatcher.push(P2pChannelsSignalingDiscoveryAction::DiscoveryRequestSend { peer_id });
+        }
+
+        // A sharing relay's request that waited at a limit gets another try
+        // once the window moves on, with no new signalling (crate::sharing).
+        if self.sharing_relay_has_waiting_request() {
+            self.webrtc_discovery_respond_with_availble_peers(dispatcher, time);
+        }
+
+        // A sharing browser tells its seeds again that it takes introduced
+        // offers, after answering one, while it has room (crate::sharing).
+        if config.sharing.is_peer() {
+            for (&peer_id, _) in self
+                .ready_peers_iter()
+                .filter(|(_, peer)| peer.channels.signaling.exchange.is_ready())
+            {
+                dispatcher.push(P2pChannelsSignalingExchangeAction::RequestSend { peer_id });
+            }
         }
 
         if let Some(_d) = config.timeouts.initial_peers {

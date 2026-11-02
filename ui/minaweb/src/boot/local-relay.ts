@@ -1,6 +1,7 @@
 import type { BuildConfig } from "./build-config";
 
-/** A downloadable bundle's server supplies the exact relay allowlist. */
+/** A downloadable bundle's server supplies the exact relay allowlist: one
+ * relay or more, each dialled. */
 export async function localRelayConfig(
   config: BuildConfig,
 ): Promise<BuildConfig> {
@@ -10,9 +11,11 @@ export async function localRelayConfig(
   const value = await response.json();
   if (
     !Array.isArray(value.relays) ||
-    value.relays.length !== 1 ||
-    typeof value.relays[0] !== "string" ||
-    !validRelayAddress(value.relays[0])
+    value.relays.length < 1 ||
+    new Set(value.relays).size !== value.relays.length ||
+    !value.relays.every(
+      (relay: unknown) => typeof relay === "string" && validRelayAddress(relay),
+    )
   )
     throw new Error("Invalid local relay config");
   // Do not append the compiled relay or seed list when overriding it.

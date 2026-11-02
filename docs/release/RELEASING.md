@@ -12,7 +12,7 @@ An agent preparing a readiness PR must not execute public writes.
 
 0.20.1 is a native-node release: its assets and `SHA256SUMS` contain only the
 two Linux archives. Minaweb and the downloadable web archive have a separate
-release plan in [web-node-next.md](web-node-next.md). Keep the web download page
+release described in the [0.21.0 notes](0.21.0.md). Keep the web download page
 hidden for 0.20.1; none of the web gates below qualifies a 0.20.1 asset.
 
 ## Set up and back up the keys
@@ -199,27 +199,27 @@ Signature formats and configuration:
 
 ## Published site switch
 
-The workspace and archive candidate version is 0.20.1. The site's `release`
+The workspace and archive candidate version is 0.21.0. The site's `release`
 object in `ui/minanode-site/content/release.ts` continues to advertise published
-0.20.0 archives and its matching Docker digest. `candidateVersion` records the
+0.20.1 archives and its matching Docker digest. `candidateVersion` records the
 prepared version; it does not select downloads. `RELEASE_FINAL=1` validates the
 signer and content, and does not switch versions.
 
-After the owner publishes and verifies the signed 0.20.1 archives and Docker
+After the owner publishes and verifies the signed 0.21.0 archives and Docker
 image, update these together before deploying the site:
 
 1. Set `release.version` to `candidateVersion`, change both `downloadUrl` and
-   `notesUrl` to `v0.20.1`, and replace `release.dockerDigest` with the verified
-   0.20.1 image index digest. Never reuse the 0.20.0 digest for 0.20.1.
+   `notesUrl` to `v0.21.0`, and replace `release.dockerDigest` with the verified
+   0.21.0 image index digest. Never reuse the 0.20.1 digest for 0.21.0.
 2. Change the fallback image in `docker-compose.yml` to
-   `ghcr.io/minanode/mina-rust:0.20.1`. The site serves this file through its
-   `public/docker/` symlink, so the default remains 0.20.0 until publication.
+   `ghcr.io/minanode/mina-rust:0.21.0`. The site serves this file through its
+   `public/docker/` symlink, so the default remains 0.20.1 until publication.
 3. Run the site build, typecheck and content checks below, including
    `RELEASE_FINAL=1`, and verify the archive, checksum, notes and image URLs.
    The archive names and Docker examples derive from the `release` object.
 
 The Docker workflow requires an explicit version and verified commit as inputs;
-its example now uses 0.20.1. A packaging dry run does not publish an image or
+its example now uses 0.21.0. A packaging dry run does not publish an image or
 change the running site's downloads. Unsigned dry-run archive hashes must not
 replace the public release-note checksum placeholder.
 
@@ -359,9 +359,10 @@ qualify bootstrap or sync.
 These gates belong to the separate web release, not native 0.20.1.
 
 - [ ] Agent: build and typecheck the web UI, then build the complete devnet WASM
-      bundle from the clean candidate. Supply a qualified devnet relay address.
-      Set `WEB_BUILD` to a new output directory. Include devnet prover assets
-      when qualifying role screens.
+      bundle from the clean candidate. Supply the qualified devnet relay
+      addresses (`RELAY` takes several, separated by commas). Set `WEB_BUILD` to
+      a new output directory. Include devnet prover assets when qualifying role
+      screens.
 
 ```sh
 npm run build:minaweb --prefix ui
@@ -377,19 +378,21 @@ BASE="$WEB_ORIGIN" PAGE=/ AUTOSTART=1 UNTIL_SYNCED=30 \
 
 Serve the built directory with the required isolation headers on an assigned
 static port. Configure `CHROME` and `PUPPETEER_DIR` first. Require a connected
-peer and a synced tip within one block of the relay. A successful process exit
-alone does not prove sync.
+peer per relay and a synced tip within one block of the relays. A successful
+process exit alone does not prove sync.
 
 - [ ] Owner: install a qualified relay build containing the restricted privacy
-      defaults before public minaweb use. Do not enable
-      `--webrtc-signaling-relay` on that relay. Retain binary provenance and a
+      defaults before public minaweb use. Retain binary provenance and a
       rollback bundle. Follow [MINAWEB.md](MINAWEB.md) for owner DNS, TLS,
       firewall, TURN, immutable upload and deployment checks. Run its external
       direct and forced-TURN gate:
 
 ```sh
-RELAY_HTTP="$PRIVATE_RELAY_HTTP" python3 -B tools/deploy/minaweb/check.py \
-  "$LAUNCH_EVIDENCE" --turn-ip "$VPS_PUBLIC_IPV4"
+python3 -B tools/deploy/minaweb/check.py "$LAUNCH_EVIDENCE" \
+  --relay https://relay1.minaweb.org --turn-ip "$RELAY1_IPV4" \
+  --relay-http "$RELAY1_PRIVATE_HTTP" \
+  --relay https://relay2.minaweb.org --turn-ip "$RELAY2_IPV4" \
+  --relay-http "$RELAY2_PRIVATE_HTTP"
 ```
 
 These launch checks gate public minaweb deployment. They do not gate a native
@@ -450,17 +453,18 @@ approved web workspace version and `WEB_DIST` to a new directory outside the
 native 0.20.1 output. Do not build or upload a web asset as 0.20.1.
 
 ```sh
-export RELAY="$PUBLIC_WEBRTC_MULTIADDR"
+export RELAY="$PUBLIC_WEBRTC_MULTIADDRS" # comma-separated, one per relay
 nice -n 10 env CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 \
   tools/regression/lock.sh build -- \
   python3 -B tools/release/build-web.py "$WEB_VERSION" --output "$WEB_DIST"
 (cd "$WEB_DIST" && sha256sum --check SHA256SUMS)
 ```
 
-- [ ] Owner: fill in the real public relay multiaddr once its identity exists,
-      following [MINAWEB.md](MINAWEB.md). There is no built-in public peer ID.
-      Packaging refuses a missing relay and records the exact address in the
-      manifest. Never publish an archive configured for a private test relay.
+- [ ] Owner: fill in the real public relay multiaddrs once their identities
+      exist, following [MINAWEB.md](MINAWEB.md). There is no built-in public
+      peer ID. Packaging refuses a missing relay and records the exact addresses
+      in the manifest. Never publish an archive configured for a private test
+      relay.
 - [ ] Coordinator: integrate the canonical browser prover-pin changes before the
       release build. The packager decompresses the tracked devnet circuits and
       checks all 24 files against the canonical OCaml SHA-256 manifest. Include

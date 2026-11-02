@@ -23,6 +23,15 @@ webrtc-rs) features=(--features p2p-webrtc-rs) ;;
 	;;
 esac
 echo "build-relay.sh: WebRTC backend $backend" >&2
+# mina-node's build.rs formats the code it generates with rustfmt, which a
+# minimal rustup profile leaves out.
+if ! rustfmt --version >/dev/null 2>&1; then
+	command -v rustup >/dev/null || {
+		echo "build-relay.sh: rustfmt is missing; install it for this toolchain" >&2
+		exit 2
+	}
+	rustup component add rustfmt
+fi
 cargo build --release -p mina-cli --bin mina "${features[@]}"
 target=$(cargo metadata --format-version 1 --no-deps |
 	python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')

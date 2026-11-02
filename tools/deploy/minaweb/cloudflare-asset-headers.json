@@ -1,0 +1,45 @@
+{
+  "description": "minaweb.org response headers",
+  "rules": [
+    {
+      "description": "minaweb assets: CORS and CORP on every response",
+      "expression": "(http.host eq \"assets.minaweb.org\")",
+      "action": "rewrite",
+      "action_parameters": {
+        "headers": {
+          "Access-Control-Allow-Origin": {
+            "operation": "set",
+            "value": "https://minaweb.org"
+          },
+          "Cross-Origin-Resource-Policy": {
+            "operation": "set",
+            "value": "cross-origin"
+          }
+        }
+      }
+    },
+    {
+      "description": "minaweb assets: immutable cache for successful release objects",
+      "expression": "(http.host eq \"assets.minaweb.org\" and starts_with(http.request.uri.path, \"/releases/\") and http.response.code eq 200)",
+      "action": "rewrite",
+      "action_parameters": {
+        "headers": {
+          "Cache-Control": {
+            "operation": "set",
+            "value": "public, max-age=31536000, immutable"
+          }
+        }
+      }
+    },
+    {
+      "description": "minaweb assets: WASM content type",
+      "expression": "(http.host eq \"assets.minaweb.org\" and http.request.uri.path.extension eq \"wasm\")",
+      "action": "rewrite",
+      "action_parameters": {
+        "headers": {
+          "Content-Type": { "operation": "set", "value": "application/wasm" }
+        }
+      }
+    }
+  ]
+}

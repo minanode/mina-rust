@@ -1,15 +1,24 @@
-use crate::RtcConfiguration;
-use crate::errors::RtcError;
-use crate::platform::sync::{Mutex, Notify, mpsc};
-use crate::transports::packet_queue::{self, Kind};
-use crate::platform::time::Instant;
 pub use crate::transports::datachannel::*;
-use crate::transports::dtls::{DtlsState, DtlsTransport};
-use crate::transports::ice::stun::random_u32;
-use alloc::collections::{BTreeMap, VecDeque};
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
-use alloc::{format, vec};
+use crate::{
+    RtcConfiguration,
+    errors::RtcError,
+    platform::{
+        sync::{Mutex, Notify, mpsc},
+        time::Instant,
+    },
+    transports::{
+        dtls::{DtlsState, DtlsTransport},
+        ice::stun::random_u32,
+        packet_queue::{self, Kind},
+    },
+};
+use alloc::{
+    collections::{BTreeMap, VecDeque},
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 // 64-bit atomics are emulated on targets without them (ESP32-Xtensa, RISC-V).
@@ -457,6 +466,8 @@ struct SctpInner {
     max_tsn_retransmits: u32,
     max_burst_packets: usize, // 0 = use default heuristic
     max_cwnd: usize,
+    // Shared across transmit calls: queued SACKs must not reset the burst.
+    data_send_after: Mutex<Option<Instant>>,
     max_buffered_amount: usize, // 0 = unbounded (compat with pre-restriction behavior)
 
     // Association Error Counter
@@ -526,6 +537,9 @@ struct SctpInner {
     stats_packets_sent: AtomicU64,
     stats_packets_received: AtomicU64,
     stats_retransmissions: AtomicU64,
+    stats_fast_retransmits: AtomicU64,
+    stats_t3_expiries: AtomicU64,
+    stats_sack_gap_blocks: AtomicU64,
     stats_heartbeats_sent: AtomicU64,
     stats_created_time: Instant,
     close_reason: Mutex<Option<String>>,
@@ -600,13 +614,25 @@ struct SackOutcome {
     bytes_acked_per_stream: Vec<(u16, usize)>,
 }
 
+/// The slow-start threshold on entering fast recovery, from the send window
+/// `cwnd`. Less aggressive (β = 0.7) when the window is already near the
+/// floor (within 2x SSTHRESH_MIN): the standard β = 0.5 always clamps it to
+/// SSTHRESH_MIN there, a throughput ceiling on lossy links.
+fn fast_recovery_ssthresh(cwnd: usize) -> usize {
+    if cwnd <= SSTHRESH_MIN * 2 {
+        (cwnd * 7 / 10).max(SSTHRESH_MIN)
+    } else {
+        (cwnd / 2).max(SSTHRESH_MIN)
+    }
+}
+
 fn apply_sack_to_sent_queue(
     sent_queue: &mut BTreeMap<u32, ChunkRecord>,
     cumulative_tsn_ack: u32,
     gap_blocks: &[(u16, u16)],
     now: Instant,
     count_missing_reports: bool,
-    max_tsn_retransmits: u32,
+    _max_tsn_retransmits: u32,
 ) -> SackOutcome {
     let before_head = sent_queue.keys().next().cloned();
 
@@ -693,6 +719,7 @@ fn apply_sack_to_sent_queue(
                 && !record.acked
             {
                 record.acked = true;
+                record.needs_retransmit = false;
                 let len = record.payload.len();
                 outcome.bytes_acked_by_gap += len;
                 // The payload is freed below; account the per-stream buffered
@@ -743,24 +770,11 @@ fn apply_sack_to_sent_queue(
                     tsn, old_reports, record.missing_reports, record.acked, record.fast_retransmit
                 );
             }
-            const MIN_FAST_RETRANSMIT_COOLDOWN_MS: u64 = 50; // Minimum 50ms between fast retransmits
-
-            let can_fast_retransmit = if record.fast_retransmit {
-                if record.transmit_count >= max_tsn_retransmits {
-                    false
-                } else if let Some(fr_time) = record.fast_retransmit_time {
-                    let elapsed = now.duration_since(fr_time);
-                    if elapsed < Duration::from_millis(MIN_FAST_RETRANSMIT_COOLDOWN_MS) {
-                        false
-                    } else {
-                        record.missing_reports >= DUP_THRESH
-                    }
-                } else {
-                    true
-                }
-            } else {
-                true
-            };
+            // RFC 9260 section 7.2.4 (5): a TSN gets only one fast
+            // retransmission. Later gap reports can describe packets sent
+            // before that retransmission, even when they arrive >50ms later.
+            // T3 remains responsible if the retransmission itself is lost.
+            let can_fast_retransmit = !record.fast_retransmit;
 
             if record.missing_reports >= DUP_THRESH && !record.abandoned && can_fast_retransmit {
                 record.missing_reports = 0;
@@ -844,8 +858,24 @@ pub struct SctpLinkStats {
     pub rto: Duration,
     /// Number of TSN retransmissions so far.
     pub retransmissions: u64,
+    /// DATA chunks marked for fast retransmit.
+    pub fast_retransmits: u64,
+    /// T3 timer expiries (including flow-control probes).
+    pub t3_expiries: u64,
+    /// Gap blocks received, including repeated reports.
+    pub sack_gap_blocks: u64,
     /// Time elapsed since the association was created.
     pub duration: Duration,
+    /// Congestion window for sending, in bytes (vendored change).
+    pub cwnd: usize,
+    /// Slow-start threshold, in bytes (vendored change).
+    pub ssthresh: usize,
+    /// DATA bytes sent and not yet acknowledged (vendored change).
+    pub flight: usize,
+    /// Bytes accepted from senders and not yet sent (vendored change).
+    pub queued: usize,
+    /// The peer's last advertised receive window (vendored change).
+    pub peer_rwnd: u32,
 }
 
 impl SctpLinkStats {
@@ -857,7 +887,15 @@ impl SctpLinkStats {
             srtt: Duration::from_secs_f64(rto_state.srtt),
             rto: Duration::from_secs_f64(rto_state.rto),
             retransmissions: t.inner.stats_retransmissions.load(Ordering::SeqCst),
+            fast_retransmits: t.inner.stats_fast_retransmits.load(Ordering::Relaxed),
+            t3_expiries: t.inner.stats_t3_expiries.load(Ordering::Relaxed),
+            sack_gap_blocks: t.inner.stats_sack_gap_blocks.load(Ordering::Relaxed),
             duration: t.inner.stats_created_time.elapsed(),
+            cwnd: t.inner.cwnd_tx.load(Ordering::Relaxed),
+            ssthresh: t.inner.ssthresh.load(Ordering::Relaxed),
+            flight: t.inner.flight_size.load(Ordering::Relaxed),
+            queued: t.inner.queued_bytes.load(Ordering::Relaxed),
+            peer_rwnd: t.inner.peer_rwnd.load(Ordering::Relaxed),
         }
     }
 }
@@ -881,7 +919,9 @@ impl SctpTransport {
         Arc<Self>,
         impl core::future::Future<Output = ()> + Send + 'static,
     ) {
-        let (outgoing_packet_tx, mut outgoing_packet_rx) = dtls_transport.packet_association().channel(Kind::SctpOutput);
+        let (outgoing_packet_tx, mut outgoing_packet_rx) = dtls_transport
+            .packet_association()
+            .channel(Kind::SctpOutput);
 
         let timer_notify = Arc::new(Notify::new());
         let inner = Arc::new(SctpInner {
@@ -938,6 +978,7 @@ impl SctpTransport {
             max_tsn_retransmits: config.sctp_max_tsn_retransmits,
             max_burst_packets: config.sctp_max_burst,
             max_cwnd: config.sctp_max_cwnd,
+            data_send_after: Mutex::new(None),
             max_buffered_amount: config.sctp_max_buffered_amount,
             association_error_count: AtomicU32::new(0),
             heartbeat_sent_time: Mutex::new(None),
@@ -972,6 +1013,9 @@ impl SctpTransport {
             stats_packets_sent: AtomicU64::new(0),
             stats_packets_received: AtomicU64::new(0),
             stats_retransmissions: AtomicU64::new(0),
+            stats_fast_retransmits: AtomicU64::new(0),
+            stats_t3_expiries: AtomicU64::new(0),
+            stats_sack_gap_blocks: AtomicU64::new(0),
             stats_heartbeats_sent: AtomicU64::new(0),
             stats_created_time: Instant::now(),
             close_reason: Mutex::new(None),
@@ -1191,11 +1235,7 @@ impl SctpInner {
         }
     }
 
-    async fn run_loop(
-        &self,
-        close_rx: Arc<Notify>,
-        mut incoming_data_rx: packet_queue::Receiver,
-    ) {
+    async fn run_loop(&self, close_rx: Arc<Notify>, mut incoming_data_rx: packet_queue::Receiver) {
         debug!("SctpTransport run_loop started");
         *self.state.lock() = SctpState::Connecting;
 
@@ -1358,7 +1398,8 @@ impl SctpInner {
                 .min(t1_timeout)
                 .min(sack_timeout)
                 .min(tlp_timeout)
-                .min(self.receive_window.update_timeout(now));
+                .min(self.receive_window.update_timeout(now))
+                .min(self.pacing_timeout(now));
 
             {
                 let close_fut = close_rx.notified();
@@ -1451,7 +1492,9 @@ impl SctpInner {
             // Batch receive: drain any packets queued behind the first one.
             // Bound each batch so a continuous sender cannot starve teardown.
             for _ in 0..64 {
-                let Ok(packet) = incoming_data_rx.try_recv() else { break; };
+                let Ok(packet) = incoming_data_rx.try_recv() else {
+                    break;
+                };
                 if let Err(e) = self.handle_packet(packet).await {
                     trace!("SCTP handle packet error: {}", e);
                 }
@@ -1601,6 +1644,7 @@ impl SctpInner {
             return Ok(());
         }
 
+        self.stats_t3_expiries.fetch_add(1, Ordering::Relaxed);
         // Record T3 fire time BEFORE backoff
         *self.last_t3_fire_time.lock() = Some(now);
         // A T3 fire starts a new RTO cycle: allow one fresh TLP probe later.
@@ -2089,6 +2133,8 @@ impl SctpInner {
                 gap_blocks.push((buf.get_u16(), buf.get_u16()));
             }
 
+            self.stats_sack_gap_blocks
+                .fetch_add(gap_blocks.len() as u64, Ordering::Relaxed);
             let sack_sig = {
                 let mut sig = (cumulative_tsn_ack as u64) << 32;
                 for (start, end) in &gap_blocks {
@@ -2157,7 +2203,8 @@ impl SctpInner {
                     // Such DATA can have been dropped for lack of charged space
                     // even though it was not originally sent as a window probe.
                     // Retry it now rather than waiting for a backed-off RTO.
-                    if let Some((&tsn, record)) = sent.iter_mut()
+                    if let Some((&tsn, record)) = sent
+                        .iter_mut()
                         .filter(|(_, r)| !r.acked && !r.abandoned)
                         .min_by_key(|(tsn, _)| tsn.wrapping_sub(cumulative_tsn_ack))
                         && old_rwnd as usize <= record.payload.len()
@@ -2176,7 +2223,7 @@ impl SctpInner {
 
             // Track retransmissions from fast retransmit
             if !outcome.retransmit.is_empty() {
-                self.stats_retransmissions
+                self.stats_fast_retransmits
                     .fetch_add(outcome.retransmit.len() as u64, Ordering::Relaxed);
             }
 
@@ -2404,24 +2451,17 @@ impl SctpInner {
                         let cwnd_tx = self.cwnd_tx.load(Ordering::SeqCst);
                         let cwnd_rx = self.cwnd_rx.load(Ordering::SeqCst);
 
-                        // Use less aggressive β=0.7 when cwnd is already near the floor
-                        // (within 2x SSTHRESH_MIN).  Standard β=0.5 causes cwnd to always
-                        // clamp to SSTHRESH_MIN, creating a throughput ceiling on lossy links.
                         let near_floor = cwnd_tx <= SSTHRESH_MIN * 2;
-                        let new_ssthresh_tx = if near_floor {
-                            (cwnd_tx * 7 / 10).max(SSTHRESH_MIN)
-                        } else {
-                            (cwnd_tx / 2).max(SSTHRESH_MIN)
-                        };
-                        let new_ssthresh_rx = if near_floor {
-                            (cwnd_rx * 7 / 10).max(SSTHRESH_MIN)
-                        } else {
-                            (cwnd_rx / 2).max(SSTHRESH_MIN)
-                        };
-                        let new_ssthresh = new_ssthresh_tx.min(new_ssthresh_rx);
+                        let new_ssthresh_rx = fast_recovery_ssthresh(cwnd_rx);
+                        // The threshold follows what we send. `cwnd_rx` never
+                        // grows, so taking the smaller of the two pinned it
+                        // at 6 KB or less after any loss for a sender that
+                        // receives little, such as a relay serving a browser
+                        // (vendored change, WEB-RELAY-RTT-THROUGHPUT).
+                        let new_ssthresh = fast_recovery_ssthresh(cwnd_tx);
                         self.ssthresh.store(new_ssthresh, Ordering::SeqCst);
                         self.cwnd_tx.store(new_ssthresh, Ordering::SeqCst);
-                        self.cwnd_rx.store(new_ssthresh, Ordering::SeqCst);
+                        self.cwnd_rx.store(new_ssthresh_rx, Ordering::SeqCst);
                         self.partial_bytes_acked.store(0, Ordering::SeqCst);
                         self.fast_recovery_active.store(true, Ordering::SeqCst);
                         self.fast_recovery_transmit.store(true, Ordering::SeqCst);
@@ -3327,6 +3367,11 @@ impl SctpInner {
     /// Maybe send a Tail Loss Probe. Returns true if a probe was armed.
     /// Called from run_loop when the PTO has elapsed.
     fn maybe_send_tlp_probe(&self, now: Instant) -> bool {
+        // The event loop also wakes for pacing, SACKs and heartbeats. A timer
+        // wakeup alone does not imply that the probe timeout has expired.
+        if now.duration_since(*self.last_send_or_ack.lock()) < self.tlp_pto() {
+            return false;
+        }
         if self.window_probe.lock().is_some() || self.tlp_probe_sent.load(Ordering::Relaxed) {
             return false;
         }
@@ -3638,6 +3683,21 @@ impl SctpInner {
         Ok(())
     }
 
+    fn pacing_timeout(&self, now: Instant) -> Duration {
+        let mut deadline = self.data_send_after.lock();
+        match *deadline {
+            Some(at) if at > now => at - now,
+            Some(_) => {
+                // The event loop may have been busy when this deadline passed.
+                // Wake once to drain DATA, then clear it to avoid spinning if
+                // the congestion or receiver window prevents another send.
+                *deadline = None;
+                Duration::ZERO
+            }
+            None => Duration::from_secs(3600),
+        }
+    }
+
     async fn transmit(&self) -> Result<()> {
         let mut chunks_to_send = Vec::new();
         #[cfg(not(test))]
@@ -3653,21 +3713,31 @@ impl SctpInner {
             chunks_to_send.push(self.create_sack_chunk());
         }
 
+        // SACKs and other control traffic never wait for the DATA pacer.
+        // RFC 9260 section 7.2.4 allows the first fast retransmit immediately.
+        let now = Instant::now();
+        if !self.fast_recovery_transmit.load(Ordering::Relaxed)
+            && self
+                .data_send_after
+                .lock()
+                .is_some_and(|deadline| deadline > now)
+        {
+            return self.transmit_chunks(chunks_to_send).await;
+        }
+
         // 1. Calculate Effective Window
         let cwnd_val = self.cwnd_tx.load(Ordering::Relaxed);
-        let flight_val = self.flight_size.load(Ordering::Relaxed);
         let rwnd_val = self.peer_rwnd.load(Ordering::Relaxed) as usize;
 
         // (fast_recovery state still influences CC growth in handle_sack; the
-        // burst limit itself is now uniformly 4 per RFC 8261.)
+        // burst limit itself defaults to 4 per RFC 9260 section 16.)
         let _in_recovery = self.fast_recovery_active.load(Ordering::Relaxed)
             || self.fast_recovery_exit_tsn.load(Ordering::Relaxed) != 0;
 
         // Burst limit: configurable via sctp_max_burst (in MTU-sized packets).
-        // 0 = use default. RFC 8261 §5 mandates max_burst=4 for WebRTC data
-        // channels (and suggests 2–4 for TURN relays, whose token buckets
-        // drop larger bursts). Previously the normal-mode default was 16,
-        // which overran TURN relays and caused loss; 4 is RFC-compliant.
+        // 0 = use default. RFC 9260 sections 6.1 and 16 recommend Max.Burst
+        // and a default of 4. Keep that bound across retransmitted and new
+        // DATA; the pacing deadline also spaces consecutive send calls.
         let burst_limit = if self.max_burst_packets > 0 {
             // Explicit limit configured (e.g., for rate-limited TURN relays)
             self.max_burst_packets * MAX_SCTP_PACKET_SIZE
@@ -3675,7 +3745,7 @@ impl SctpInner {
             4 * MAX_SCTP_PACKET_SIZE
         };
 
-        let burst_constrained_cwnd = (flight_val + burst_limit).min(cwnd_val);
+        let mut retransmit_budget = burst_limit;
 
         // 2. Retransmit Phase (Priority)
         let mut in_flight_chunks = 0usize;
@@ -3684,7 +3754,19 @@ impl SctpInner {
             let mut recovery_tx = self.fast_recovery_transmit.load(Ordering::Relaxed);
 
             for record in sent.values_mut() {
-                if record.needs_retransmit {
+                if record.needs_retransmit
+                    && !record.acked
+                    && !record.abandoned
+                    && retransmit_budget >= record.payload.len()
+                    && (recovery_tx
+                        || record.in_flight
+                        || self
+                            .flight_size
+                            .load(Ordering::Relaxed)
+                            .saturating_add(record.payload.len())
+                            <= cwnd_val)
+                {
+                    retransmit_budget -= record.payload.len();
                     if recovery_tx {
                         self.fast_recovery_transmit.store(false, Ordering::Relaxed);
                         recovery_tx = false;
@@ -3697,6 +3779,7 @@ impl SctpInner {
                     }
 
                     record.needs_retransmit = false;
+                    self.stats_retransmissions.fetch_add(1, Ordering::Relaxed);
                     // Note: transmit_count already incremented when marking for retransmit
                     // (in apply_sack_to_sent_queue for fast retransmit, or handle_timeout for RTO)
                     record.sent_time = Instant::now();
@@ -3722,34 +3805,41 @@ impl SctpInner {
         let may_probe = flight == 0 && self.sent_queue.lock().is_empty();
         let mut new_data_sent = false;
         {
-            let mut budget =
-                burst_constrained_cwnd.saturating_sub(self.flight_size.load(Ordering::Relaxed));
+            // RFC 9260 section 6.1(B): when flight is below cwnd, one
+            // complete DATA chunk may cross it. Keep the burst budget
+            // separate: limited cwnd overbooking must not enlarge a burst.
+            let mut congestion_budget = cwnd_val.saturating_sub(flight);
+            let mut burst_budget = retransmit_budget;
             let mut probing = false;
             let mut batch: Vec<OutboundChunk> = Vec::new();
             let mut dequeued_bytes = 0usize;
             let window_limited;
             {
                 let mut outbound = self.outbound_queue.lock();
-                while budget > 0 && batch.len() < 1000 {
+                while congestion_budget > 0 && batch.len() < 1000 {
                     let Some(next) = outbound.front() else {
                         break;
                     };
                     let chunk_wire_size = CHUNK_HEADER_SIZE + 12 + next.payload.len();
                     let padded = chunk_wire_size + (4 - (chunk_wire_size % 4)) % 4;
+                    if padded > burst_budget {
+                        break;
+                    }
                     let receiver_charge = padded.saturating_add(peer_chunk_overhead);
                     if receiver_budget < receiver_charge {
                         // RFC 9260 section 6.1 rule A: one DATA chunk can probe
                         // an insufficient rwnd when no DATA is outstanding and
                         // cwnd permits it. T3 retransmits this same TSN with RTO
                         // backoff until it fits or a window update arrives.
-                        if !may_probe || !batch.is_empty() || budget < padded {
+                        if !may_probe || !batch.is_empty() || congestion_budget < padded {
                             break;
                         }
                         probing = true;
                     }
                     let chunk_info = outbound.pop_front().unwrap();
                     dequeued_bytes += chunk_info.payload.len();
-                    budget = budget.saturating_sub(padded);
+                    congestion_budget = congestion_budget.saturating_sub(padded);
+                    burst_budget -= padded;
                     receiver_budget = receiver_budget.saturating_sub(receiver_charge);
                     batch.push(chunk_info);
                     if probing {
@@ -3826,6 +3916,27 @@ impl SctpInner {
             }
         }
 
+        let data_bytes: usize = chunks_to_send
+            .iter()
+            .filter(|chunk| chunk.first() == Some(&CT_DATA))
+            .map(|chunk| chunk.len())
+            .sum();
+        if data_bytes > 0 {
+            let srtt = self.rto_state.lock().srtt;
+            // Pace at cwnd/SRTT with 20% scheduling headroom: an exact
+            // cwnd/SRTT rate underfills the window between timer wakes.
+            // The cwnd gate permits only the one-chunk crossing above;
+            // Max.Burst remains a hard limit.
+            // Do not accumulate idle credit.
+            const PACING_GAIN: f64 = 1.2;
+            let interval = Duration::from_secs_f64(
+                srtt * data_bytes as f64 / (cwnd_val.max(1) as f64 * PACING_GAIN),
+            );
+            // platform::time::Instant truncates durations to milliseconds.
+            // Keep the deadline in the future on short paths, including when
+            // no nonzero RTT sample is available yet.
+            *self.data_send_after.lock() = Some(now + interval.max(Duration::from_millis(1)));
+        }
         if !chunks_to_send.is_empty() {
             self.transmit_chunks(chunks_to_send).await?;
         }
@@ -4188,8 +4299,7 @@ impl SctpInner {
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
-    use std::time::Duration;
+    use std::{collections::BTreeMap, time::Duration};
 
     fn create_data_chunk(tsn: u32) -> Bytes {
         let mut buf = BytesMut::new();
@@ -4280,19 +4390,48 @@ mod tests {
     async fn raw_output_dispatch_overload_closes_association() {
         let (socket_tx, _) = crate::platform::sync::watch::channel(None);
         let conn = crate::transports::ice::conn::IceConn::new(
-            socket_tx.subscribe(), "127.0.0.1:5000".parse().unwrap(), None);
-        let (dtls, incoming, _) = DtlsTransport::new(conn,
-            crate::transports::dtls::generate_certificate().unwrap(), false, 1500, None).await.unwrap();
-        let (sctp, runner) = SctpTransport::new(dtls.clone(), incoming,
-            Arc::new(Mutex::new(Vec::new())), 5000, 5000, None, false, &RtcConfiguration::default());
+            socket_tx.subscribe(),
+            "127.0.0.1:5000".parse().unwrap(),
+            None,
+        );
+        let (dtls, incoming, _) = DtlsTransport::new(
+            conn,
+            crate::transports::dtls::generate_certificate().unwrap(),
+            false,
+            1500,
+            None,
+        )
+        .await
+        .unwrap();
+        let (sctp, runner) = SctpTransport::new(
+            dtls.clone(),
+            incoming,
+            Arc::new(Mutex::new(Vec::new())),
+            5000,
+            5000,
+            None,
+            false,
+            &RtcConfiguration::default(),
+        );
         for _ in 0..packet_queue::MAX_ITEMS {
-            sctp.inner.send_packet_with_tag(Vec::new(), 0).await.unwrap();
+            sctp.inner
+                .send_packet_with_tag(Vec::new(), 0)
+                .await
+                .unwrap();
         }
-        assert!(sctp.inner.send_packet_with_tag(Vec::new(), 0).await.is_err());
+        assert!(
+            sctp.inner
+                .send_packet_with_tag(Vec::new(), 0)
+                .await
+                .is_err()
+        );
         assert_eq!(*sctp.inner.state.lock(), SctpState::Closed);
         assert!(matches!(dtls.get_state(), DtlsState::Failed));
         drop(runner);
-        assert_eq!(sctp.inner.outgoing_packet_tx.send(Bytes::new()), Err(packet_queue::SendError::Closed));
+        assert_eq!(
+            sctp.inner.outgoing_packet_tx.send(Bytes::new()),
+            Err(packet_queue::SendError::Closed)
+        );
     }
 
     #[tokio::test]
@@ -4346,6 +4485,60 @@ mod tests {
 
         let blocks = build_gap_ack_blocks_from_map(&received, 6);
         assert_eq!(blocks, vec![(2, 3)]);
+    }
+
+    #[test]
+    fn fast_retransmit_is_once_per_tsn_even_after_cooldown() {
+        let now = Instant::now();
+        let mut sent = BTreeMap::new();
+        for tsn in 100..=108 {
+            sent.insert(
+                tsn,
+                ChunkRecord {
+                    payload: Bytes::from_static(b"data"),
+                    sent_time: now,
+                    transmit_count: 1,
+                    missing_reports: 0,
+                    abandoned: false,
+                    fast_retransmit: false,
+                    fast_retransmit_time: None,
+                    needs_retransmit: false,
+                    in_flight: true,
+                    acked: false,
+                    stream_id: 0,
+                    ssn: 0,
+                    flags: 3,
+                    max_retransmits: None,
+                    expiry: None,
+                },
+            );
+        }
+        // Lose TSNs 100 and 101. Three distinct new gap acknowledgements
+        // mark both holes, exactly as RFC 9260 section 7.2.4 requires.
+        for end in 3..=5 {
+            let out = apply_sack_to_sent_queue(&mut sent, 99, &[(3, end)], now, true, 8);
+            assert_eq!(out.retransmit.len(), if end == 5 { 2 } else { 0 });
+        }
+        // More original packets arrive while the retransmissions cross a
+        // 160ms path. The former 50ms cooldown generated duplicate resends.
+        for end in 6..=9 {
+            let out = apply_sack_to_sent_queue(
+                &mut sent,
+                99,
+                &[(3, end)],
+                now + Duration::from_millis(80),
+                true,
+                8,
+            );
+            assert!(out.retransmit.is_empty());
+        }
+        assert_eq!(sent[&100].transmit_count, 2);
+        assert_eq!(sent[&101].transmit_count, 2);
+        // A SACK may arrive while a marked retransmit awaits the pacer.
+        // Gap acknowledgement cancels it rather than sending an empty chunk.
+        apply_sack_to_sent_queue(&mut sent, 99, &[(1, 9)], now, true, 8);
+        assert!(!sent[&100].needs_retransmit);
+        assert!(!sent[&101].needs_retransmit);
     }
 
     #[test]
@@ -5490,7 +5683,7 @@ mod tests {
     /// Test demonstrating sent_queue buildup in lossy networks
     /// This can cause application-layer send operations to hang
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)]// sent_queue guard is dropped before the .await
+    #[allow(clippy::await_holding_lock)] // sent_queue guard is dropped before the .await
     async fn test_sent_queue_buildup_scenario() {
         let (socket_tx, _) = crate::platform::sync::watch::channel(None);
         let ice_conn = crate::transports::ice::conn::IceConn::new(
@@ -6533,8 +6726,19 @@ mod tests {
     }
 
     /// Test adaptive fast retransmit based on transmit_count
+    /// Fast recovery halves the send window, gently near the floor. The
+    /// receive-direction window, which never grows, no longer caps it: a
+    /// relay's 120 KiB window used to fall to 6 KB (vendored change).
+    #[test]
+    fn fast_recovery_threshold_follows_the_send_window() {
+        assert_eq!(fast_recovery_ssthresh(120 * 1024), 60 * 1024);
+        assert_eq!(fast_recovery_ssthresh(8000), 5600);
+        assert_eq!(fast_recovery_ssthresh(1000), SSTHRESH_MIN);
+        assert_eq!(fast_recovery_ssthresh(CWND_INITIAL), 6000);
+    }
+
     #[tokio::test]
-    async fn test_adaptive_fast_retransmit_for_repeatedly_lost_packets() {
+    async fn test_lost_fast_retransmission_waits_for_timeout() {
         let (socket_tx, _) = crate::platform::sync::watch::channel(None);
         let ice_conn = crate::transports::ice::conn::IceConn::new(
             socket_tx.subscribe(),
@@ -6568,7 +6772,7 @@ mod tests {
             .store(12345, Ordering::SeqCst);
         sctp.inner.cumulative_tsn_ack.store(100, Ordering::SeqCst);
 
-        // Simulate a packet that has been retransmitted but cooldown has passed
+        // A fast retransmission remains unacknowledged after 100 ms.
         {
             let mut sent_queue = sctp.inner.sent_queue.lock();
             sent_queue.insert(
@@ -6576,12 +6780,12 @@ mod tests {
                 ChunkRecord {
                     payload: Bytes::from(vec![0u8; 1200]),
                     sent_time: Instant::now() - Duration::from_millis(100),
-                    transmit_count: 2, // Already retransmitted 2 times
+                    transmit_count: 2, // Original send plus one fast retransmission
                     missing_reports: 0,
                     needs_retransmit: false,
                     abandoned: false,
                     fast_retransmit: true, // Already fast retransmitted
-                    // IMPORTANT: Set cooldown time to 100ms ago (> 50ms MIN_COOLDOWN)
+                    // Beyond the former 50 ms cooldown, but not the RTO.
                     fast_retransmit_time: Some(Instant::now() - Duration::from_millis(100)),
                     in_flight: true,
                     acked: false,
@@ -6634,30 +6838,22 @@ mod tests {
             sctp.inner.handle_sack(sack.freeze()).await.unwrap();
 
             let sent_queue = sctp.inner.sent_queue.lock();
-            if let Some(record) = sent_queue.get(&101) {
-                println!(
-                    "✓ Iteration {}: transmit_count={}, missing_reports={}, fast_retransmit={}",
-                    i + 1,
-                    record.transmit_count,
-                    record.missing_reports,
-                    record.fast_retransmit
-                );
-
-                // After 3rd SACK, with transmit_count=2 and missing_reports=3,
-                // adaptive strategy should trigger fast retransmit immediately (aggressive mode)
-                if i == 2 {
-                    // The packet should have been fast retransmitted again
-                    // transmit_count should have increased to 3
-                    assert!(
-                        record.transmit_count >= 3,
-                        "Adaptive fast retransmit should have triggered for repeatedly lost packet (transmit_count={})",
-                        record.transmit_count
-                    );
-                }
-            }
+            assert_eq!(
+                sent_queue[&101].transmit_count,
+                2,
+                "RFC 9260 7.2.4(5): SACK {} must not repeat fast retransmit",
+                i + 1
+            );
         }
 
-        println!("✅ FIX VERIFIED: Adaptive fast retransmit works for repeatedly lost packets");
+        // A genuinely lost retransmission is still recovered by T3.
+        let rto = Duration::from_secs_f64(sctp.inner.rto_state.lock().rto);
+        let expiry = sctp.inner.sent_queue.lock()[&101].sent_time + rto;
+        sctp.inner.handle_timeout_at(expiry).await.unwrap();
+        let sent = sctp.inner.sent_queue.lock();
+        assert_eq!(sent[&101].transmit_count, 3);
+        assert!(sent[&101].needs_retransmit);
+        assert!(!sent[&101].abandoned);
     }
 
     /// Test that fast retransmit is limited to prevent infinite loops
@@ -6862,7 +7058,7 @@ mod tests {
             let mut sack = BytesMut::new();
             sack.put_u32(100); // cumulative_tsn_ack (stuck at 100)
             sack.put_u32(1024 * 1024); // a_rwnd (large)
-            sack.put_u16(1); // number of gap ack blocks  
+            sack.put_u16(1); // number of gap ack blocks
             sack.put_u16(0); // number of duplicate TSNs
             sack.put_u16((gap_start - 100) as u16); // gap start
             sack.put_u16((gap_start + 2 - 100) as u16); // gap end
@@ -10275,6 +10471,226 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn new_data_overbooks_cwnd_once_without_overbooking_burst() {
+        let config = RtcConfiguration::default();
+        // The first case matches the independent main-branch probe: twenty
+        // 1,188-byte DATA chunks leave 240 bytes of cwnd, enough to admit one
+        // more complete chunk under RFC 9260 section 6.1(B).
+        for (cwnd, outstanding, expected_flight, expected_new) in [
+            (24_000, 20, 24_948, 1),
+            (23_761, 20, 24_948, 1), // one byte of congestion credit suffices
+            (23_760, 20, 23_760, 0), // already at cwnd
+            (23_000, 20, 23_760, 0), // already above cwnd
+            (24_000, 0, 4_752, 4),   // Max.Burst remains strict
+        ] {
+            let (socket_tx, _) = crate::platform::sync::watch::channel(None);
+            let conn = crate::transports::ice::conn::IceConn::new(
+                socket_tx.subscribe(),
+                "127.0.0.1:5000".parse().unwrap(),
+                None,
+            );
+            let (dtls, _, _) = DtlsTransport::new(
+                conn,
+                crate::transports::dtls::generate_certificate().unwrap(),
+                true,
+                100,
+                None,
+            )
+            .await
+            .unwrap();
+            let (_, incoming) = packet_queue::channel(Kind::DtlsData);
+            let (sctp, _runner) = SctpTransport::new(
+                dtls,
+                incoming,
+                Arc::new(Mutex::new(Vec::new())),
+                5000,
+                5000,
+                None,
+                true,
+                &config,
+            );
+            let inner = &sctp.inner;
+            *inner.state.lock() = SctpState::Connected;
+            inner.cwnd_tx.store(cwnd, Ordering::Relaxed);
+            inner.peer_rwnd.store(1_000_000, Ordering::Relaxed);
+            let payload = Bytes::from(vec![0; DEFAULT_MAX_PAYLOAD_SIZE]);
+            for tsn in 100..100 + outstanding {
+                let wire = inner.create_data_chunk(0, 53, &payload, 0, 3, tsn);
+                assert_eq!(wire.len(), 1_188);
+                inner.flight_size.fetch_add(wire.len(), Ordering::Relaxed);
+                inner.sent_queue.lock().insert(
+                    tsn,
+                    ChunkRecord {
+                        payload: wire,
+                        sent_time: Instant::now(),
+                        transmit_count: 1,
+                        missing_reports: 0,
+                        abandoned: false,
+                        fast_retransmit: false,
+                        needs_retransmit: false,
+                        fast_retransmit_time: None,
+                        in_flight: true,
+                        acked: false,
+                        stream_id: 0,
+                        ssn: 0,
+                        flags: 3,
+                        max_retransmits: None,
+                        expiry: None,
+                    },
+                );
+            }
+            inner.next_tsn.store(100 + outstanding, Ordering::Relaxed);
+            for _ in 0..6 {
+                inner.outbound_queue.lock().push_back(OutboundChunk {
+                    stream_id: 0,
+                    ppid: 53,
+                    payload: payload.clone(),
+                    ssn: 0,
+                    flags: 3,
+                    max_retransmits: None,
+                    expiry: None,
+                });
+            }
+            inner
+                .queued_bytes
+                .store(6 * payload.len(), Ordering::Relaxed);
+            inner.transmit().await.unwrap();
+            assert_eq!(inner.flight_size.load(Ordering::Relaxed), expected_flight);
+            assert_eq!(inner.outbound_queue.lock().len(), 6 - expected_new);
+            assert_eq!(
+                inner.queued_bytes.load(Ordering::Relaxed),
+                (6 - expected_new) * payload.len()
+            );
+            // A second call cannot turn residual burst credit into another
+            // burst, even though the final case still has congestion credit.
+            *inner.data_send_after.lock() = Some(Instant::now() + Duration::from_secs(60));
+            inner.transmit().await.unwrap();
+            assert_eq!(inner.flight_size.load(Ordering::Relaxed), expected_flight);
+            sctp.close();
+        }
+    }
+
+    #[tokio::test]
+    async fn pacing_survives_repeated_transmit_calls_and_allows_sacks() {
+        let (socket_tx, _) = crate::platform::sync::watch::channel(None);
+        let ice_conn = crate::transports::ice::conn::IceConn::new(
+            socket_tx.subscribe(),
+            "127.0.0.1:5000".parse().unwrap(),
+            None,
+        );
+        let cert = crate::transports::dtls::generate_certificate().unwrap();
+        let (dtls, _, _) = DtlsTransport::new(ice_conn, cert, true, 100, None)
+            .await
+            .unwrap();
+        let mut config = RtcConfiguration::default();
+        config.sctp_max_burst = 0; // use the default heuristic
+        let (_incoming_tx, incoming_rx) = packet_queue::channel(Kind::DtlsData);
+        let (sctp, runner) = SctpTransport::new(
+            dtls,
+            incoming_rx,
+            Arc::new(Mutex::new(Vec::new())),
+            5000,
+            5000,
+            None,
+            true,
+            &config,
+        );
+        crate::platform::task::spawn(runner);
+        *sctp.inner.state.lock() = SctpState::Connected;
+        sctp.inner
+            .remote_verification_tag
+            .store(12345, Ordering::SeqCst);
+        sctp.inner.rto_state.lock().srtt = 0.160;
+        sctp.inner.cwnd_tx.store(48_000, Ordering::Relaxed);
+        sctp.inner.peer_rwnd.store(1_000_000, Ordering::Relaxed);
+        for _ in 0..20 {
+            sctp.inner.outbound_queue.lock().push_back(OutboundChunk {
+                stream_id: 0,
+                ppid: 53,
+                payload: Bytes::from(vec![0; 1100]),
+                ssn: 0,
+                flags: 3,
+                max_retransmits: None,
+                expiry: None,
+            });
+        }
+        sctp.inner.transmit().await.unwrap();
+        let first = sctp.inner.next_tsn.load(Ordering::Relaxed);
+        let deadline = sctp.inner.data_send_after.lock().unwrap();
+        assert!(deadline > Instant::now());
+        assert!(sctp.inner.sent_queue.lock().len() <= 4);
+        // Keep the test independent of scheduling delays on a loaded runner.
+        *sctp.inner.data_send_after.lock() = Some(Instant::now() + Duration::from_secs(60));
+        for _ in 0..10 {
+            sctp.inner.transmit().await.unwrap();
+        }
+        assert_eq!(sctp.inner.next_tsn.load(Ordering::Relaxed), first);
+        let packets = sctp.inner.stats_packets_sent.load(Ordering::Relaxed);
+        sctp.inner.sack_needed.store(true, Ordering::Relaxed);
+        sctp.inner.transmit().await.unwrap();
+        assert_eq!(
+            sctp.inner.stats_packets_sent.load(Ordering::Relaxed),
+            packets + 1
+        );
+        // Advance just the pacer's deadline; this test needs no wall-clock sleep.
+        let now = Instant::now();
+        *sctp.inner.data_send_after.lock() = Some(now);
+        assert_eq!(sctp.inner.pacing_timeout(now), Duration::ZERO);
+        assert_eq!(sctp.inner.pacing_timeout(now), Duration::from_secs(3600));
+        sctp.inner.transmit().await.unwrap();
+        assert!(sctp.inner.next_tsn.load(Ordering::Relaxed) > first);
+
+        // A millisecond clock must not truncate a short-path deadline to
+        // "now", nor disable pacing when the first RTT samples are zero.
+        for srtt in [0.0, 0.0001] {
+            sctp.inner.rto_state.lock().srtt = srtt;
+            *sctp.inner.data_send_after.lock() = None;
+            let before = Instant::now();
+            sctp.inner.transmit().await.unwrap();
+            assert!(
+                sctp.inner.data_send_after.lock().unwrap() >= before + Duration::from_millis(1)
+            );
+        }
+
+        // Multiple holes share the congestion window, rather than all
+        // retransmitting in one burst. Entering recovery bypasses the pacer
+        // for the first packet, even while the deadline is in the future.
+        sctp.inner.outbound_queue.lock().clear();
+        let pending = {
+            let mut sent = sctp.inner.sent_queue.lock();
+            for record in sent.values_mut() {
+                record.in_flight = false;
+                record.needs_retransmit = true;
+            }
+            sent.len()
+        };
+        sctp.inner.flight_size.store(0, Ordering::Relaxed);
+        sctp.inner
+            .cwnd_tx
+            .store(MAX_SCTP_PACKET_SIZE, Ordering::Relaxed);
+        sctp.inner
+            .fast_recovery_transmit
+            .store(true, Ordering::Relaxed);
+        *sctp.inner.data_send_after.lock() = Some(Instant::now() + Duration::from_secs(60));
+        sctp.inner.transmit().await.unwrap();
+        assert_eq!(sctp.inner.stats_retransmissions.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            sctp.inner
+                .sent_queue
+                .lock()
+                .values()
+                .filter(|record| record.needs_retransmit)
+                .count(),
+            pending - 1
+        );
+        // Pacing headroom is not congestion-window credit. Even after its
+        // deadline expires, another hole must wait for an ACK to free space.
+        *sctp.inner.data_send_after.lock() = Some(Instant::now());
+        sctp.inner.transmit().await.unwrap();
+        assert_eq!(sctp.inner.stats_retransmissions.load(Ordering::Relaxed), 1);
+    }
+
     /// C.11 verification: after the PTO elapses with unacked in-flight data and
     /// no SACK, a Tail Loss Probe retransmits the highest-TSN unacked chunk
     /// once, so a tail loss is recovered in ~PTO instead of waiting the full
@@ -10342,11 +10758,18 @@ mod tests {
             q.insert(101, mk(101)); // tail
         }
 
-        // Make last_send_or_ack look PTO-old.
-        *sctp.inner.last_send_or_ack.lock() = Instant::now() - Duration::from_secs(1);
+        // An unrelated timer (including the DATA pacer) must not probe early.
+        let now = Instant::now();
+        *sctp.inner.last_send_or_ack.lock() = now;
+        assert!(!sctp.inner.maybe_send_tlp_probe(now));
+        assert_eq!(sctp.inner.sent_queue.lock()[&101].transmit_count, 1);
+
+        // Advance the observed time instead of backdating before the
+        // platform clock's first-use anchor (which saturates at zero).
+        let expired = now + Duration::from_secs(1);
 
         let probes_before = sctp.inner.stats_tlp_probes.load(Ordering::Relaxed);
-        let fired = sctp.inner.maybe_send_tlp_probe(Instant::now());
+        let fired = sctp.inner.maybe_send_tlp_probe(expired);
         assert!(fired, "TLP should fire when PTO elapsed with unacked tail");
 
         // The TAIL chunk (highest TSN = 101) is the one probed.
@@ -10362,7 +10785,7 @@ mod tests {
         drop(q);
 
         // Only ONE probe per RTO cycle.
-        let fired2 = sctp.inner.maybe_send_tlp_probe(Instant::now());
+        let fired2 = sctp.inner.maybe_send_tlp_probe(expired);
         assert!(!fired2, "only one TLP per RTO cycle");
         let probes_after = sctp.inner.stats_tlp_probes.load(Ordering::Relaxed);
         assert_eq!(probes_after, probes_before + 1);
@@ -10477,9 +10900,11 @@ mod tests {
         // Insert a single unacked in-flight TSN sent 400ms ago.
         // PTO (250ms) < age (400ms) < RTO (500ms) → TLP should fire, T3 should NOT.
         let age = Duration::from_millis(400);
+        let sent_at = Instant::now();
+        let expired = sent_at + age;
         let chunk = ChunkRecord {
             payload: Bytes::from_static(b"test-payload"),
-            sent_time: Instant::now() - age,
+            sent_time: sent_at,
             transmit_count: 1,
             missing_reports: 0,
             abandoned: false,
@@ -10495,10 +10920,11 @@ mod tests {
             expiry: None,
         };
         sctp.inner.sent_queue.lock().insert(100, chunk);
+        *sctp.inner.last_send_or_ack.lock() = sent_at;
 
         // Simulate the sleep-branch logic: call TLP first, then T3.
         let probes_before = sctp.inner.stats_tlp_probes.load(Ordering::Relaxed);
-        let tlp_fired = sctp.inner.maybe_send_tlp_probe(Instant::now());
+        let tlp_fired = sctp.inner.maybe_send_tlp_probe(expired);
         assert!(
             tlp_fired,
             "TLP should fire — PTO (250ms) has elapsed (age=400ms)"
@@ -10523,7 +10949,7 @@ mod tests {
         }
 
         // Now call handle_timeout — T3 should NOT fire because RTO (500ms) hasn't elapsed yet (age=400ms).
-        sctp.inner.handle_timeout().await.unwrap();
+        sctp.inner.handle_timeout_at(expired).await.unwrap();
 
         // Transmit count should still be 2 (only TLP bumped it, T3 did nothing).
         {
@@ -10581,9 +11007,11 @@ mod tests {
 
         // TSN sent 600ms ago — both PTO (250ms) and RTO (500ms) have elapsed.
         let age = Duration::from_millis(600);
+        let sent_at = Instant::now();
+        let expired = sent_at + age;
         let chunk = ChunkRecord {
             payload: Bytes::from_static(b"test-payload"),
-            sent_time: Instant::now() - age,
+            sent_time: sent_at,
             transmit_count: 1,
             missing_reports: 0,
             abandoned: false,
@@ -10599,16 +11027,16 @@ mod tests {
             expiry: None,
         };
         sctp.inner.sent_queue.lock().insert(100, chunk);
-        *sctp.inner.last_send_or_ack.lock() = Instant::now() - age;
+        *sctp.inner.last_send_or_ack.lock() = sent_at;
 
         let probes_before = sctp.inner.stats_tlp_probes.load(Ordering::Relaxed);
 
         // 1. TLP fires first (sleep-branch order).
-        let tlp_fired = sctp.inner.maybe_send_tlp_probe(Instant::now());
+        let tlp_fired = sctp.inner.maybe_send_tlp_probe(expired);
         assert!(tlp_fired, "TLP must fire — PTO (250ms) has elapsed");
 
         // 2. T3 fires (handle_timeout).
-        sctp.inner.handle_timeout().await.unwrap();
+        sctp.inner.handle_timeout_at(expired).await.unwrap();
 
         let probes_after = sctp.inner.stats_tlp_probes.load(Ordering::Relaxed);
         assert_eq!(probes_after, probes_before + 1, "TLP probe counter");
@@ -11236,6 +11664,8 @@ mod receive_bounds_tests {
             sack.put_u32(1200);
             sack.put_u16(0);
             sack.put_u16(0);
+            // The unpolled runner does not advance the DATA pacing timer.
+            *inner.data_send_after.lock() = Some(Instant::now());
             inner.handle_sack(sack.freeze()).await.unwrap();
             assert!(inner.window_probe.lock().is_none());
             assert_eq!(inner.sent_queue.lock()[&tsn].transmit_count, 2);
@@ -11284,6 +11714,9 @@ mod receive_bounds_tests {
         // More turns than either the receive or congestion window can fill.
         // A second transmit must also charge the chunks already in flight.
         for _ in 0..64 {
+            // Model successive send opportunities within this RTT. Pacing
+            // itself is tested separately; this model exhausts window credit.
+            *tx.data_send_after.lock() = Some(Instant::now());
             tx.transmit().await.unwrap();
         }
         let chunks: Vec<_> = tx
@@ -11329,7 +11762,9 @@ mod receive_bounds_tests {
                 let event = dc.recv().await;
                 let mut expected = [0u8; 32];
                 expected[..4].copy_from_slice(&read.to_be_bytes());
-                assert!(matches!(event, Some(DataChannelEvent::Message(m)) if m.as_ref() == expected));
+                assert!(
+                    matches!(event, Some(DataChannelEvent::Message(m)) if m.as_ref() == expected)
+                );
                 read += 1;
             }
             let sack = rx.inner.create_sack_chunk();
@@ -11381,13 +11816,15 @@ mod receive_bounds_tests {
             .min()
             .unwrap();
         tx.inner
-            .handle_timeout_at(oldest + Duration::from_secs_f64(initial_rto) + Duration::from_millis(1))
+            .handle_timeout_at(
+                oldest + Duration::from_secs_f64(initial_rto) + Duration::from_millis(1),
+            )
             .await
             .unwrap();
         assert!(tx.inner.last_t3_fire_time.lock().is_some());
+        *tx.inner.data_send_after.lock() = Some(Instant::now());
         tx.inner.transmit().await.unwrap();
-        // The public retransmission statistic counts fast retransmits only;
-        // inspect the actual records to include T3 retransmissions too.
+        // Inspect the records to verify which chunks T3 retransmitted.
         let retransmitted = tx
             .inner
             .sent_queue
@@ -11436,6 +11873,7 @@ mod receive_bounds_tests {
         sack.put_u16(0);
         sack.put_u16(2);
         sack.put_u16(2);
+        *inner.data_send_after.lock() = Some(Instant::now());
         inner.handle_sack(sack.freeze()).await.unwrap();
         assert_eq!(inner.sent_queue.lock().len(), 3);
         assert_eq!(inner.flight_size.load(Ordering::Relaxed), 40);
@@ -11447,6 +11885,7 @@ mod receive_bounds_tests {
             .handle_timeout_at(now + Duration::from_secs(2))
             .await
             .unwrap();
+        *inner.data_send_after.lock() = Some(Instant::now());
         inner.transmit().await.unwrap();
         assert_eq!(inner.sent_queue.lock().len(), 3);
         assert_eq!(inner.flight_size.load(Ordering::Relaxed), 40);

@@ -10,6 +10,12 @@ pub use catchup::*;
 mod p2p_channels_rpc_state;
 pub use p2p_channels_rpc_state::*;
 
+mod p2p_channels_rpc_pipeline;
+pub use p2p_channels_rpc_pipeline::*;
+
+mod p2p_channels_rpc_sync_peers;
+pub use p2p_channels_rpc_sync_peers::*;
+
 mod p2p_channels_rpc_actions;
 pub use p2p_channels_rpc_actions::*;
 

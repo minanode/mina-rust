@@ -5,9 +5,12 @@ import { cn } from "@minanode/design-system/lib/utils";
 import { Eyebrow } from "@minanode/design-system/patterns/eyebrow";
 
 import { Container } from "@/components/container";
-import { docsPages, type DocsPage as Page } from "@/content/docs";
-
-const index = { slug: "", title: "Docs overview" };
+import {
+  docsNav,
+  docsOverview,
+  docsPages,
+  type DocsPage as Page,
+} from "@/content/docs";
 
 function href(page: { slug: string }) {
   return page.slug ? `/docs/${page.slug}/` : "/docs/";
@@ -16,44 +19,68 @@ function href(page: { slug: string }) {
 const focusRing =
   "focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring";
 
-function NavList({ current }: { current: string }) {
+/** The Docs pages under their group names. Each group is a list labelled by
+ * its name; `idPrefix` keeps the label ids unique, as the page renders the
+ * list twice (one copy per screen size, the other hidden). */
+function NavGroups({
+  current,
+  idPrefix,
+}: {
+  current: string;
+  idPrefix: string;
+}) {
   return (
-    <ul className="flex flex-col gap-0.5">
-      {[index, ...docsPages].map(page => {
-        const active = page.slug === current;
+    <div className="flex flex-col gap-5">
+      {docsNav.map(group => {
+        const labelId = `${idPrefix}-${group.id}`;
         return (
-          <li key={page.slug}>
-            <a
-              href={href(page)}
-              aria-current={active ? "page" : undefined}
-              className={cn(
-                "block rounded-md px-3 py-2.5 text-sm lg:py-2 transition-colors duration-150",
-                focusRing,
-                active
-                  ? "bg-brand-subtle font-medium text-brand-text"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground",
-              )}
-            >
-              {page.title}
-            </a>
-          </li>
+          <div key={group.id} className="flex flex-col gap-1">
+            <Eyebrow id={labelId} className="px-3">
+              {group.title}
+            </Eyebrow>
+            <ul aria-labelledby={labelId} className="flex flex-col gap-0.5">
+              {group.pages.map(page => {
+                const active = page.slug === current;
+                return (
+                  <li key={page.slug}>
+                    <a
+                      href={href(page)}
+                      aria-current={active ? "page" : undefined}
+                      className={cn(
+                        "block rounded-md px-3 py-2.5 text-sm lg:py-1.5 transition-colors duration-150",
+                        focusRing,
+                        active
+                          ? "bg-brand-subtle font-medium text-brand-text"
+                          : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                      )}
+                    >
+                      {page.title}
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         );
       })}
-    </ul>
+    </div>
   );
 }
 
 /** The Docs pages: a sticky list from lg up, a disclosure above the page
  * below lg. Only one is displayed at a time, so there is one Docs landmark. */
 function DocsNav({ current }: { current: string }) {
+  const group = docsNav.find(group =>
+    group.pages.some(page => page.slug === current),
+  );
   const title =
-    docsPages.find(page => page.slug === current)?.title ?? index.title;
+    group?.pages.find(page => page.slug === current)?.title ??
+    docsOverview.title;
   return (
     <>
       <nav aria-label="Docs" className="hidden lg:block">
-        <div className="sticky top-24 flex flex-col gap-3">
-          <Eyebrow className="px-3">Docs</Eyebrow>
-          <NavList current={current} />
+        <div className="sticky top-24 max-h-[calc(100dvh-7rem)] overflow-y-auto pb-4">
+          <NavGroups current={current} idPrefix="docs-nav" />
         </div>
       </nav>
       <nav aria-label="Docs" className="lg:hidden">
@@ -64,23 +91,19 @@ function DocsNav({ current }: { current: string }) {
               focusRing,
             )}
           >
-            <span>
-              <span className="text-muted-foreground">
-                Docs (
-                {[index, ...docsPages].findIndex(
-                  page => page.slug === current,
-                ) + 1}
-                /{docsPages.length + 1}):{" "}
+            <span className="flex min-w-0 flex-col">
+              <span className="text-xs text-muted-foreground">
+                Docs{group ? `, ${group.title}` : null}
               </span>
               <span className="font-medium text-foreground">{title}</span>
             </span>
             <ChevronDown
               aria-hidden
-              className="size-4 text-muted-foreground transition-transform duration-150 group-open:rotate-180"
+              className="size-4 shrink-0 text-muted-foreground transition-transform duration-150 group-open:rotate-180"
             />
           </summary>
-          <div className="border-t px-1 py-2">
-            <NavList current={current} />
+          <div className="border-t px-1 py-3">
+            <NavGroups current={current} idPrefix="docs-nav-menu" />
           </div>
         </details>
       </nav>
@@ -145,9 +168,10 @@ export function DocsPage({
   showPagination?: boolean;
   children: React.ReactNode;
 }) {
-  const at = docsPages.findIndex(page => page.slug === slug);
-  const prev = at === 0 ? index : at > 0 ? docsPages[at - 1] : undefined;
-  const next = docsPages[at + 1];
+  const order = [docsOverview, ...docsPages];
+  const at = order.findIndex(page => page.slug === slug);
+  const prev = at > 0 ? order[at - 1] : undefined;
+  const next = at >= 0 ? order[at + 1] : undefined;
   return (
     <Container className="grid gap-8 py-10 lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-16 lg:py-16">
       <DocsNav current={slug} />

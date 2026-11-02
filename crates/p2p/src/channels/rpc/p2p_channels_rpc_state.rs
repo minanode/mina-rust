@@ -44,10 +44,14 @@ pub enum P2pRpcLocalState {
     /// told, to retry it with another peer. The peer is kept: its answer may
     /// still come, and moves us to `Responded`. No new request is sent to it
     /// meanwhile, so that a late answer can't be taken for the answer to
-    /// another request. If the request times out a second time, counted from
-    /// `time`, the peer is disconnected.
+    /// another request. If the request times out a second time, the peer is
+    /// disconnected: a timeout after `time` for a libp2p peer, and for a WebRTC
+    /// peer at [`crate::channels::stretched_timeout`] after `sent`
+    /// ([`crate::channels::timed_out_request_expired`]).
     TimedOut {
         time: redux::Timestamp,
+        /// When the request was sent.
+        sent: redux::Timestamp,
         id: P2pRpcId,
         request: Box<P2pRpcRequest>,
     },
@@ -95,29 +99,46 @@ impl P2pChannelsRpcState {
     }
 
     /// Whether our request `rpc_id` has gone unanswered for its timeout: since
-    /// it was sent, or since its first timeout if it has had one.
+    /// it was sent, or since its first timeout if it has had one. For a WebRTC
+    /// peer, `last_received` makes it count from the peer's last bytes
+    /// ([`crate::channels::request_timed_out`]).
     pub fn is_timed_out(
         &self,
         rpc_id: P2pRpcId,
         now: redux::Timestamp,
         config: &P2pTimeouts,
+        last_received: Option<redux::Timestamp>,
     ) -> bool {
         match self {
             Self::Ready {
-                local:
-                    P2pRpcLocalState::Requested { time, id, request }
-                    | P2pRpcLocalState::TimedOut { time, id, request },
+                local: P2pRpcLocalState::Requested { time, id, request },
                 ..
             } => {
                 rpc_id == *id
-                    && request
-                        .kind()
-                        .timeout(config)
-                        .and_then(|timeout| {
-                            let dur = now.checked_sub(*time)?;
-                            Some(dur >= timeout)
-                        })
-                        .unwrap_or(false)
+                    && request.kind().timeout(config).is_some_and(|timeout| {
+                        crate::channels::request_timed_out(*time, timeout, now, last_received)
+                    })
+            }
+            Self::Ready {
+                local:
+                    P2pRpcLocalState::TimedOut {
+                        time,
+                        sent,
+                        id,
+                        request,
+                    },
+                ..
+            } => {
+                rpc_id == *id
+                    && request.kind().timeout(config).is_some_and(|timeout| {
+                        crate::channels::timed_out_request_expired(
+                            *sent,
+                            *time,
+                            timeout,
+                            now,
+                            last_received,
+                        )
+                    })
             }
             _ => false,
         }
@@ -252,12 +273,13 @@ mod tests {
             request: request(),
         });
         assert!(!requested.can_send_request());
-        assert!(!requested.is_timed_out(7, at(24), &config));
-        assert!(requested.is_timed_out(7, at(25), &config));
+        assert!(!requested.is_timed_out(7, at(24), &config, None));
+        assert!(requested.is_timed_out(7, at(25), &config, None));
 
         // The first timeout, at 25 s.
         let timed_out = ready(P2pRpcLocalState::TimedOut {
             time: at(25),
+            sent: at(10),
             id: 7,
             request: request(),
         });
@@ -265,9 +287,16 @@ mod tests {
         assert_eq!(timed_out.pending_local_rpc_id(), None);
         assert_eq!(timed_out.unanswered_local_rpc().map(|(id, _)| id), Some(7));
         assert_eq!(timed_out.timed_out_local_rpc().map(|(id, _)| id), Some(7));
-        assert!(!timed_out.is_timed_out(7, at(39), &config));
-        assert!(timed_out.is_timed_out(7, at(40), &config));
-        assert!(!timed_out.is_timed_out(8, at(40), &config));
+        assert!(!timed_out.is_timed_out(7, at(39), &config, None));
+        assert!(timed_out.is_timed_out(7, at(40), &config, None));
+        assert!(!timed_out.is_timed_out(8, at(40), &config, None));
+        // From a WebRTC peer the second timeout is the ceiling counted from
+        // the send at 10 s, 150 s for a 15 s timeout, whatever it sent since.
+        for last_received in [at(0), at(100), at(159)] {
+            let last_received = Some(last_received);
+            assert!(!timed_out.is_timed_out(7, at(159), &config, last_received));
+            assert!(timed_out.is_timed_out(7, at(160), &config, last_received));
+        }
 
         // Answered late, the slot is free again.
         let responded = ready(P2pRpcLocalState::Responded {

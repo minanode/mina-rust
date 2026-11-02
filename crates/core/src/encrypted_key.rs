@@ -59,13 +59,14 @@
 
 use std::{fs, path::Path};
 
-use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
+use argon2::{password_hash::SaltString, Argon2, Block};
 use base64::Engine;
 use crypto_secretbox::{
     aead::{Aead, OsRng},
     AeadCore, KeyInit, XSalsa20Poly1305,
 };
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Base58String(String);
@@ -95,6 +96,13 @@ pub enum EncryptionError {
     CipherKeyInvalidLength(#[from] crypto_secretbox::cipher::InvalidLength),
     #[error("invalid encrypted key file: {0}")]
     InvalidFormat(&'static str),
+    #[error("invalid encrypted key file: unsupported primitive")]
+    UnsupportedPrimitive,
+    #[error(
+        "key file asks for an unreasonably expensive derivation \
+         ({memory} bytes, {iterations} iterations)"
+    )]
+    TooExpensive { memory: u32, iterations: u32 },
     #[error("Password hash missing after hash_password")]
     HashMissing,
     #[error(transparent)]
@@ -164,6 +172,11 @@ impl EncryptedSecretKeyFile {
         reject_public_key_file(&file)?;
         Ok(serde_json::from_reader(file)?)
     }
+
+    /// The Argon2i cost the file asks for: (memory in bytes, iterations).
+    pub fn pwdiff(&self) -> (u32, u32) {
+        self.pwdiff
+    }
 }
 
 /// The most expensive derivation a key file may ask for: 1 GiB of memory
@@ -175,11 +188,10 @@ const MAX_PWDIFF: (u32, u32) = (1024 * 1024 * 1024, 64);
 
 fn setup_argon(pwdiff: (u32, u32)) -> Result<Argon2<'static>, EncryptionError> {
     if pwdiff.0 > MAX_PWDIFF.0 || pwdiff.1 > MAX_PWDIFF.1 {
-        return Err(EncryptionError::Other(format!(
-            "key file asks for an unreasonably expensive derivation \
-             ({} bytes, {} iterations)",
-            pwdiff.0, pwdiff.1
-        )));
+        return Err(EncryptionError::TooExpensive {
+            memory: pwdiff.0,
+            iterations: pwdiff.1,
+        });
     }
     let params = argon2::Params::new(
         pwdiff.0 / 1024,
@@ -193,6 +205,24 @@ fn setup_argon(pwdiff: (u32, u32)) -> Result<Argon2<'static>, EncryptionError> {
         Default::default(),
         params,
     ))
+}
+
+/// The 32-byte key Argon2i derives from `password` and `salt`: what
+/// `PasswordHasher::hash_password` computes with these parameters, but with
+/// the key and the derivation's memory wiped when dropped.
+fn derive_key(
+    argon2: &Argon2,
+    password: &[u8],
+    salt: &SaltString,
+) -> Result<Zeroizing<[u8; 32]>, EncryptionError> {
+    let mut salt_buffer = [0u8; 64];
+    let salt = salt.decode_b64(&mut salt_buffer)?;
+    let mut memory = Zeroizing::new(vec![Block::default(); argon2.params().block_count()]);
+    let mut key = Zeroizing::new([0u8; 32]);
+    argon2
+        .hash_password_into_with_memory(password, salt, &mut key[..], &mut memory[..])
+        .map_err(argon2::password_hash::Error::from)?;
+    Ok(key)
 }
 
 /// Refuses a key file that other users could read, as OCaml's Secret_file
@@ -268,7 +298,7 @@ pub trait EncryptedSecretKey {
         if encrypted.box_primitive != Self::BOX_PRIMITIVE
             || encrypted.pw_primitive != Self::PW_PRIMITIVE
         {
-            return Err(EncryptionError::InvalidFormat("unsupported primitive"));
+            return Err(EncryptionError::UnsupportedPrimitive);
         }
         // prepare inputs to cipher
         let password = password.as_bytes();
@@ -299,17 +329,14 @@ pub trait EncryptedSecretKey {
         let salt = SaltString::from_b64(&pwsalt_encoded)?;
 
         let argon2 = setup_argon(encrypted.pwdiff)?;
-        let password_hash = argon2
-            .hash_password(password, &salt)?
-            .hash
-            .ok_or(EncryptionError::HashMissing)?;
-        let password_bytes = password_hash.as_bytes();
+        let password_key = derive_key(&argon2, password, &salt)?;
 
         // decrypt cipher
-        let cipher = XSalsa20Poly1305::new_from_slice(password_bytes)?;
+        let cipher = XSalsa20Poly1305::new_from_slice(&password_key[..])?;
         let decrypted = cipher.decrypt(nonce.into(), ciphertext.as_ref())?;
 
-        // Plaintext formats differ for account and P2P keys.
+        // Plaintext formats differ for account and P2P keys. The caller
+        // wipes it.
         Ok(decrypted)
     }
 
@@ -336,7 +363,6 @@ pub trait EncryptedSecretKey {
     /// # Errors
     /// - `EncryptionError::ArgonError`: Key derivation failure
     /// - `EncryptionError::SecretBox`: AEAD encryption failure
-    /// - `EncryptionError::HashMissing`: Argon2 hash generation failure
     ///
     /// # Security Notes
     /// - Uses cryptographically secure random number generation for salt
@@ -345,7 +371,7 @@ pub trait EncryptedSecretKey {
     /// - Each encryption produces unique salt and nonce for security
     fn try_encrypt(key: &[u8], password: &str) -> Result<EncryptedSecretKeyFile, EncryptionError> {
         // add the prefix byte to the key
-        let mut key_prefixed = vec![Self::SECRET_KEY_PREFIX_BYTE];
+        let mut key_prefixed = Zeroizing::new(vec![Self::SECRET_KEY_PREFIX_BYTE]);
         key_prefixed.extend(key);
 
         Self::try_encrypt_raw(&key_prefixed, password)
@@ -361,13 +387,10 @@ pub trait EncryptedSecretKey {
         let argon2 = setup_argon(Self::PW_DIFF)?;
 
         let salt = SaltString::generate(&mut OsRng);
-        let password_hash = argon2
-            .hash_password(password.as_bytes(), &salt)?
-            .hash
-            .ok_or(EncryptionError::HashMissing)?;
+        let password_key = derive_key(&argon2, password.as_bytes(), &salt)?;
 
         let nonce = XSalsa20Poly1305::generate_nonce(&mut OsRng);
-        let cipher = XSalsa20Poly1305::new_from_slice(password_hash.as_bytes())?;
+        let cipher = XSalsa20Poly1305::new_from_slice(&password_key[..])?;
 
         let ciphertext = cipher.encrypt(&nonce, plaintext)?;
 
@@ -398,6 +421,20 @@ mod tests {
 
     fn encrypted() -> EncryptedSecretKeyFile {
         TestKey::try_encrypt_raw(b"synthetic plaintext", "test password").unwrap()
+    }
+
+    #[test]
+    fn derive_key_is_what_hash_password_computes() {
+        use argon2::PasswordHasher;
+        let argon2 = setup_argon(TestKey::PW_DIFF).unwrap();
+        let salt = SaltString::generate(&mut OsRng);
+        let expected = argon2
+            .hash_password(b"test password", &salt)
+            .unwrap()
+            .hash
+            .unwrap();
+        let key = derive_key(&argon2, b"test password", &salt).unwrap();
+        assert_eq!(&key[..], expected.as_bytes());
     }
 
     #[test]
@@ -449,7 +486,10 @@ mod tests {
             let mut json = serde_json::to_value(encrypted()).unwrap();
             json[field] = "unsupported".into();
             let file = serde_json::from_value(json).unwrap();
-            assert!(TestKey::try_decrypt(&file, "test password").is_err());
+            assert!(matches!(
+                TestKey::try_decrypt(&file, "test password"),
+                Err(EncryptionError::UnsupportedPrimitive)
+            ));
         }
     }
 

@@ -125,11 +125,11 @@ function Options({ args }: { args: Arg[] }) {
 
 const journalNote = (command: string) => (
   <>
-    The help text names the systemd unit <C>mina</C>. The unit these docs set
-    up is <C>minanode.service</C>, so read from the journal with{" "}
+    The help text names the systemd unit <C>mina</C>. The unit that these docs
+    set up is <C>minanode.service</C>, so read from the journal with{" "}
     <C>journalctl --user -u minanode.service | mina {command} --log -</C>.{" "}
-    <DocLink href="/docs/bug-reports/#options">Reporting a bug</DocLink> has
-    more.
+    <DocLink href="/docs/bug-reports/#options">Report a bug</DocLink> gives more
+    options.
   </>
 );
 
@@ -140,9 +140,9 @@ const notes: Record<string, ReactNode> = {
   "wallet-generate": (
     <>
       It reads the new key&apos;s password from <C>MINA_PRIVKEY_PASS</C>, and
-      stops if that is unset or empty.{" "}
-      <DocLink href="/docs/block-producer/#key">The key</DocLink> shows how to
-      set it.
+      stops if that variable is unset or empty.{" "}
+      <DocLink href="/docs/block-producer/#key">Make a key</DocLink> shows how
+      to set it.
     </>
   ),
 };
@@ -156,15 +156,17 @@ export default function CliPage() {
     >
       <Prose>
         <p>
-          The same text is printed by <C>mina &lt;command&gt; --help</C>,
-          apart from the notes this page adds to some commands. Every
-          command also takes <C>-h</C> or <C>--help</C>, and <C>mina</C> itself
-          takes <C>-V</C> or <C>--version</C>; they are not listed below. An
-          option with an environment variable may be set by that variable
-          instead; the option on the command line takes precedence. Before
-          opening the HTTP port to other machines, read{" "}
+          <C>mina &lt;command&gt; --help</C> prints the same text, without the
+          notes that this page adds to some commands. Every command also takes{" "}
+          <C>-h</C> or <C>--help</C>, and <C>mina</C> itself takes <C>-V</C> or{" "}
+          <C>--version</C>. The list below leaves those options out.
+        </p>
+        <p>
+          An option that has an environment variable can be set by that variable
+          instead. The option on the command line takes precedence. Before you
+          open the HTTP port to other machines, read{" "}
           <DocLink href="/docs/dashboard/#on-a-server">
-            viewing it on a server
+            Open it on a server
           </DocLink>
           .
         </p>

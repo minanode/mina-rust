@@ -60,7 +60,7 @@ impl TransitionFrontierSyncLedgerSnarkedState {
                         .p2p
                         .ready_peers_iter()
                         .filter(|(_, peer)| {
-                            peer.channels.rpc.can_send_request()
+                            peer.channels.can_send_sync_request()
                                 && check_peer_available(
                                     peer,
                                     ledger.target(),
@@ -87,13 +87,22 @@ impl TransitionFrontierSyncLedgerSnarkedState {
                 let mut peer_ids = global_state
                     .p2p
                     .ready_peers_iter()
-                    .filter(|(_, p)| p.channels.rpc.can_send_request())
-                    .map(|(id, p)| (*id, p.connected_since))
+                    .filter(|(_, p)| p.channels.can_send_sync_request())
+                    .map(|(id, p)| (*id, p.channels.sync_request_room()))
                     .collect::<Vec<_>>();
                 peer_ids.shuffle(&mut global_state.pseudo_rng());
+                // Near WebRTC peers first; far ones get what is left, one
+                // request at a time (`plan_sync_peers`, WEB-NEAREST-RELAY).
+                // libp2p peers keep their shuffled places and room.
+                let plan = global_state.p2p.plan_sync_peers(
+                    peer_ids
+                        .into_iter()
+                        .map(|(peer_id, room)| (peer_id, peer_id, room)),
+                    meta.time(),
+                );
 
                 if is_num_accounts_pending {
-                    for (peer_id, _) in peer_ids {
+                    for (peer_id, _) in plan.into_ordered() {
                         if dispatcher.push_if_enabled(
                             TransitionFrontierSyncLedgerSnarkedAction::PeerQueryNumAccountsInit {
                                 peer_id,
@@ -114,36 +123,62 @@ impl TransitionFrontierSyncLedgerSnarkedState {
                     return;
                 }
 
-                for (peer_id, _) in peer_ids {
-                    if let Some(address) = retry_addresses.last() {
-                        if dispatcher.push_if_enabled(
-                            TransitionFrontierSyncLedgerSnarkedAction::PeerQueryAddressRetry {
-                                peer_id,
-                                address: address.clone(),
-                            },
-                            global_state,
-                            meta.time(),
-                        ) {
-                            retry_addresses.pop();
+                // A WebRTC peer takes several queries at once (`P2pRpcPipeline`),
+                // so go round the peers while they have room. libp2p peers
+                // have room for one, as before.
+                let (mut peer_ids, mut far) = (plan.first, plan.then);
+                loop {
+                    let mut sent = false;
+                    for (peer_id, room) in peer_ids.iter_mut() {
+                        if *room == 0 {
                             continue;
+                        }
+                        let peer_id = *peer_id;
+                        if let Some(address) = retry_addresses.last() {
+                            if dispatcher.push_if_enabled(
+                                TransitionFrontierSyncLedgerSnarkedAction::PeerQueryAddressRetry {
+                                    peer_id,
+                                    address: address.clone(),
+                                },
+                                global_state,
+                                meta.time(),
+                            ) {
+                                retry_addresses.pop();
+                                *room = room.saturating_sub(1);
+                                sent = true;
+                                continue;
+                            }
+                        }
+
+                        if let Some((address, expected_hash)) = addresses.last().cloned() {
+                            if dispatcher.push_if_enabled(
+                                TransitionFrontierSyncLedgerSnarkedAction::PeerQueryAddressInit {
+                                    peer_id,
+                                    expected_hash,
+                                    address,
+                                },
+                                global_state,
+                                meta.time(),
+                            ) {
+                                addresses.pop();
+                                *room = room.saturating_sub(1);
+                                sent = true;
+                                continue;
+                            }
+                        } else if retry_addresses.is_empty() {
+                            break;
                         }
                     }
-
-                    if let Some((address, expected_hash)) = addresses.last().cloned() {
-                        if dispatcher.push_if_enabled(
-                            TransitionFrontierSyncLedgerSnarkedAction::PeerQueryAddressInit {
-                                peer_id,
-                                expected_hash,
-                                address,
-                            },
-                            global_state,
-                            meta.time(),
-                        ) {
-                            addresses.pop();
-                            continue;
-                        }
-                    } else if retry_addresses.is_empty() {
+                    if addresses.is_empty() && retry_addresses.is_empty() {
                         break;
+                    }
+                    if !sent {
+                        // The near peers are full: the far ones get what is
+                        // left.
+                        if far.is_empty() {
+                            break;
+                        }
+                        peer_ids = std::mem::take(&mut far);
                     }
                 }
             }
@@ -689,6 +724,9 @@ impl TransitionFrontierSyncLedgerSnarkedState {
             } => {
                 state.reject_address_answer(address, sender, meta.time());
                 let dispatcher = state_context.into_dispatcher();
+                // Its answer was timed before it was checked: drop that
+                // (`P2pSyncPeerStats::record_rejected`).
+                dispatcher.push(P2pChannelsRpcAction::SyncAnswerRejected { peer_id: *sender });
                 dispatcher.push(TransitionFrontierSyncLedgerSnarkedAction::PeersQuery);
             }
             TransitionFrontierSyncLedgerSnarkedAction::ChildAccountsReceived { .. } => {}
@@ -727,6 +765,7 @@ impl TransitionFrontierSyncLedgerSnarkedState {
             } => {
                 state.reject_address_answer(address, sender, meta.time());
                 let dispatcher = state_context.into_dispatcher();
+                dispatcher.push(P2pChannelsRpcAction::SyncAnswerRejected { peer_id: *sender });
                 dispatcher.push(TransitionFrontierSyncLedgerSnarkedAction::PeersQuery);
             }
             TransitionFrontierSyncLedgerSnarkedAction::Success => {

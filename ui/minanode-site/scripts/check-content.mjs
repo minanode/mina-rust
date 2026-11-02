@@ -55,6 +55,7 @@ try {
 for (const file of [
   "docker-compose.yml",
   "docker-compose.block-producer.yml",
+  "docker-compose.relay.yml",
 ]) {
   try {
     if (

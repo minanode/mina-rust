@@ -10,7 +10,6 @@ import os
 from pathlib import Path
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 import uuid
@@ -18,7 +17,9 @@ import uuid
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
 sys.path.insert(0, str(REPO / "tools/mesa-circuits"))
+sys.path.insert(0, str(REPO / "tools/regression/webnode"))
 from web_pins import build_pins
+from csp import headers_file
 
 
 def sha(path):
@@ -42,6 +43,33 @@ def verify_caches(directory):
                 raise SystemExit(f"{name} verifier cache does not match this source")
 
 
+PEER_ID = r"12D3KooW[1-9A-HJ-NP-Za-km-z]{44}"
+
+
+def public_relays(environ):
+    """The relays, [(DNS name, peer id)], from RELAYS ("NAME=PEER_ID ...",
+    one entry a relay) or, for one relay as before, RELAY_PEER_ID and
+    RELAY_DOMAIN, both required: there is no default relay name."""
+    text = environ.get("RELAYS", "").strip()
+    if text and (environ.get("RELAY_PEER_ID") or environ.get("RELAY_DOMAIN")):
+        raise ValueError("set RELAYS or RELAY_PEER_ID and RELAY_DOMAIN, not both")
+    if not text:
+        if not environ.get("RELAY_DOMAIN"):
+            raise ValueError("set RELAYS, or RELAY_PEER_ID and RELAY_DOMAIN (such as relay1.minaweb.org)")
+        text = f"{environ['RELAY_DOMAIN']}={environ.get('RELAY_PEER_ID', '')}"
+    relays = []
+    for entry in text.split():
+        domain, _, peer = entry.partition("=")
+        if not re.fullmatch(r"[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+", domain):
+            raise ValueError(f"a relay's name must be a DNS name: {domain}")
+        if not re.fullmatch(PEER_ID, peer):
+            raise ValueError(f"set {domain}'s public peer ID (12D3KooW..., 52 characters)")
+        relays.append((domain.lower(), peer))
+    if len({d for d, _ in relays}) != len(relays) or len({p for _, p in relays}) != len(relays):
+        raise ValueError("a relay's name or peer ID is listed twice")
+    return relays
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("commit", help="must be checked out and clean")
@@ -53,13 +81,11 @@ def main():
     out = args.output.resolve()
     if out.exists():
         parser.error("output exists; a release must never replace another release")
-    peer = os.environ.get("RELAY_PEER_ID", "")
-    if not re.fullmatch(r"12D3KooW[1-9A-HJ-NP-Za-km-z]{44}", peer):
-        parser.error("set RELAY_PEER_ID to the relay's public peer ID")
-    domain = os.environ.get("RELAY_DOMAIN", "relay.minaweb.org")
+    try:
+        relays = public_relays(os.environ)
+    except ValueError as error:
+        parser.error(str(error))
     assets = os.environ.get("ASSETS_ORIGIN", "https://assets.minaweb.org").rstrip("/")
-    if not re.fullmatch(r"[a-zA-Z0-9.-]+", domain):
-        parser.error("RELAY_DOMAIN must be a DNS name")
     if not re.fullmatch(r"https://[a-zA-Z0-9.-]+", assets):
         parser.error("ASSETS_ORIGIN must be an HTTPS origin without a path")
     # Fail before compiling; the generic builder can omit either stale cache.
@@ -73,21 +99,24 @@ def main():
         parser.error(str(error))
     # The nonce also distinguishes configuration changes and rebuilds of one commit.
     release = f"releases/{commit}/{uuid.uuid4().hex}"
+    # The page dials every relay and fetches fresh, time-limited TURN
+    # credentials from each relay's credential service at every boot,
+    # rollbacks included; each coturn forwards to its own relay only.
     env = dict(os.environ, UI="minaweb", NETWORK="devnet", NATIVE="", CONTROLS="",
-               RELAY=f"/dns4/{domain}/tcp/443/webrtc/https/p2p/{peer}",
+               RELAY=",".join(f"/dns4/{d}/tcp/443/webrtc/https/p2p/{p}" for d, p in relays),
                WASM_URL=f"{assets}/{release}/wasm",
                CIRCUITS_URL=f"{assets}/{release}/circuit-blobs",
-               ICE_SERVERS=str(HERE / "ice-servers.json"))
+               ICE_SERVERS="",
+               ICE_SERVERS_URLS=",".join(f"https://{d}/ice-servers.json" for d, _ in relays),
+               CSP_CONNECT="")
+    for name in ("RELAYS", "RELAY_PEER_ID", "RELAY_DOMAIN"):
+        env.pop(name, None)
     env.pop("ALLOW_DIRTY", None)
     subprocess.run([str(REPO / "tools/regression/webnode/build.sh"), str(out)],
                    env=env, check=True, cwd=REPO)
     browser = out / "browser"
-    shutil.copyfile(HERE / "_headers", browser / "_headers")
+    (browser / "_headers").write_text(headers_file(HERE / "_headers", browser / "build-info.json"))
     (browser / "serve.json").unlink()
-    # Fetch fresh time-limited credentials at each page boot, including rollback.
-    (browser / "webnode-devnet/ice-servers.json").unlink()
-    (browser / "_redirects").write_text(
-        f"/webnode-devnet/ice-servers.json https://{domain}/ice-servers.json 302\n")
     # Publish raw WASM: no content-encoding ambiguity; CDN compression is optional.
     for suffix in (".br", ".gz", ".zst"):
         for path in (out / "upload/wasm").glob("*" + suffix):
@@ -116,14 +145,21 @@ def main():
     q = shlex.quote
     # rclone refuses changed objects instead of replacing an immutable release.
     # --checksum prevents equal-size changed files from being silently skipped.
+    # Each object stores its Cache-Control: the edge Cache Rule follows the
+    # stored header, and the zone's response-header rule sets only what the
+    # browser sees.
     commands = ["#!/usr/bin/env bash", "set -euo pipefail",
                 'cd -- "$(dirname -- "${BASH_SOURCE[0]}")"', "sha256sum -c SHA256SUMS",
                 "# Configure the private rclone remote 'r2' before running.",
-                f"rclone copy upload {q('r2:' + bucket + '/' + release)} --immutable --checksum",
+                f"rclone copy upload {q('r2:' + bucket + '/' + release)} --immutable --checksum "
+                "--header-upload 'Cache-Control: public, max-age=31536000, immutable'",
                 f"rclone check upload {q('r2:' + bucket + '/' + release)} --download --one-way",
                 "# Verify asset CORS/CORP and MIME types before deploying Pages.",
                 'test "${ASSET_HEADERS_VERIFIED:-}" = yes',
-                f"npx wrangler pages deploy browser --project-name {q(project)} --branch main --commit-hash {commit}"]
+                # The bundle is built from a clean checkout; Wrangler would otherwise mark the
+                # deployment dirty when run inside any git worktree with changes.
+                f"npx wrangler pages deploy browser --project-name {q(project)} --branch main "
+                f"--commit-hash {commit} --commit-dirty=false"]
     (out / "deploy.sh").write_text("\n".join(commands) + "\n")
     print(json.dumps({"manifest": str(out / "manifest.json"), "release": release,
                       "files": len(files), "bytes": sum(f["bytes"] for f in files)}, indent=2))

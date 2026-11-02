@@ -33,10 +33,12 @@ import { formatHeight } from "@minanode/node-client";
 import { useNodeStatus, useSyncView } from "@minanode/node-client/react";
 
 import { CONFIG } from "../config";
+import { VERSION } from "../version";
 import { rolesAllowed } from "../roles/role";
 import { useBoot } from "./boot-context";
 import { CarriedKey } from "./carried-key";
 import { Link, type Route } from "./router";
+import { SecondTabBanner } from "./second-tab-banner";
 
 /** The minanode.org docs. */
 const DOCS_HOME = "https://minanode.org/docs/";
@@ -116,7 +118,7 @@ function StatusChip() {
 function NodeFooter() {
   const { status, build } = useNodeStatus();
   const network = status.data?.network;
-  const version = build.data?.version;
+  const version = build.data?.version ?? VERSION;
   return (
     <div className="flex items-center gap-2">
       {network ? <Badge variant="default">{network}</Badge> : null}
@@ -215,7 +217,12 @@ export function Shell({
       sidebarFooter={<NodeFooter />}
       headerEnd={<StatusChip />}
       mobileHeaderEnd={<ThemeToggle />}
-      banner={<OfflineBanner />}
+      banner={
+        <>
+          <OfflineBanner />
+          <SecondTabBanner />
+        </>
+      }
     >
       <CarriedKey />
       {children}

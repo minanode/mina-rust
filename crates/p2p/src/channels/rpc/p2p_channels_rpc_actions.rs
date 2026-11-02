@@ -54,6 +54,11 @@ pub enum P2pChannelsRpcAction {
         id: P2pRpcId,
         response: Option<Box<P2pRpcResponse>>,
     },
+    /// The sync rejected an answer from this WebRTC peer: it no longer
+    /// ranks as near (`P2pSyncPeerStats::record_rejected`).
+    SyncAnswerRejected {
+        peer_id: PeerId,
+    },
 }
 
 impl P2pChannelsRpcAction {
@@ -67,7 +72,8 @@ impl P2pChannelsRpcAction {
             | Self::ResponseReceived { peer_id, .. }
             | Self::RequestReceived { peer_id, .. }
             | Self::ResponsePending { peer_id, .. }
-            | Self::ResponseSend { peer_id, .. } => peer_id,
+            | Self::ResponseSend { peer_id, .. }
+            | Self::SyncAnswerRejected { peer_id } => peer_id,
         }
     }
 }
@@ -97,7 +103,7 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsRpcAction {
                         .filter(|p| !p.is_libp2p() || request.kind().supported_by_libp2p())
                         .and_then(|p| p.status.as_ready())
                         .is_some_and(|p| {
-                            p.channels.rpc.can_send_request()
+                            p.channels.can_send_rpc(request)
                                 && p.channels.next_local_rpc_id() == *id
                         })
                     && (!matches!(request.as_ref(), P2pRpcRequest::BestTipWithProof)
@@ -106,24 +112,19 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsRpcAction {
                         || state.is_completed_snarks_request_within_budget(peer_id, time))
             }
             P2pChannelsRpcAction::Timeout { peer_id, id } => {
-                state.get_ready_peer(peer_id).is_some_and(|p| {
-                    p.channels
-                        .rpc
-                        .unanswered_local_rpc()
-                        .is_some_and(|(rpc_id, _)| rpc_id == *id)
-                }) && state.is_peer_rpc_timed_out(peer_id, *id, time)
+                state
+                    .get_ready_peer(peer_id)
+                    .is_some_and(|p| p.channels.is_rpc_unanswered(*id))
+                    && state.is_peer_rpc_timed_out(peer_id, *id, time)
             }
             P2pChannelsRpcAction::ResponseReceived { peer_id, id, .. } => {
                 // TODO(binier): use consensus to enforce that peer doesn't send
                 // us inferior block than it has in the past.
                 // TODO(binier): validate that response corresponds to request.
                 // A request that timed out once may still be answered.
-                state.get_ready_peer(peer_id).is_some_and(|p| {
-                    p.channels
-                        .rpc
-                        .unanswered_local_rpc()
-                        .is_some_and(|(rpc_id, _)| rpc_id == *id)
-                })
+                state
+                    .get_ready_peer(peer_id)
+                    .is_some_and(|p| p.channels.is_rpc_unanswered(*id))
             }
             P2pChannelsRpcAction::RequestReceived {
                 peer_id,
@@ -195,6 +196,9 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsRpcAction {
                     }
                 })
             }
+            P2pChannelsRpcAction::SyncAnswerRejected { peer_id } => state
+                .get_ready_peer(peer_id)
+                .is_some_and(|p| p.channels.rpc_pipeline.enabled),
         }
     }
 }

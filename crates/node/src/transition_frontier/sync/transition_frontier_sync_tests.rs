@@ -41,6 +41,15 @@ mod fresh_sync_tests;
 #[path = "no_outcome_sync_tests.rs"]
 mod no_outcome_sync_tests;
 
+#[path = "webrtc_pipeline_sync_tests.rs"]
+mod webrtc_pipeline_sync_tests;
+
+#[path = "nearest_peer_sync_tests.rs"]
+mod nearest_peer_sync_tests;
+
+#[path = "root_retarget_sync_tests.rs"]
+mod root_retarget_sync_tests;
+
 /// Mesa mainnet block 563900, from a `get_transition_chain` answer captured
 /// from an OCaml node: the template for the blocks below.
 fn template_block() -> Block {
@@ -202,6 +211,7 @@ fn sync_test_node(best_chain: Vec<AppliedBlock>) -> crate::State {
             limits: Default::default(),
             peer_discovery: false,
             seed_only: false,
+            sharing: Default::default(),
             meshsub: Default::default(),
             catchup_rpc: Default::default(),
         },

@@ -4,6 +4,7 @@ import { parseRole, runOptions, runRoleArgs, VIEWER } from "./role";
 
 const PUBLIC = `B62q${"1".repeat(51)}`;
 const PRIVATE = `EK${"3".repeat(50)}`;
+const RECEIVER = `B62q${"2".repeat(51)}`;
 
 describe("the tab's role", () => {
   test("is read on devnet only", () => {
@@ -29,10 +30,40 @@ describe("the tab's role", () => {
       JSON.stringify({ kind: "worker", publicKey: PUBLIC, fee: "1e3" }),
       JSON.stringify({ kind: "worker", publicKey: "B62", fee: "1" }),
       JSON.stringify({ kind: "producer", publicKey: PRIVATE }),
+      JSON.stringify({
+        kind: "producer",
+        publicKey: PUBLIC,
+        coinbaseReceiver: PRIVATE,
+      }),
+      JSON.stringify({
+        kind: "producer",
+        publicKey: PUBLIC,
+        coinbaseReceiver: "",
+      }),
+      JSON.stringify({
+        kind: "producer",
+        publicKey: PUBLIC,
+        coinbaseReceiver: null,
+      }),
       JSON.stringify({ kind: "both", publicKey: PUBLIC }),
     ]) {
       expect(parseRole(text, "devnet")).toEqual(VIEWER);
     }
+  });
+
+  test("a producer keeps its coinbase receiver, if it chose one", () => {
+    const paying = {
+      kind: "producer",
+      publicKey: PUBLIC,
+      coinbaseReceiver: RECEIVER,
+    } as const;
+    expect(parseRole(JSON.stringify(paying), "devnet")).toEqual(paying);
+    expect(
+      parseRole(
+        JSON.stringify({ kind: "producer", publicKey: PUBLIC }),
+        "devnet",
+      ),
+    ).toEqual({ kind: "producer", publicKey: PUBLIC });
   });
 
   test("never holds a private key", () => {
@@ -49,14 +80,24 @@ describe("run's arguments", () => {
   test("a worker passes its public key and fee, no producer key", () => {
     expect(
       runRoleArgs({ kind: "worker", publicKey: PUBLIC, fee: "1" }, null),
-    ).toEqual({ blockProducer: null, snarker: PUBLIC, snarkerFee: "1" });
+    ).toEqual({
+      blockProducer: null,
+      coinbaseReceiver: null,
+      snarker: PUBLIC,
+      snarkerFee: "1",
+    });
   });
 
   test("a producer passes its key only if it matches", () => {
     const role = { kind: "producer", publicKey: PUBLIC } as const;
     expect(
       runRoleArgs(role, { publicKey: PUBLIC, privateKey: PRIVATE }),
-    ).toEqual({ blockProducer: PRIVATE, snarker: null, snarkerFee: null });
+    ).toEqual({
+      blockProducer: PRIVATE,
+      coinbaseReceiver: null,
+      snarker: null,
+      snarkerFee: null,
+    });
     expect(() =>
       runRoleArgs(role, {
         publicKey: `B62q${"2".repeat(51)}`,
@@ -64,6 +105,17 @@ describe("run's arguments", () => {
       }),
     ).toThrow();
     expect(() => runRoleArgs(role, null)).toThrow();
+  });
+
+  test("a producer's coinbase receiver is passed when it chose one", () => {
+    const pair = { publicKey: PUBLIC, privateKey: PRIVATE };
+    expect(
+      runRoleArgs(
+        { kind: "producer", publicKey: PUBLIC, coinbaseReceiver: RECEIVER },
+        pair,
+      ).coinbaseReceiver,
+    ).toBe(RECEIVER);
+    expect(runRoleArgs(VIEWER, null).coinbaseReceiver).toBeNull();
   });
 
   test("no role turns on peer discovery (PR #173)", () => {
@@ -79,5 +131,13 @@ describe("run's arguments", () => {
       frontierStore: true,
       frontierStoreReset: true,
     });
+  });
+
+  test("sharing is off unless the visitor turned it on", () => {
+    expect(runOptions(true, null)).not.toHaveProperty("sharing");
+    expect(runOptions(true, null, false, false)).not.toHaveProperty("sharing");
+    const on = runOptions(true, null, false, true);
+    expect(on).toEqual({ frontierStore: true, sharing: true });
+    expect(on).not.toHaveProperty("peerDiscovery");
   });
 });

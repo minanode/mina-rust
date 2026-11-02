@@ -84,11 +84,16 @@ impl P2pChannelsStreamingRpcState {
         }
     }
 
+    /// Whether the part we asked for last has not come within the timeout.
+    /// For a WebRTC peer, `last_received` makes it count from the peer's
+    /// last bytes ([`crate::channels::request_timed_out`]): a part of
+    /// megabytes on a slow link is still arriving.
     pub fn is_timed_out(
         &self,
         rpc_id: P2pStreamingRpcId,
         now: redux::Timestamp,
         config: &P2pTimeouts,
+        last_received: Option<redux::Timestamp>,
     ) -> bool {
         match self {
             Self::Ready {
@@ -102,14 +107,14 @@ impl P2pChannelsStreamingRpcState {
                 ..
             } => {
                 rpc_id == *id
-                    && request
-                        .kind()
-                        .timeout(config)
-                        .and_then(|timeout| {
-                            let dur = now.checked_sub(progress.last_updated())?;
-                            Some(dur >= timeout)
-                        })
-                        .unwrap_or(false)
+                    && request.kind().timeout(config).is_some_and(|timeout| {
+                        crate::channels::request_timed_out(
+                            progress.last_updated(),
+                            timeout,
+                            now,
+                            last_received,
+                        )
+                    })
             }
             _ => false,
         }

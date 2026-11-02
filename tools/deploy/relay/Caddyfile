@@ -1,7 +1,8 @@
 # Caddy in front of the relay: TLS from Let's Encrypt for its WebRTC
 # signalling, on 443, so that a page served over HTTPS can call it. Install
 # this file, relay.caddy and (optionally) ../site/site.caddy in /etc/caddy;
-# see README.md here.
+# see README.md here. Not for a public relay: relay.caddy has no rate or
+# connection limits (the public kit is nginx, ../minaweb).
 #
 # The names come from Caddy's environment (a systemd drop-in, README.md) or
 # default to the minaweb.org ones. Their DNS records must point at this host

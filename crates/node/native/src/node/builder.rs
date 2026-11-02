@@ -126,6 +126,7 @@ impl NodeBuilder {
                 enabled_channels: ChannelId::without_signaling().collect(),
                 peer_discovery: true,
                 seed_only: false,
+                sharing: Default::default(),
                 meshsub: P2pMeshsubConfig {
                     initial_time: Duration::ZERO,
                     ..Default::default()
@@ -215,11 +216,14 @@ impl NodeBuilder {
         self
     }
 
-    /// Opt in to relaying signaling between peers (including browser visitors).
-    pub fn p2p_signaling_relay(&mut self) -> &mut Self {
+    /// Introduce browsers that opted in to sharing to each other, within the
+    /// limits of `mina_p2p::sharing`. The signalling channels serve nothing
+    /// else: this node neither asks for introductions nor takes offers.
+    pub fn p2p_sharing_relay(&mut self) -> &mut Self {
         self.p2p
             .enabled_channels
             .extend([ChannelId::SignalingDiscovery, ChannelId::SignalingExchange]);
+        self.p2p.sharing = mina_node::p2p::P2pSharing::relay();
         self
     }
 

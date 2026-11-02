@@ -49,6 +49,61 @@ def relay_address(value):
     return value
 
 
+# As tools/regression/webnode/csp.py, which made the bundle's policy; this
+# file ships alone in the archive, so it repeats the little it needs.
+X_FRAME_OPTIONS = "DENY"
+PERMISSIONS_POLICY = ("accelerometer=(), camera=(), display-capture=(), "
+                      "geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), "
+                      "midi=(), payment=(), serial=(), usb=()")
+
+
+IPV6_REFUSED = ("a Content-Security-Policy cannot name an IPv6 relay, and "
+                "allowing its whole scheme would let the page send data to any "
+                "host; give the relay a DNS name (/dns/NAME/...)")
+
+
+def relay_source(relay):
+    """The relay's signalling origin as a CSP source. A source has no IPv6
+    form, so an IPv6 relay is refused rather than widened to its scheme."""
+    family, host, port, scheme, _ = RELAY.fullmatch(relay).groups()
+    if family == "ip6":
+        raise ValueError(IPV6_REFUSED)
+    if family == "ip4":
+        host = str(ipaddress.IPv4Address(host))
+    host = host.lower()
+    port = int(port)
+    return f"{scheme}://{host}" if port == {"http": 80, "https": 443}[scheme] else f"{scheme}://{host}:{port}"
+
+
+def bundle_relays(manifest):
+    """The relays the bundle was built for (an older one names one)."""
+    relays = manifest.get("relays") or [manifest["relay"]]
+    if not isinstance(relays, list) or not all(isinstance(r, str) for r in relays):
+        raise ValueError("unsupported bundle manifest")
+    return relays
+
+
+def page_policy(manifest, relays):
+    """The bundle's Content-Security-Policy with these relays' signalling
+    origins in place of the ones it was built with."""
+    if isinstance(relays, str):
+        relays = [relays]
+    policy = manifest.get("build", {}).get("contentSecurityPolicy")
+    if not policy:
+        raise ValueError("the bundle has no Content-Security-Policy")
+    built = [relay_source(r) for r in bundle_relays(manifest)]
+    used = list(dict.fromkeys(relay_source(r) for r in relays))
+    directives = [part.split() for part in policy.split(";") if part.strip()]
+    for directive in directives:
+        if directive[0] == "connect-src":
+            if not all(source in directive for source in built):
+                raise ValueError("the bundle's policy does not name its relays")
+            at = min(directive.index(source) for source in built)
+            kept = [source for source in directive if source not in built]
+            directive[:] = kept[:at] + [s for s in used if s not in kept] + kept[at:]
+    return "; ".join(" ".join(directive) for directive in directives)
+
+
 def sha(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
@@ -77,14 +132,18 @@ def verify(root):
     sums += f"{sha(root / 'manifest.json')}  manifest.json\n"
     if (root / "SHA256SUMS").read_text() != sums:
         raise ValueError("SHA256SUMS does not match the manifest")
-    relay_address(manifest["relay"])
+    for relay in bundle_relays(manifest):
+        relay_address(relay)
     return manifest
 
 
-def handler(root, manifest, relay, port):
+def handler(root, manifest, relays, port):
+    if isinstance(relays, str):
+        relays = [relays]
     files = {"/" + f["path"].removeprefix("browser/"): root / f["path"]
              for f in manifest["files"] if f["path"].startswith("browser/")}
-    config = json.dumps({"relays": [relay]}).encode()
+    config = json.dumps({"relays": relays}).encode()
+    policy = page_policy(manifest, relays)
     types = {".html": "text/html; charset=utf-8", ".js": "text/javascript",
              ".css": "text/css", ".json": "application/json", ".wasm": "application/wasm",
              ".svg": "image/svg+xml", ".woff2": "font/woff2", ".txt": "text/plain"}
@@ -134,6 +193,10 @@ def handler(root, manifest, relay, port):
             self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
             self.send_header("Cross-Origin-Resource-Policy", "same-origin")
             self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Security-Policy", policy)
+            self.send_header("X-Frame-Options", X_FRAME_OPTIONS)
+            self.send_header("Permissions-Policy", PERMISSIONS_POLICY)
             self.send_header("Cache-Control", "no-store")
             super().end_headers()
 
@@ -143,7 +206,8 @@ def handler(root, manifest, relay, port):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--relay", type=relay_address, help="replace the bundle's relay; no discovery")
+    parser.add_argument("--relay", type=relay_address, action="append",
+                        help="replace the bundle's relays; repeat for several, each dialled; no discovery")
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
@@ -156,9 +220,18 @@ def main():
     print("Bundle hashes verified. Authenticate the archive with the signed release checksums.", flush=True)
     if args.verify_only:
         return
-    relay = args.relay or manifest["relay"]
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), handler(root, manifest, relay, args.port))
-    print(f"Open http://127.0.0.1:{args.port}/\nRelay: {relay}\nCtrl-C to stop.", flush=True)
+    relays = args.relay or bundle_relays(manifest)
+    if len(set(relays)) != len(relays):
+        parser.exit(1, "Relay refused: a relay is given twice\n")
+    if any(relay.startswith("/ip6/") for relay in relays):
+        parser.exit(1, f"Relay refused: {IPV6_REFUSED}\n")
+    try:
+        page = handler(root, manifest, relays, args.port)
+    except ValueError as error:
+        parser.exit(1, f"Verification failed: {error}\n")
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), page)
+    print(f"Open http://127.0.0.1:{args.port}/\n" + "".join(f"Relay: {r}\n" for r in relays)
+          + "Ctrl-C to stop.", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

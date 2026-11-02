@@ -8,7 +8,7 @@ import { toneFill, type Tone } from "@minanode/design-system/patterns/signal";
  * - current: under way
  * - stopped: where it ended without this step
  * - skipped: not reached, it ended earlier
- * - pending: still to come
+ * - pending: waiting its turn
  */
 type TimelineState = "done" | "current" | "stopped" | "skipped" | "pending";
 
@@ -28,7 +28,7 @@ const stateWords: Record<Exclude<TimelineState, "done">, string> = {
   current: "under way",
   stopped: "stopped here",
   skipped: "not reached",
-  pending: "to come",
+  pending: "waiting",
 };
 
 function Marker({ state, tone }: { state: TimelineState; tone: Tone }) {

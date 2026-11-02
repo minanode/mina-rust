@@ -9,7 +9,7 @@ import { sourceBuild } from "@/content/docs";
 
 export const metadata: Metadata = {
   title: "Build from source",
-  description: "Build the minanode dashboard and native node from source.",
+  description: "Build the minanode dashboard and the native node from source.",
   alternates: { canonical: "/docs/build-from-source/" },
 };
 
@@ -45,15 +45,15 @@ export default function BuildFromSourcePage() {
     <DocsPage
       slug="build-from-source"
       title="Build from source"
-      lead="Build the dashboard first, then the node."
+      lead="Build the dashboard and the native node from the release source. Build the dashboard first, because the node embeds it."
     >
       <DocSection id="prepare" title="1. Prepare">
         <Prose>
           <p>
-            On Ubuntu, ask an administrator to install the build packages. The
-            commands below are for Ubuntu on x86-64. On ARM64, use rustup&apos;s
-            aarch64 installer and the Node.js arm64 archive.
+            The commands below are for Ubuntu on x86-64. On ARM64, use
+            rustup&apos;s aarch64 installer and the Node.js arm64 archive.
           </p>
+          <p>First, ask an administrator to install the build packages:</p>
         </Prose>
         <CodeBlock code={packages} label="system packages" />
         <Prose>
@@ -69,15 +69,15 @@ export default function BuildFromSourcePage() {
           <p>
             Run these commands in one shell. The clone checks out the release
             tag, <C>v{release.version}</C>, and git notes that the checkout is a
-            detached HEAD. Without <C>--branch</C>, it builds the newest code on
-            the default branch instead.
+            detached HEAD. Without <C>--branch</C>, the commands build the
+            newest code on the default branch instead.
           </p>
         </Prose>
         <CodeBlock code={build} label="build commands" />
         <Prose>
           <p>
-            Cargo writes the binary to <C>target/release/mina</C>. If the
-            dashboard was not built first, the binary has no dashboard, and the
+            Cargo writes the binary to <C>target/release/mina</C>. If you did
+            not build the dashboard first, the binary has no dashboard, and the
             release build warns.
           </p>
           <p data-claim={sourceBuild.circuits.claim}>
@@ -85,28 +85,6 @@ export default function BuildFromSourcePage() {
           </p>
           <p data-claim={sourceBuild.measurements.claim}>
             {sourceBuild.measurements.text}
-          </p>
-        </Prose>
-      </DocSection>
-
-      <DocSection id="webrtc-backend" title="WebRTC backend">
-        <Prose>
-          <p>
-            The default <C>p2p-webrtc</C> feature uses rustrtc for server-side
-            WebRTC. To build with the previous webrtc-rs backend, enable{" "}
-            <C>p2p-webrtc-rs</C> with the command below. The backend is selected
-            at build time; there is no automatic fallback.
-          </p>
-        </Prose>
-        <CodeBlock
-          code={`CARGO_BUILD_JOBS=8 cargo build --release --locked \\
-  -p mina-cli --bin mina --features p2p-webrtc-rs`}
-          label="build with webrtc-rs"
-        />
-        <Prose>
-          <p>
-            <C>mina --version</C> and <C>mina build-info</C> name the selected
-            backend.
           </p>
         </Prose>
       </DocSection>
@@ -119,12 +97,34 @@ target/release/mina build-info`}
         />
         <Prose>
           <p>
-            Both commands should report the build you expect. Then{" "}
-            <DocLink href="/docs/run-a-node/">run a node</DocLink> and open its
-            dashboard.
+            Check that both commands report the version and commit you built.
+            Then <DocLink href="/docs/run-a-node/">run a node</DocLink> and open
+            its dashboard.
           </p>
           <p data-claim={sourceBuild.release.claim}>
             {sourceBuild.release.text}
+          </p>
+        </Prose>
+      </DocSection>
+
+      <DocSection id="webrtc-backend" title="Build with the webrtc-rs backend">
+        <Prose>
+          <p>
+            The default <C>p2p-webrtc</C> feature uses rustrtc for server-side
+            WebRTC. To build with the previous webrtc-rs backend, enable{" "}
+            <C>p2p-webrtc-rs</C> with the command below. The build chooses the
+            backend, and there is no automatic fallback.
+          </p>
+        </Prose>
+        <CodeBlock
+          code={`CARGO_BUILD_JOBS=8 cargo build --release --locked \\
+  -p mina-cli --bin mina --features p2p-webrtc-rs`}
+          label="build with webrtc-rs"
+        />
+        <Prose>
+          <p>
+            <C>mina --version</C> and <C>mina build-info</C> name the selected
+            backend.
           </p>
         </Prose>
       </DocSection>

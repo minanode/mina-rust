@@ -26,7 +26,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version, without the v (e.g. 0.20.1)"
+        description: "Release version, without the v (e.g. 0.21.0)"
         required: true
         type: string
       commit:
@@ -177,7 +177,32 @@ jobs:
             > "$RUNNER_TEMP/allowed_signers"
           ssh-keygen -Y verify -f "$RUNNER_TEMP/allowed_signers" \
             -I release@minanode.org -n file -s SHA256SUMS.sig < SHA256SUMS
-          sha256sum -c --strict SHA256SUMS
+          # Every line is a SHA-256, two spaces and a plain file name, so no
+          # second entry for an archive can hide in another format.
+          if ! LC_ALL=C awk '
+            /^#/ { next }
+            {
+              h = substr($0, 1, 64)
+              name = substr($0, 67)
+              if (length(h) != 64 || h ~ /[^0-9a-fA-F]/ ||
+                  substr($0, 65, 2) != "  " ||
+                  name !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) exit 1
+            }
+          ' SHA256SUMS; then
+            echo "::error::SHA256SUMS has a line that is not a SHA-256, two spaces and a file name"
+            exit 1
+          fi
+          # SHA256SUMS lists every release asset, the web archive too. Check
+          # the one line for each native archive this job downloaded.
+          for arch in x86_64 arm64; do
+            f="mina-$VERSION-linux-$arch.tar.gz"
+            awk -v f="$f" 'substr($0, 65) == "  " f' SHA256SUMS > "$RUNNER_TEMP/check-$arch"
+            if [ "$(wc -l < "$RUNNER_TEMP/check-$arch")" != 1 ]; then
+              echo "::error::SHA256SUMS has no single line for $f"
+              exit 1
+            fi
+            sha256sum -c --strict "$RUNNER_TEMP/check-$arch"
+          done
           for arch in x86_64 arm64; do
             # One JSON object; exact strings: commit, version and target.
             if ! tar -xzOf "mina-$VERSION-linux-$arch.tar.gz" build-info.json |
@@ -251,7 +276,32 @@ jobs:
             > "$RUNNER_TEMP/allowed_signers"
           ssh-keygen -Y verify -f "$RUNNER_TEMP/allowed_signers" \
             -I release@minanode.org -n file -s SHA256SUMS.sig < SHA256SUMS
-          sha256sum -c --strict SHA256SUMS
+          # Every line is a SHA-256, two spaces and a plain file name, so no
+          # second entry for an archive can hide in another format.
+          if ! LC_ALL=C awk '
+            /^#/ { next }
+            {
+              h = substr($0, 1, 64)
+              name = substr($0, 67)
+              if (length(h) != 64 || h ~ /[^0-9a-fA-F]/ ||
+                  substr($0, 65, 2) != "  " ||
+                  name !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) exit 1
+            }
+          ' SHA256SUMS; then
+            echo "::error::SHA256SUMS has a line that is not a SHA-256, two spaces and a file name"
+            exit 1
+          fi
+          # SHA256SUMS lists every release asset, the web archive too. Check
+          # the one line for each native archive this job downloaded.
+          for arch in x86_64 arm64; do
+            f="mina-$VERSION-linux-$arch.tar.gz"
+            awk -v f="$f" 'substr($0, 65) == "  " f' SHA256SUMS > "$RUNNER_TEMP/check-$arch"
+            if [ "$(wc -l < "$RUNNER_TEMP/check-$arch")" != 1 ]; then
+              echo "::error::SHA256SUMS has no single line for $f"
+              exit 1
+            fi
+            sha256sum -c --strict "$RUNNER_TEMP/check-$arch"
+          done
           for arch in x86_64 arm64; do
             # One JSON object; exact strings: commit, version and target.
             if ! tar -xzOf "mina-$VERSION-linux-$arch.tar.gz" build-info.json |

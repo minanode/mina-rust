@@ -4,14 +4,23 @@
 #
 #   SITE_DOMAIN  the site's name (default minaweb.org)
 #   SITE_ROOT    the build's browser/ directory (default /srv/minaweb)
+#   SITE_CSP     required: the build's Content-Security-Policy, its
+#                build-info.json's contentSecurityPolicy (build.sh prints it).
+#                Unset, the policy refuses everything and the page won't load
 
 {$SITE_DOMAIN:minaweb.org} {
 	root * {$SITE_ROOT:/srv/minaweb}
-	# Cross-origin isolation, without which the node has no threads.
+	# Cross-origin isolation, without which the node has no threads, and the
+	# page's Content-Security-Policy, no framing and no powerful features.
 	header {
 		Cross-Origin-Opener-Policy same-origin
 		Cross-Origin-Embedder-Policy require-corp
 		Cross-Origin-Resource-Policy same-origin
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		Content-Security-Policy "{$SITE_CSP:default-src 'none'}"
+		X-Frame-Options DENY
+		Permissions-Policy "accelerometer=(), camera=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), serial=(), usb=()"
 		Cache-Control no-cache
 	}
 	# A WASM is named by its content: another build is another name.

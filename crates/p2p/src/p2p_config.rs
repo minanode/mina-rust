@@ -26,6 +26,9 @@ pub struct P2pConfig {
     /// incoming connections. Used by the public browser node.
     #[serde(default)]
     pub seed_only: bool,
+    /// Browser-to-browser sharing (MINAWEB-OPT-IN-SHARING). Off by default.
+    #[serde(default)]
+    pub sharing: crate::P2pSharing,
     /// External addresses
     pub external_addrs: Vec<IpAddr>,
 
@@ -47,8 +50,21 @@ pub struct P2pConfig {
 }
 
 impl P2pConfig {
+    /// A seed-only node dials its exact initial peer addresses, and, sharing,
+    /// the browsers its seeds introduce; the sharing limits are checked
+    /// separately ([`crate::P2pState::sharing_allows_dial`]).
     pub fn allows_dial(&self, opts: &P2pConnectionOutgoingInitOpts) -> bool {
-        !self.seed_only || self.initial_peers.contains(opts)
+        !self.seed_only || self.initial_peers.contains(opts) || self.sharing_dial(opts)
+    }
+
+    /// A sharing browser's dial to a browser that one of its seeds introduced.
+    fn sharing_dial(&self, opts: &P2pConnectionOutgoingInitOpts) -> bool {
+        let is_seed = |id: &crate::PeerId| self.initial_peers.iter().any(|s| s.peer_id() == id);
+        self.sharing.is_peer()
+            && opts
+                .webrtc_p2p_relay_peer_id()
+                .is_some_and(|relay| is_seed(&relay))
+            && !is_seed(opts.peer_id())
     }
 }
 

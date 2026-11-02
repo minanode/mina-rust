@@ -367,6 +367,7 @@ impl Cluster {
             enabled_channels: mina_p2p::channels::ChannelId::for_libp2p().collect(),
             peer_discovery: config.discovery,
             seed_only: false,
+            sharing: Default::default(),
             timeouts: config.timeouts,
             limits: config.limits,
             meshsub: P2pMeshsubConfig::default(),

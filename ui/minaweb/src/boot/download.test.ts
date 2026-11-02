@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import { BootError, downloadWasm, sha256Hex } from "./download";
+import { BootError, compressedSize, downloadWasm, sha256Hex } from "./download";
 
 const bytes = new TextEncoder().encode("\0asm not really a module");
 
@@ -43,4 +43,17 @@ test("a missing file and no answer are told apart", async () => {
     async () => Promise.reject(new TypeError("Failed to fetch")),
   ).catch((e: BootError) => e.failure);
   expect(offline).toMatchObject({ kind: "download" });
+});
+
+test("the WASM's compressed size, from the browser's resource timing", () => {
+  const timing = (encodedBodySize: number) => ({
+    getEntriesByName: () =>
+      [{ encodedBodySize }] as unknown as PerformanceEntryList,
+  });
+  const url = "https://minaweb.org/assets/webnode/pkg/node.wasm";
+  expect(compressedSize(url, 39_160_000, timing(6_470_000))).toBe(6_470_000);
+  // Sent as it is, or the browser doesn't say.
+  expect(compressedSize(url, 39_160_000, timing(39_160_000))).toBeNull();
+  expect(compressedSize(url, 39_160_000, timing(0))).toBeNull();
+  expect(compressedSize(url, 39_160_000, undefined)).toBeNull();
 });

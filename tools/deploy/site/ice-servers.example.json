@@ -1,11 +1,20 @@
 [
-  { "urls": "stun:<VPS_PUBLIC_IPV4>:3478" },
+  { "urls": "stun:<RELAY1_IPV4>:3478" },
   {
     "urls": [
-      "turn:<VPS_PUBLIC_IPV4>:3478?transport=udp",
-      "turn:<VPS_PUBLIC_IPV4>:3478?transport=tcp"
+      "turn:<RELAY1_IPV4>:3478?transport=udp",
+      "turn:<RELAY1_IPV4>:3478?transport=tcp"
     ],
     "username": "webnode",
-    "credential": "<TURN_PASSWORD>"
+    "credential": "<RELAY1_TURN_PASSWORD>"
+  },
+  { "urls": "stun:<RELAY2_IPV4>:3478" },
+  {
+    "urls": [
+      "turn:<RELAY2_IPV4>:3478?transport=udp",
+      "turn:<RELAY2_IPV4>:3478?transport=tcp"
+    ],
+    "username": "webnode",
+    "credential": "<RELAY2_TURN_PASSWORD>"
   }
 ]

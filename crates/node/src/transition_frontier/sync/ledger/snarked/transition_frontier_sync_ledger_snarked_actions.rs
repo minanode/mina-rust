@@ -174,7 +174,7 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncLedgerSnar
                 let peers_available = state
                     .p2p
                     .ready_peers_iter()
-                    .any(|(_, p)| p.channels.rpc.can_send_request());
+                    .any(|(_, p)| p.channels.can_send_sync_request());
                 let sync_next_available = state
                     .transition_frontier
                     .sync
@@ -263,7 +263,7 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierSyncLedgerSnar
                     let other_untried = ledger.num_accounts_pending().is_some_and(|pending| {
                         state.p2p.ready_peers_iter().any(|(other_id, other)| {
                             other_id != peer_id
-                                && other.channels.rpc.can_send_request()
+                                && other.channels.can_send_sync_request()
                                 && check_peer_available(
                                     other,
                                     target,
@@ -555,7 +555,7 @@ pub(super) fn check_peer_available(
 ) -> bool {
     None.or_else(|| {
         let peer_best_tip = peer.best_tip.as_ref()?;
-        let available = if !peer.channels.rpc.can_send_request() {
+        let available = if !peer.channels.can_send_sync_request() {
             false
         } else if target.staged.is_some() {
             // if peer has same best tip, then he has same root

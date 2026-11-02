@@ -53,6 +53,28 @@ test("an older node without block timestamps or a root still reads", () => {
   expect(s.libp2pPort).toBeNull();
 });
 
+test("the frontier store: open, locked, or absent", () => {
+  expect(parseStatus(fixture.status).frontierStore).toBeNull();
+  expect(
+    parseStatus({
+      frontier_store: { open: true, unavailable: null, locked: false },
+    }).frontierStore,
+  ).toEqual({ open: true, unavailable: null, locked: false });
+  expect(
+    parseStatus({
+      frontier_store: {
+        open: false,
+        unavailable: "the store is locked by another process",
+        locked: true,
+      },
+    }).frontierStore,
+  ).toEqual({
+    open: false,
+    unavailable: "the store is locked by another process",
+    locked: true,
+  });
+});
+
 test("a block's nanosecond timestamp is used when timestamp_ms is absent", () => {
   const raw = structuredClone(fixture.status) as Record<string, any>;
   delete raw.transition_frontier.best_tip.timestamp_ms;

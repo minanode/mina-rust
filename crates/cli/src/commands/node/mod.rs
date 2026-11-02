@@ -732,11 +732,13 @@ pub struct Node {
     #[arg(long, help_heading = "Advanced")]
     pub no_peers_discovery: bool,
 
-    /// Allow peers to discover each other and exchange WebRTC offers through
-    /// this node. Exposes connecting peers' addresses to each other; leave off
-    /// on public browser relays. Direct HTTP signaling is always available.
+    /// Introduce web nodes that turned on sharing with other browsers to each
+    /// other, within limits per peer key, per address and in total, an hour.
+    /// Two pages introduced see each other's IP address; pages that didn't
+    /// turn sharing on are never introduced. Peers use this node for
+    /// introductions only.
     #[arg(long, help_heading = "WebRTC")]
-    pub webrtc_signaling_relay: bool,
+    pub webrtc_sharing_relay: bool,
 
     // Development only: hidden from the help, still accepted.
     /// Record the node's initial state and input actions to
@@ -1324,8 +1326,8 @@ impl Node {
         node_builder.p2p_max_peers(self.max_peers);
         node_builder.p2p_webrtc_config(webrtc_config);
         self.seed.then(|| node_builder.p2p_seed_node());
-        self.webrtc_signaling_relay
-            .then(|| node_builder.p2p_signaling_relay());
+        self.webrtc_sharing_relay
+            .then(|| node_builder.p2p_sharing_relay());
         self.no_peers_discovery
             .then(|| node_builder.p2p_no_discovery());
 

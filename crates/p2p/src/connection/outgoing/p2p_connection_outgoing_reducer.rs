@@ -38,7 +38,7 @@ impl P2pConnectionOutgoingState {
         | P2pConnectionOutgoingAction::Reconnect { opts, .. }
         | P2pConnectionOutgoingAction::Recover { opts } = &action
         {
-            if !p2p_state.config.allows_dial(opts) {
+            if !p2p_state.config.allows_dial(opts) || !p2p_state.sharing_allows_dial(opts) {
                 return Ok(());
             }
         }
@@ -365,6 +365,7 @@ impl P2pConnectionOutgoingState {
                     "Missing peer connection for `P2pConnectionOutgoingAction::AnswerRecvSuccess`",
                 )?;
 
+                let mut relayed = false;
                 if let Self::AnswerRecvPending {
                     opts,
                     offer,
@@ -373,6 +374,7 @@ impl P2pConnectionOutgoingState {
                     ..
                 } = state
                 {
+                    relayed = opts.webrtc_p2p_relay_peer_id().is_some();
                     *state = Self::AnswerRecvSuccess {
                         time,
                         opts: opts.clone(),
@@ -386,6 +388,18 @@ impl P2pConnectionOutgoingState {
                         "Invalid state for `P2pConnectionOutgoingAction::AnswerRecvSuccess`: {:?}",
                         state
                     );
+                }
+                // The WebRTC stack gets the sharing policy's copy of an
+                // introduced browser's answer; the state keeps the original,
+                // which the authentication hashes.
+                let mut answer = answer;
+                match p2p_state.sharing_stack_sdp(relayed, &answer.sdp) {
+                    Ok(Some(sdp)) => answer.sdp = sdp,
+                    Ok(None) => {}
+                    Err(refusal) => {
+                        bug_condition!("answer accepted past the SDP policy: {refusal}");
+                        return Ok(());
+                    }
                 }
 
                 let dispatcher = state_context.into_dispatcher();

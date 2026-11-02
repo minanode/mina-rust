@@ -13,7 +13,7 @@ use rand::prelude::*;
 use crate::p2p::{
     bootstrap::P2pNetworkKadBootstrapState,
     channels::{
-        rpc::{P2pRpcId, P2pRpcRequest, P2pRpcResponse},
+        rpc::{P2pRpcId, P2pRpcRequest, P2pRpcResponse, P2pSyncPeerPlan},
         streaming_rpc::P2pStreamingRpcResponseFull,
     },
     connection::{outgoing::P2pConnectionOutgoingError, P2pConnectionResponse},
@@ -787,6 +787,26 @@ impl P2p {
 
     pub fn ready_peers_iter(&self) -> ReadyPeersIter<'_> {
         ReadyPeersIter::new(self)
+    }
+
+    /// Ranks `peers` for the sync's bulk requests: near WebRTC peers first,
+    /// far ones after with one request at a time, libp2p peers in their
+    /// places (`p2p::channels::rpc::plan_sync_peers`).
+    pub fn plan_sync_peers<T>(
+        &self,
+        peers: impl IntoIterator<Item = (PeerId, T, usize)>,
+        time: Timestamp,
+    ) -> P2pSyncPeerPlan<T> {
+        match self.ready() {
+            Some(p2p) => p2p.plan_sync_peers(peers, time),
+            None => P2pSyncPeerPlan {
+                first: peers
+                    .into_iter()
+                    .map(|(_, item, room)| (item, room))
+                    .collect(),
+                then: Vec::new(),
+            },
+        }
     }
 }
 

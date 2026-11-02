@@ -3,12 +3,16 @@ import { describe, expect, test } from "vitest";
 import {
   decryptKey,
   encryptKey,
+  exportKeyFile,
   importKey,
+  importKeyFile,
   KeyStore,
+  MAX_ITERATIONS,
   parseEncryptedKey,
   SAVED_KEY,
   StorageError,
   type HeldKey,
+  type KeyFileGlue,
   type KeyGlue,
 } from "./keys";
 import { installStorage, MemoryStorage } from "./test-storage";
@@ -73,6 +77,61 @@ describe("an encrypted key", () => {
     expect(parseEncryptedKey("not json")).toBeNull();
     expect(parseEncryptedKey(JSON.stringify({ version: 2 }))).toBeNull();
   });
+
+  test("a record asking for too many iterations is refused, saying so", async () => {
+    const record = await encryptKey(key, "correct horse battery", FAST);
+    const at = (iterations: number) => ({ ...record, iterations });
+    expect(MAX_ITERATIONS).toBe(1_200_000);
+    // Read from storage, so the visitor sees it and can delete it.
+    expect(parseEncryptedKey(JSON.stringify(at(2 ** 31)))?.iterations).toBe(
+      2 ** 31,
+    );
+    expect(parseEncryptedKey(JSON.stringify(at(600_000.5)))).toBeNull();
+    // Refused before any derivation, so it returns at once.
+    for (const iterations of [MAX_ITERATIONS + 1, 2 ** 31]) {
+      await expect(
+        decryptKey(at(iterations), "correct horse battery", glue),
+      ).rejects.toThrow(
+        "This saved key asks for more PBKDF2 iterations than the page allows.",
+      );
+    }
+    // What the page writes still unlocks.
+    const written = await encryptKey(key, "correct horse battery");
+    expect(written.iterations).toBe(600_000);
+    expect(
+      (await decryptKey(written, "correct horse battery", glue)).privateKey,
+    ).toBe(PRIVATE);
+  });
+
+  test("an unlocked key that doesn't derive its public key is refused", async () => {
+    const other: HeldKey = { ...key, privateKey: `EK${"4".repeat(50)}` };
+    const record = await encryptKey(other, "correct horse battery", FAST);
+    await expect(
+      decryptKey(record, "correct horse battery", glue),
+    ).rejects.toThrow("The saved key doesn't match its public key.");
+  });
+});
+
+describe("a key carried across a reload", () => {
+  test("is kept if it derives its public key, dropped if not", () => {
+    const store = new KeyStore();
+    store.hold(key);
+    store.dropIfMismatched(glue);
+    expect(store.getSnapshot().key).toEqual(key);
+
+    // The right shape, but the glue derives another public key from it,
+    // or none.
+    for (const privateKey of [`EK${"4".repeat(50)}`, PRIVATE]) {
+      const mismatched: HeldKey = {
+        ...key,
+        privateKey,
+        publicKey: privateKey === PRIVATE ? OTHER : PUBLIC,
+      };
+      store.hold(mismatched);
+      store.dropIfMismatched(glue);
+      expect(store.getSnapshot().key).toBeNull();
+    }
+  });
 });
 
 describe("importing a key", () => {
@@ -95,6 +154,43 @@ describe("importing a key", () => {
       expect(message).not.toBe("");
       expect(message).not.toContain(text);
     }
+  });
+});
+
+describe("a key file", () => {
+  const FILE = '{"box_primitive":"xsalsa20poly1305"}';
+  const fileGlue = (answer: unknown): KeyFileGlue => ({
+    account_key_from_file: async () => answer,
+    account_key_to_file: async () => FILE,
+  });
+
+  test("gives the WASM's key, as an imported one", async () => {
+    const pair = { publicKey: PUBLIC, privateKey: PRIVATE };
+    expect(
+      await importKeyFile(fileGlue(pair), `\n${FILE}\n`, "password"),
+    ).toEqual({ ...pair, origin: "imported" });
+  });
+
+  test("refuses an answer that isn't a key pair, and an empty password", async () => {
+    for (const answer of [null, {}, { publicKey: PUBLIC }, "text"]) {
+      await expect(
+        importKeyFile(fileGlue(answer), FILE, "password"),
+      ).rejects.toThrow("The page couldn't read that key file.");
+    }
+    await expect(
+      importKeyFile(
+        fileGlue({ publicKey: PUBLIC, privateKey: PRIVATE }),
+        FILE,
+        "",
+      ),
+    ).rejects.toThrow("Type the key file's password.");
+  });
+
+  test("exports under a password of ten characters", async () => {
+    await expect(exportKeyFile(fileGlue(null), key, "short")).rejects.toThrow(
+      /10/,
+    );
+    expect(await exportKeyFile(fileGlue(null), key, "long enough!")).toBe(FILE);
   });
 });
 

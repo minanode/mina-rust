@@ -345,9 +345,9 @@ For a cloud host whose interface has a private address. Repeat it, or separate a
 
 Environment: `MINA_WEBRTC_NAT_IP`.
 
-#### `--webrtc-signaling-relay`
+#### `--webrtc-sharing-relay`
 
-Allow peers to discover each other and exchange WebRTC offers through this node. Exposes connecting peers' addresses to each other; leave off on public browser relays. Direct HTTP signaling is always available.
+Introduce web nodes that turned on sharing with other browsers to each other, within limits per peer key, per address and in total, an hour. Two pages introduced see each other's IP address; pages that didn't turn sharing on are never introduced. Peers use this node for introductions only.
 
 ### Logging
 

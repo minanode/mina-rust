@@ -44,8 +44,8 @@ export function PoolPage() {
         <MetricCard
           size="sm"
           value={txs ? formatCount(queuedSenders(txs)) : "–"}
-          label="Senders with a queue"
-          detail="More than one pending; a block takes them in nonce order"
+          label="Senders with several pending"
+          detail="Taken in nonce order"
         />
         <MetricCard
           size="sm"
@@ -60,7 +60,7 @@ export function PoolPage() {
       </div>
       <PageSection
         title="Pending transactions"
-        description="Highest fee first, as a block producer takes them. The node checked each one's signature, fee and nonce before it kept it. Next: its sender's lowest nonce, which a block can take now."
+        description="Highest fee first."
       >
         <Loaded polled={pool} what="the transaction pool" rows={6}>
           {list => {
@@ -87,10 +87,10 @@ export function PoolPage() {
                   const s = statuses[index.get(t) ?? -1];
                   if (!s || s.kind === "unknown") return "–";
                   return s.kind === "next" ? (
-                    <Signal tone="ok">Next</Signal>
+                    <Signal tone="ok">Ready</Signal>
                   ) : (
                     <Signal tone="neutral">
-                      After nonce {formatCount(s.after)}
+                      Waits for nonce {formatCount(s.after)}
                     </Signal>
                   );
                 }}
