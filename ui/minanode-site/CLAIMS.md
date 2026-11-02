@@ -41,13 +41,13 @@ the subject of the private measurement; they do not link to unavailable files.
 
 - Page: home and Docs overview badges, Open Graph image; the beta sentence under
   the Docs overview lead.
-- Says: "0.20.1 beta for devnet"; Open Graph adds "available now". The Docs
-  overview adds "0.20.1 is a beta release. Run it on devnet and in test setups.
+- Says: "0.21.0 beta for devnet"; Open Graph adds "available now". The Docs
+  overview adds "0.21.0 is a beta release. Run it on devnet and in test setups.
   Expect changes before it is ready for production." The site header carries a
   "Beta" badge with no claim id.
 - Sources: `coordinator: DOCS-V launch copy, 2026-10-24`,
   `coordinator: SITE-BETA, 2026-10-26`
-- Figures: `0.20.1`
+- Figures: `0.21.0`
 - Caveat kept: Site copy is prepared for publication on minanode.org. Release
   availability is unverified until publish; see C69. The beta sentence is the
   site's one beta warning and appears on the Docs overview only.
@@ -264,8 +264,7 @@ the subject of the private measurement; they do not link to unavailable files.
 - Caveat kept: 39 MB is the WASM unpacked, as the web node's start screen and
   Start-up page show it; 6.5 MB is the Brotli transfer from minaweb.org,
   measured on build 0543d52a6. Until 2 November 2026 the card said "A few MB.
-  WebAssembly, compressed.", from a 3.1 MB Brotli transfer of an earlier
-  build.
+  WebAssembly, compressed.", from a 3.1 MB Brotli transfer of an earlier build.
 
 ### C07 Devnet block made in a browser
 
@@ -294,11 +293,11 @@ the subject of the private measurement; they do not link to unavailable files.
 ### C50 Release state
 
 - Page: home, "Get started" and the four build cards.
-- Says: "Run 0.20.1 beta for devnet"; download the archive or run the Docker
+- Says: "Run 0.21.0 beta for devnet"; download the archive or run the Docker
   image, then open the dashboard. The web node card links to minaweb.org and the
   web archive (C83); the source card describes building from public source.
 - Sources: `coordinator: DOCS-V launch copy, 2026-10-24`
-- Figures: `0.20.1`
+- Figures: `0.21.0`
 - Caveat kept: Planned public repository and release availability are unverified
   until publish (C69). The browser build is separate.
 
@@ -460,12 +459,12 @@ condition or caveat changed.
 ### C69 Release archives and URLs
 
 - Page: Quickstart download step; Install archive list and release notes.
-- Says: Linux x86-64 and ARM64 archives for 0.20.1, checked with a signed
+- Says: Linux x86-64 and ARM64 archives for 0.21.0, checked with a signed
   SHA256SUMS list.
 - Sources:
   `coordinator: private pre-release evidence; Release archives and URLs`,
   `coordinator: DOCS-V public release URLs, 2026-10-24`
-- Figures: `mina-0.20.1-linux-x86_64.tar.gz`, `mina-0.20.1-linux-arm64.tar.gz`,
+- Figures: `mina-0.21.0-linux-x86_64.tar.gz`, `mina-0.21.0-linux-arm64.tar.gz`,
   `SHA256SUMS`
 - Caveat kept: The planned public repository, download location and release
   notes in content/release.ts are **unverified until publish**. Confirm the
