@@ -121,6 +121,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Web node**: the header's best tip keeps up with the page. It reads the
+  shared `/status`, which no poll asks again while the tab is hidden, so a
+  page opened then showed a newer block than the header (#583746 under
+  #583745). The page asks `/status` again on every navigation, and when the
+  Blocks list holds a block above the header's tip.
 - **Web node**: a second tab of the same browser, which can't open the
   frontier store the first tab holds, now says so: one caution banner, and the
   Overview and Start-up show the store as not available in this tab, with no

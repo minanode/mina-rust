@@ -34,6 +34,7 @@ import { useNodeStatus, useSyncView } from "@minanode/node-client/react";
 
 import { CONFIG } from "../config";
 import { VERSION } from "../version";
+import { useStatusOnNavigate } from "../lib/tip";
 import { rolesAllowed } from "../roles/role";
 import { useBoot } from "./boot-context";
 import { CarriedKey } from "./carried-key";
@@ -162,6 +163,7 @@ export function Shell({
   children: React.ReactNode;
 }) {
   const role = useBoot().role.kind;
+  useStatusOnNavigate();
   return (
     <AppShell
       brand={
