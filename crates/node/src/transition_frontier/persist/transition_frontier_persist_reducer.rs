@@ -122,17 +122,10 @@ impl TransitionFrontierPersistState {
                     last_progress_time: None,
                 };
                 let (dispatcher, global_state) = state_context.into_dispatcher_and_state();
-                let Some(genesis) = global_state.genesis_block() else {
+                let Some(request) = load_request(global_state) else {
                     return;
                 };
-                let k = genesis.constants().k.as_u32();
-                dispatcher.push(TransitionFrontierPersistEffectfulAction::Load {
-                    request: PersistLoadRequest {
-                        current_slot: global_state.cur_global_slot(),
-                        stale_slots: k.saturating_mul(STALE_SLOTS_PER_K),
-                        genesis: Some(genesis.clone()),
-                    },
-                });
+                dispatcher.push(TransitionFrontierPersistEffectfulAction::Load { request });
             }
             TransitionFrontierPersistAction::LoadSuccess { restored } => {
                 let Some(ready) = state.ready_mut() else {
@@ -447,6 +440,19 @@ impl TransitionFrontierPersistState {
             }
         }
     }
+}
+
+/// What a load is asked with (R20 D5): the clock's slot, 4k and our genesis
+/// block. `None` before the genesis block is known. The status asks the
+/// loader's rules with the same clock.
+pub fn load_request(state: &crate::State) -> Option<PersistLoadRequest> {
+    let genesis = state.genesis_block()?;
+    let k = genesis.constants().k.as_u32();
+    Some(PersistLoadRequest {
+        current_slot: state.cur_global_slot(),
+        stale_slots: k.saturating_mul(STALE_SLOTS_PER_K),
+        genesis: Some(genesis),
+    })
 }
 
 /// Ends the restore: the node bootstraps (or, for `Restored`, follows).

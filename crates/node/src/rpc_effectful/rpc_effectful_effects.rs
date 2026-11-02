@@ -1467,26 +1467,113 @@ fn compute_node_status<S: Service>(store: &mut Store<S>) -> RpcNodeStatus {
 
 /// The frontier store for `/status`: `None` when the config has it off.
 fn frontier_store_status(state: &crate::State) -> Option<RpcNodeStatusFrontierStore> {
+    let frontier = &state.transition_frontier;
+    let request = crate::transition_frontier::persist::load_request(state);
+    frontier_store_status_of(
+        &frontier.config.persist,
+        &frontier.persist,
+        request.as_ref(),
+    )
+}
+
+/// [`frontier_store_status`] of the store's config and state, and the
+/// request a load would be asked with now.
+pub(crate) fn frontier_store_status_of(
+    config: &crate::transition_frontier::persist::TransitionFrontierPersistConfig,
+    persist: &crate::transition_frontier::persist::TransitionFrontierPersistState,
+    request: Option<&crate::persist::load::PersistLoadRequest>,
+) -> Option<RpcNodeStatusFrontierStore> {
     use crate::transition_frontier::persist::TransitionFrontierPersistState as Persist;
 
-    let frontier = &state.transition_frontier;
-    if !frontier.config.persist.enabled {
+    if !config.enabled {
         return None;
     }
     let mut status = RpcNodeStatusFrontierStore {
         open: false,
         unavailable: None,
         locked: false,
+        saved_chain: None,
     };
-    match &frontier.persist {
+    match persist {
         Persist::Disabled { reason } => {
             status.locked = *reason == crate::persist::PersistError::Locked.to_string();
             status.unavailable = Some(reason.clone());
         }
         Persist::Idle | Persist::OpenPending { .. } => {}
-        Persist::Ready(_) => status.open = true,
+        Persist::Ready(ready) => {
+            status.open = true;
+            status.saved_chain = Some(saved_chain(ready, config.restore, request));
+        }
     }
     Some(status)
+}
+
+/// What a restart does with the stored chain: the loader's rules
+/// ([`RestoreFacts::decide`](crate::persist::load::RestoreFacts::decide)) on
+/// the newest manifest the store thread reported, with the clock a load would
+/// be asked with now. Saved only when every rule is known to pass.
+fn saved_chain(
+    ready: &crate::transition_frontier::persist::PersistReadyState,
+    restore: bool,
+    request: Option<&crate::persist::load::PersistLoadRequest>,
+) -> rpc::RpcSavedChain {
+    use crate::persist::load::{NotRestorable, RestoreDecision};
+    use rpc::RpcSavedChain as Saved;
+
+    if !restore {
+        return Saved::NotRestorable {
+            reason: "restoring is off for this node".into(),
+        };
+    }
+    if ready.restore.is_in_progress() {
+        return Saved::Checking;
+    }
+    let Some(request) = request else {
+        return Saved::Unknown {
+            reason: "the genesis block isn't known".into(),
+        };
+    };
+    match ready
+        .store
+        .restore
+        .decide(request.current_slot, request.stale_slots)
+    {
+        RestoreDecision::NotRestorable(NotRestorable::NoCheckpoint) => Saved::NotSaved,
+        RestoreDecision::NotRestorable(reason) => Saved::NotRestorable {
+            reason: reason.to_string(),
+        },
+        RestoreDecision::Unknown { reason } => Saved::Unknown { reason },
+        RestoreDecision::Restore { tip_height } => match failed_restore(ready) {
+            Some(reason) => Saved::NotRestorable { reason },
+            None => Saved::Saved { height: tip_height },
+        },
+    }
+}
+
+/// This run's restore failed or timed out, and no checkpoint has been
+/// written since: a restart loads the same checkpoint, and may fail the same
+/// way.
+fn failed_restore(
+    ready: &crate::transition_frontier::persist::PersistReadyState,
+) -> Option<String> {
+    use crate::transition_frontier::persist::{
+        PersistRestoreOutcome as Outcome, PersistRestoreState,
+    };
+
+    if ready.last_checkpoint.is_some() {
+        return None;
+    }
+    match &ready.restore {
+        PersistRestoreState::Done {
+            outcome: Outcome::Failed { error },
+            ..
+        } => Some(format!("this run's restore failed: {error}")),
+        PersistRestoreState::Done {
+            outcome: Outcome::TimedOut,
+            ..
+        } => Some("this run's restore timed out".into()),
+        _ => None,
+    }
 }
 
 /// The producer records the timing and its source consensus point together.

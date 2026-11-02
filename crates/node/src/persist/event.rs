@@ -8,7 +8,7 @@ use mina_core::block::ArcBlockWithHash;
 use mina_p2p_messages::v2;
 use serde::{Deserialize, Serialize};
 
-use super::load::PersistLoadTimings;
+use super::load::{PersistLoadTimings, RestoreFacts};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum PersistEvent {
@@ -95,6 +95,9 @@ pub struct PersistStoreSummary {
     /// Files the manifest references, and their total size.
     pub files: u32,
     pub bytes: u64,
+    /// What the loader would decide a restore on.
+    #[serde(default)]
+    pub restore: RestoreFacts,
 }
 
 impl PersistStoreSummary {

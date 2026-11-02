@@ -11,7 +11,7 @@ mod transition_frontier_persist_actions;
 pub use transition_frontier_persist_actions::*;
 
 mod transition_frontier_persist_reducer;
-pub use transition_frontier_persist_reducer::chain_entry;
+pub use transition_frontier_persist_reducer::{chain_entry, load_request};
 
 #[cfg(test)]
 mod transition_frontier_persist_tests;
