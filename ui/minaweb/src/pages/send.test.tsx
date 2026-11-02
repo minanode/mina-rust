@@ -15,6 +15,13 @@ const TO = `B62q${"2".repeat(51)}`;
 const PRIVATE = `EK${"3".repeat(50)}`;
 
 const sendPayment = vi.fn();
+/** What the node's pool and inclusion search answer. */
+let poolHas = true;
+let inclusion: () => Promise<unknown> = async () => ({
+  tipHeight: 10,
+  depthSearched: 40,
+  found: null,
+});
 
 vi.mock("../config", () => ({ CONFIG: { network: "devnet" } }));
 vi.mock("../roles/hooks", () => {
@@ -28,8 +35,8 @@ vi.mock("../roles/hooks", () => {
     available: true,
     sendPayment: (...args: unknown[]) => sendPayment(...args),
     account: async (pk: string) => account(pk),
-    inclusion: async () => ({ tipHeight: 10, depthSearched: 40, found: null }),
-    inPool: async () => true,
+    inclusion: () => inclusion(),
+    inPool: async () => poolHas,
   };
   return {
     useKeys: () => ({
@@ -203,4 +210,75 @@ test("the sent list comes back after the restart, with no secret in storage", as
     );
   });
   expect(sendPayment.mock.calls.at(-1)![1].nonce).toBe(nonce + 1);
+});
+
+/** A payment from before the restart, at the account's nonce (4). */
+function keepFromBeforeRestart() {
+  sessionStorage.setItem(
+    "minaweb.sent",
+    JSON.stringify([
+      {
+        hash: "5JuBefore",
+        from: FROM,
+        to: TO,
+        amount: "3000000000",
+        fee: "100000000",
+        nonce: 4,
+        sentAt: Date.now(),
+        stage: "pending",
+        detail: null,
+        inclusion: null,
+      },
+    ]),
+  );
+}
+
+test("Send waits while a payment from before the restart is checked", async () => {
+  keepFromBeforeRestart();
+  // The inclusion search doesn't answer yet.
+  inclusion = () => new Promise(() => {});
+  vi.resetModules();
+  const { SendPage: Page } = await import("./send");
+  render(<Page />);
+  expect(document.querySelector("[data-nonce=checking]")).not.toBeNull();
+  expect(
+    screen.getByRole("button", { name: "Review" }).hasAttribute("disabled"),
+  ).toBe(true);
+  inclusion = async () => ({ tipHeight: 10, depthSearched: 40, found: null });
+});
+
+test("a payment missing after the restart gives its nonce to the next one", async () => {
+  keepFromBeforeRestart();
+  poolHas = false;
+  vi.resetModules();
+  const { SendPage: Page } = await import("./send");
+  render(<Page />);
+  await waitFor(() =>
+    expect(document.querySelector("[data-nonce=missing]")).not.toBeNull(),
+  );
+  await act(async () =>
+    fireEvent.click(
+      document.querySelector("[data-action=refill]") as HTMLElement,
+    ),
+  );
+  expect(field("send-to").value).toBe(TO);
+  expect(field("send-amount").value).toBe("3");
+  expect(field("send-fee").value).toBe("0.1");
+  sendPayment.mockResolvedValueOnce({
+    hash: "5JuAgain",
+    accepted: true,
+    rejection: null,
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Review" }));
+  await act(async () => {
+    fireEvent.click(
+      document.querySelector("[data-action=confirm-send]") as HTMLElement,
+    );
+  });
+  // The same nonce, not one past it.
+  expect(sendPayment.mock.calls.at(-1)![1].nonce).toBe(4);
+  await waitFor(() =>
+    expect(document.querySelector("[data-nonce=missing]")).toBeNull(),
+  );
+  poolHas = true;
 });

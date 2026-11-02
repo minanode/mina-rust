@@ -46,14 +46,21 @@ import {
   DEFAULT_FEE,
   MEMO_BYTES,
   memoBytes,
-  nextNonce,
   rejectionText,
   type FormErrors,
   type Payment,
   type PaymentForm,
+  type Sent,
   type SentStage,
 } from "../roles/payment";
-import { isOpen, sentStore, Tracker } from "../roles/sent";
+import {
+  isOpen,
+  nonceFor,
+  SENT_OPEN_MAX,
+  sentStore,
+  Tracker,
+  type NonceState,
+} from "../roles/sent";
 import { FAUCET_URL, NeedKey, RolesGate } from "./roles-common";
 
 const TRACK_MS = 10_000;
@@ -98,6 +105,26 @@ export function SendPage() {
 
 const EMPTY: PaymentForm = { to: "", amount: "", fee: DEFAULT_FEE, memo: "" };
 
+/** The next payment's nonce from `sender`'s account and this tab's list. A
+ * key with no account yet sends at 0, to see the pool's refusal. */
+function nonceState(
+  sender: Account | null,
+  sent: readonly Sent[] = sentStore.getSnapshot(),
+): NonceState {
+  return sender ? nonceFor(sender, sent) : { kind: "ready", nonce: 0 };
+}
+
+/** The nonce a payment can take now, or null while it can't. */
+function usable(state: NonceState): number | null {
+  return state.kind === "ready" || state.kind === "missing"
+    ? state.nonce
+    : null;
+}
+
+/** MINA for the form, without digit groups. */
+const minaField = (nanomina: bigint) =>
+  (formatMina(nanomina) ?? "").replaceAll(",", "");
+
 function SendForm() {
   const { key } = useKeys();
   const glue = useKeyGlue();
@@ -118,6 +145,8 @@ function SendForm() {
   if (!key || !glue || !node) return null;
 
   const sender: Account | null = account.data ?? null;
+  const nonce = nonceState(sender, sent);
+  const nextNonce = usable(nonce);
   const { payment, errors } = checkPayment(form, {
     from: key.publicKey,
     sender,
@@ -147,8 +176,8 @@ function SendForm() {
     if (!key || !node || p.from !== key.publicKey) return;
     // The nonce shown is the nonce signed; if another payment took it
     // meanwhile, review again.
-    const nonce = sender ? nextNonce(sender, sentStore.getSnapshot()) : 0;
-    if (nonce !== p.nonce) {
+    const nonce = usable(nonceState(sender));
+    if (nonce === null || nonce !== p.nonce) {
       setReview(null);
       setOutcome("The next nonce changed since the review: review it again.");
       return;
@@ -216,10 +245,25 @@ function SendForm() {
         ) : sender ? (
           <p className="text-sm text-muted-foreground">
             From <Hash value={key.publicKey} label="sender" />, balance{" "}
-            <Amount unit="MINA" value={formatMina(sender.balance)} />, next
-            nonce {formatCount(nextNonce(sender, sent))}.
+            <Amount unit="MINA" value={formatMina(sender.balance)} />
+            {nextNonce !== null
+              ? `, next nonce ${formatCount(nextNonce)}.`
+              : "."}
           </p>
         ) : null}
+        <NonceNotice
+          state={nonce}
+          onRefill={p => {
+            setForm({
+              to: p.to,
+              amount: minaField(p.amount),
+              fee: minaField(p.fee),
+              memo: "",
+            });
+            setReview(null);
+            setOutcome(null);
+          }}
+        />
         <form
           className="flex flex-col gap-4"
           data-send-form
@@ -245,12 +289,9 @@ function SendForm() {
                     validKey: k => glue.account_public_key_valid(k),
                   }).payment
                 : null);
-            if (p) {
-              setReview({
-                ...p,
-                from: key.publicKey,
-                nonce: sender ? nextNonce(sender, sentStore.getSnapshot()) : 0,
-              });
+            const n = usable(nonceState(sender));
+            if (p && n !== null) {
+              setReview({ ...p, from: key.publicKey, nonce: n });
             }
           }}
         >
@@ -356,7 +397,11 @@ function SendForm() {
               </div>
             </div>
           ) : (
-            <Button type="submit" className="w-fit">
+            <Button
+              type="submit"
+              className="w-fit"
+              disabled={nextNonce === null}
+            >
               <Send aria-hidden />
               Review
             </Button>
@@ -370,6 +415,65 @@ function SendForm() {
       </CardContent>
     </Card>
   );
+}
+
+/** Why the next payment waits, or takes a missing payment's nonce. */
+function NonceNotice({
+  state,
+  onRefill,
+}: {
+  state: NonceState;
+  onRefill: (payment: Sent) => void;
+}) {
+  switch (state.kind) {
+    case "ready":
+      return null;
+    case "checking":
+      return (
+        <p className="text-sm text-muted-foreground" data-nonce="checking">
+          Checking the payment at nonce {formatCount(state.nonce)}, sent before
+          the restart.
+        </p>
+      );
+    case "missing":
+      return (
+        <Alert variant="caution" data-nonce="missing">
+          <AlertTitle>
+            Nonce {formatCount(state.nonce)} is in no block or pool
+          </AlertTitle>
+          <AlertDescription>
+            <p>
+              The payment sent at it before the restart isn't in this node's
+              pool or a block. The next payment takes nonce{" "}
+              {formatCount(state.nonce)} in its place.
+            </p>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="mt-2 w-fit"
+              data-action="refill"
+              onClick={() => onRefill(state.payment)}
+            >
+              Send the same payment again
+            </Button>
+          </AlertDescription>
+        </Alert>
+      );
+    case "full":
+      return (
+        <p className="text-sm text-muted-foreground" data-nonce="full">
+          {formatCount(SENT_OPEN_MAX)} payments wait for a block. Send more once
+          blocks include them.
+        </p>
+      );
+    case "exhausted":
+      return (
+        <p className="text-sm text-muted-foreground" data-nonce="exhausted">
+          This account has used every nonce.
+        </p>
+      );
+  }
 }
 
 /** Follows each sent payment until it is confirmed, fails or drops: one

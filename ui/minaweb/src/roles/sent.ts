@@ -8,20 +8,30 @@
  * The list is kept in this tab's sessionStorage, so it outlasts the role
  * change's restart (a reload) and a reload of the visitor's own. It holds
  * the public fields the list shows and the tracking needs, never a key or
- * the memo: at most SENT_MAX payments, and none that is done and older
- * than SENT_KEEP_MS.
+ * the memo. A payment that is done is kept for SENT_KEEP_MS, and at most
+ * SENT_MAX of them; one still open is never dropped, as its nonce is taken.
+ *
+ * The restarted node's pool is empty, so a payment kept from before the
+ * restart doesn't hold its nonce until a look finds it in the pool or a
+ * block. Until then the next nonce waits; if the look finds it in
+ * neither, the next payment takes its nonce in its place (nonceFor).
  */
 
 import { num, obj, str } from "@minanode/node-client";
 
 import { looksLikePublicKey } from "./keys";
 import type { Account, Inclusion, InclusionLook } from "./node";
-import { nextStage, type Sent, type SentStage } from "./payment";
+import { nextStage, type Look, type Sent, type SentStage } from "./payment";
 
 /** sessionStorage: this tab's sent payments. */
 export const SENT_KEY = "minaweb.sent";
-/** The most payments the list keeps, newest first. */
+/** The most payments that are done the list keeps, newest first. */
 export const SENT_MAX = 20;
+/** The most open payments the tab has at once: a new one waits for a
+ * block to take some. */
+export const SENT_OPEN_MAX = 50;
+/** Mina nonces are uint32. */
+export const NONCE_MAX = 0xffff_ffff;
 /** A payment that is done (confirmed, failed, dropped or refused) leaves
  * the list this long after it was sent. */
 export const SENT_KEEP_MS = 24 * 60 * 60_000;
@@ -50,11 +60,16 @@ function tabStorage(): Storage | null {
   }
 }
 
-/** The list without what is done and old, and at most SENT_MAX long. */
+/** The list without what is done and old, and at most SENT_MAX of what
+ * is done. Every open payment stays: its nonce is taken. */
 export function pruneSent(list: readonly Sent[], now: number): Sent[] {
-  return list
-    .filter(s => isOpen(s) || now - s.sentAt <= SENT_KEEP_MS)
-    .slice(0, SENT_MAX);
+  let done = 0;
+  return list.filter(s => {
+    if (isOpen(s)) return true;
+    if (now - s.sentAt > SENT_KEEP_MS || done >= SENT_MAX) return false;
+    done++;
+    return true;
+  });
 }
 
 /** The fields kept, by name: a field added to Sent stays out until it is
@@ -84,6 +99,14 @@ const publicKey = (value: unknown): string | null => {
   return v !== null && v === v.trim() && looksLikePublicKey(v) ? v : null;
 };
 
+/** Null, or a string of at most DETAIL_MAX; undefined for anything else. */
+const nullableText = (value: unknown): string | null | undefined =>
+  value === null
+    ? null
+    : typeof value === "string" && value.length <= DETAIL_MAX
+      ? value
+      : undefined;
+
 const count = (value: unknown): number | null => {
   const n = typeof value === "number" ? num(value) : null;
   return n !== null && Number.isSafeInteger(n) && n >= 0 ? n : null;
@@ -100,14 +123,13 @@ function parseInclusion(raw: unknown): Inclusion | null | undefined {
   const height = count(i?.height);
   const depth = count(i?.depth);
   const blockHash = str(i?.blockHash);
-  const failure = i?.failure === null ? null : str(i?.failure);
+  const failure = nullableText(i?.failure);
   if (
     height === null ||
     depth === null ||
     blockHash === null ||
     !HASH.test(blockHash) ||
-    failure === undefined ||
-    (failure !== null && failure.length > DETAIL_MAX)
+    failure === undefined
   ) {
     return undefined;
   }
@@ -122,9 +144,10 @@ function parseOne(raw: unknown): Sent | null {
   const amount = nanomina(s?.amount);
   const fee = nanomina(s?.fee);
   const nonce = count(s?.nonce);
+  const nonceOk = nonce !== null && nonce <= NONCE_MAX;
   const sentAt = count(s?.sentAt);
   const stage = STAGES.find(x => x === s?.stage);
-  const detail = s?.detail === null ? null : str(s?.detail);
+  const detail = nullableText(s?.detail);
   const inclusion = parseInclusion(s?.inclusion);
   if (
     hash === null ||
@@ -134,10 +157,10 @@ function parseOne(raw: unknown): Sent | null {
     amount === null ||
     fee === null ||
     nonce === null ||
+    !nonceOk ||
     sentAt === null ||
     stage === undefined ||
     detail === undefined ||
-    (detail !== null && detail.length > DETAIL_MAX) ||
     inclusion === undefined
   ) {
     return null;
@@ -170,7 +193,7 @@ export function parseSent(raw: string | null): Sent[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
   const list: Sent[] = [];
-  for (const item of value.slice(0, SENT_MAX)) {
+  for (const item of value.slice(0, SENT_MAX + SENT_OPEN_MAX)) {
     const s = parseOne(item);
     if (!s || seen.has(s.hash)) continue;
     seen.add(s.hash);
@@ -194,7 +217,10 @@ export class SentStore {
     } catch {
       // No storage in this tab: the list starts empty.
     }
-    this.list = pruneSent(parseSent(raw), now());
+    // The restarted node's pool doesn't have them: unchecked until a look.
+    this.list = pruneSent(parseSent(raw), now()).map(s =>
+      isOpen(s) ? { ...s, check: "unchecked" } : s,
+    );
     // Drops from storage what didn't parse or is done and old.
     if (raw !== null) this.save();
   }
@@ -284,9 +310,11 @@ export async function trackOnce(
         node.inPool(s.hash).catch(() => undefined),
         nonceOf(s.from),
       ]);
-      store.update(s.hash, current =>
-        nextStage(current, { inclusion, inPool, accountNonce }),
-      );
+      const look = { inclusion, inPool, accountNonce };
+      store.update(s.hash, current => {
+        const next = nextStage(current, look);
+        return { ...next, check: nextCheck(current, look) };
+      });
     }),
   );
 }
@@ -311,5 +339,58 @@ export class Tracker {
     } finally {
       this.busy = false;
     }
+  }
+}
+
+/** A kept payment's check after a look: found in the pool or a block, it
+ * holds its nonce again; a look that answers everything and finds it in
+ * neither makes it missing. A lookup that failed changes nothing. */
+export function nextCheck(sent: Sent, look: Look): Sent["check"] {
+  if (sent.check === undefined) return undefined;
+  if (look.inclusion?.found || look.inPool === true) return undefined;
+  if (
+    look.inclusion !== undefined &&
+    look.inclusion !== null &&
+    look.inPool === false &&
+    look.accountNonce !== undefined
+  ) {
+    return "missing";
+  }
+  return sent.check;
+}
+
+export type NonceState =
+  /** The next payment's nonce. */
+  | { kind: "ready"; nonce: number }
+  /** A payment kept from before the restart has this nonce, and no look
+   * has answered for it yet. */
+  | { kind: "checking"; nonce: number }
+  /** A payment kept from before the restart has this nonce, and is in
+   * neither the pool nor a block: the next payment takes its place. */
+  | { kind: "missing"; nonce: number; payment: Sent }
+  /** SENT_OPEN_MAX payments are open. */
+  | { kind: "full" }
+  /** No uint32 nonce is left. */
+  | { kind: "exhausted" };
+
+/**
+ * The nonce for a new payment from this account: the account's, past the
+ * run of this tab's open payments from it that hold the next nonce each.
+ * A payment after a gap holds nothing: the gap's nonce comes first.
+ */
+export function nonceFor(account: Account, sent: readonly Sent[]): NonceState {
+  if (sent.filter(isOpen).length >= SENT_OPEN_MAX) return { kind: "full" };
+  const open = sent.filter(s => s.from === account.publicKey && isOpen(s));
+  let nonce = account.nonce;
+  for (;;) {
+    if (nonce > NONCE_MAX) return { kind: "exhausted" };
+    const at = open.filter(s => s.nonce === nonce);
+    if (at.length === 0) return { kind: "ready", nonce };
+    if (!at.some(s => s.check === undefined)) {
+      return at.some(s => s.check === "unchecked")
+        ? { kind: "checking", nonce }
+        : { kind: "missing", nonce, payment: at[0] };
+    }
+    nonce++;
   }
 }

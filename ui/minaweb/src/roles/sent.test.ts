@@ -3,8 +3,12 @@ import { describe, expect, test } from "vitest";
 import type { Account, InclusionLook } from "./node";
 import type { Sent } from "./payment";
 import {
+  nextCheck,
+  NONCE_MAX,
+  nonceFor,
   parseSent,
   pruneSent,
+  SENT_OPEN_MAX,
   SENT_KEEP_MS,
   SENT_KEY,
   SENT_MAX,
@@ -248,7 +252,10 @@ describe("keeping the list across a restart", () => {
     }));
 
     const after = store(storage, NOW + 60_000).getSnapshot();
-    expect(after).toEqual(before.getSnapshot());
+    // The same, and each open payment unchecked until a look.
+    expect(after).toEqual(
+      before.getSnapshot().map(s => ({ ...s, check: "unchecked" })),
+    );
     expect(after.map(s => s.hash)).toEqual([hash(1), hash(0)]);
     expect(after[1].amount).toBe(1_000_000_000n);
     expect(after[1].inclusion?.height).toBe(583746);
@@ -276,13 +283,18 @@ describe("keeping the list across a restart", () => {
     expect(store(storage).getSnapshot()[0].memo).toBe("");
   });
 
-  test(`the list keeps the newest ${SENT_MAX}`, () => {
+  test(`the list keeps the newest ${SENT_MAX} done, and every open one`, () => {
     const storage = new MemoryStorage();
     const s = store(storage);
-    for (let n = 0; n < SENT_MAX + 5; n++) s.add(sent(n));
-    expect(s.getSnapshot()).toHaveLength(SENT_MAX);
-    expect(s.getSnapshot()[0].hash).toBe(hash(SENT_MAX + 4));
-    expect(JSON.parse(storage.getItem(SENT_KEY)!)).toHaveLength(SENT_MAX);
+    s.add(sent(100));
+    for (let n = 0; n < SENT_MAX + 5; n++) {
+      s.add(sent(n, { stage: "confirmed" }));
+    }
+    const list = s.getSnapshot();
+    expect(list).toHaveLength(SENT_MAX + 1);
+    expect(list[0].hash).toBe(hash(SENT_MAX + 4));
+    expect(list.at(-1)?.hash).toBe(hash(100));
+    expect(JSON.parse(storage.getItem(SENT_KEY)!)).toHaveLength(SENT_MAX + 1);
   });
 
   test("a payment that is done and old leaves; an open one stays", () => {
@@ -362,5 +374,205 @@ describe("keeping the list across a restart", () => {
     });
     denied.add(sent(0));
     expect(denied.getSnapshot()).toHaveLength(1);
+  });
+});
+
+describe("the next nonce", () => {
+  const ledger = (nonce: number): Account => ({ ...account(nonce) });
+  const at = (nonce: number, change: Partial<Sent> = {}): Sent => ({
+    ...payment(`5Ju${nonce}`, nonce),
+    ...change,
+  });
+
+  test("it follows this tab's open payments from the account, in a run", () => {
+    expect(nonceFor(ledger(4), [])).toEqual({ kind: "ready", nonce: 4 });
+    expect(nonceFor(ledger(4), [at(4), at(5)])).toEqual({
+      kind: "ready",
+      nonce: 6,
+    });
+    expect(nonceFor(ledger(4), [at(4, { stage: "rejected" })])).toEqual({
+      kind: "ready",
+      nonce: 4,
+    });
+    // Another key's payments don't move this one's nonce.
+    expect(nonceFor({ ...ledger(0), publicKey: TO }, [at(4), at(5)])).toEqual({
+      kind: "ready",
+      nonce: 0,
+    });
+    // A payment after a gap holds nothing: the gap comes first.
+    expect(nonceFor(ledger(4), [at(6)])).toEqual({ kind: "ready", nonce: 4 });
+    expect(nonceFor(ledger(4), [at(4), at(6)])).toEqual({
+      kind: "ready",
+      nonce: 5,
+    });
+  });
+
+  test("a kept payment waits for a look, then gives up its nonce if missing", () => {
+    expect(nonceFor(ledger(7), [at(7, { check: "unchecked" })])).toEqual({
+      kind: "checking",
+      nonce: 7,
+    });
+    const missing = at(7, { check: "missing" });
+    expect(nonceFor(ledger(7), [missing])).toEqual({
+      kind: "missing",
+      nonce: 7,
+      payment: missing,
+    });
+    // Its replacement holds 7.
+    expect(nonceFor(ledger(7), [at(7), missing])).toEqual({
+      kind: "ready",
+      nonce: 8,
+    });
+    // Below the account's nonce it doesn't matter.
+    expect(nonceFor(ledger(8), [missing])).toEqual({ kind: "ready", nonce: 8 });
+  });
+
+  test("no nonce past uint32, and a cap on open payments", () => {
+    expect(nonceFor(ledger(NONCE_MAX), [])).toEqual({
+      kind: "ready",
+      nonce: NONCE_MAX,
+    });
+    expect(nonceFor(ledger(NONCE_MAX), [at(NONCE_MAX)])).toEqual({
+      kind: "exhausted",
+    });
+    const open = Array.from({ length: SENT_OPEN_MAX }, (_, n) => at(n + 100));
+    expect(nonceFor(ledger(0), open)).toEqual({ kind: "full" });
+  });
+
+  test("a look decides a kept payment's check", () => {
+    const kept = at(7, { check: "unchecked" });
+    const none = { tipHeight: 100, depthSearched: 40, found: null };
+    const found = {
+      ...none,
+      found: { height: 99, blockHash: "3NA", depth: 1, failure: null },
+    };
+    const check = (look: Partial<Parameters<typeof nextCheck>[1]>) =>
+      nextCheck(kept, {
+        inclusion: none,
+        inPool: false,
+        accountNonce: 7,
+        ...look,
+      });
+    expect(check({})).toBe("missing");
+    expect(check({ inPool: true })).toBeUndefined();
+    expect(check({ inclusion: found })).toBeUndefined();
+    // A lookup that failed, or no best tip: still unchecked.
+    expect(check({ inPool: undefined })).toBe("unchecked");
+    expect(check({ inclusion: undefined })).toBe("unchecked");
+    expect(check({ inclusion: null })).toBe("unchecked");
+    expect(check({ accountNonce: undefined })).toBe("unchecked");
+    // A payment this run's node had is never checked.
+    expect(
+      nextCheck(at(7), { inclusion: none, inPool: false, accountNonce: 7 }),
+    ).toBeUndefined();
+  });
+});
+
+describe("review findings", () => {
+  const FUNDED: Account = { ...account(7) };
+  const kept: Sent = {
+    ...payment("5JuReview", 7),
+    sentAt: Date.now(),
+  };
+
+  test("a kept payment absent from the restarted pool and chain gives up its nonce", async () => {
+    const storage = new MemoryStorage();
+    new SentStore(() => storage).add(kept);
+    const restored = new SentStore(() => storage);
+    expect(restored.getSnapshot()[0].check).toBe("unchecked");
+    expect(nonceFor(FUNDED, restored.getSnapshot()).kind).toBe("checking");
+    await trackOnce(
+      {
+        account: async () => FUNDED,
+        inPool: async () => false,
+        inclusion: async () => ({
+          found: null,
+          tipHeight: 100,
+          depthSearched: 40,
+        }),
+      },
+      restored,
+    );
+    expect(restored.getSnapshot()[0].check).toBe("missing");
+    expect(nonceFor(FUNDED, restored.getSnapshot())).toMatchObject({
+      kind: "missing",
+      nonce: 7,
+    });
+  });
+
+  test("a kept payment the restarted pool has holds its nonce", async () => {
+    const storage = new MemoryStorage();
+    new SentStore(() => storage).add(kept);
+    const restored = new SentStore(() => storage);
+    await trackOnce(
+      {
+        account: async () => FUNDED,
+        inPool: async () => true,
+        inclusion: async () => ({
+          found: null,
+          tipHeight: 100,
+          depthSearched: 40,
+        }),
+      },
+      restored,
+    );
+    expect(restored.getSnapshot()[0].check).toBeUndefined();
+    expect(nonceFor(FUNDED, restored.getSnapshot())).toEqual({
+      kind: "ready",
+      nonce: 8,
+    });
+    // `check` is never stored: the next restart checks again.
+    expect(storage.getItem(SENT_KEY)).not.toContain("check");
+  });
+
+  test("a nonce past uint32 doesn't parse", () => {
+    const storage = new MemoryStorage();
+    new SentStore(() => storage).add(kept);
+    const raw = JSON.parse(storage.getItem(SENT_KEY)!);
+    for (const nonce of [Number.MAX_SAFE_INTEGER, NONCE_MAX + 1, -1, 1.5]) {
+      raw[0].nonce = nonce;
+      expect(parseSent(JSON.stringify(raw))).toEqual([]);
+    }
+    raw[0].nonce = NONCE_MAX;
+    expect(parseSent(JSON.stringify(raw))).toHaveLength(1);
+  });
+
+  test("nullable text is null or a string, nothing else", () => {
+    const storage = new MemoryStorage();
+    new SentStore(() => storage).add(kept);
+    const good = JSON.parse(storage.getItem(SENT_KEY)!)[0];
+    const inclusion = { height: 1, depth: 1, blockHash: "3NLr", failure: null };
+    const parses = (change: object) =>
+      parseSent(JSON.stringify([{ ...good, ...change }])).length === 1;
+    expect(parses({ detail: null })).toBe(true);
+    expect(parses({ detail: "Looking for it again." })).toBe(true);
+    expect(parses({ detail: { bad: true } })).toBe(false);
+    expect(parses({ detail: 42 })).toBe(false);
+    expect(parses({ detail: undefined })).toBe(false);
+    expect(parses({ inclusion })).toBe(true);
+    expect(parses({ inclusion: { ...inclusion, failure: "Overflow" } })).toBe(
+      true,
+    );
+    expect(parses({ inclusion: { ...inclusion, failure: 42 } })).toBe(false);
+    expect(parses({ inclusion: { ...inclusion, failure: undefined } })).toBe(
+      false,
+    );
+  });
+
+  test("refused attempts don't push out an open payment", () => {
+    const store = new SentStore();
+    store.add(kept);
+    for (let n = 0; n < SENT_MAX + 5; n++) {
+      store.add({
+        ...kept,
+        hash: `5JuRefused${n}`,
+        nonce: 8,
+        stage: "rejected",
+      });
+    }
+    const list = store.getSnapshot();
+    expect(list.filter(s => s.stage === "rejected")).toHaveLength(SENT_MAX);
+    expect(list.some(s => s.hash === kept.hash)).toBe(true);
+    expect(nonceFor(FUNDED, list)).toEqual({ kind: "ready", nonce: 8 });
   });
 });
