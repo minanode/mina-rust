@@ -131,6 +131,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page opened then showed a newer block than the header (#583746 under
   #583745). The page asks `/status` again on every navigation, and when the
   Blocks list holds a block above the header's tip.
+- **Web node**: the header's status chip says "Stale", with the tip it last
+  had and the answer's age, once `/status` hasn't answered for 20 s, instead
+  of the last phase. It said "Synced" over a 20-minute-old answer.
 - **Web node**: a second tab of the same browser, which can't open the
   frontier store the first tab holds, now says so: one caution banner, and the
   Overview and Start-up show the store as not available in this tab, with no
