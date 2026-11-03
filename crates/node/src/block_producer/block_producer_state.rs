@@ -497,7 +497,7 @@ impl BlockProducerCurrentState {
         // How long before its slot starts a block's production begins. The
         // parent is chosen when production starts, so a shorter lead picks a
         // later best tip. A browser block proof takes about 6 to 10 s on 8
-        // cores; a slower machine finishes a few seconds into its 90 s slot.
+        // cores; a slower machine may finish a few seconds into its 90 s slot.
         #[cfg(not(target_arch = "wasm32"))]
         const BLOCK_PRODUCTION_ESTIMATE: u64 = Duration::from_secs(6).as_nanos() as u64;
         #[cfg(target_arch = "wasm32")]
