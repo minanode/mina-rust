@@ -375,8 +375,9 @@ impl TransitionFrontierSyncLedgerStagedState {
 
                 // STAGED-SPLIT: invalid parts may have been put together with
                 // another peer's. Either may have sent the bad ones, so both
-                // count as invalid, and the next fetch is from one peer at a
-                // time.
+                // count as invalid, neither is rejected, and the next fetch
+                // is from one peer at a time.
+                let mut put_together = false;
                 if let TransitionFrontierSyncLedgerStagedAction::PartsPeerInvalid { .. } = action {
                     if let Self::PartsFetchPending {
                         attempts,
@@ -389,6 +390,7 @@ impl TransitionFrontierSyncLedgerStagedState {
                                 *other =
                                     PeerStagedLedgerPartsFetchState::Invalid { time: meta.time() };
                                 *single_stream = true;
+                                put_together = true;
                             }
                         }
                     }
@@ -405,7 +407,10 @@ impl TransitionFrontierSyncLedgerStagedState {
                 } else {
                     // `P2pSyncPeerStats::record_rejected`: it ranks as near
                     // no longer.
-                    dispatcher.push(P2pChannelsRpcAction::SyncAnswerRejected { peer_id: *sender });
+                    if !put_together {
+                        dispatcher
+                            .push(P2pChannelsRpcAction::SyncAnswerRejected { peer_id: *sender });
+                    }
                     dispatcher.push(TransitionFrontierSyncLedgerStagedAction::PartsPeerFetchInit);
                 }
             }

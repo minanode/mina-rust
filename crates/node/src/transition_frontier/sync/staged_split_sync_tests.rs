@@ -14,7 +14,7 @@ use crate::{
             rpc::{P2pSyncPeerStats, StagedLedgerAuxAndPendingCoinbases},
             streaming_rpc::{
                 staged_ledger_parts::{
-                    from_first_part, from_last_part, StagedLedgerPartsResponse,
+                    from_first_part, from_last_part, parts_count, StagedLedgerPartsResponse,
                     StagedLedgerPartsSendProgress,
                 },
                 P2pChannelsStreamingRpcAction, P2pChannelsStreamingRpcState, P2pStreamingRpcId,
@@ -223,8 +223,8 @@ fn one_relay_sends_it_without_the_advertisement_or_with_one_stream() {
 
 /// The two streams meet: the parts are put together as the second's
 /// answer, the first is cancelled and its part on the way dropped. The
-/// parts here don't hash to the target, so both peers are blamed and the
-/// next fetch is from one at a time.
+/// parts here don't hash to the target, so both peers count as invalid,
+/// neither is rejected, and the next fetch is from one at a time.
 #[test]
 fn the_two_halves_are_put_together_and_the_other_cancelled() {
     let mut state = staged_node(2, true);
@@ -251,6 +251,14 @@ fn the_two_halves_are_put_together_and_the_other_cancelled() {
         "{ran:#?}"
     );
     assert!(
+        ran.iter().any(|a| a.contains("PartsPeerInvalid")),
+        "{ran:#?}"
+    );
+    assert!(
+        !ran.iter().any(|a| a.contains("SyncAnswerRejected")),
+        "{ran:#?}"
+    );
+    assert!(
         matches!(local(&state, &near()), P2pStreamingRpcLocalState::Cancelled { id, .. } if id == first)
     );
     // The tree the first was sending comes, and is dropped.
@@ -259,7 +267,7 @@ fn the_two_halves_are_put_together_and_the_other_cancelled() {
         matches!(local(&state, &near()), P2pStreamingRpcLocalState::Responded { id, .. } if id == first)
     );
 
-    // Fake parts: rejected, both blamed, one stream from now on.
+    // Fake parts: both invalid, one stream from now on.
     let staged = state
         .transition_frontier
         .sync
@@ -284,6 +292,30 @@ fn the_two_halves_are_put_together_and_the_other_cancelled() {
             "{attempts:?}"
         );
     }
+}
+
+/// Parts from one relay alone that fail the hash check: that relay is
+/// rejected.
+#[test]
+fn parts_from_one_relay_that_fail_the_hash_reject_it() {
+    let mut state = staged_node(1, true);
+    run(&mut state, StagedAction::PartsPeerFetchInit, at_ms(1_000));
+    let id = local_rpc(&state, &near()).unwrap();
+    let data = staged_ledger(5);
+    let mut ran = vec![];
+    for sent in 0..parts_count(&data) {
+        ran = part(&mut state, near(), id, from_first_part(&data, sent));
+    }
+    assert!(
+        ran.iter().any(|a| a.contains("PartsPeerInvalid")),
+        "{ran:#?}"
+    );
+    let rejected: Vec<_> = ran
+        .iter()
+        .filter(|a| a.contains("SyncAnswerRejected"))
+        .collect();
+    assert_eq!(rejected.len(), 1, "{ran:#?}");
+    assert!(rejected[0].contains(&format!("{:?}", near())), "{ran:#?}");
 }
 
 /// The same, the first completing it: the last had asked for its next tree,
