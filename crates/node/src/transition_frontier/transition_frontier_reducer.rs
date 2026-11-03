@@ -66,7 +66,13 @@ impl TransitionFrontierState {
                 );
             }
             TransitionFrontierAction::Sync(a) => {
-                use super::sync::{PeerBlockFetchError, TransitionFrontierSyncAction as Sync};
+                use super::sync::{
+                    ledger::{
+                        staged::TransitionFrontierSyncLedgerStagedAction as Staged,
+                        TransitionFrontierSyncLedgerAction as SyncLedger,
+                    },
+                    PeerBlockFetchError, TransitionFrontierSyncAction as Sync,
+                };
                 match a {
                     Sync::BlocksPeerQueryError {
                         peer_id,
@@ -91,6 +97,26 @@ impl TransitionFrontierState {
                     }
                     Sync::BlocksPeerQuerySuccess { response, .. } => {
                         state.block_local_check_errors.remove(&response.hash);
+                    }
+                    Sync::Ledger(SyncLedger::Staged(staged)) => {
+                        // Read before the sync reducer moves on: who sent the
+                        // parts it refuses (STAGED-SPLIT).
+                        let refused = match staged {
+                            Staged::PartsPeerInvalid { sender, .. } => Some(Some(sender)),
+                            Staged::ReconstructError { .. } => Some(None),
+                            _ => None,
+                        };
+                        if let Some(sender) = refused {
+                            let peers = state
+                                .sync
+                                .ledger()
+                                .and_then(|ledger| ledger.staged())
+                                .map(|staged| staged.refused_parts_senders(sender))
+                                .unwrap_or_default();
+                            state.staged_parts_refused(peers, meta.time());
+                        } else if matches!(staged, Staged::Success) {
+                            state.staged_parts_refusals.clear();
+                        }
                     }
                     _ => {}
                 }

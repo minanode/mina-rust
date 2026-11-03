@@ -776,3 +776,93 @@ fn the_retry_after_a_bad_union_drops_the_cancelled_tree() {
     assert!(!ran.iter().any(|a| a.contains("Disconnection")), "{ran:#?}");
     assert_eq!(local_rpc(&state, &near()), Some(retry));
 }
+
+/// The root moves while the two streams run, to a root of the same snarked
+/// ledger: the staged ledger target is kept, the new root counted as an
+/// update (WEB-ROOT-RETARGET).
+pub(super) fn advance_root(state: &mut crate::State) {
+    let TransitionFrontierSyncState::RootLedgerPending(pending) =
+        &mut state.transition_frontier.sync
+    else {
+        panic!("not syncing the root ledger");
+    };
+    let snarked = pending
+        .ledger
+        .staged()
+        .unwrap()
+        .target()
+        .snarked_ledger_hash
+        .clone();
+    let old = pending.root_block.clone();
+    let mut next = block(&template_block(), 101, Some(&old), 7);
+    Arc::make_mut(&mut next.block)
+        .header
+        .protocol_state
+        .body
+        .blockchain_state
+        .ledger_proof_statement
+        .target
+        .first_pass_ledger = snarked;
+    pending.root_block = next;
+    pending.update_root_ledger_target(at_ms(2_000), old);
+    assert_eq!(pending.root_block_updates.len(), 1);
+}
+
+/// Parts put together that fail the hash check after the root moved: the
+/// fetch retargets to the new root, and the new fetch still waits the
+/// retry delay for both relays and then asks one, from the first, with no
+/// relay rejected.
+#[test]
+fn a_bad_union_after_the_root_moved_retries_one_stream_after_the_delay() {
+    let mut state = staged_node(2, true);
+    run(&mut state, StagedAction::PartsPeerFetchInit, at_ms(1_000));
+    let first = local_rpc(&state, &near()).unwrap();
+    let last = local_rpc(&state, &other()).unwrap();
+    advance_root(&mut state);
+    let data = staged_ledger(5);
+    for sent in 0..5 {
+        part(&mut state, near(), first, from_first_part(&data, sent));
+    }
+    for sent in 0..3 {
+        part(&mut state, other(), last, from_last_part(&data, sent));
+    }
+    let mut ran = part(&mut state, other(), last, from_last_part(&data, 3));
+    // The cancelled stream's part on its way comes, and is dropped.
+    part(&mut state, near(), first, from_first_part(&data, 5));
+    ran.extend(run(
+        &mut state,
+        StagedAction::PartsPeerFetchInit,
+        at_ms(2_000),
+    ));
+    assert!(
+        ran.iter().any(|a| a.contains("LedgerRootRetarget")),
+        "{ran:#?}"
+    );
+    assert!(requests(&ran).is_empty(), "asked at once: {ran:#?}");
+    assert!(
+        !ran.iter().any(|a| a.contains("SyncAnswerRejected")),
+        "{ran:#?}"
+    );
+    let staged = state
+        .transition_frontier
+        .sync
+        .ledger()
+        .and_then(|l| l.staged())
+        .unwrap();
+    assert!(
+        matches!(
+            staged,
+            TransitionFrontierSyncLedgerStagedState::PartsFetchPending {
+                single_stream: true,
+                ..
+            }
+        ),
+        "single-stream fallback lost on root retarget: {staged:?}"
+    );
+
+    let ran = run(&mut state, StagedAction::PartsPeerFetchInit, at_ms(7_000));
+    let asked = requests(&ran);
+    assert_eq!(asked.len(), 1, "{ran:#?}");
+    assert!(!asked[0].contains("FromLast"), "{asked:?}");
+    assert!(!StagedAction::PartsPeerFetchInit.is_enabled(&state, at_ms(7_500)));
+}

@@ -22,9 +22,9 @@ pub enum TransitionFrontierSyncLedgerStagedState {
         time: Timestamp,
         target: SyncLedgerTargetWithStaged,
         attempts: BTreeMap<PeerId, PeerStagedLedgerPartsFetchState>,
-        /// Fetch from one peer at a time: parts put together from two
-        /// peers didn't hash to the target (STAGED-SPLIT), or parts failed
-        /// to rebuild the staged ledger.
+        /// Fetch from one peer at a time: parts were refused, from one peer
+        /// or put together from two (STAGED-SPLIT), for this target or an
+        /// earlier one ([`Self::pending_after_refusals`]).
         #[serde(default)]
         single_stream: bool,
     },
@@ -124,6 +124,64 @@ impl TransitionFrontierSyncLedgerStagedState {
             attempts: Default::default(),
             single_stream: false,
         }
+    }
+
+    /// [`Self::pending`] after `refusals`, the peers whose parts were
+    /// refused in an earlier fetch, of this target or another, and when
+    /// (`TransitionFrontierState::staged_parts_refusals`). Each counts as
+    /// having sent invalid parts then, so it isn't asked again before the
+    /// retry delay, and after any refusal the parts come from one peer at a
+    /// time: a peer whose own parts then fail is the one rejected. Without
+    /// it, a root retarget after parts put together from two peers failed
+    /// would ask both again at once, together, and reject neither.
+    pub fn pending_after_refusals(
+        time: Timestamp,
+        target: SyncLedgerTargetWithStaged,
+        refusals: &BTreeMap<PeerId, Timestamp>,
+    ) -> Self {
+        Self::PartsFetchPending {
+            time,
+            target,
+            attempts: refusals
+                .iter()
+                .map(|(peer_id, at)| {
+                    (
+                        *peer_id,
+                        PeerStagedLedgerPartsFetchState::Invalid { time: *at },
+                    )
+                })
+                .collect(),
+            single_stream: !refusals.is_empty(),
+        }
+    }
+
+    /// The peers behind parts refused now: for parts `sender` answered
+    /// with, `sender`; for a failed rebuild (`None`), the peer whose parts
+    /// are being rebuilt. With either, the peers whose requests were pending
+    /// as the parts came, which may have been put together from their
+    /// streams (STAGED-SPLIT).
+    pub fn refused_parts_senders(&self, sender: Option<&PeerId>) -> Vec<PeerId> {
+        let (peer_id, others) = match (self, sender) {
+            (Self::PartsFetchPending { attempts, .. }, Some(sender)) => (*sender, attempts),
+            (
+                Self::ReconstructPending {
+                    sender: Some(sender),
+                    ..
+                },
+                None,
+            ) => (sender.peer_id, &sender.other_attempts),
+            _ => return Vec::new(),
+        };
+        std::iter::once(peer_id)
+            .chain(
+                others
+                    .iter()
+                    .filter(|(id, attempt)| {
+                        **id != peer_id && attempt.fetch_pending_rpc_id().is_some()
+                    })
+                    .map(|(id, _)| *id),
+            )
+            .collect()
     }
 
     pub fn target(&self) -> &SyncLedgerTargetWithStaged {

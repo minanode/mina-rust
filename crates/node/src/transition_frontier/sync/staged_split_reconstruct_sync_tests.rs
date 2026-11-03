@@ -8,7 +8,7 @@
 use super::{
     nearest_peer_sync_tests::{at_ms, near, run},
     reconstruct_reject_sync_tests::{rebuilding, staged, Fixture, FEE},
-    staged_split_sync_tests::{local, local_rpc, other, requests, staged_node},
+    staged_split_sync_tests::{advance_root, local, local_rpc, other, requests, staged_node},
     *,
 };
 use crate::{
@@ -311,4 +311,85 @@ fn after_a_failed_union_one_relay_at_a_time_rebuilds_the_staged_ledger() {
         }
         assert!(!ever_rejected(&state, &other()), "bad {bad:?}");
     }
+}
+
+/// Parts put together that fail to rebuild after the root moved: the fetch
+/// retargets to the new root, and the new fetch still waits the retry
+/// delay for both relays and then asks one, from the first. The bad relay,
+/// asked first as the nearer, is then rejected alone, and the other asked.
+#[test]
+fn a_failed_union_rebuild_after_the_root_moved_retries_one_stream_after_the_delay() {
+    let parts = Parts::new();
+    let bad = near();
+    let (mut state, _) = put_together(&parts, bad);
+    advance_root(&mut state);
+    let (rebuilt, ran) = rebuild(&mut state, &parts, union_at());
+    assert!(!rebuilt);
+    assert!(
+        ran.iter().any(|a| a.contains("LedgerRootRetarget")),
+        "{ran:#?}"
+    );
+    assert!(requests(&ran).is_empty(), "asked at once: {ran:#?}");
+    assert!(rejected(&ran).is_empty(), "{ran:#?}");
+    assert!(
+        matches!(
+            staged(&state),
+            TransitionFrontierSyncLedgerStagedState::PartsFetchPending {
+                single_stream: true,
+                ..
+            }
+        ),
+        "single-stream fallback lost on root retarget: {:?}",
+        staged(&state)
+    );
+
+    // One stream, from the first, to the nearer relay. Its parts are not
+    // the new root's, so they are refused, from it alone: it is rejected,
+    // and the other relay is asked, alone too.
+    let ran = run(&mut state, StagedAction::PartsPeerFetchInit, retry_at());
+    let asked = requests(&ran);
+    assert_eq!(asked.len(), 1, "{ran:#?}");
+    assert!(!asked[0].contains("FromLast"), "{asked:?}");
+    assert!(asked[0].contains(&format!("{bad:?}")), "{asked:?}");
+    let id = local_rpc(&state, &bad).unwrap();
+    let data = parts.of(bad, bad);
+    let mut ran = vec![];
+    for sent in 0..parts_count(data) {
+        ran = part(&mut state, bad, id, from_first_part(data, sent), retry_at());
+    }
+    let rejected = rejected(&ran);
+    assert_eq!(rejected.len(), 1, "{ran:#?}");
+    assert!(rejected[0].contains(&format!("{bad:?}")), "{ran:#?}");
+    let asked = requests(&ran);
+    assert_eq!(asked.len(), 1, "{ran:#?}");
+    assert!(!asked[0].contains("FromLast"), "{asked:?}");
+    assert!(asked[0].contains(&format!("{:?}", other())), "{asked:?}");
+    assert!(!ever_rejected(&state, &other()));
+}
+
+/// The frontier keeps both relays of a failed union, across targets, until
+/// a staged ledger is rebuilt.
+#[test]
+fn refusals_are_kept_until_a_staged_ledger_is_rebuilt() {
+    let parts = Parts::new();
+    let bad = other();
+    let (mut state, _) = put_together(&parts, bad);
+    rebuild(&mut state, &parts, union_at());
+    let refusals = &state.transition_frontier.staged_parts_refusals;
+    assert_eq!(
+        refusals.keys().copied().collect::<Vec<_>>(),
+        {
+            let mut both = vec![near(), other()];
+            both.sort();
+            both
+        },
+        "{refusals:?}"
+    );
+    assert!(refusals.values().all(|at| *at == union_at()));
+
+    let ran = run(&mut state, StagedAction::PartsPeerFetchInit, retry_at());
+    stream_alone(&mut state, &parts, bad, &ran);
+    let (rebuilt, _) = rebuild(&mut state, &parts, retry_at());
+    assert!(rebuilt);
+    assert!(state.transition_frontier.staged_parts_refusals.is_empty());
 }

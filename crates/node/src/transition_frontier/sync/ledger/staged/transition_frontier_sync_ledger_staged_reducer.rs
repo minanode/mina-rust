@@ -375,8 +375,11 @@ impl TransitionFrontierSyncLedgerStagedState {
 
                 // STAGED-SPLIT: invalid parts may have been put together with
                 // another peer's. Either may have sent the bad ones, so both
-                // count as invalid, neither is rejected, and the next fetch
-                // is from one peer at a time.
+                // count as invalid and neither is rejected. After any invalid
+                // parts the next fetch is from one peer at a time, so a peer
+                // whose own parts are invalid is the one rejected. The frontier
+                // keeps the refusal for later targets too
+                // (`TransitionFrontierState::staged_parts_refusals`).
                 let mut put_together = false;
                 if let TransitionFrontierSyncLedgerStagedAction::PartsPeerInvalid { .. } = action {
                     if let Self::PartsFetchPending {
@@ -389,10 +392,10 @@ impl TransitionFrontierSyncLedgerStagedState {
                             if peer_id != sender && other.fetch_pending_rpc_id().is_some() {
                                 *other =
                                     PeerStagedLedgerPartsFetchState::Invalid { time: meta.time() };
-                                *single_stream = true;
                                 put_together = true;
                             }
                         }
+                        *single_stream = true;
                     }
                 }
 
@@ -508,7 +511,9 @@ impl TransitionFrontierSyncLedgerStagedState {
                     // the part that fails: both count as invalid and neither
                     // is rejected, as when such parts don't make the hash.
                     // Either way the next fetch is from one peer at a time,
-                    // so a peer whose parts fail again is the one rejected.
+                    // so a peer whose parts fail again is the one rejected,
+                    // for a later target too (`TransitionFrontierState::
+                    // staged_parts_refusals`, recorded by the frontier).
                     let put_together = sender.may_be_put_together();
                     let StagedLedgerPartsSender {
                         peer_id,
