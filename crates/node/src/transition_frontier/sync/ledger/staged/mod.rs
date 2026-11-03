@@ -362,4 +362,197 @@ mod tests {
                 .is_valid()
         );
     }
+
+    /// The parts a web node gets from two relays that meet after `first`
+    /// trees: the first relay's bases and its first `first` trees, and the
+    /// second relay's scan state base and the other trees, last first. Both
+    /// relays hold `full`, and send each tree without its completed merge
+    /// jobs.
+    fn union_of_two_streams(
+        full: &StagedLedgerAuxAndPendingCoinbases,
+        first: usize,
+    ) -> StagedLedgerAuxAndPendingCoinbases {
+        use crate::p2p::channels::streaming_rpc::staged_ledger_parts::{
+            from_first_part, from_last_part, staged_ledger_parts_complete,
+            take_staged_ledger_parts, StagedLedgerPartsFromLastProgress,
+            StagedLedgerPartsReceiveProgress,
+        };
+        let time = redux::Timestamp::ZERO;
+        let trees = full.scan_state.scan_state.trees.1.len() + 1;
+        let mut from_first = StagedLedgerPartsReceiveProgress::BasePending { time };
+        for part in (0..3 + first).map(|sent| from_first_part(full, sent).unwrap()) {
+            if !from_first.is_part_pending() {
+                assert!(from_first.set_next_pending(time));
+            }
+            assert!(from_first.update(time, part));
+        }
+        let mut from_last = StagedLedgerPartsFromLastProgress::new(time);
+        for part in (0..1 + trees - first).map(|sent| from_last_part(full, sent).unwrap()) {
+            if !from_last.is_part_pending() {
+                assert!(from_last.set_next_pending(time));
+            }
+            assert!(from_last.update(time, part));
+        }
+        assert_eq!(
+            staged_ledger_parts_complete(&from_first, &from_last),
+            Some(true)
+        );
+        take_staged_ledger_parts(&mut from_first, &mut from_last).unwrap()
+    }
+
+    fn lean_trees(
+        scan_state: &v2::TransactionSnarkScanStateStableV2,
+    ) -> Vec<v2::TransactionSnarkScanStateStableV2ScanStateTreesA> {
+        let trees = &scan_state.scan_state.trees;
+        std::iter::once(&trees.0)
+            .chain(trees.1.iter())
+            .map(|tree| tree.with_leaner_trees())
+            .collect()
+    }
+
+    /// Two relays that applied the blocks themselves hold completed (`Done`)
+    /// merge jobs with their proofs, and send every tree without them, one
+    /// from the first tree and one from the last. Wherever the two streams
+    /// meet, the web node's union makes the staged ledger hash of the full
+    /// scan state, and has each tree once, in order.
+    #[test]
+    fn lean_trees_from_two_relays_make_the_full_staged_ledger_hash() {
+        use mina_p2p_messages::binprot::BinProtRead;
+        use v2::{
+            ParallelScanJobStatusStableV1 as Status,
+            TransactionSnarkScanStateStableV2ScanStateTreesA as Tree,
+            TransactionSnarkScanStateStableV2ScanStateTreesAMergeT1 as MergeJob,
+            TransactionSnarkScanStateStableV2ScanStateTreesAMergeT1Full as Full,
+        };
+
+        let bytes =
+            include_bytes!("../../../../../../ledger/src/verifier/fixtures/mainnet-551267-1.bin");
+        let work = v2::TransactionSnarkWorkTStableV2::binprot_read(&mut bytes.as_slice()).unwrap();
+        let proof = match work.proofs {
+            v2::TransactionSnarkWorkTStableV2Proofs::One(proof) => proof,
+            v2::TransactionSnarkWorkTStableV2Proofs::Two((proof, _)) => proof,
+        };
+        // Tree `i`: its root merge job done with sequence number `i + 1`,
+        // and below it one job done and one waiting for its second proof,
+        // which is pending work and stays.
+        let tree = |template: &Tree, i: u64| {
+            let Tree::Node {
+                depth,
+                value,
+                sub_tree,
+            } = template
+            else {
+                panic!("a scan state tree has merge nodes")
+            };
+            let done = |seq_no: u64| {
+                MergeJob::Full(Box::new(Full {
+                    left: proof.clone(),
+                    right: proof.clone(),
+                    seq_no: v2::ParallelScanSequenceNumberStableV1(seq_no.into()),
+                    status: Status::Done,
+                }))
+            };
+            let mut value = value.clone();
+            value[0].1 = done(i + 1);
+            let Tree::Node {
+                depth: sub_depth,
+                value: sub_value,
+                sub_tree: rest,
+            } = &**sub_tree
+            else {
+                panic!("a scan state tree has two levels of merge nodes")
+            };
+            let mut sub_value = sub_value.clone();
+            sub_value[0].1 = done(i + 1);
+            sub_value[1].1 = MergeJob::Part(Box::new(proof.clone()));
+            Tree::Node {
+                depth: *depth,
+                value,
+                sub_tree: Box::new(Tree::Node {
+                    depth: *sub_depth,
+                    value: sub_value,
+                    sub_tree: rest.clone(),
+                }),
+            }
+        };
+
+        const TREES: usize = 5;
+        let (wire, _) = parts();
+        let mut full = (*wire).clone();
+        let trees = &mut full.scan_state.scan_state.trees;
+        let template = trees.0.clone();
+        trees.0 = tree(&template, 0);
+        trees.1 = (1..TREES as u64).map(|i| tree(&template, i)).collect();
+        let (_, hash) = StagedLedgerAuxAndPendingCoinbasesValid::convert(&full).unwrap();
+        assert!(StagedLedgerAuxAndPendingCoinbasesValidated::validate(
+            &Arc::new(full.clone()),
+            &hash
+        )
+        .is_valid());
+        let lean = lean_trees(&full.scan_state);
+        assert!(bytes_of(&lean) < bytes_of(&full_trees(&full.scan_state)));
+
+        for first in 0..TREES {
+            let union = union_of_two_streams(&full, first);
+            assert_ne!(union.scan_state, full.scan_state, "meeting after {first}");
+            assert_eq!(lean_trees(&union.scan_state), lean, "meeting after {first}");
+            assert!(
+                StagedLedgerAuxAndPendingCoinbasesValidated::validate(&Arc::new(union), &hash)
+                    .is_valid(),
+                "meeting after {first}"
+            );
+        }
+    }
+
+    fn full_trees(
+        scan_state: &v2::TransactionSnarkScanStateStableV2,
+    ) -> Vec<v2::TransactionSnarkScanStateStableV2ScanStateTreesA> {
+        let trees = &scan_state.scan_state.trees;
+        std::iter::once(&trees.0)
+            .chain(trees.1.iter())
+            .cloned()
+            .collect()
+    }
+
+    fn bytes_of(trees: &[v2::TransactionSnarkScanStateStableV2ScanStateTreesA]) -> usize {
+        trees.iter().map(|tree| bytes(tree).len()).sum()
+    }
+
+    /// The same on a stored root, where the relays' trees are as a
+    /// long-running node holds them. Needs a frontier store's parts file:
+    ///
+    /// ```text
+    /// MINA_PERSIST_PARTS=<store>/<chain id>/frontier/parts-<root>.bin \
+    ///     cargo test --release -p mina-node --lib stored_root_lean -- --ignored
+    /// ```
+    #[test]
+    #[ignore = "needs a parts file in MINA_PERSIST_PARTS"]
+    fn stored_root_lean_trees_from_two_relays_make_its_staged_ledger_hash() {
+        use mina_p2p_messages::binprot::BinProtRead;
+
+        let path = std::env::var("MINA_PERSIST_PARTS").expect("MINA_PERSIST_PARTS");
+        let bytes = std::fs::read(&path).unwrap();
+        let full = StagedLedgerAuxAndPendingCoinbases::binprot_read(&mut bytes.as_slice()).unwrap();
+        let (sent, hash) = StagedLedgerAuxAndPendingCoinbasesValid::convert(&full).unwrap();
+        let lean = lean_trees(&full.scan_state);
+        assert_ne!(lean, full_trees(&full.scan_state), "no Done merge jobs");
+        eprintln!(
+            "{} trees, {} bytes full, {} bytes lean",
+            lean.len(),
+            bytes_of(&full_trees(&full.scan_state)),
+            bytes_of(&lean)
+        );
+        let trees = lean.len();
+        for first in [0, 1, trees / 2, trees - 1] {
+            let union = union_of_two_streams(&full, first);
+            assert_eq!(lean_trees(&union.scan_state), lean, "meeting after {first}");
+            let (received, union_hash) =
+                StagedLedgerAuxAndPendingCoinbasesValid::convert(&union).unwrap();
+            assert_eq!(union_hash, hash, "meeting after {first}");
+            assert_eq!(
+                received.has_required_protocol_states(),
+                sent.has_required_protocol_states()
+            );
+        }
+    }
 }
