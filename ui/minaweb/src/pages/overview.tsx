@@ -32,7 +32,7 @@ import { Link } from "../app/router";
 import { formatBytes } from "../boot/failures";
 import { CONFIG } from "../config";
 import { parseMemoryStats } from "../lib/memory";
-import { storeLabel, storeState } from "../lib/store";
+import { savedChainLabel, storeLabel, storeState } from "../lib/store";
 
 const MEMORY_POLL_MS = 5_000;
 
@@ -42,6 +42,8 @@ export function OverviewPage() {
   const { status, build, peers } = useNodeStatus();
   const view = useSyncView(now);
   const s = status.data;
+  const store = storeState(boot.frontierStore, s?.frontierStore);
+  const saved = savedChainLabel(store, s?.frontierStore?.savedChain);
   const restore = useSyncRestore();
   const checks = useVerification(1, 10_000);
   const glue = boot.glue;
@@ -244,11 +246,17 @@ export function OverviewPage() {
             {
               label: "Frontier store",
               value: (
-                <span data-frontier-store-status>
-                  {storeLabel(storeState(boot.frontierStore, s?.frontierStore))}
-                </span>
+                <span data-frontier-store-status>{storeLabel(store)}</span>
               ),
             },
+            ...(saved
+              ? [
+                  {
+                    label: "Saved chain",
+                    value: <span data-saved-chain>{saved}</span>,
+                  },
+                ]
+              : []),
           ]}
         />
       </div>

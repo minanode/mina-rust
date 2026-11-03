@@ -121,6 +121,37 @@ export default function WebNodeConnectionsPage() {
             before that starts the sync again.
           </p>
           <p>
+            The Overview and Start-up pages show what a reload does with the
+            saved chain. The node decides it with the same rules it applies when
+            it restores.
+          </p>
+        </Prose>
+        <Terms
+          items={[
+            {
+              term: "Not saved yet",
+              text: "No chain is saved. A reload starts the sync again.",
+            },
+            {
+              term: "Saved at #N",
+              text: "A reload restores the chain up to block N. If a saved file fails the node's checks, the node syncs again instead.",
+            },
+            {
+              term: "Saved, but a reload syncs again",
+              text: "The saved chain can't be restored. The Start-up page gives the reason, such as a saved tip more than 1,160 slots old. The node reuses the saved ledgers, syncs, and saves a new chain.",
+            },
+            {
+              term: "Checking",
+              text: "The node is restoring the saved chain.",
+            },
+            {
+              term: "Not known",
+              text: "The node couldn't read what it needs to decide. The Start-up page gives the reason.",
+            },
+          ]}
+        />
+        <Prose>
+          <p>
             One tab per browser uses the saved chain. A second tab of the same
             browser runs a second node without it, which uses as much memory
             again. Close one of the tabs to stop its node.
