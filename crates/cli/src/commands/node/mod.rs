@@ -17,7 +17,7 @@ use mina_node::{
     p2p::{
         connection::outgoing::P2pConnectionOutgoingInitOpts,
         identity::SecretKey,
-        webrtc::{IceServer, UdpPortRange, WebrtcConfig, DEFAULT_SCTP_WINDOW, SCTP_WINDOW_RANGE},
+        webrtc::{IceServer, UdpPortRange, WebrtcConfig, SCTP_WINDOW_RANGE},
     },
     service::Recorder,
     snark::{BlockVerifier, TransactionVerifier},
@@ -631,10 +631,16 @@ pub struct Node {
     )]
     pub webrtc_nat_ip: Vec<IpAddr>,
 
-    /// The most data, in bytes, a connection to a browser may have sent and
-    /// not yet acknowledged, or queued to send. It bounds what one browser
-    /// gets each round trip, so it sets how fast a distant browser syncs.
-    /// Each connection may hold up to this much memory.
+    /// The most data, in bytes, a WebRTC connection sends before the peer
+    /// acknowledges it: the cap on its SCTP congestion window. New messages
+    /// also wait while this much is in flight or queued. It bounds what a
+    /// peer gets each round trip, so it sets how fast a distant browser
+    /// syncs from a relay. It applies to every WebRTC connection of a native
+    /// node.
+    ///
+    /// It is send accounting, not a memory limit: while a peer downloads,
+    /// its connection's send buffers hold about this much, plus up to one
+    /// more message and allocation overhead.
     ///
     /// Defaults to 1048576 (1 MiB), from 65536 to 16777216.
     #[arg(
@@ -2204,6 +2210,7 @@ mod tests {
 
     #[test]
     fn sctp_window_is_bounded_and_defaults_as_its_help_says() {
+        use mina_node::p2p::webrtc::DEFAULT_SCTP_WINDOW;
         let unset = parse(&[]).unwrap().webrtc_sctp_window;
         assert_eq!(unset, None);
         let config = webrtc_config(None, None, &[], unset).unwrap();
