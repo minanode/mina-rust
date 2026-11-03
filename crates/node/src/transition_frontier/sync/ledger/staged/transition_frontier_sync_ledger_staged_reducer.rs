@@ -15,8 +15,8 @@ use crate::{
 
 use super::{
     PeerStagedLedgerPartsFetchState, StagedLedgerAuxAndPendingCoinbasesValidated,
-    TransitionFrontierSyncLedgerStagedAction, TransitionFrontierSyncLedgerStagedActionWithMetaRef,
-    TransitionFrontierSyncLedgerStagedState,
+    StagedLedgerPartsSender, TransitionFrontierSyncLedgerStagedAction,
+    TransitionFrontierSyncLedgerStagedActionWithMetaRef, TransitionFrontierSyncLedgerStagedState,
 };
 
 impl TransitionFrontierSyncLedgerStagedState {
@@ -310,16 +310,22 @@ impl TransitionFrontierSyncLedgerStagedState {
                 else {
                     return;
                 };
-                let Some(attempt) = attempts.get_mut(sender) else {
+                let Some(PeerStagedLedgerPartsFetchState::Valid { parts, .. }) =
+                    attempts.get(sender)
+                else {
                     return;
                 };
-                let PeerStagedLedgerPartsFetchState::Valid { parts, .. } = attempt else {
-                    return;
-                };
+                let parts = parts.clone();
+                let mut other_attempts = std::mem::take(attempts);
+                other_attempts.remove(sender);
                 *state = Self::PartsFetchSuccess {
                     time: meta.time(),
                     target: target.clone(),
-                    parts: parts.clone(),
+                    parts,
+                    sender: StagedLedgerPartsSender {
+                        peer_id: *sender,
+                        other_attempts,
+                    },
                 };
 
                 // Dispatch
@@ -356,19 +362,56 @@ impl TransitionFrontierSyncLedgerStagedState {
                 });
             }
             TransitionFrontierSyncLedgerStagedAction::ReconstructPending => {
-                let Some((target, parts)) = state.target_with_parts() else {
-                    return;
+                let (target, parts, sender) = match state {
+                    Self::PartsFetchSuccess {
+                        target,
+                        parts,
+                        sender,
+                        ..
+                    } => (target, Some(parts.clone()), Some(sender.clone())),
+                    Self::ReconstructEmpty { target, .. } => (target, None, None),
+                    _ => return,
                 };
                 *state = Self::ReconstructPending {
                     time: meta.time(),
                     target: target.clone(),
-                    parts: parts.cloned(),
+                    parts,
+                    sender,
                 }
             }
             TransitionFrontierSyncLedgerStagedAction::ReconstructError { error } => {
-                let Self::ReconstructPending { target, parts, .. } = state else {
+                let Self::ReconstructPending {
+                    target,
+                    parts,
+                    sender,
+                    ..
+                } = state
+                else {
                     return;
                 };
+                if let Some(StagedLedgerPartsSender {
+                    peer_id,
+                    other_attempts,
+                }) = sender.take()
+                {
+                    // A peer's parts that make the staged ledger hash but
+                    // don't rebuild the staged ledger: rejected as parts that
+                    // don't make it are, and asked of another peer.
+                    let mut attempts = other_attempts;
+                    attempts.insert(
+                        peer_id,
+                        PeerStagedLedgerPartsFetchState::Invalid { time: meta.time() },
+                    );
+                    *state = Self::PartsFetchPending {
+                        time: meta.time(),
+                        target: target.clone(),
+                        attempts,
+                    };
+                    let dispatcher = state_context.into_dispatcher();
+                    dispatcher.push(P2pChannelsRpcAction::SyncAnswerRejected { peer_id });
+                    dispatcher.push(TransitionFrontierSyncLedgerStagedAction::PartsPeerFetchInit);
+                    return;
+                }
                 *state = Self::ReconstructError {
                     time: meta.time(),
                     target: target.clone(),

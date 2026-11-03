@@ -66,7 +66,7 @@ fn node(root: &ArcBlockWithHash) -> (crate::State, PeerId) {
     (state, peer)
 }
 
-fn reduce(
+pub(super) fn reduce(
     state: &mut crate::State,
     action: impl Into<crate::Action>,
     now: Timestamp,

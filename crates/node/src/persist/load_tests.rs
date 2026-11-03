@@ -1090,6 +1090,50 @@ fn a_pending_coinbase_position_out_of_range_is_damage() {
 }
 
 #[test]
+fn a_scan_state_with_more_trees_than_an_update_leaves_is_damage() {
+    // Trees of a done fee transfer of nothing: the staged ledger hash leaves
+    // them out, and their transactions change no account. A restored staged
+    // ledger with them would panic at its next update.
+    use crate::persist::test_fixtures::done_fee_transfer;
+    use mina_p2p_messages::{
+        binprot::BinProtRead, v2::TransactionSnarkScanStateStableV2ScanStateTreesA as Tree,
+    };
+
+    let stored = Stored::new(8, 3);
+    let mem = stored.store();
+    let name = parts_name(stored.blocks[0].hash());
+    let bytes = mem.file(&name).expect("the parts file");
+    let mut parts = crate::p2p::channels::rpc::StagedLedgerAuxAndPendingCoinbases::binprot_read(
+        &mut bytes.as_slice(),
+    )
+    .unwrap();
+    let receiver = stored
+        .fixture
+        .staged
+        .get_at_index(ledger::AccountIndex(0))
+        .unwrap();
+    let state = stored.blocks[0].header().protocol_state.clone();
+    let constants = constraint_constants();
+    let max_trees = (constants.transaction_capacity_log_2 + 1) * (constants.work_delay + 1) + 1;
+    for _ in 0..max_trees {
+        parts
+            .scan_state
+            .scan_state
+            .trees
+            .1
+            .push_back(Tree::Leaf(vec![done_fee_transfer(&receiver, 0, &state)]));
+    }
+    parts.needed_blocks.push_back(state);
+    let mut out = Vec::new();
+    parts.binprot_write(&mut out).unwrap();
+    replace_file(&mem, &name, out);
+
+    let reason = discarded(load_from(&mem, Some(stored.tip_slot())));
+    assert!(reason.contains("scan state"), "{reason}");
+    assert!(reason.contains("trees, not 1 to"), "{reason}");
+}
+
+#[test]
 fn cancellation_during_file_reads_keeps_the_generation_and_stops_the_load() {
     use super::load_control::LoadControl;
     let stored = Stored::new(32, 3);

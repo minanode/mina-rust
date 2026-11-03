@@ -2995,12 +2995,18 @@ fn staged_ledger_reconstruct(
             }
         }
         Err(_) => {
-            if let Err(e) = dump_reconstruct_to_file(&snarked_ledger, &parts) {
-                mina_core::error!(
-                    mina_core::log::system_time();
-                    kind = "LedgerService::dump - Failed reconstruct",
-                    summary = format!("Failed to save reconstruction to file: {e:?}")
-                );
+            // The first failure only: the sync asks another peer after one,
+            // and each dump writes the whole snarked ledger.
+            static DUMPED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !DUMPED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                if let Err(e) = dump_reconstruct_to_file(&snarked_ledger, &parts) {
+                    mina_core::error!(
+                        mina_core::log::system_time();
+                        kind = "LedgerService::dump - Failed reconstruct",
+                        summary = format!("Failed to save reconstruction to file: {e:?}")
+                    );
+                }
             }
         }
     }
@@ -3056,6 +3062,9 @@ fn dump_reconstruct_to_file(
     let Some(parts) = parts else {
         return Err(std::io::ErrorKind::Other.into());
     };
+    // A web node has no work dir; the dump must not panic there.
+    let debug_dir = mina_core::try_get_debug_dir()
+        .ok_or_else(|| std::io::Error::other("no work dir to dump to"))?;
 
     let StagedLedgerAuxAndPendingCoinbases {
         scan_state,
@@ -3076,7 +3085,6 @@ fn dump_reconstruct_to_file(
         states: needed_blocks,
     };
 
-    let debug_dir = mina_core::get_debug_dir();
     let filename = debug_dir
         .join("failed_reconstruct_ctx.binprot")
         .to_string_lossy()

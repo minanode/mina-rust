@@ -168,7 +168,11 @@ impl StagedLedgerAuxAndPendingCoinbasesValidated {
         expected_hash: &MinaBaseStagedLedgerHashStableV1,
     ) -> Self {
         match StagedLedgerAuxAndPendingCoinbasesValid::convert(parts) {
-            Ok((valid, hash)) if &hash == expected_hash && valid.has_required_protocol_states() => {
+            Ok((valid, hash))
+                if &hash == expected_hash
+                    && valid.has_required_protocol_states()
+                    && valid.scan_state.check_shape().is_ok() =>
+            {
                 Self::Valid(Arc::new(valid))
             }
             _ => Self::Invalid(parts.clone()),
