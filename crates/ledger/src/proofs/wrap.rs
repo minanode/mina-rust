@@ -1023,8 +1023,7 @@ pub mod pseudo {
             let all = all_possible_domains.iter().map(Domain::log2_size);
             Iterator::max(all).unwrap() // `rust-analyzer` is confused if we use `all.max()`
         };
-        let shifts = make_shifts(&domain);
-        let shifts = Box::new(*shifts.shifts());
+        let shifts = Box::new(make_shifts(&domain));
 
         PseudoDomain {
             domain,

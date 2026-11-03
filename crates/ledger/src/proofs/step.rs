@@ -419,12 +419,9 @@ pub mod step_verifier {
 
     fn tick_shifts(log2_size: u64) -> Box<[Fp; PERMUTS]> {
         // caml_pasta_fp_plonk_verifier_index_shifts
-        use kimchi::circuits::polynomials::permutation::Shifts;
-
         let num_coeff = 1 << log2_size;
         let domain = Radix2EvaluationDomain::<Fp>::new(num_coeff).unwrap();
-        let shifts = Shifts::new(&domain);
-        Box::from(*shifts.shifts())
+        Box::new(plonk_checks::make_shifts(&domain))
     }
 
     fn domain_generator(log2_size: u64) -> Fp {

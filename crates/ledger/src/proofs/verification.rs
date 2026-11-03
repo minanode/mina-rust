@@ -301,7 +301,7 @@ pub fn prev_evals_to_p2p(
 
 struct LimitedDomain<F: FieldWitness> {
     domain: Radix2EvaluationDomain<F>,
-    shifts: kimchi::circuits::polynomials::permutation::Shifts<F>,
+    shifts: [F; PERMUTS],
 }
 
 impl<F: FieldWitness> PlonkDomain<F> for LimitedDomain<F> {
@@ -312,7 +312,7 @@ impl<F: FieldWitness> PlonkDomain<F> for LimitedDomain<F> {
         self.domain.group_gen
     }
     fn shifts(&self) -> &[F; PERMUTS] {
-        self.shifts.shifts()
+        &self.shifts
     }
 }
 
