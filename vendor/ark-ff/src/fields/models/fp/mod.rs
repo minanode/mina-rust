@@ -16,6 +16,9 @@ use ark_std::{
 };
 use core::iter;
 
+// Used on wasm32 only, public for its tests (`tests/fp9.rs`).
+#[doc(hidden)]
+pub mod fp9;
 #[macro_use]
 mod montgomery_backend;
 pub use montgomery_backend::*;

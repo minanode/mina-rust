@@ -1,4 +1,4 @@
-use super::{Fp, FpConfig};
+use super::{fp9, Fp, FpConfig};
 use crate::{
     biginteger::arithmetic as fa, BigInt, BigInteger, PrimeField, SqrtPrecomputation, Zero,
 };
@@ -55,6 +55,16 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
     /// (a) `Self::MODULUS[N-1] >> 63 == 0`
     #[doc(hidden)]
     const MODULUS_HAS_SPARE_BIT: bool = modulus_has_spare_bit::<Self, N>();
+
+    /// Can multiplication use nine 29-bit limbs on wasm32 (see `fp9`)?
+    ///
+    /// This applies if `N == 4` and `Self::MODULUS < 2^255`.
+    #[doc(hidden)]
+    const FP9: bool = fp9::usable(&Self::MODULUS.0);
+
+    /// The modulus in nine 29-bit limbs, if [`Self::FP9`].
+    #[doc(hidden)]
+    const FP9_MODULUS: [u64; 9] = fp9::modulus_limbs(&Self::MODULUS.0);
 
     /// 2^s root of unity computed by GENERATOR^t
     const TWO_ADIC_ROOT_OF_UNITY: Fp<MontBackend<Self, N>, N>;
@@ -149,6 +159,9 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
     #[unroll_for_loops(12)]
     #[inline(always)]
     fn mul_assign(a: &mut Fp<MontBackend<Self, N>, N>, b: &Fp<MontBackend<Self, N>, N>) {
+        if fp9_mul_assign(a, b) {
+            return;
+        }
         // No-carry optimisation applied to CIOS
         if Self::CAN_USE_NO_CARRY_MUL_OPT {
             if N <= 6
@@ -218,6 +231,9 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
     #[inline(always)]
     #[unroll_for_loops(12)]
     fn square_in_place(a: &mut Fp<MontBackend<Self, N>, N>) {
+        if fp9_square_in_place(a) {
+            return;
+        }
         if N == 1 {
             // We default to multiplying with `a` using the `Mul` impl
             // for the N == 1 case
@@ -411,7 +427,7 @@ pub trait MontConfig<const N: usize>: 'static + Sync + Send + Sized {
         //   intermediate results and eventually having twice as many limbs.
 
         let modulus_size = Self::MODULUS.const_num_bits() as usize;
-        if modulus_size >= 64 * N - 1 {
+        if modulus_size >= 64 * N - 1 || fp9_enabled::<Self, N>() {
             a.iter().zip(b).map(|(a, b)| *a * b).sum()
         } else if M == 2 {
             // Algorithm 2, line 2
@@ -512,6 +528,50 @@ pub const fn inv<T: MontConfig<N>, const N: usize>() -> u64 {
         inv = inv.wrapping_mul(T::MODULUS.0[0]);
     });
     inv.wrapping_neg()
+}
+
+/// Whether multiplication uses nine 29-bit limbs ([`fp9`]): on wasm32, for a
+/// modulus that allows it.
+#[doc(hidden)]
+#[inline(always)]
+pub const fn fp9_enabled<T: MontConfig<N>, const N: usize>() -> bool {
+    cfg!(any(target_arch = "wasm32", ark_ff_fp9)) && T::FP9
+}
+
+/// `a *= b` on nine 29-bit limbs, if [`fp9_enabled`]. Returns whether it did.
+#[doc(hidden)]
+#[inline(always)]
+pub fn fp9_mul_assign<T: MontConfig<N>, const N: usize>(
+    a: &mut Fp<MontBackend<T, N>, N>,
+    b: &Fp<MontBackend<T, N>, N>,
+) -> bool {
+    if fp9_enabled::<T, N>() {
+        if let (Ok(x), Ok(y)) = (
+            <&mut [u64; 4]>::try_from(&mut (a.0).0[..]),
+            <&[u64; 4]>::try_from(&(b.0).0[..]),
+        ) {
+            *x = fp9::mul(x, y, &T::FP9_MODULUS, T::INV & fp9::MASK);
+            a.subtract_modulus();
+            return true;
+        }
+    }
+    false
+}
+
+/// `a = a^2` on nine 29-bit limbs, if [`fp9_enabled`]. Returns whether it did.
+#[doc(hidden)]
+#[inline(always)]
+pub fn fp9_square_in_place<T: MontConfig<N>, const N: usize>(
+    a: &mut Fp<MontBackend<T, N>, N>,
+) -> bool {
+    if fp9_enabled::<T, N>() {
+        if let Ok(x) = <&mut [u64; 4]>::try_from(&mut (a.0).0[..]) {
+            *x = fp9::square(x, &T::FP9_MODULUS, T::INV & fp9::MASK);
+            a.subtract_modulus();
+            return true;
+        }
+    }
+    false
 }
 
 #[inline]

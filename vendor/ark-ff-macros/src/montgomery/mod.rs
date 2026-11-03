@@ -146,10 +146,17 @@ pub fn mont_config_helper(
 
                 #[inline(always)]
                 fn mul_assign(a: &mut F, b: &F) {
+                    // Nine 29-bit limbs on wasm32, see ark-ff's `fp9`.
+                    if ark_ff::fields::fp9_mul_assign(a, b) {
+                        return;
+                    }
                     #mul_assign
                 }
                 #[inline(always)]
                 fn square_in_place(a: &mut F) {
+                    if ark_ff::fields::fp9_square_in_place(a) {
+                        return;
+                    }
                     #square_in_place
                 }
 
@@ -157,6 +164,9 @@ pub fn mont_config_helper(
                     a: &[F; M],
                     b: &[F; M],
                 ) -> F {
+                    if ark_ff::fields::fp9_enabled::<Self, #limbs>() {
+                        return a.iter().zip(b).map(|(a, b)| *a * b).sum();
+                    }
                     #sum_of_products
                 }
             }
