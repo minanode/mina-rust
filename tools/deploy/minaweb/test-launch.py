@@ -545,7 +545,8 @@ class BrotliWasmTest(unittest.TestCase):
         pinned = hashlib.sha256(self.WASM).hexdigest()
         with tempfile.TemporaryDirectory() as temp:
             out, name = self.release_dir(temp)
-            target = release.stage_brotli_wasm(out, pinned)
+            size = (out / "upload/wasm" / (name + ".br")).stat().st_size
+            target = release.stage_brotli_wasm(out, pinned, size)
             self.assertEqual(target, out / "upload-br/wasm" / name)
             self.assertEqual(release.brotli_sha256(target), pinned)
             # The raw WASM is kept, out of both uploads.
@@ -555,9 +556,16 @@ class BrotliWasmTest(unittest.TestCase):
     def test_a_brotli_file_of_other_bytes_is_refused(self):
         pinned = hashlib.sha256(self.WASM).hexdigest()
         with tempfile.TemporaryDirectory() as temp:
-            out, _ = self.release_dir(temp, encoded=brotli(self.WASM[:-1]))
+            out, name = self.release_dir(temp, encoded=brotli(self.WASM[:-1]))
+            size = (out / "upload/wasm" / (name + ".br")).stat().st_size
             with self.assertRaisesRegex(SystemExit, "does not decode to the pinned"):
-                release.stage_brotli_wasm(out, pinned)
+                release.stage_brotli_wasm(out, pinned, size)
+        # Bytes after the end of the stream, which a decoder may ignore.
+        with tempfile.TemporaryDirectory() as temp:
+            good = brotli(self.WASM)
+            out, _ = self.release_dir(temp, encoded=good + b"x")
+            with self.assertRaisesRegex(SystemExit, "does not decode to the pinned"):
+                release.stage_brotli_wasm(out, pinned, len(good))
 
     def test_deploy_without_the_option_is_unchanged(self):
         commands = release.deploy_commands("minaweb-assets", "releases/c/r", "minaweb", "c" * 40)
@@ -575,7 +583,8 @@ class BrotliWasmTest(unittest.TestCase):
             f"--commit-hash {'c' * 40} --commit-dirty=false"])
 
     def test_deploy_with_brotli_uploads_checks_then_deploys(self):
-        wasm = {"url": "https://assets.minaweb.org/releases/c/r/wasm/x.wasm", "sha256": "a" * 64}
+        wasm = {"url": "https://assets.minaweb.org/releases/c/r/wasm/x.wasm", "sha256": "a" * 64,
+                "encoded_sha256": "b" * 64}
         commands = release.deploy_commands("minaweb-assets", "releases/c/r", "minaweb", "c" * 40, wasm)
         upload = next(c for c in commands if c.startswith("rclone copy upload-br "))
         self.assertIn("--header-upload 'Content-Encoding: br'", upload)
@@ -585,6 +594,8 @@ class BrotliWasmTest(unittest.TestCase):
             "rclone copy upload ", "rclone copy upload-br ", "rclone check upload ",
             "rclone check upload-br ", "python3 -B check-wasm-encoding.py ", "npx wrangler")]
         self.assertEqual(order, sorted(order))
+        self.assertIn("check-wasm-encoding.py https://assets.minaweb.org/releases/c/r/wasm/x.wasm "
+                      f"{'a' * 64} {'b' * 64}", "\n".join(commands))
 
     def test_the_encoding_check_reads_each_answer_raw(self):
         pinned = hashlib.sha256(self.WASM).hexdigest()
@@ -600,8 +611,16 @@ class BrotliWasmTest(unittest.TestCase):
             if accept and "br" in accept:
                 return 200, headers("br"), encoded
             return 200, headers(None), self.WASM
-        lines = encoding_check.check("https://x/w.wasm", pinned, fetch=edge)
+        sent = hashlib.sha256(encoded).hexdigest()
+        lines = encoding_check.check("https://x/w.wasm", pinned, sent, fetch=edge)
         self.assertEqual(len(lines), len(encoding_check.CLIENTS))
+        # The brotli file with a byte after its end: it may decode, but it is
+        # not the uploaded file.
+        def trailing(url, accept):
+            status, message, body = edge(url, accept)
+            return status, message, body + b"x" if message["Content-Encoding"] == "br" else body
+        with self.assertRaisesRegex(AssertionError, "not the uploaded brotli file"):
+            encoding_check.check("https://x/w.wasm", pinned, sent, fetch=trailing)
         failures = {
             # Brotli to a client that asked for gzip only.
             "not one of": lambda url, accept: (200, headers("br"), encoded),
@@ -612,7 +631,7 @@ class BrotliWasmTest(unittest.TestCase):
         }
         for message, fetch in failures.items():
             with self.subTest(message=message), self.assertRaisesRegex(AssertionError, message):
-                encoding_check.check("https://x/w.wasm", pinned, fetch=fetch)
+                encoding_check.check("https://x/w.wasm", pinned, sent, fetch=fetch)
 
 
 if __name__ == "__main__":

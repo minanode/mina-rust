@@ -39,18 +39,20 @@ def brotli_sha256(path):
                           capture_output=True, text=True).stdout.strip()
 
 
-def stage_brotli_wasm(out, pinned):
+def stage_brotli_wasm(out, pinned, br_bytes):
     """WASM_ENCODING=br: upload-br/wasm/NAME.wasm holds the build's brotli
     file under the WASM's own name, for deploy.sh to upload with
     Content-Encoding: br. The raw WASM moves to wasm/, out of the upload, for
     the record. Both must be the pinned WASM: the raw file by its SHA-256, the
-    brotli file once decoded."""
+    brotli file once decoded, and at the size build.sh recorded, as a decoder
+    may ignore bytes after the end of the stream."""
     raws = list((out / "upload/wasm").glob("*.wasm"))
     if len(raws) != 1:
         raise SystemExit("expected one WASM in upload/wasm")
     raw = raws[0]
     encoded = raw.with_name(raw.name + ".br")
-    if sha(raw) != pinned or brotli_sha256(encoded) != pinned:
+    if (sha(raw) != pinned or encoded.stat().st_size != br_bytes
+            or brotli_sha256(encoded) != pinned):
         raise SystemExit("the brotli WASM does not decode to the pinned WASM")
     target = out / "upload-br/wasm" / raw.name
     target.parent.mkdir(parents=True)
@@ -84,8 +86,10 @@ def deploy_commands(bucket, release, project, commit, wasm=None):
     if wasm:
         commands += [f"rclone check upload-br {dest} --download --one-way",
                      "# What the asset host sends each kind of client, decoded by its own",
-                     "# Content-Encoding only, must be the pinned WASM.",
-                     f"python3 -B check-wasm-encoding.py {q(wasm['url'])} {q(wasm['sha256'])}"]
+                     "# Content-Encoding only, must be the pinned WASM; as brotli, the",
+                     "# uploaded file byte for byte.",
+                     f"python3 -B check-wasm-encoding.py {q(wasm['url'])} {q(wasm['sha256'])} "
+                     f"{q(wasm['encoded_sha256'])}"]
     commands += ["# Verify asset CORS/CORP and MIME types before deploying Pages.",
                  'test "${ASSET_HEADERS_VERIFIED:-}" = yes',
                  # The bundle is built from a clean checkout; Wrangler would otherwise mark the
@@ -198,9 +202,10 @@ def main():
     info = json.loads((browser / "build-info.json").read_text())
     wasm = None
     if encoding == "br":
-        stage_brotli_wasm(out, info["wasm"]["sha256"])
+        encoded = stage_brotli_wasm(out, info["wasm"]["sha256"], info["wasm"]["br"])
         shutil.copy(HERE / "check-wasm-encoding.py", out / "check-wasm-encoding.py")
-        wasm = {"url": info["wasm"]["path"], "sha256": info["wasm"]["sha256"]}
+        wasm = {"url": info["wasm"]["path"], "sha256": info["wasm"]["sha256"],
+                "encoded_sha256": sha(encoded)}
     verify_caches(out / "upload/circuit-blobs")
     try:
         build_pins("devnet", out / "upload/circuit-blobs/4.0.2devnet", require_provers=True)
