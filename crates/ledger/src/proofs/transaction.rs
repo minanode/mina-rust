@@ -299,12 +299,16 @@ pub mod scalar_challenge {
                 (b_y.double() - F::one()) * yt,
             )
         };
-        let qs: Vec<(F, F)> = bits.chunks(2).map(|bs| q(bs[0], bs[1])).collect();
-        let steps = match NBITS % bits_per_row {
-            0 => double_add_chain((acc.x, acc.y), &qs),
+        // Only for whole rows: with another width, the row loop below runs as
+        // before, on the rows that fit.
+        let chain = match NBITS % bits_per_row {
+            0 => {
+                let qs: Vec<(F, F)> = bits.chunks(2).map(|bs| q(bs[0], bs[1])).collect();
+                double_add_chain((acc.x, acc.y), &qs).map(|steps| (qs, steps))
+            }
             _ => None,
         };
-        if let Some(steps) = steps {
+        if let Some((qs, steps)) = chain {
             let mut xp = acc.x;
             let invs: Vec<F> = steps
                 .chunks(2)
@@ -397,6 +401,120 @@ pub mod scalar_challenge {
         });
         let _ = endo::<F, F2, NBITS>(res.to_affine(), chal, w);
         res.to_affine()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use ark_ec::AffineRepr;
+        use ark_ff::UniformRand;
+        use mina_curves::pasta::{Fp, Fq};
+        use rand::{rngs::StdRng, SeedableRng};
+
+        use super::*;
+
+        /// `endo_cvar` as it was before `double_add_chain`: row by row, on
+        /// the whole rows of `NBITS` bits.
+        fn endo_by_rows<F, F2, const NBITS: usize>(
+            t: CircuitVar<GroupAffine<F>>,
+            scalar: F2,
+            w: &mut Witness<F>,
+        ) -> GroupAffine<F>
+        where
+            F: FieldWitness,
+            F2: FieldWitness,
+        {
+            let bits: [bool; NBITS] = bits_msb::<F2, NBITS>(scalar);
+
+            let bits_per_row = 4;
+            let rows = NBITS / bits_per_row;
+
+            let GroupAffine::<F> { x: xt, y: yt, .. } = *t.value();
+            let (endo_base, _) = endos::<F>();
+
+            let mut acc = {
+                let tmp = match t {
+                    CircuitVar::Var(_) => w.exists(xt * endo_base),
+                    CircuitVar::Constant(_) => xt * endo_base,
+                };
+                let p = w.add_fast(*t.value(), make_group::<F>(tmp, yt));
+                w.add_fast(p, p)
+            };
+
+            let mut n_acc = F::zero();
+            for i in 0..rows {
+                let n_acc_prev = n_acc;
+                let b1 = w.exists(F::from(bits[i * bits_per_row]));
+                let b2 = w.exists(F::from(bits[(i * bits_per_row) + 1]));
+                let b3 = w.exists(F::from(bits[(i * bits_per_row) + 2]));
+                let b4 = w.exists(F::from(bits[(i * bits_per_row) + 3]));
+
+                let GroupAffine::<F> { x: xp, y: yp, .. } = acc;
+                let xq1 = w.exists((F::one() + ((endo_base - F::one()) * b1)) * xt);
+                let yq1 = w.exists((b2.double() - F::one()) * yt);
+                let s1 = w.exists((yq1 - yp) / (xq1 - xp));
+                let s1_squared = w.exists(s1.square());
+                let s2 = w.exists((yp.double() / (xp.double() + xq1 - s1_squared)) - s1);
+                let xr = w.exists(xq1 + s2.square() - s1_squared);
+                let yr = w.exists(((xp - xr) * s2) - yp);
+                let xq2 = w.exists((F::one() + ((endo_base - F::one()) * b3)) * xt);
+                let yq2 = w.exists((b4.double() - F::one()) * yt);
+                let s3 = w.exists((yq2 - yr) / (xq2 - xr));
+                let s3_squared = w.exists(s3.square());
+                let s4 = w.exists((yr.double() / (xr.double() + xq2 - s3_squared)) - s3);
+                let xs = w.exists(xq2 + s4.square() - s3_squared);
+                let ys = w.exists(((xr - xs) * s4) - yr);
+                let _inv = w.exists(((xp - xr) * (xr - xs)).inverse().unwrap_or_default());
+
+                acc = make_group::<F>(xs, ys);
+                n_acc = w.exists(
+                    (((n_acc_prev.double() + b1).double() + b2).double() + b3).double() + b4,
+                );
+            }
+
+            acc
+        }
+
+        /// The point `f` returns, or `None` if it panics, and the values it
+        /// pushed until then.
+        fn run<F: FieldWitness>(
+            f: impl FnOnce(&mut Witness<F>) -> GroupAffine<F>,
+        ) -> (Option<GroupAffine<F>>, Vec<F>) {
+            let mut w = Witness::empty();
+            let point = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut w))).ok();
+            (point, w.aux().to_vec())
+        }
+
+        /// At every width `endo_cvar` pushes the values the row-by-row loop
+        /// pushes and returns its point. A multiple of 4 takes the chain;
+        /// another width runs the loop on the rows that fit, as before, so
+        /// 1 to 3 bits push no row at all.
+        #[test]
+        fn endo_is_the_row_loop_at_every_width() {
+            fn check<F: FieldWitness, const NBITS: usize>(rng: &mut StdRng) {
+                let points = [
+                    GroupAffine::<F>::generator(),
+                    GroupAffine::<F>::rand(rng),
+                    GroupAffine::<F>::rand(rng),
+                ];
+                let scalars = [F::zero(), F::one(), -F::one(), F::rand(rng), F::rand(rng)];
+                for p in points {
+                    for t in [CircuitVar::Var(p), CircuitVar::Constant(p)] {
+                        for s in scalars {
+                            let new = run(|w| endo_cvar::<F, F, NBITS>(t, s, w));
+                            let old = run(|w| endo_by_rows::<F, F, NBITS>(t, s, w));
+                            assert!(old.0.is_some(), "{NBITS} bits");
+                            assert_eq!(new, old, "{NBITS} bits");
+                        }
+                    }
+                }
+            }
+            macro_rules! widths {
+                ($rng:expr, $f:ty, $($nbits:literal),*) => { $(check::<$f, $nbits>($rng);)* };
+            }
+            let mut rng = StdRng::seed_from_u64(3);
+            widths!(&mut rng, Fp, 1, 2, 3, 4, 5, 6, 7, 8, 12, 128);
+            widths!(&mut rng, Fq, 1, 2, 3, 4, 5, 6, 7, 8, 12, 128);
+        }
     }
 }
 
