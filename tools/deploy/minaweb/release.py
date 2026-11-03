@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import uuid
@@ -25,6 +26,73 @@ from csp import headers_file
 def sha(path):
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+# Prints the SHA-256 of a brotli file's decoded bytes (node's zlib).
+BROTLI_SHA256 = ('const z = require("zlib"), c = require("crypto"), f = require("fs");'
+                 'process.stdout.write(c.createHash("sha256")'
+                 '.update(z.brotliDecompressSync(f.readFileSync(process.argv[1]))).digest("hex"));')
+
+
+def brotli_sha256(path):
+    return subprocess.run(["node", "-e", BROTLI_SHA256, str(path)], check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def stage_brotli_wasm(out, pinned):
+    """WASM_ENCODING=br: upload-br/wasm/NAME.wasm holds the build's brotli
+    file under the WASM's own name, for deploy.sh to upload with
+    Content-Encoding: br. The raw WASM moves to wasm/, out of the upload, for
+    the record. Both must be the pinned WASM: the raw file by its SHA-256, the
+    brotli file once decoded."""
+    raws = list((out / "upload/wasm").glob("*.wasm"))
+    if len(raws) != 1:
+        raise SystemExit("expected one WASM in upload/wasm")
+    raw = raws[0]
+    encoded = raw.with_name(raw.name + ".br")
+    if sha(raw) != pinned or brotli_sha256(encoded) != pinned:
+        raise SystemExit("the brotli WASM does not decode to the pinned WASM")
+    target = out / "upload-br/wasm" / raw.name
+    target.parent.mkdir(parents=True)
+    encoded.rename(target)
+    (out / "wasm").mkdir()
+    raw.rename(out / "wasm" / raw.name)
+    return target
+
+
+def deploy_commands(bucket, release, project, commit, wasm=None):
+    """deploy.sh. With `wasm` (WASM_ENCODING=br: its URL and SHA-256), the
+    WASM goes up from upload-br/ with Content-Encoding: br, and the asset
+    host's answers to each kind of client are checked before Pages."""
+    q = shlex.quote
+    dest = q("r2:" + bucket + "/" + release)
+    cache = "--header-upload 'Cache-Control: public, max-age=31536000, immutable'"
+    # rclone refuses changed objects instead of replacing an immutable release.
+    # --checksum prevents equal-size changed files from being silently skipped.
+    # Each object stores its Cache-Control: the edge Cache Rule follows the
+    # stored header, and the zone's response-header rule sets only what the
+    # browser sees.
+    commands = ["#!/usr/bin/env bash", "set -euo pipefail",
+                'cd -- "$(dirname -- "${BASH_SOURCE[0]}")"', "sha256sum -c SHA256SUMS",
+                "# Configure the private rclone remote 'r2' before running.",
+                f"rclone copy upload {dest} --immutable --checksum {cache}"]
+    if wasm:
+        commands.append(f"rclone copy upload-br {dest} --immutable --checksum {cache} "
+                        "--header-upload 'Content-Encoding: br' "
+                        "--header-upload 'Content-Type: application/wasm'")
+    commands.append(f"rclone check upload {dest} --download --one-way")
+    if wasm:
+        commands += [f"rclone check upload-br {dest} --download --one-way",
+                     "# What the asset host sends each kind of client, decoded by its own",
+                     "# Content-Encoding only, must be the pinned WASM.",
+                     f"python3 -B check-wasm-encoding.py {q(wasm['url'])} {q(wasm['sha256'])}"]
+    commands += ["# Verify asset CORS/CORP and MIME types before deploying Pages.",
+                 'test "${ASSET_HEADERS_VERIFIED:-}" = yes',
+                 # The bundle is built from a clean checkout; Wrangler would otherwise mark the
+                 # deployment dirty when run inside any git worktree with changes.
+                 f"npx wrangler pages deploy browser --project-name {q(project)} --branch main "
+                 f"--commit-hash {commit} --commit-dirty=false"]
+    return commands
 
 
 def git(*args):
@@ -85,6 +153,12 @@ def main():
         relays = public_relays(os.environ)
     except ValueError as error:
         parser.error(str(error))
+    # raw (the default): the WASM goes up as it is, and the edge may compress
+    # it per request. br: the build's brotli file goes up in its place, with
+    # Content-Encoding: br (stage_brotli_wasm, deploy_commands).
+    encoding = os.environ.get("WASM_ENCODING", "raw")
+    if encoding not in ("raw", "br"):
+        parser.error("WASM_ENCODING is raw or br")
     assets = os.environ.get("ASSETS_ORIGIN", "https://assets.minaweb.org").rstrip("/")
     if not re.fullmatch(r"https://[a-zA-Z0-9.-]+", assets):
         parser.error("ASSETS_ORIGIN must be an HTTPS origin without a path")
@@ -117,10 +191,16 @@ def main():
     browser = out / "browser"
     (browser / "_headers").write_text(headers_file(HERE / "_headers", browser / "build-info.json"))
     (browser / "serve.json").unlink()
-    # Publish raw WASM: no content-encoding ambiguity; CDN compression is optional.
-    for suffix in (".br", ".gz", ".zst"):
+    # Raw WASM unless WASM_ENCODING=br: then its brotli file, staged apart.
+    for suffix in (".gz", ".zst") if encoding == "br" else (".br", ".gz", ".zst"):
         for path in (out / "upload/wasm").glob("*" + suffix):
             path.unlink()
+    info = json.loads((browser / "build-info.json").read_text())
+    wasm = None
+    if encoding == "br":
+        stage_brotli_wasm(out, info["wasm"]["sha256"])
+        shutil.copy(HERE / "check-wasm-encoding.py", out / "check-wasm-encoding.py")
+        wasm = {"url": info["wasm"]["path"], "sha256": info["wasm"]["sha256"]}
     verify_caches(out / "upload/circuit-blobs")
     try:
         build_pins("devnet", out / "upload/circuit-blobs/4.0.2devnet", require_provers=True)
@@ -131,9 +211,8 @@ def main():
             raise SystemExit(f"Pages file exceeds 25 MiB: {path.relative_to(browser)}")
     files = [{"path": p.relative_to(out).as_posix(), "bytes": p.stat().st_size,
               "sha256": sha(p)} for p in sorted(out.rglob("*")) if p.is_file()]
-    info = json.loads((browser / "build-info.json").read_text())
     manifest = {"schema": 1, "commit": commit, "release": release,
-                "network": "devnet", "build": info, "files": files}
+                "network": "devnet", "build": info, "wasmEncoding": encoding, "files": files}
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     (out / "SHA256SUMS").write_text("".join(
         f"{f['sha256']}  {f['path']}\n" for f in files) +
@@ -142,24 +221,7 @@ def main():
     project = os.environ.get("PAGES_PROJECT", "minaweb")
     if not all(re.fullmatch(r"[a-z0-9-]+", s) for s in (bucket, project)):
         raise SystemExit("invalid R2_BUCKET or PAGES_PROJECT")
-    q = shlex.quote
-    # rclone refuses changed objects instead of replacing an immutable release.
-    # --checksum prevents equal-size changed files from being silently skipped.
-    # Each object stores its Cache-Control: the edge Cache Rule follows the
-    # stored header, and the zone's response-header rule sets only what the
-    # browser sees.
-    commands = ["#!/usr/bin/env bash", "set -euo pipefail",
-                'cd -- "$(dirname -- "${BASH_SOURCE[0]}")"', "sha256sum -c SHA256SUMS",
-                "# Configure the private rclone remote 'r2' before running.",
-                f"rclone copy upload {q('r2:' + bucket + '/' + release)} --immutable --checksum "
-                "--header-upload 'Cache-Control: public, max-age=31536000, immutable'",
-                f"rclone check upload {q('r2:' + bucket + '/' + release)} --download --one-way",
-                "# Verify asset CORS/CORP and MIME types before deploying Pages.",
-                'test "${ASSET_HEADERS_VERIFIED:-}" = yes',
-                # The bundle is built from a clean checkout; Wrangler would otherwise mark the
-                # deployment dirty when run inside any git worktree with changes.
-                f"npx wrangler pages deploy browser --project-name {q(project)} --branch main "
-                f"--commit-hash {commit} --commit-dirty=false"]
+    commands = deploy_commands(bucket, release, project, commit, wasm)
     (out / "deploy.sh").write_text("\n".join(commands) + "\n")
     print(json.dumps({"manifest": str(out / "manifest.json"), "release": release,
                       "files": len(files), "bytes": sum(f["bytes"] for f in files)}, indent=2))

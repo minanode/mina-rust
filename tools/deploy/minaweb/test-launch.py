@@ -25,6 +25,7 @@ def module(name):
 check = module("check")
 release = module("release")
 issuer = module("turn-credentials")
+encoding_check = module("check-wasm-encoding")
 guard = module("turn-egress")
 csp = check.csp
 
@@ -518,6 +519,100 @@ class LaunchTest(unittest.TestCase):
         with patch.object(sys, "argv", ["check.py", "x", "--turn-ip", "192.0.2.1"]), \
                 patch("sys.stderr"), self.assertRaises(SystemExit):
             check.main()
+
+
+def brotli(data):
+    """The bytes brotli-compressed, as build.sh makes the WASM's .br (node)."""
+    import subprocess
+    script = ('const z = require("zlib"); const c = [];'
+              'process.stdin.on("data", d => c.push(d));'
+              'process.stdin.on("end", () => process.stdout.write(z.brotliCompressSync(Buffer.concat(c))));')
+    return subprocess.run(["node", "-e", script], input=data, check=True, capture_output=True).stdout
+
+
+class BrotliWasmTest(unittest.TestCase):
+    WASM = b"\0asm" + bytes(range(256)) * 64
+
+    def release_dir(self, temp, encoded=None):
+        out = Path(temp)
+        (out / "upload/wasm").mkdir(parents=True)
+        name = "mina_node_web_bg.0123456789abcdef.wasm"
+        (out / "upload/wasm" / name).write_bytes(self.WASM)
+        (out / "upload/wasm" / (name + ".br")).write_bytes(brotli(self.WASM) if encoded is None else encoded)
+        return out, name
+
+    def test_the_brotli_file_goes_up_under_the_wasm_name(self):
+        pinned = hashlib.sha256(self.WASM).hexdigest()
+        with tempfile.TemporaryDirectory() as temp:
+            out, name = self.release_dir(temp)
+            target = release.stage_brotli_wasm(out, pinned)
+            self.assertEqual(target, out / "upload-br/wasm" / name)
+            self.assertEqual(release.brotli_sha256(target), pinned)
+            # The raw WASM is kept, out of both uploads.
+            self.assertEqual((out / "wasm" / name).read_bytes(), self.WASM)
+            self.assertEqual(sorted(p.name for p in (out / "upload/wasm").iterdir()), [])
+
+    def test_a_brotli_file_of_other_bytes_is_refused(self):
+        pinned = hashlib.sha256(self.WASM).hexdigest()
+        with tempfile.TemporaryDirectory() as temp:
+            out, _ = self.release_dir(temp, encoded=brotli(self.WASM[:-1]))
+            with self.assertRaisesRegex(SystemExit, "does not decode to the pinned"):
+                release.stage_brotli_wasm(out, pinned)
+
+    def test_deploy_without_the_option_is_unchanged(self):
+        commands = release.deploy_commands("minaweb-assets", "releases/c/r", "minaweb", "c" * 40)
+        # Line for line the deploy.sh that release.py wrote before the option.
+        self.assertEqual(commands, [
+            "#!/usr/bin/env bash", "set -euo pipefail",
+            'cd -- "$(dirname -- "${BASH_SOURCE[0]}")"', "sha256sum -c SHA256SUMS",
+            "# Configure the private rclone remote 'r2' before running.",
+            "rclone copy upload r2:minaweb-assets/releases/c/r --immutable --checksum "
+            "--header-upload 'Cache-Control: public, max-age=31536000, immutable'",
+            "rclone check upload r2:minaweb-assets/releases/c/r --download --one-way",
+            "# Verify asset CORS/CORP and MIME types before deploying Pages.",
+            'test "${ASSET_HEADERS_VERIFIED:-}" = yes',
+            "npx wrangler pages deploy browser --project-name minaweb --branch main "
+            f"--commit-hash {'c' * 40} --commit-dirty=false"])
+
+    def test_deploy_with_brotli_uploads_checks_then_deploys(self):
+        wasm = {"url": "https://assets.minaweb.org/releases/c/r/wasm/x.wasm", "sha256": "a" * 64}
+        commands = release.deploy_commands("minaweb-assets", "releases/c/r", "minaweb", "c" * 40, wasm)
+        upload = next(c for c in commands if c.startswith("rclone copy upload-br "))
+        self.assertIn("--header-upload 'Content-Encoding: br'", upload)
+        self.assertIn("--header-upload 'Content-Type: application/wasm'", upload)
+        self.assertIn("--immutable --checksum", upload)
+        order = [next(i for i, c in enumerate(commands) if c.startswith(p)) for p in (
+            "rclone copy upload ", "rclone copy upload-br ", "rclone check upload ",
+            "rclone check upload-br ", "python3 -B check-wasm-encoding.py ", "npx wrangler")]
+        self.assertEqual(order, sorted(order))
+
+    def test_the_encoding_check_reads_each_answer_raw(self):
+        pinned = hashlib.sha256(self.WASM).hexdigest()
+        encoded = brotli(self.WASM)
+        def headers(encoding):
+            message = Message()
+            message["Content-Type"] = "application/wasm"
+            message["Access-Control-Allow-Origin"] = "https://minaweb.org"
+            if encoding:
+                message["Content-Encoding"] = encoding
+            return message
+        def edge(url, accept):
+            if accept and "br" in accept:
+                return 200, headers("br"), encoded
+            return 200, headers(None), self.WASM
+        lines = encoding_check.check("https://x/w.wasm", pinned, fetch=edge)
+        self.assertEqual(len(lines), len(encoding_check.CLIENTS))
+        failures = {
+            # Brotli to a client that asked for gzip only.
+            "not one of": lambda url, accept: (200, headers("br"), encoded),
+            # A browser given the edge's own zstd instead of the brotli file.
+            "Content-Encoding zstd": lambda url, accept: (200, headers("zstd"), b""),
+            # Brotli bytes labelled as plain: decoding by the label fails the hash.
+            "not the pinned": lambda url, accept: (200, headers("br" if accept and "br" in accept else None), encoded),
+        }
+        for message, fetch in failures.items():
+            with self.subTest(message=message), self.assertRaisesRegex(AssertionError, message):
+                encoding_check.check("https://x/w.wasm", pinned, fetch=fetch)
 
 
 if __name__ == "__main__":
