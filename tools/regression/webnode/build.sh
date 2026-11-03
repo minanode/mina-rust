@@ -79,7 +79,12 @@
 #                starting a prover role fails if its files are unavailable.
 #   VERIFIER_CACHES  auto (default) or omit; archives omit host-local caches
 #                (the verifier index and, with PROVER_CIRCUITS, Lagrange
-#                basis caches)
+#                basis caches). omit also drops Lagrange basis caches found
+#                in PROVER_CIRCUITS
+#   MINA_BIN     a native mina of this commit, which checks each Lagrange
+#                basis cache before it is pinned (default
+#                ${CARGO_TARGET_DIR:-$REPO/target}/release/mina); without it,
+#                none is shipped
 #   SOURCE_DATE_EPOCH  reproducible payload timestamp, when set
 #   WASM_URL     a directory URL on another host the page loads the WASM
 #                from, for a static host that caps files below its 35 MB
@@ -130,6 +135,7 @@ CIRCUITS_URL=${CIRCUITS_URL%/}
 WASM_URL=${WASM_URL:-}
 WASM_URL=${WASM_URL%/}
 PROVER_CIRCUITS=${PROVER_CIRCUITS:-}
+MINA_BIN=${MINA_BIN:-${CARGO_TARGET_DIR:-$REPO/target}/release/mina}
 export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-8}
 
 case $NETWORK in
@@ -266,12 +272,23 @@ done
 if [[ -n $PROVER_CIRCUITS ]]; then
 	[[ -d $PROVER_CIRCUITS ]] || die "PROVER_CIRCUITS is not a directory: $PROVER_CIRCUITS"
 	cp -L "$PROVER_CIRCUITS"/* "$CSTAGE/"
-	# The Lagrange basis caches, if this machine's node has written them:
-	# about 10 s less per prover start. The prover checks that a cache names
-	# its SRS and computes the basis otherwise (lagrange_cache.rs).
-	if [[ ${VERIFIER_CACHES:-auto} != omit ]]; then
+	# The Lagrange basis caches, from PROVER_CIRCUITS or this machine's node:
+	# about 10 s less per prover start (lagrange_cache.rs). A pin only fixes a
+	# cache's bytes, so each one is first checked against the prover SRS, as
+	# the prover does before using it, with MINA_BIN. A cache that fails, or
+	# that cannot be checked, is not shipped; the prover computes its basis.
+	if [[ ${VERIFIER_CACHES:-auto} == omit ]]; then
+		rm -f "$CSTAGE"/lagrange_basis_*.bin
+	else
 		for cache in "$HOME/.mina/circuit-blobs/$CIRCUITS"/lagrange_basis_*.bin; do
-			[[ -f $cache ]] && cp "$cache" "$CSTAGE/"
+			[[ -f $cache && ! -e $CSTAGE/${cache##*/} ]] && cp "$cache" "$CSTAGE/"
+		done
+		for cache in "$CSTAGE"/lagrange_basis_*.bin; do
+			[[ -e $cache ]] || continue
+			if [[ ! -x $MINA_BIN ]] || ! "$MINA_BIN" internal check-lagrange-cache "$cache"; then
+				echo "not shipping ${cache##*/}: $MINA_BIN did not accept it"
+				rm -f "$cache"
+			fi
 		done
 	fi
 fi

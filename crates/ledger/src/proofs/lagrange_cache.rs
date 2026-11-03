@@ -10,11 +10,15 @@
 //!   `~/.mina/circuit-blobs/<circuits>/lagrange_basis_<curve>_<log2 n>.bin`
 //!   and later reads it from the local circuit sources;
 //! - in WASM, the prover fetches it with the circuit files, pinned by
-//!   SHA-256 like the verifier index caches.
+//!   SHA-256 like the verifier index caches. The web build ships only caches
+//!   that `mina internal check-lagrange-cache` accepts ([`check_file`]).
 //!
 //! A cache is used only if it names this SRS (its SHA-256 over the SRS points)
-//! and the domain size, and every point is on the curve. Anything else, a
-//! missing file included, falls back to computing the basis.
+//! and the domain size, every point is on the curve, and the basis passes a
+//! random linear combination check against the SRS ([`check_basis`]), so a
+//! cache of valid points in the wrong places or with the wrong values is
+//! refused too. Anything else, a missing file included, falls back to
+//! computing the basis.
 
 use std::{
     any::TypeId,
@@ -22,11 +26,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ark_ec::AffineRepr;
+use ark_ec::{AffineRepr, VariableBaseMSM};
+use ark_ff::UniformRand;
 use ark_poly::{EvaluationDomain, Radix2EvaluationDomain};
 use ark_serialize::{Compress, Validate};
-use mina_curves::pasta::{Pallas, Vesta};
-use poly_commitment::{commitment::PolyComm, ipa::SRS, SRS as _};
+use mina_curves::pasta::{Fp, Fq, Pallas, Vesta};
+use poly_commitment::{
+    commitment::{CommitmentCurve, PolyComm},
+    ipa::SRS,
+    SRS as _,
+};
 use sha2::{Digest, Sha256};
 
 const MAGIC: &[u8; 8] = b"MINALGB1";
@@ -44,6 +53,16 @@ pub fn file_name<G: 'static>(domain_size: usize) -> String {
         "lagrange_basis_{curve}_{}.bin",
         domain_size.trailing_zeros()
     )
+}
+
+/// The curve and the log2 of the domain size in a cache's file name.
+fn parse_name(name: &str) -> Option<(&str, u32)> {
+    let rest = name.strip_prefix("lagrange_basis_")?.strip_suffix(".bin")?;
+    let (curve, log2) = rest.split_once('_')?;
+    let valid = matches!(curve, "pallas" | "vesta")
+        && (1..=2).contains(&log2.len())
+        && log2.bytes().all(|b| b.is_ascii_digit());
+    Some((curve, log2.parse().ok().filter(|_| valid)?))
 }
 
 fn relative_path<G: 'static>(domain_size: usize) -> PathBuf {
@@ -95,9 +114,53 @@ fn invalid(why: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, why.into())
 }
 
+/// Checks that `basis` is the Lagrange basis of `srs` for `domain`.
+///
+/// The Lagrange polynomials and the monomials span the same polynomials, so
+/// for any values `s_i`, committing to the polynomial that takes them on the
+/// domain gives the same point either way: `sum_i s_i L_i` from the basis, and
+/// `sum_j r_j g_j` from the SRS, where `r` is the inverse FFT of `s`. With more
+/// points than the SRS, chunk `k` of each `L_i` pairs with `r_j` for `j` in
+/// chunk `k`. The `s_i` come from the OS's random number generator after the
+/// basis is read, so a basis that differs from the true one anywhere passes
+/// with probability 1 over the field size. Costs two multi-scalar
+/// multiplications and one FFT per chunk, small beside computing the basis.
+pub fn check_basis<G: AffineRepr>(
+    srs: &SRS<G>,
+    domain: Radix2EvaluationDomain<G::ScalarField>,
+    basis: &[PolyComm<G>],
+) -> io::Result<()> {
+    let n = domain.size();
+    let srs_size = srs.g.len();
+    if n == 0 || srs_size == 0 || basis.len() != n {
+        return Err(invalid("Lagrange basis cache: wrong size"));
+    }
+    let chunks = n.div_ceil(srs_size);
+    if basis.iter().any(|c| c.chunks.len() != chunks) {
+        return Err(invalid("Lagrange basis cache: wrong number of chunks"));
+    }
+    let mut rng = rand::rngs::OsRng;
+    let s: Vec<G::ScalarField> = (0..n).map(|_| G::ScalarField::rand(&mut rng)).collect();
+    let r = domain.ifft(&s);
+    for k in 0..chunks {
+        let start = k * srs_size;
+        let len = srs_size.min(n - start);
+        let points: Vec<G> = basis.iter().map(|c| c.chunks[k]).collect();
+        let from_basis = G::Group::msm_unchecked(&points, &s);
+        let from_srs = G::Group::msm_unchecked(&srs.g[..len], &r[start..start + len]);
+        if from_basis != from_srs {
+            return Err(invalid(
+                "Lagrange basis cache: not the Lagrange basis of this SRS",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The Lagrange basis of `srs` for `domain_size` in `bytes`, checked: the
-/// header must name this SRS and size, every point must be on the curve, and
-/// nothing may follow the last point.
+/// header must name this SRS and size, every point must be on the curve,
+/// nothing may follow the last point, and the points must pass
+/// [`check_basis`].
 pub fn decode<G: AffineRepr>(
     srs: &SRS<G>,
     domain_size: usize,
@@ -129,7 +192,10 @@ pub fn decode<G: AffineRepr>(
     if reader.len() as u64 != size * chunks * point_size as u64 {
         return Err(invalid("Lagrange basis cache: wrong length"));
     }
-    (0..domain_size)
+    let domain = Radix2EvaluationDomain::new(domain_size)
+        .filter(|domain| domain.size() == domain_size)
+        .ok_or_else(|| invalid("Lagrange basis cache: not a domain size"))?;
+    let basis = (0..domain_size)
         .map(|_| {
             let chunks = (0..chunks)
                 .map(|_| {
@@ -141,7 +207,37 @@ pub fn decode<G: AffineRepr>(
                 .collect::<io::Result<Vec<G>>>()?;
             Ok(PolyComm { chunks })
         })
-        .collect()
+        .collect::<io::Result<Vec<_>>>()?;
+    check_basis(srs, domain, &basis)?;
+    Ok(basis)
+}
+
+/// Checks the cache file at `path` against the prover SRS of the curve its
+/// name gives, as the prover would before using it. For the web build, before
+/// it pins a cache (`mina internal check-lagrange-cache`).
+pub fn check_file(path: &Path) -> io::Result<()> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let (curve, log2) = parse_name(name)
+        .filter(|(_, log2)| *log2 <= 30)
+        .ok_or_else(|| invalid(format!("{name}: not a Lagrange basis cache name")))?;
+    let bytes = std::fs::read(path)?;
+    let domain_size = 1usize << log2;
+    // The step proofs (Fp) commit on Vesta, the wraps (Fq) on Pallas.
+    match curve {
+        "vesta" => {
+            let srs = crate::verifier::get_srs_mut::<Fp>();
+            let srs = srs.lock().map_err(|_| io::Error::other("SRS lock"))?;
+            decode(&srs, domain_size, &bytes).map(drop)
+        }
+        _ => {
+            let srs = crate::verifier::get_srs_mut::<Fq>();
+            let srs = srs.lock().map_err(|_| io::Error::other("SRS lock"))?;
+            decode(&srs, domain_size, &bytes).map(drop)
+        }
+    }
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -155,10 +251,7 @@ fn read(path: &Path) -> io::Result<Vec<u8>> {
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn write<G: poly_commitment::commitment::CommitmentCurve>(
-    srs: &SRS<G>,
-    domain_size: usize,
-) -> io::Result<()> {
+fn write<G: CommitmentCurve>(srs: &SRS<G>, domain_size: usize) -> io::Result<()> {
     let path = super::circuit_blobs::home_base_dir()
         .ok_or_else(|| io::Error::other("$HOME is not set"))?
         .join(relative_path::<G>(domain_size));
@@ -173,20 +266,36 @@ fn write<G: poly_commitment::commitment::CommitmentCurve>(
     std::fs::rename(partial, path)
 }
 
-/// Makes the Lagrange basis of `srs` for `domain` available in its cache:
-/// from a cache file if there is a valid one, otherwise computed, and then,
-/// natively, written for the next start.
-pub fn prepare<G: AffineRepr + poly_commitment::commitment::CommitmentCurve>(
+/// Gives `srs` its Lagrange basis for `domain`: the one in `cached` if it
+/// passes [`decode`], otherwise the computed one. The error says why the cache
+/// was not used.
+fn install<G: CommitmentCurve>(
     srs: &SRS<G>,
     domain: Radix2EvaluationDomain<G::ScalarField>,
-) {
+    cached: io::Result<Vec<u8>>,
+) -> io::Result<()> {
+    match cached.and_then(|bytes| decode(srs, domain.size(), &bytes)) {
+        Ok(basis) => {
+            srs.lagrange_bases().set_once(domain.size(), basis);
+            Ok(())
+        }
+        Err(error) => {
+            srs.get_lagrange_basis(domain);
+            Err(error)
+        }
+    }
+}
+
+/// Makes the Lagrange basis of `srs` for `domain` available in its cache:
+/// from a cache file if there is a valid one, otherwise computed, and then,
+/// natively, written for the next start (replacing a refused file).
+pub fn prepare<G: CommitmentCurve>(srs: &SRS<G>, domain: Radix2EvaluationDomain<G::ScalarField>) {
     use mina_core::log::system_time;
 
     let domain_size = domain.size();
     let path = relative_path::<G>(domain_size);
-    match read(&path).and_then(|bytes| decode(srs, domain_size, &bytes)) {
-        Ok(basis) => {
-            srs.lagrange_bases().set_once(domain_size, basis);
+    match install(srs, domain, read(&path)) {
+        Ok(()) => {
             mina_core::debug!(system_time(); kind = "ledger proofs", path = path.display().to_string(), message = "Lagrange basis read from its cache");
             return;
         }
@@ -195,7 +304,6 @@ pub fn prepare<G: AffineRepr + poly_commitment::commitment::CommitmentCurve>(
             mina_core::warn!(system_time(); kind = "ledger proofs", path = path.display().to_string(), message = "Lagrange basis cache not used", error = error.to_string());
         }
     }
-    srs.get_lagrange_basis(domain);
     #[cfg(not(target_family = "wasm"))]
     if let Err(error) = write(srs, domain_size) {
         mina_core::warn!(system_time(); kind = "ledger proofs", message = "cannot store the Lagrange basis cache", error = error.to_string());
@@ -205,21 +313,53 @@ pub fn prepare<G: AffineRepr + poly_commitment::commitment::CommitmentCurve>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ark_poly::Evaluations;
+    use ark_serialize::CanonicalSerialize;
+
+    const HEADER: usize = 56;
 
     fn new_srs() -> SRS<Vesta> {
         SRS::<Vesta>::create(16)
     }
 
-    fn basis(srs: &SRS<Vesta>, n: usize) -> Vec<PolyComm<Vesta>> {
-        let domain = Radix2EvaluationDomain::new(n).unwrap();
-        srs.get_lagrange_basis(domain).clone()
+    fn domain(n: usize) -> Radix2EvaluationDomain<Fp> {
+        Radix2EvaluationDomain::new(n).unwrap()
+    }
+
+    /// The basis as the prover computes it, from an SRS of its own.
+    fn computed(n: usize) -> Vec<PolyComm<Vesta>> {
+        new_srs().get_lagrange_basis(domain(n)).clone()
+    }
+
+    fn point_size() -> usize {
+        Vesta::zero().uncompressed_size()
+    }
+
+    /// Swaps point records `a` and `b` of an encoded cache.
+    fn swap(bytes: &[u8], a: usize, b: usize) -> Vec<u8> {
+        let size = point_size();
+        let (a, b) = (HEADER + a * size, HEADER + b * size);
+        let mut out = bytes.to_vec();
+        out[a..a + size].copy_from_slice(&bytes[b..b + size]);
+        out[b..b + size].copy_from_slice(&bytes[a..a + size]);
+        out
+    }
+
+    /// Writes `point` over point record `at` of an encoded cache.
+    fn put(bytes: &[u8], at: usize, point: Vesta) -> Vec<u8> {
+        let size = point_size();
+        let mut record = Vec::new();
+        point.serialize_uncompressed(&mut record).unwrap();
+        let mut out = bytes.to_vec();
+        out[HEADER + at * size..HEADER + (at + 1) * size].copy_from_slice(&record);
+        out
     }
 
     #[test]
     fn round_trip_matches_computed_basis() {
         let srs = new_srs();
         for n in [8, 16, 32] {
-            let computed = basis(&srs, n);
+            let computed = computed(n);
             let bytes = encode(&srs, &computed);
             assert_eq!(decode(&srs, n, &bytes).unwrap(), computed);
 
@@ -235,7 +375,7 @@ mod tests {
     #[test]
     fn refuses_other_files() {
         let srs = new_srs();
-        let bytes = encode(&srs, &basis(&srs, 16));
+        let bytes = encode(&srs, &computed(16));
         let refused = |bytes: &[u8], n: usize| decode(&srs, n, bytes).is_err();
         assert!(!refused(&bytes, 16));
         // Another domain size, truncated, extended, wrong magic.
@@ -251,7 +391,7 @@ mod tests {
         assert!(refused(&digest, 16));
         // A point moved off the curve.
         let mut point = bytes.clone();
-        point[56 + 3] ^= 1;
+        point[HEADER + 3] ^= 1;
         assert!(refused(&point, 16));
         // A basis for the other curve's SRS.
         let pallas = SRS::<Pallas>::create(16);
@@ -260,9 +400,104 @@ mod tests {
         assert!(refused(&other, 16));
     }
 
+    /// Valid curve points, the right header and length, but not the basis:
+    /// only `check_basis` can refuse these.
+    #[test]
+    fn refuses_valid_points_that_are_not_the_basis() {
+        let srs = new_srs();
+        for n in [8, 16, 32] {
+            let basis = computed(n);
+            let chunks = basis[0].chunks.len();
+            let points = n * chunks;
+            let bytes = encode(&srs, &basis);
+            let mut wrong = vec![
+                // Two commitments swapped (the review's reproduction).
+                swap(&bytes, 0, chunks),
+                swap(&bytes, points - chunks, points - 2 * chunks),
+                // One point replaced by another basis point, by its negation,
+                // by its double, by an SRS point.
+                put(&bytes, 3, basis[5].chunks[0]),
+                put(&bytes, 0, -basis[0].chunks[0]),
+                put(&bytes, 1, (basis[0].chunks[0] + basis[0].chunks[0]).into()),
+                put(&bytes, points - 1, srs.g[0]),
+            ];
+            if chunks > 1 {
+                // The two chunks of one commitment swapped, and the second
+                // chunks of two commitments swapped. With twice the SRS's
+                // points, chunk 1 of L_i is (-1)^i times chunk 0, so L_1's
+                // differ and L_0's do not.
+                wrong.push(swap(&bytes, chunks, chunks + 1));
+                wrong.push(swap(&bytes, 1, chunks + 1));
+            }
+            for (case, wrong) in wrong.iter().enumerate() {
+                assert_ne!(wrong, &bytes, "n {n}, case {case} changes nothing");
+                let error = decode(&srs, n, wrong).unwrap_err();
+                assert!(
+                    error.to_string().contains("not the Lagrange basis"),
+                    "n {n}, case {case}: {error}"
+                );
+            }
+        }
+    }
+
+    /// A refused cache leaves the SRS with the computed basis, so that every
+    /// commitment is the same as without a cache.
+    #[test]
+    fn install_falls_back_to_the_computed_basis() {
+        let n = 16;
+        let trusted = new_srs();
+        let basis = computed(n);
+        let bytes = encode(&trusted, &basis);
+        let mut evaluations = vec![Fp::from(0u64); n];
+        evaluations[0] = Fp::from(1u64);
+        let evaluations = Evaluations::from_vec_and_domain(evaluations, domain(n));
+        let expected = trusted.commit_evaluations_non_hiding(domain(n), &evaluations);
+
+        let cases: [(io::Result<Vec<u8>>, bool); 4] = [
+            (Ok(bytes.clone()), true),
+            (Ok(swap(&bytes, 0, 1)), false),
+            (Ok(bytes[..100].to_vec()), false),
+            (Err(io::ErrorKind::NotFound.into()), false),
+        ];
+        for (case, (cached, used)) in cases.into_iter().enumerate() {
+            let srs = new_srs();
+            assert_eq!(
+                install(&srs, domain(n), cached).is_ok(),
+                used,
+                "case {case}"
+            );
+            assert_eq!(
+                *srs.get_lagrange_basis_from_domain_size(n),
+                basis,
+                "case {case}"
+            );
+            assert_eq!(
+                srs.commit_evaluations_non_hiding(domain(n), &evaluations),
+                expected,
+                "case {case}"
+            );
+        }
+    }
+
     #[test]
     fn names() {
         assert_eq!(file_name::<Vesta>(1 << 16), "lagrange_basis_vesta_16.bin");
         assert_eq!(file_name::<Pallas>(1 << 15), "lagrange_basis_pallas_15.bin");
+        assert_eq!(
+            parse_name("lagrange_basis_vesta_16.bin"),
+            Some(("vesta", 16))
+        );
+        assert_eq!(
+            parse_name("lagrange_basis_pallas_14.bin"),
+            Some(("pallas", 14))
+        );
+        for name in [
+            "lagrange_basis_other_16.bin",
+            "lagrange_basis_vesta_.bin",
+            "lagrange_basis_vesta_123.bin",
+            "lagrange_basis_vesta_16.bin.partial",
+        ] {
+            assert_eq!(parse_name(name), None, "{name}");
+        }
     }
 }
