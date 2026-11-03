@@ -96,6 +96,14 @@ pub struct Offer {
     /// Port number of the signaling server of the offerer.
     /// Optional port for signaling server connections.
     pub listen_port: Option<u16>,
+
+    /// Whether the sender serves a staged ledger from its last part
+    /// ([`crate::channels::streaming_rpc::P2pStreamingRpcRequest::StagedLedgerPartsFromLast`])
+    /// and takes a cancelled stream
+    /// ([`crate::channels::streaming_rpc::StreamingRpcChannelMsg::Cancel`]).
+    /// Absent from a node that predates them, which must not be sent either.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub staged_ledger_from_last: bool,
 }
 
 /// WebRTC connection answer responding to an offer.
@@ -135,6 +143,14 @@ pub struct Answer {
     /// Peer ID of the original offerer that this answer is responding to.
     /// Ensures the answer reaches the correct peer that initiated the connection.
     pub target_peer_id: PeerId,
+
+    /// Whether the sender serves a staged ledger from its last part
+    /// ([`crate::channels::streaming_rpc::P2pStreamingRpcRequest::StagedLedgerPartsFromLast`])
+    /// and takes a cancelled stream
+    /// ([`crate::channels::streaming_rpc::StreamingRpcChannelMsg::Cancel`]).
+    /// Absent from a node that predates them, which must not be sent either.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub staged_ledger_from_last: bool,
 }
 
 /// Union type for WebRTC signaling messages.
@@ -321,6 +337,7 @@ impl std::fmt::Debug for Offer {
             .field("target_peer_id", &self.target_peer_id)
             .field("host", &self.host)
             .field("listen_port", &self.listen_port)
+            .field("staged_ledger_from_last", &self.staged_ledger_from_last)
             .finish()
     }
 }
@@ -331,6 +348,7 @@ impl std::fmt::Debug for Answer {
             .field("sdp", &RedactedSdp(&self.sdp))
             .field("identity_pub_key", &self.identity_pub_key)
             .field("target_peer_id", &self.target_peer_id)
+            .field("staged_ledger_from_last", &self.staged_ledger_from_last)
             .finish()
     }
 }

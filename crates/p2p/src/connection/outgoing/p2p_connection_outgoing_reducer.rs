@@ -229,6 +229,7 @@ impl P2pConnectionOutgoingState {
                     // TODO(vlad9486): put real address
                     host: Host::Ipv4([127, 0, 0, 1].into()),
                     listen_port: p2p_state.config.listen_port,
+                    staged_ledger_from_last: true,
                 });
                 let dispatcher = state_context.into_dispatcher();
                 dispatcher.push(P2pConnectionOutgoingAction::OfferReady { peer_id, offer });

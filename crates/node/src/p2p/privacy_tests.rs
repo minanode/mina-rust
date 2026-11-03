@@ -86,6 +86,7 @@ fn signalling_source_address_stays_out_of_requests_unless_sharing_relay() {
                 target_peer_id: p2p.my_id(),
                 host: "127.0.0.1".parse().unwrap(),
                 listen_port: None,
+                staged_ledger_from_last: false,
             }),
             remote_ip: "198.51.100.77".parse().ok(),
         };

@@ -381,6 +381,8 @@ pub struct P2pLimits {
     max_dials_per_minute: Limit<usize>,
     #[serde(default = "P2pLimits::default_libp2p_target_peers")]
     libp2p_target_peers: Limit<usize>,
+    #[serde(default = "P2pLimits::default_staged_ledger_streams")]
+    staged_ledger_streams: Limit<usize>,
 }
 
 macro_rules! limit {
@@ -607,6 +609,12 @@ impl P2pLimits {
         /// Sets how many libp2p peers we keep.
         with_libp2p_target_peers
     );
+    limit!(
+        #[doc = "How many WebRTC peers the sync fetches one staged ledger from at once: 2 has a second peer send it from its other end while the first sends it from the start (STAGED-SPLIT), 1 fetches it from one peer as before. Only peers that advertised `staged_ledger_from_last` take part."]
+        staged_ledger_streams,
+        /// Sets how many WebRTC peers the sync fetches one staged ledger from at once.
+        with_staged_ledger_streams
+    );
 
     const fn default_max_redials_per_minute() -> Limit<usize> {
         Limit::Some(20)
@@ -631,6 +639,16 @@ impl P2pLimits {
     /// OCaml: <https://github.com/MinaProtocol/mina/blob/8250f62a9bb6450f6c9fdc9a3af72da62c2f5e39/src/app/libp2p_helper/src/libp2p_helper/config_msg.go#L86-L93>
     const fn default_libp2p_target_peers() -> Limit<usize> {
         Limit::Some(20)
+    }
+
+    /// Two in the web node, which fetches the staged ledger from relays.
+    /// One elsewhere: a native node fetches it as before.
+    const fn default_staged_ledger_streams() -> Limit<usize> {
+        if cfg!(target_family = "wasm") {
+            Limit::Some(2)
+        } else {
+            Limit::Some(1)
+        }
     }
 }
 
@@ -718,6 +736,7 @@ impl Default for P2pLimits {
             seed_reconnect_below,
             max_dials_per_minute,
             libp2p_target_peers,
+            staged_ledger_streams: Self::default_staged_ledger_streams(),
         }
     }
 }

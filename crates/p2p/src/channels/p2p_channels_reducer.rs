@@ -251,6 +251,9 @@ impl P2pChannelsState {
                     }
                     .into(),
                 ),
+                StreamingRpcChannelMsg::Cancel(id) => {
+                    is_enabled(P2pChannelsStreamingRpcAction::CancelReceived { peer_id, id }.into())
+                }
                 StreamingRpcChannelMsg::Response(id, response) => match response {
                     None => is_enabled(
                         P2pChannelsStreamingRpcAction::ResponseReceived {

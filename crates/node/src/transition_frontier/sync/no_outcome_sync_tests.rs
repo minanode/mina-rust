@@ -438,6 +438,7 @@ fn staged_parts_without_an_outcome_are_retried_once_stale() {
                 time: start,
                 target: target.clone(),
                 attempts: [(peer_id, attempt)].into(),
+                single_stream: false,
             }
             .into(),
         );

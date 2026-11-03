@@ -5,7 +5,7 @@ use redux::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    p2p::{channels::rpc::P2pRpcId, PeerId},
+    p2p::{channels::rpc::P2pRpcId, P2pState, PeerId},
     transition_frontier::sync::ledger::SyncLedgerTargetWithStaged,
 };
 
@@ -22,6 +22,10 @@ pub enum TransitionFrontierSyncLedgerStagedState {
         time: Timestamp,
         target: SyncLedgerTargetWithStaged,
         attempts: BTreeMap<PeerId, PeerStagedLedgerPartsFetchState>,
+        /// Fetch from one peer at a time: parts put together from two
+        /// peers didn't hash to the target (STAGED-SPLIT).
+        #[serde(default)]
+        single_stream: bool,
     },
     /// Fetched pieces required to reconstruct staged ledger from
     /// snarked ledger.
@@ -87,6 +91,7 @@ impl TransitionFrontierSyncLedgerStagedState {
             time,
             target,
             attempts: Default::default(),
+            single_stream: false,
         }
     }
 
@@ -145,6 +150,71 @@ impl TransitionFrontierSyncLedgerStagedState {
     pub fn parts_fetch_rpc_id(&self, peer_id: &PeerId) -> Option<P2pRpcId> {
         self.fetch_attempts()?.get(peer_id)?.fetch_pending_rpc_id()
     }
+
+    /// The peers whose requests for the parts are live, the one sending
+    /// them from the first part and the one from the last (STAGED-SPLIT). A
+    /// libp2p peer's request counts as from the first.
+    pub fn live_parts_streams(
+        &self,
+        now: Timestamp,
+        p2p: &P2pState,
+    ) -> (Option<PeerId>, Option<PeerId>) {
+        let (mut first, mut last) = (None, None);
+        for (peer_id, attempt) in self.fetch_attempts().into_iter().flatten() {
+            if attempt.fetch_pending_rpc_id().is_none() || attempt.is_failed_or_stale(now) {
+                continue;
+            }
+            let from_last = p2p
+                .get_ready_peer(peer_id)
+                .and_then(|peer| peer.channels.streaming_rpc.pending_local_rpc())
+                .is_some_and(|request| request.is_from_last());
+            if from_last {
+                last.get_or_insert(*peer_id);
+            } else {
+                first.get_or_insert(*peer_id);
+            }
+        }
+        (first, last)
+    }
+
+    /// Whether a second peer should send the parts from the other end: one
+    /// request is live, to a WebRTC peer that advertised
+    /// `staged_ledger_from_last`, and the node fetches from two at once
+    /// (`P2pLimits::staged_ledger_streams`).
+    pub fn wants_second_parts_stream(&self, now: Timestamp, p2p: &P2pState) -> bool {
+        if !self.is_second_parts_stream_allowed(p2p) {
+            return false;
+        }
+        match self.live_parts_streams(now, p2p) {
+            (Some(peer_id), None) | (None, Some(peer_id)) => {
+                takes_staged_ledger_from_last(p2p, &peer_id)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl TransitionFrontierSyncLedgerStagedState {
+    /// Whether the node fetches the parts from two peers at once
+    /// (`P2pLimits::staged_ledger_streams`), and parts put together from two
+    /// have not failed to hash to the target.
+    pub fn is_second_parts_stream_allowed(&self, p2p: &P2pState) -> bool {
+        matches!(
+            self,
+            Self::PartsFetchPending {
+                single_stream: false,
+                ..
+            }
+        ) && p2p.config.limits.staged_ledger_streams() > 1
+    }
+}
+
+/// Whether `peer_id` is a WebRTC peer that advertised
+/// `staged_ledger_from_last`.
+pub fn takes_staged_ledger_from_last(p2p: &P2pState, peer_id: &PeerId) -> bool {
+    p2p.get_ready_peer(peer_id)
+        .is_some_and(|peer| peer.channels.staged_ledger_from_last)
+        && !p2p.is_libp2p_peer(peer_id)
 }
 
 impl PeerStagedLedgerPartsFetchState {

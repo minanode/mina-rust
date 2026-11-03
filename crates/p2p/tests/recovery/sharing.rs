@@ -133,6 +133,7 @@ fn offer_from(s: &State, n: u8) -> Box<mina_p2p::webrtc::Offer> {
         target_peer_id: s.0.my_id(),
         host: "127.0.0.1".parse().unwrap(),
         listen_port: None,
+        staged_ledger_from_last: false,
     })
 }
 
@@ -1193,6 +1194,7 @@ fn the_webrtc_stack_gets_only_allowed_candidates_and_auth_keeps_the_original() {
             sdp,
             identity_pub_key: SecretKey::from_bytes([11; 32]).public_key(),
             target_peer_id: me,
+            staged_ledger_from_last: false,
         })
     };
     let private_only = answer_of(sdp_with(&[LAN, LOOPBACK]));

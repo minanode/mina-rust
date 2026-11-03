@@ -367,6 +367,7 @@ fn the_staged_ledger_comes_from_the_near_relay() {
                     time: Timestamp::ZERO,
                     target,
                     attempts: Default::default(),
+                    single_stream: false,
                 }
                 .into(),
             });

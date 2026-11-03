@@ -685,11 +685,12 @@ fn staged_progress(
                 total: v,
             }
         }),
+        // With two peers sending it from its two ends (STAGED-SPLIT), the
+        // parts from both.
         Some(attempts) => attempts
             .iter()
-            .find(|(_, s)| s.fetch_pending_rpc_id().is_some())
-            .map(|(id, _)| id)
-            .and_then(|peer_id| state.p2p.get_ready_peer(peer_id))
+            .filter(|(_, s)| s.fetch_pending_rpc_id().is_some())
+            .filter_map(|(peer_id, _)| state.p2p.get_ready_peer(peer_id))
             .map(
                 |peer| match peer.channels.streaming_rpc.pending_local_rpc_progress() {
                     None => unknown(),
@@ -697,8 +698,16 @@ fn staged_progress(
                         let (fetched, total) = progress.progress();
                         RootStagedLedgerSyncProgress { fetched, total }
                     }
+                    Some(P2pStreamingRpcReceiveProgress::StagedLedgerPartsFromLast(progress)) => {
+                        let (fetched, total) = progress.progress();
+                        RootStagedLedgerSyncProgress { fetched, total }
+                    }
                 },
-            ),
+            )
+            .reduce(|a, b| RootStagedLedgerSyncProgress {
+                fetched: a.fetched + b.fetched,
+                total: a.total.max(b.total),
+            }),
     }
 }
 

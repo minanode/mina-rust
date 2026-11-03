@@ -48,6 +48,7 @@ fn fetching_parts(
             time: Timestamp::ZERO,
             target: SyncLedgerTarget::root(root).with_staged().unwrap(),
             attempts: attempt.map(|a| (near(), a)).into_iter().collect(),
+            single_stream: false,
         }
         .into(),
     }

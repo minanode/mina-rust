@@ -32,6 +32,11 @@ pub struct P2pChannelsState {
     #[serde(default)]
     pub sync_stats: P2pSyncPeerStats,
     pub streaming_rpc: P2pChannelsStreamingRpcState,
+    /// Whether the peer said it serves a staged ledger from its last part
+    /// and takes a cancelled stream (WebRTC offer or answer), so the sync
+    /// may fetch one staged ledger from it and another peer at once.
+    #[serde(default)]
+    pub staged_ledger_from_last: bool,
 
     pub(super) next_local_rpc_id: P2pRpcId,
     /// When a WebRTC peer last sent us anything, on any channel: a whole
@@ -83,6 +88,7 @@ impl P2pChannelsState {
                 false => P2pChannelsStreamingRpcState::Disabled,
                 true => P2pChannelsStreamingRpcState::Enabled,
             },
+            staged_ledger_from_last: false,
 
             next_local_rpc_id: 0,
             last_received: redux::Timestamp::ZERO,

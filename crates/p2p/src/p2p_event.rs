@@ -286,6 +286,9 @@ impl fmt::Display for P2pChannelEvent {
                                 Some(resp) => write!(f, "{:?}", resp.kind()),
                             }
                         }
+                        StreamingRpcChannelMsg::Cancel(id) => {
+                            write!(f, "Cancel, id: {id}")
+                        }
                     },
                 }
             }
