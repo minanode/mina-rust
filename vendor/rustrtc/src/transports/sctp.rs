@@ -198,11 +198,6 @@ const SCTP_MAX_INIT_RETRANS: u32 = 8;
 // minimum RTO (avoids spurious T3 retransmits). Coalesces one-SACK-per-DATA
 // into ~half as many on symmetric/bursty traffic.
 const SACK_DELAY: Duration = Duration::from_millis(0);
-// Max chunks retransmitted per T3 (RTO) cycle. RFC 4960 §7.2.3 collapses cwnd
-// to ~4*MTU after an RTO; retransmitting a matching burst recovers a burst of
-// losses in one cycle instead of one-packet-per-RTO (which, combined with RTO
-// exponential backoff, made loss recovery glacially slow on lossy links).
-const RETRANSMIT_BURST: u32 = 4;
 const COOKIE_HMAC_LEN: usize = 20; // SHA1 output
 const COOKIE_TIMESTAMP_LEN: usize = 8; // u64 millis
 const COOKIE_TOTAL_LEN: usize = COOKIE_TIMESTAMP_LEN + COOKIE_HMAC_LEN;
@@ -1669,7 +1664,6 @@ impl SctpInner {
 
         {
             let mut sent_queue = self.sent_queue.lock();
-            let mut retransmit_count = 0u32;
 
             for (tsn, record) in sent_queue.iter_mut() {
                 if !record.acked && !record.abandoned {
@@ -1694,26 +1688,21 @@ impl SctpInner {
                         continue;
                     }
 
-                    if retransmit_count < RETRANSMIT_BURST {
-                        // RFC 4960 §6.3.3 / §7.2.3: retransmit outstanding
-                        // chunks up to the (collapsed) cwnd. Retransmitting a
-                        // burst recovers a burst of losses in one RTO cycle
-                        // instead of one-packet-per-cycle.
-                        record.needs_retransmit = true;
-                        record.transmit_count += 1;
-                        record.sent_time = now;
-                        retransmit_count += 1;
-                        trace!(
-                            "T3 retransmit: marking TSN {} for retransmission (transmit #{})",
-                            tsn, record.transmit_count
-                        );
-                    } else {
-                        // Reset sent_time for the remaining unacked records to
-                        // prevent them from immediately triggering another T3
-                        // on the next tick; they will be retransmitted in a
-                        // subsequent T3 cycle if still unacked.
-                        record.sent_time = now;
-                    }
+                    // RFC 9260 section 6.3.3 E3: mark every outstanding chunk
+                    // for retransmission; transmit() resends them, lowest TSN
+                    // first, as cwnd and Max.Burst allow. Marking only the
+                    // first few left the rest out of flight and unscheduled:
+                    // a lost fast retransmission among them waited for
+                    // another, backed-off, T3 per few chunks (vendored change,
+                    // SCTP-CC). One that is acked before it goes out is not
+                    // resent.
+                    record.needs_retransmit = true;
+                    record.transmit_count += 1;
+                    record.sent_time = now;
+                    trace!(
+                        "T3 retransmit: marking TSN {} for retransmission (transmit #{})",
+                        tsn, record.transmit_count
+                    );
                 }
             }
         }
@@ -4965,12 +4954,11 @@ mod tests {
         let _ = pr; // keep payload alive for the test
     }
 
-    /// Reproducer for BUG #3: on T3 (RTO) timeout only the FIRST outstanding
-    /// TSN is marked for retransmission, so a burst of losses recovers at one
-    /// packet per RTO cycle. Combined with RTO exponential backoff this makes
-    /// recovery glacially slow on lossy links.
+    /// On T3 every outstanding chunk is marked for retransmission (RFC 9260
+    /// section 6.3.3 E3), so a burst of losses is recovered in one timeout
+    /// rather than a few chunks per backed-off timeout.
     #[tokio::test]
-    async fn test_bug3_t3_retransmits_only_one_chunk() {
+    async fn t3_marks_every_outstanding_chunk() {
         let (socket_tx, _) = crate::platform::sync::watch::channel(None);
         let ice_conn = crate::transports::ice::conn::IceConn::new(
             socket_tx.subscribe(),
@@ -4999,10 +4987,14 @@ mod tests {
         crate::platform::task::spawn(runner);
         *sctp.inner.state.lock() = SctpState::Connected;
 
-        // Five stale, in-flight, unacked chunks — a burst loss scenario.
+        // Five in-flight, unacked chunks whose timer has run out: a burst
+        // loss. (Instant counts from the first use in the process, so a time
+        // before it saturates; move the clock forward instead.)
+        let sent_at = Instant::now();
+        let expired = sent_at + Duration::from_secs(2);
         let stale = |tsn: u32| ChunkRecord {
             payload: Bytes::from_static(b"x"),
-            sent_time: Instant::now() - Duration::from_secs(10),
+            sent_time: sent_at,
             transmit_count: 1,
             missing_reports: 0,
             abandoned: false,
@@ -5024,27 +5016,17 @@ mod tests {
             }
         }
 
-        sctp.inner.handle_timeout().await.unwrap();
+        sctp.inner.handle_timeout_at(expired).await.unwrap();
 
         let q = sctp.inner.sent_queue.lock();
-        let marked = q.values().filter(|r| r.needs_retransmit).count();
-        // FIX: a burst of outstanding chunks is retransmitted per T3 cycle,
-        // capped at RETRANSMIT_BURST. The rest are sent_time-reset so they do
-        // not immediately re-trigger T3.
-        assert_eq!(
-            marked, RETRANSMIT_BURST as usize,
-            "FIX: T3 should retransmit up to RETRANSMIT_BURST chunks per cycle"
-        );
-        // The 5th chunk (beyond the burst) must NOT be marked, but its
-        // sent_time must be reset so it doesn't immediately re-fire T3.
-        let fifth = q.get(&104).unwrap();
         assert!(
-            !fifth.needs_retransmit,
-            "chunks beyond RETRANSMIT_BURST wait for the next cycle"
+            q.values()
+                .all(|r| r.needs_retransmit && r.transmit_count == 2 && !r.in_flight),
+            "every outstanding chunk is marked once and left out of flight"
         );
         assert!(
-            fifth.sent_time.elapsed() < Duration::from_secs(2),
-            "remaining chunks get sent_time reset to avoid immediate T3 re-fire"
+            q.values().all(|r| r.sent_time == expired),
+            "the timer restarts for every marked chunk"
         );
     }
 
@@ -11043,9 +11025,8 @@ mod tests {
 
         let q = sctp.inner.sent_queue.lock();
         let record = q.get(&100).unwrap();
-        // TLP bumped to 2, then T3 bumped to 3 — but T3 may or may not mark
-        // again (depends on RETRANSMIT_BURST and whether TLP already marked it).
-        // At minimum, needs_retransmit is set and transmit_count >= 2.
+        // TLP bumped to 2; T3 finds the chunk already marked and leaves the
+        // count. At minimum, needs_retransmit is set and transmit_count >= 2.
         assert!(
             record.transmit_count >= 2,
             "transmit_count must be at least 2 (TLP=2, T3 may also bump)"
@@ -11824,15 +11805,33 @@ mod receive_bounds_tests {
         assert!(tx.inner.last_t3_fire_time.lock().is_some());
         *tx.inner.data_send_after.lock() = Some(Instant::now());
         tx.inner.transmit().await.unwrap();
-        // Inspect the records to verify which chunks T3 retransmitted.
-        let retransmitted = tx
-            .inner
-            .sent_queue
-            .lock()
-            .values()
-            .filter(|r| r.transmit_count > 1 && !r.needs_retransmit)
-            .count();
-        assert_eq!(retransmitted, RETRANSMIT_BURST as usize);
+        // Inspect the records to verify which chunks T3 retransmitted: the
+        // lowest TSNs, one Max.Burst's worth; the rest stay marked.
+        let (retransmitted, retransmitted_bytes, waiting) = {
+            let q = tx.inner.sent_queue.lock();
+            let sent: Vec<_> = q
+                .values()
+                .filter(|r| r.transmit_count > 1 && !r.needs_retransmit)
+                .collect();
+            let waiting = q.values().filter(|r| r.needs_retransmit).count();
+            (
+                sent.len(),
+                sent.iter().map(|r| r.payload.len()).sum::<usize>(),
+                waiting,
+            )
+        };
+        assert!(retransmitted > 0);
+        assert!(retransmitted_bytes <= 4 * MAX_SCTP_PACKET_SIZE);
+        assert_eq!(
+            retransmitted + waiting,
+            tx.inner
+                .sent_queue
+                .lock()
+                .values()
+                .filter(|r| !r.acked)
+                .count(),
+            "every outstanding chunk is either resent or still marked"
+        );
         assert!(rx.inner.unread_bytes() <= rx.inner.local_rwnd);
         assert!(rx.close_reason().is_none());
         eprintln!(
