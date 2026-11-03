@@ -45,7 +45,7 @@ export function checkPage(page: PageFacts): BootFailure | null {
       kind: "threads",
       title: "WebAssembly is off in this browser",
       detail:
-        "The web node is a WebAssembly program, and this browser has no WebAssembly. Security settings turn it off: Lockdown Mode on an iPhone, iPad or Mac, and the strict level of Microsoft Edge's enhanced security.",
+        "The web node is a WebAssembly program, and this browser has no WebAssembly. Some security settings turn it off, such as Lockdown Mode on an iPhone, iPad or Mac.",
       hint: "Exclude this site from the setting, or open the page in another browser.",
     };
   }
@@ -89,7 +89,7 @@ export function checkPage(page: PageFacts): BootFailure | null {
       kind: "webrtc",
       title: "WebRTC is off in this browser",
       detail:
-        "The node reaches its peers over WebRTC data channels, and this browser has no RTCPeerConnection. A setting or an extension turned it off.",
+        "The node reaches its peers over WebRTC data channels, and this browser has no RTCPeerConnection. A setting or an extension may have turned it off.",
       hint: "Turn WebRTC on for this site, or open the page in another browser. In Firefox, the setting is media.peerconnection.enabled in about:config.",
     };
   }
