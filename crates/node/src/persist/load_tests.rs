@@ -1004,6 +1004,91 @@ fn a_root_staged_ledger_that_does_not_hash_to_the_root_block_is_damage() {
     assert!(reason.contains("complete hash"), "{reason}");
 }
 
+/// Rewrites the stored parts' pending coinbase with `tamper` and records the
+/// new length and CRC32, so only the conversion's checks can catch it.
+fn tamper_pending_coinbase(
+    stored: &Stored,
+    mem: &MemBackend,
+    tamper: impl FnOnce(&mut v2::MinaBasePendingCoinbaseStableV2),
+) {
+    use mina_p2p_messages::binprot::BinProtRead;
+
+    let name = parts_name(stored.blocks[0].hash());
+    let bytes = mem.file(&name).expect("the parts file");
+    let mut parts = crate::p2p::channels::rpc::StagedLedgerAuxAndPendingCoinbases::binprot_read(
+        &mut bytes.as_slice(),
+    )
+    .unwrap();
+    tamper(&mut parts.pending_coinbase);
+    let mut out = Vec::new();
+    parts.binprot_write(&mut out).unwrap();
+    replace_file(mem, &name, out);
+}
+
+#[test]
+fn a_pending_coinbase_whose_leaves_do_not_make_its_stored_hashes_is_damage() {
+    // A leaf changed under the stored inner hashes: the declared root, which
+    // the complete staged ledger hash covers, is unchanged.
+    use ledger::scan_state::{currency::Slot, pending_coinbase::Stack};
+    use mina_p2p_messages::v2::MinaBasePendingCoinbaseMerkleTreeVersionedStableV2Tree as Tree;
+
+    let stored = Stored::new(8, 3);
+    let mem = stored.store();
+    tamper_pending_coinbase(&stored, &mem, |pending_coinbase| {
+        let mut node = &mut pending_coinbase.tree.tree;
+        while let Tree::Node(_, left, _) = node {
+            node = left;
+        }
+        *node =
+            Tree::Account((&Stack::empty().push_state(Fp::from(7u64), Slot::from_u32(1))).into());
+    });
+    let reason = discarded(load_from(&mem, Some(stored.tip_slot())));
+    assert!(reason.contains("pending coinbase"), "{reason}");
+}
+
+#[test]
+fn a_pending_coinbase_missing_a_stack_index_is_damage() {
+    // The staged ledger hash doesn't cover the stack indexes.
+    let stored = Stored::new(8, 3);
+    let mem = stored.store();
+    tamper_pending_coinbase(&stored, &mem, |pending_coinbase| {
+        let indexes = &mut pending_coinbase.tree.indexes;
+        *indexes = indexes.iter().skip(1).cloned().collect();
+    });
+    let reason = discarded(load_from(&mem, Some(stored.tip_slot())));
+    assert!(reason.contains("pending coinbase"), "{reason}");
+}
+
+#[test]
+fn a_pending_coinbase_of_another_depth_is_damage() {
+    let stored = Stored::new(8, 3);
+    let mem = stored.store();
+    tamper_pending_coinbase(&stored, &mem, |pending_coinbase| {
+        let depth = pending_coinbase.tree.depth.as_u64();
+        pending_coinbase.tree.depth = (depth + 1).into();
+    });
+    let reason = discarded(load_from(&mem, Some(stored.tip_slot())));
+    assert!(
+        reason.contains("pending coinbase") && reason.contains("depth"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_pending_coinbase_position_out_of_range_is_damage() {
+    let stored = Stored::new(8, 3);
+    let mem = stored.store();
+    tamper_pending_coinbase(&stored, &mem, |pending_coinbase| {
+        let stacks = 1u64 << constraint_constants().pending_coinbase_depth;
+        pending_coinbase.new_pos = v2::MinaBasePendingCoinbaseStackIdStableV1(stacks.into());
+    });
+    let reason = discarded(load_from(&mem, Some(stored.tip_slot())));
+    assert!(
+        reason.contains("pending coinbase") && reason.contains("out of range"),
+        "{reason}"
+    );
+}
+
 #[test]
 fn cancellation_during_file_reads_keeps_the_generation_and_stops_the_load() {
     use super::load_control::LoadControl;
