@@ -74,6 +74,9 @@ fn self_requeue_limit(kind: ActionKind) -> Option<usize> {
         // than 3 requests are in flight and each refusal ends one of them, so
         // a chain holds the first batch and at most 3 more.
         ActionKind::P2pNetworkKadBootstrapCreateRequests => Some(4),
+        // The WebRTC service wraps a plain event with its queue permit, and
+        // the event source dispatches the unwrapped event once more.
+        ActionKind::EventSourceNewEvent => Some(2),
         _ => None,
     }
 }
