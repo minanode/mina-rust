@@ -6,7 +6,8 @@
  * without the saved chain.
  */
 
-import type { FrontierStore } from "@minanode/node-client";
+import { formatHeight } from "@minanode/node-client";
+import type { FrontierStore, SavedChain } from "@minanode/node-client";
 
 export type StoreState =
   /** Off for this run, by the build or the visitor's choice. */
@@ -46,6 +47,36 @@ export function storeLabel(state: StoreState): string {
     case "on":
       return "On";
   }
+}
+
+/** What a reload does with the saved chain, as one value; null when the
+ * store isn't open in this tab or the node doesn't say. */
+export function savedChainLabel(
+  state: StoreState,
+  chain: SavedChain | null | undefined,
+): string | null {
+  if (state.kind !== "on" || !chain) return null;
+  switch (chain.state) {
+    case "checking":
+      return "Checking";
+    case "not_saved":
+      return "Not saved yet";
+    case "saved":
+      return `Saved at ${formatHeight(chain.height)}`;
+    case "not_restorable":
+      return "Saved, but a reload syncs again";
+    case "unknown":
+      return "Not known";
+  }
+}
+
+/** Why the saved chain doesn't restore, or isn't known. */
+export function savedChainReason(
+  chain: SavedChain | null | undefined,
+): string | null {
+  return chain?.state === "not_restorable" || chain?.state === "unknown"
+    ? chain.reason || null
+    : null;
 }
 
 /** The docs section on the saved chain. */

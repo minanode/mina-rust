@@ -784,6 +784,7 @@ pub enum ActionKind {
     TransitionFrontierPersistOpenTimeout,
     TransitionFrontierPersistReplayDone,
     TransitionFrontierPersistReplayFailed,
+    TransitionFrontierPersistStoreRestoreFacts,
     TransitionFrontierPersistStoreSummary,
     TransitionFrontierPersistEffectfulChainPut,
     TransitionFrontierPersistEffectfulDiscard,
@@ -873,7 +874,7 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    pub const COUNT: u16 = 742;
+    pub const COUNT: u16 = 743;
 }
 
 impl std::fmt::Display for ActionKind {
@@ -1812,6 +1813,9 @@ impl ActionKindGet for TransitionFrontierPersistAction {
             Self::LoadError { .. } => ActionKind::TransitionFrontierPersistLoadError,
             Self::LoadProgress { .. } => ActionKind::TransitionFrontierPersistLoadProgress,
             Self::StoreSummary { .. } => ActionKind::TransitionFrontierPersistStoreSummary,
+            Self::StoreRestoreFacts { .. } => {
+                ActionKind::TransitionFrontierPersistStoreRestoreFacts
+            }
             Self::LoadTimeout => ActionKind::TransitionFrontierPersistLoadTimeout,
             Self::LoadCancelPending => ActionKind::TransitionFrontierPersistLoadCancelPending,
             Self::LoadCancelled => ActionKind::TransitionFrontierPersistLoadCancelled,

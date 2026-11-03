@@ -1,13 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import type { Account } from "./node";
-import {
-  checkPayment,
-  nextNonce,
-  nextStage,
-  rejectionText,
-  type Sent,
-} from "./payment";
+import { checkPayment, nextStage, rejectionText, type Sent } from "./payment";
 
 const FROM = `B62q${"1".repeat(51)}`;
 const TO = `B62q${"2".repeat(51)}`;
@@ -189,15 +183,6 @@ describe("a sent payment's progress", () => {
         accountNonce: 5,
       }).stage,
     ).toBe("pending");
-  });
-
-  test("the next nonce skips this tab's pending payments from this account", () => {
-    expect(nextNonce(funded, [])).toBe(4);
-    expect(nextNonce(funded, [sent, { ...sent, nonce: 5 }])).toBe(6);
-    expect(nextNonce(funded, [{ ...sent, stage: "rejected" }])).toBe(4);
-    // Another key's payments don't move this one's nonce.
-    const fresh = { ...funded, publicKey: TO, nonce: 0 };
-    expect(nextNonce(fresh, [sent, { ...sent, nonce: 5 }])).toBe(0);
   });
 
   test("the pool's reasons in words", () => {

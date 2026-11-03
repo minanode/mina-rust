@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Web node**: the Overview and Start-up pages say what a reload does with
+  the saved chain: Not saved yet, Saved at #N, or Saved, but a reload syncs
+  again, with the reason. `/status` reports it as `frontier_store.saved_chain`.
+  The loader and the status decide with one set of restore rules, on the facts
+  the store thread reads from the newest manifest, the attempts record and the
+  stored tip's block, so the status never says saved when a restart would
+  bootstrap. The loader's checks and outcomes are unchanged.
 - **Web node**: sharing with other browsers, off by default: a switch on the
   Peers page, behind a warning that other visitors and modified pages get your
   IP address and that it uses your upload. A sharing page still dials only its
@@ -118,9 +125,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consumed at the next load; a key saved in the browser but locked asks once
   for its own passphrase, and the passphrase screens remain only as a fallback
   (PR #252).
+- **Web node**: the start screen lists the six start-up steps, waiting, each
+  with a figure from the build (the WASM's size, the relays' names), and links
+  "How the web node works". After Start the boot screen keeps the same page
+  and runs the same list in place. `MINAWEB_WASM_COMPRESSED_BYTES` adds the
+  size the host sends the WASM at to the download step.
 
 ### Fixed
 
+- **Web node**: the header's best tip keeps up with the page. It reads the
+  shared `/status`, which no poll asks again while the tab is hidden, so a
+  page opened then showed a newer block than the header (#583746 under
+  #583745). The page asks `/status` again on every navigation, and when the
+  Blocks list holds a block above the header's tip.
+- **Web node**: the header's status chip says "Stale", with the tip it last
+  had and the answer's age, once `/status` hasn't answered for 20 s, instead
+  of the last phase. It said "Synced" over a 20-minute-old answer.
+- **Web node**: the Send page keeps the payments this tab sent across a role
+  change's restart and a reload, in the tab's sessionStorage. It keeps the
+  hash, sender, recipient, amount, fee, nonce, time sent and status, never a
+  key or the memo: every open payment, and at most 20 that are done, none
+  sent more than a day ago. A kept payment holds its nonce once the
+  restarted node finds it in its pool or a block; until then, and while the
+  key's account is unknown, Send waits, with Retry when a lookup fails. If
+  it is in neither, the page says so and the next payment competes for its
+  nonce, with a button to send the same payment again; the page looks again
+  right before signing it, and the pool's Duplicate keeps the nonce held.
+  Nonces are uint32.
 - **Web node**: a second tab of the same browser, which can't open the
   frontier store the first tab holds, now says so: one caution banner, and the
   Overview and Start-up show the store as not available in this tab, with no

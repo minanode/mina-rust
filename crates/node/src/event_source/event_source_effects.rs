@@ -703,6 +703,11 @@ pub fn event_source_effects<S: Service>(store: &mut Store<S>, action: EventSourc
                             store: Box::new(summary),
                         });
                     }
+                    PersistEvent::RestoreFacts(facts) => {
+                        store.dispatch(TransitionFrontierPersistAction::StoreRestoreFacts {
+                            facts: Box::new(facts),
+                        });
+                    }
                     PersistEvent::Loaded(result) => {
                         use crate::persist::event::PersistLoadResult;
                         // Even a result queued just before cancellation acknowledges

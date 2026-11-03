@@ -216,6 +216,9 @@ impl std::fmt::Display for Event {
                     PersistEvent::Summary(store) => {
                         write!(f, "Summary, generation {}", store.generation)
                     }
+                    PersistEvent::RestoreFacts(facts) => {
+                        write!(f, "RestoreFacts, generation {}", facts.generation)
+                    }
                     PersistEvent::Loaded(result) => {
                         use crate::persist::event::PersistLoadResult;
                         write!(f, "Loaded, ")?;

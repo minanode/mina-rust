@@ -29,11 +29,17 @@ import { Logo, LogoMark } from "@minanode/design-system/patterns/logo";
 import { Signal } from "@minanode/design-system/patterns/signal";
 import { ThemeToggle } from "@minanode/design-system/patterns/theme-toggle";
 import { formatAge, useNow } from "@minanode/design-system/lib/time";
-import { formatHeight } from "@minanode/node-client";
+import {
+  formatHeight,
+  type NodeStatus,
+  type SyncView,
+  type Tone,
+} from "@minanode/node-client";
 import { useNodeStatus, useSyncView } from "@minanode/node-client/react";
 
 import { CONFIG } from "../config";
 import { VERSION } from "../version";
+import { useStatusOnNavigate } from "../lib/tip";
 import { rolesAllowed } from "../roles/role";
 import { useBoot } from "./boot-context";
 import { CarriedKey } from "./carried-key";
@@ -83,32 +89,65 @@ export const ROLE_NAV: NavItem[] = [
 const focusRing =
   "focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring";
 
-function StatusChip() {
-  const now = useNow();
-  const view = useSyncView(now);
-  const { status } = useNodeStatus();
-  const tip = status.data?.bestTip ?? null;
+/** What the header chip says. A view whose last answer is older than
+ * STATUS_STALE_MS is no longer the node's status: the chip says so, with
+ * the tip it had then. */
+export function chipView(
+  view: SyncView,
+  status: NodeStatus | null,
+): { tone: Tone; label: string; height: string; note: string | null } {
+  const tip = status?.bestTip ?? null;
+  if (view.stale && view.key !== "NoAnswer") {
+    return {
+      tone: "warn",
+      label: "Stale",
+      height: tip ? formatHeight(tip.height) : "",
+      note:
+        view.sampleAgeMs !== null
+          ? `as of ${formatAge(view.sampleAgeMs)} ago`
+          : null,
+    };
+  }
   const height =
     view.key === "Bootstrap" || view.key === "Catchup"
-      ? status.data?.target
-        ? `to ${formatHeight(status.data.target.height)}`
+      ? status?.target
+        ? `to ${formatHeight(status.target.height)}`
         : ""
       : tip
         ? formatHeight(tip.height)
         : "";
+  return {
+    tone: view.tone,
+    label: view.label,
+    height,
+    note:
+      view.key === "Synced" && view.tipAgeMs !== null
+        ? `block ${formatAge(view.tipAgeMs)} old`
+        : null,
+  };
+}
+
+export function StatusChip() {
+  const now = useNow();
+  const view = useSyncView(now);
+  const { status } = useNodeStatus();
+  const chip = chipView(view, status.data);
   return (
     <Link
       to="/"
       className={`flex min-w-0 items-center gap-2 rounded-full ${focusRing}`}
       title="Node status: go to the overview"
+      data-status-chip={view.stale ? "stale" : view.key}
     >
-      <Signal tone={view.tone} pulse={view.tone === "info"}>
-        {view.label}
-        {height ? <span className="text-foreground/80">{height}</span> : null}
+      <Signal tone={chip.tone} pulse={chip.tone === "info"}>
+        {chip.label}
+        {chip.height ? (
+          <span className="text-foreground/80">{chip.height}</span>
+        ) : null}
       </Signal>
-      {view.key === "Synced" && view.tipAgeMs !== null ? (
+      {chip.note ? (
         <span className="hidden font-mono text-xs text-muted-foreground sm:inline">
-          block {formatAge(view.tipAgeMs)} old
+          {chip.note}
         </span>
       ) : null}
     </Link>
@@ -162,6 +201,7 @@ export function Shell({
   children: React.ReactNode;
 }) {
   const role = useBoot().role.kind;
+  useStatusOnNavigate();
   return (
     <AppShell
       brand={
