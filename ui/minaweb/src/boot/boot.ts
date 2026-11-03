@@ -145,6 +145,8 @@ export interface ConnectCounts {
 /** How long without a connected peer before the screen says why. */
 export const PEER_WAIT_MS = 45_000;
 const POLL_MS = 1_000;
+/** The poll while the node dials: the first peer shows within this. */
+const CONNECT_POLL_MS = 200;
 
 /** localStorage `webnodeFrontierStore` (`on` or `off`) overrides the build,
  * as on the Angular page. */
@@ -401,18 +403,40 @@ export class Boot {
     });
 
     this.step("download", { state: "current" });
-    const glue = await this.loadGlue();
-    this.glueRef = glue;
+    // The glue, the WASM, the genesis config's check and the ICE server
+    // lists, asked for together: none waits on another. Each is used, and
+    // its failure shown, at the step that needs it, as when they were
+    // asked for one after the other.
+    const base = location.href;
+    const genesisUrl = new URL(config.genesisUrl, base).href;
+    const stopDownload = new AbortController();
     const began = Date.now();
-    const bytes = await downloadWasm(config.wasm, download => {
-      this.set({ download });
-      this.step("download", {
-        detail:
-          download.total !== null
-            ? `${formatBytes(download.received)} of ${formatBytes(download.total)}`
-            : formatBytes(download.received),
-      });
-    });
+    const download = early(
+      downloadWasm(
+        config.wasm,
+        download => {
+          this.set({ download });
+          this.step("download", {
+            detail:
+              download.total !== null
+                ? `${formatBytes(download.received)} of ${formatBytes(download.total)}`
+                : formatBytes(download.received),
+          });
+        },
+        input => fetch(input, { signal: stopDownload.signal }),
+      ),
+    );
+    const genesisChecked = early(this.checkFile(genesisUrl, "genesis config"));
+    const iceLoaded = early(loadEachIceServers(config.iceServersUrls, base));
+    let glue: WebNodeGlue;
+    try {
+      glue = await this.loadGlue();
+    } catch (error) {
+      stopDownload.abort();
+      throw error;
+    }
+    this.glueRef = glue;
+    const bytes = await download;
     const took = seconds(Date.now() - began);
     const downloaded = (compressed: number | null) =>
       `${formatBytes(bytes.byteLength)}${compressed !== null ? ` (${formatBytes(compressed)} compressed)` : ""} in ${took}, SHA-256 checked.`;
@@ -473,15 +497,11 @@ export class Boot {
 
     this.set({ startPart: 1 });
     this.step("start", { detail: "Fetching the genesis config and peers." });
-    const base = location.href;
-    const genesisUrl = new URL(config.genesisUrl, base).href;
-    await this.checkFile(genesisUrl, "genesis config");
+    await genesisChecked;
     // A list from each relay's credential service, joined, each admitted only
     // if it meets the node's renewal contract; none: the node's built-in STUN
     // servers.
-    const iceLists = admitIceLists(
-      await loadEachIceServers(config.iceServersUrls, base),
-    );
+    const iceLists = admitIceLists(await iceLoaded);
     const iceServers = iceLists.some(Boolean) ? joinIceServers(iceLists) : null;
     if (config.iceServersUrls.length && glue.update_ice_servers) {
       const stopRenewal = renewEachIceServers(
@@ -677,7 +697,10 @@ export class Boot {
     });
     this.step("connect", { state: "current", detail: "Dialling the relay." });
     for (;;) {
-      await new Promise(resolve => setTimeout(resolve, POLL_MS));
+      const dialling = this.stepState("connect").state !== "done";
+      await new Promise(resolve =>
+        setTimeout(resolve, dialling ? CONNECT_POLL_MS : POLL_MS),
+      );
       let status;
       try {
         status = await client.status();
@@ -799,6 +822,13 @@ export class Boot {
       });
     }
   }
+}
+
+/** `work`, started now and awaited later: a failure is thrown where it is
+ * awaited, and not reported as unhandled before that. */
+function early<T>(work: Promise<T>): Promise<T> {
+  work.catch(() => {});
+  return work;
 }
 
 function safeStorage(key: string): string | null {
