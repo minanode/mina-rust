@@ -110,5 +110,7 @@ Wired in and skipped by the formatters and checks the same way as rustrtc.
   `cargo test --release --manifest-path vendor/ark-ff/Cargo.toml --test fp9`
   checks the limb code against `num-bigint` on every target. With
   `RUSTFLAGS="--cfg ark_ff_fp9"` the field operations take the wasm32 path
-  natively and are checked too. The crate's own unit tests need upstream's
-  dev-dependencies, which the published package leaves out.
+  natively and are checked too. With `-- --ignored` it also compares the limb
+  code with arkworks' 64-bit code on 23 million pairs over five fields (about 6
+  s in release). The crate's own unit tests need upstream's dev-dependencies,
+  which the published package leaves out.

@@ -6,7 +6,7 @@
 
 use ark_ff::{
     fields::models::fp::fp9::{modulus_limbs, mul, pack, square, unpack, usable, MASK},
-    BigInteger, Field, Fp256, MontBackend, MontConfig, PrimeField, Zero,
+    BigInt, BigInteger, Field, Fp256, MontBackend, MontConfig, PrimeField, Zero,
 };
 use num_bigint::BigUint;
 
@@ -33,6 +33,11 @@ type Bn254Scalar = Fp256<MontBackend<Bn254ScalarConfig, 4>>;
 #[generator = "7"]
 pub struct Bls12ScalarConfig;
 type Bls12Scalar = Fp256<MontBackend<Bls12ScalarConfig, 4>>;
+
+#[derive(MontConfig)]
+#[modulus = "57896044618658097711785492504343953926634992332820282019728792003956564819949"]
+#[generator = "2"]
+pub struct Curve25519Config;
 
 const MODULI: [[u64; 4]; 4] = [
     PallasBaseConfig::MODULUS.0,
@@ -97,7 +102,9 @@ fn edges(p: &BigUint) -> Vec<BigUint> {
         p - &one,
         p - BigUint::from(2u32),
     ];
-    for bit in [29u32, 58, 63, 64, 87, 116, 128, 145, 192, 203, 232, 253, 254] {
+    for bit in [
+        29u32, 58, 63, 64, 87, 116, 128, 145, 192, 203, 232, 253, 254,
+    ] {
         let power = &one << bit;
         for v in [&power - &one, power.clone(), &power + &one] {
             if &v < p {
@@ -157,8 +164,14 @@ fn products_match_montgomery_reference() {
 #[test]
 fn dispatch_follows_target() {
     let expected = cfg!(any(target_arch = "wasm32", ark_ff_fp9));
-    assert_eq!(ark_ff::fields::fp9_enabled::<PallasBaseConfig, 4>(), expected);
-    assert_eq!(ark_ff::fields::fp9_enabled::<VestaBaseConfig, 4>(), expected);
+    assert_eq!(
+        ark_ff::fields::fp9_enabled::<PallasBaseConfig, 4>(),
+        expected
+    );
+    assert_eq!(
+        ark_ff::fields::fp9_enabled::<VestaBaseConfig, 4>(),
+        expected
+    );
 }
 
 #[test]
@@ -216,4 +229,84 @@ fn field_operations_match_reference() {
     field_ops::<VestaBase>();
     field_ops::<Bn254Scalar>();
     field_ops::<Bls12Scalar>();
+}
+
+/// `fp9::mul` and `fp9::square` against arkworks' own 64-bit Montgomery code,
+/// which the field operations use on targets other than wasm32: 3,000,000
+/// random canonical pairs per field, and every pair of edge values (0, 1,
+/// p - 1 to p - 32, and 2^k - 2 to 2^k + 2 for every k below p). Five fields,
+/// one of them 2^255 - 19, the largest kind `usable` accepts. About 23 million
+/// pairs; run it in release:
+/// `cargo test --release --manifest-path vendor/ark-ff/Cargo.toml --test fp9 -- --ignored`
+#[cfg(not(any(target_arch = "wasm32", ark_ff_fp9)))]
+#[test]
+#[ignore = "23 million pairs; run in release with --ignored"]
+fn millions_of_pairs_match_the_64_bit_code() {
+    fn run<C: MontConfig<4>>(name: &str) {
+        type F<C> = Fp256<MontBackend<C, 4>>;
+        let p9 = modulus_limbs(&C::MODULUS.0);
+        let inv = C::INV & MASK;
+        let canonical = |limbs: [u64; 4]| {
+            let mut r = BigInt(limbs);
+            let mut twice = C::MODULUS;
+            twice.mul2();
+            assert!(r < twice, "{name}: result not below 2p");
+            if r >= C::MODULUS {
+                r.sub_with_borrow(&C::MODULUS);
+            }
+            r
+        };
+        let check = |a: BigInt<4>, b: BigInt<4>| {
+            let (fa, fb) = (F::<C>::new_unchecked(a), F::<C>::new_unchecked(b));
+            assert_eq!(canonical(mul(&a.0, &b.0, &p9, inv)), (fa * fb).0, "{name}");
+            assert_eq!(canonical(square(&a.0, &p9, inv)), fa.square().0, "{name}");
+        };
+        let mut edges = vec![BigInt::from(0u64), BigInt::from(1u64)];
+        for d in 1u64..=32 {
+            let mut x = C::MODULUS;
+            x.sub_with_borrow(&BigInt::from(d));
+            edges.push(x);
+        }
+        for bit in 0..255 {
+            let mut power = BigInt([0; 4]);
+            power.0[bit / 64] = 1 << (bit % 64);
+            for d in -2i64..=2 {
+                let mut x = power;
+                let borrowed = if d < 0 {
+                    x.sub_with_borrow(&BigInt::from(d.unsigned_abs()))
+                } else {
+                    x.add_with_carry(&BigInt::from(d as u64))
+                };
+                if !borrowed && x < C::MODULUS {
+                    edges.push(x);
+                }
+            }
+        }
+        edges.sort();
+        edges.dedup();
+        for &a in &edges {
+            for &b in &edges {
+                check(a, b);
+            }
+        }
+        let mut rng = Rng(C::MODULUS.0[0] ^ 0x6f374abcc918e027);
+        let mut random = || loop {
+            let x = BigInt([rng.next(), rng.next(), rng.next(), rng.next() >> 1]);
+            if x < C::MODULUS {
+                break x;
+            }
+        };
+        for _ in 0..3_000_000 {
+            check(random(), random());
+        }
+        println!(
+            "{name}: 3000000 random pairs and {} edge pairs match",
+            edges.len() * edges.len()
+        );
+    }
+    run::<PallasBaseConfig>("Pasta Fp");
+    run::<VestaBaseConfig>("Pasta Fq");
+    run::<Bn254ScalarConfig>("BN254 scalar");
+    run::<Bls12ScalarConfig>("BLS12-381 scalar");
+    run::<Curve25519Config>("2^255 - 19");
 }
