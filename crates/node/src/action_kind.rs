@@ -295,9 +295,11 @@ pub enum ActionKind {
     P2pChannelsSnarkJobCommitmentRequestReceived,
     P2pChannelsSnarkJobCommitmentRequestSend,
     P2pChannelsSnarkJobCommitmentResponseSend,
+    P2pChannelsStreamingRpcCancelReceived,
     P2pChannelsStreamingRpcInit,
     P2pChannelsStreamingRpcPending,
     P2pChannelsStreamingRpcReady,
+    P2pChannelsStreamingRpcRequestCancel,
     P2pChannelsStreamingRpcRequestReceived,
     P2pChannelsStreamingRpcRequestSend,
     P2pChannelsStreamingRpcResponseNextPartGet,
@@ -874,7 +876,7 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    pub const COUNT: u16 = 743;
+    pub const COUNT: u16 = 745;
 }
 
 impl std::fmt::Display for ActionKind {
@@ -2190,6 +2192,8 @@ impl ActionKindGet for P2pChannelsStreamingRpcAction {
             }
             Self::ResponsePartSend { .. } => ActionKind::P2pChannelsStreamingRpcResponsePartSend,
             Self::ResponseSent { .. } => ActionKind::P2pChannelsStreamingRpcResponseSent,
+            Self::RequestCancel { .. } => ActionKind::P2pChannelsStreamingRpcRequestCancel,
+            Self::CancelReceived { .. } => ActionKind::P2pChannelsStreamingRpcCancelReceived,
         }
     }
 }

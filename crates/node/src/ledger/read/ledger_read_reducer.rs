@@ -1,7 +1,7 @@
 use crate::p2p::{
     channels::{
         rpc::{P2pChannelsRpcAction, P2pRpcId, P2pRpcRequest, P2pRpcResponse},
-        streaming_rpc::{P2pChannelsStreamingRpcAction, P2pStreamingRpcRequest},
+        streaming_rpc::P2pChannelsStreamingRpcAction,
     },
     P2pAction, PeerId,
 };

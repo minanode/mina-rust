@@ -229,8 +229,9 @@ fn the_two_halves_are_put_together_and_the_other_cancelled() {
     // Tree 2 from the last completes it.
     let ran = part(&mut state, other(), last, from_last_part(&data, 3));
     assert!(
-        ran.iter()
-            .any(|a| a.contains("RequestCancel") && a.contains(&format!("{:?}", near()))),
+        ran.iter().any(
+            |a| a.contains(&format!("Cancel({first})")) && a.contains(&format!("{:?}", near()))
+        ),
         "{ran:#?}"
     );
     assert!(
