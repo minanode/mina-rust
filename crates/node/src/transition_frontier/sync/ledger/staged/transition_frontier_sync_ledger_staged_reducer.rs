@@ -7,6 +7,7 @@ use crate::p2p::{
 };
 use mina_p2p_messages::{hash::MinaHash, list::List, v2};
 use rand::prelude::*;
+use std::sync::Arc;
 
 use crate::{
     ledger::write::{LedgerWriteAction, LedgerWriteRequest},
@@ -243,8 +244,19 @@ impl TransitionFrontierSyncLedgerStagedState {
                 };
 
                 let expected_hash = &target.staged.hashes;
-                let validated =
-                    StagedLedgerAuxAndPendingCoinbasesValidated::validate(parts, expected_hash);
+                let (validated, refusal) = match StagedLedgerAuxAndPendingCoinbasesValidated::check(
+                    parts,
+                    expected_hash,
+                ) {
+                    Ok(valid) => (
+                        StagedLedgerAuxAndPendingCoinbasesValidated::Valid(Arc::new(valid)),
+                        None,
+                    ),
+                    Err(reason) => (
+                        StagedLedgerAuxAndPendingCoinbasesValidated::Invalid(parts.clone()),
+                        Some(reason),
+                    ),
+                };
 
                 *attempt = PeerStagedLedgerPartsFetchState::Success {
                     time: meta.time(),
@@ -261,6 +273,7 @@ impl TransitionFrontierSyncLedgerStagedState {
                     dispatcher.push(TransitionFrontierSyncLedgerStagedAction::PartsPeerInvalid {
                         sender: *peer_id,
                         parts: parts.clone(),
+                        reason: refusal.unwrap_or_default(),
                     });
                 }
             }

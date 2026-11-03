@@ -11,7 +11,7 @@ use ledger::{
     staged_ledger::hash::StagedLedgerHash,
     Account, AccountId, BaseLedger, Mask, TokenId,
 };
-use mina_core::constants::constraint_constants;
+use mina_core::{constants::constraint_constants, log::inner as tracing};
 use mina_p2p_messages::v2::{self, TransactionSnarkScanStateStableV2ScanStateTreesA as Tree};
 use redux::EnablingCondition;
 
@@ -306,16 +306,16 @@ fn a_failed_rebuild_leaves_no_mask_over_the_snarked_ledger() {
     assert!(!child, "the failed rebuild's mask is still a child");
 }
 
-#[test]
-fn parts_with_more_scan_state_trees_than_a_scan_state_has_are_invalid() {
-    let fixture = Fixture::new();
-    let (parts, hash) = fixture.parts(FEE);
-    // Trees of a done transfer of nothing, after the parts' own tree: the
-    // scan state hash leaves them out and the rebuilt ledger is the same,
-    // but no update leaves that many trees, and the next one panics.
+/// `parts` with trees of a done transfer of nothing after their own tree:
+/// the scan state hash leaves them out and the rebuilt ledger is the same,
+/// but no update leaves that many trees, and the next one panics.
+fn with_more_trees(
+    fixture: &Fixture,
+    parts: &StagedLedgerAuxAndPendingCoinbases,
+) -> Arc<StagedLedgerAuxAndPendingCoinbases> {
     let constants = constraint_constants();
     let max_trees = (constants.transaction_capacity_log_2 + 1) * (constants.work_delay + 1) + 1;
-    let mut tampered = (*parts).clone();
+    let mut tampered = parts.clone();
     for _ in 0..max_trees {
         tampered
             .scan_state
@@ -328,7 +328,14 @@ fn parts_with_more_scan_state_trees_than_a_scan_state_has_are_invalid() {
                 &fixture.state,
             )]));
     }
-    let tampered = Arc::new(tampered);
+    Arc::new(tampered)
+}
+
+#[test]
+fn parts_with_more_scan_state_trees_than_a_scan_state_has_are_invalid() {
+    let fixture = Fixture::new();
+    let (parts, hash) = fixture.parts(FEE);
+    let tampered = with_more_trees(&fixture, &parts);
     let scan_state = ScanState::try_from(&tampered.scan_state).unwrap();
     assert_eq!(
         scan_state.hash(),
@@ -338,4 +345,121 @@ fn parts_with_more_scan_state_trees_than_a_scan_state_has_are_invalid() {
 
     assert!(!Validated::validate(&tampered, &hash).is_valid());
     assert!(Validated::validate(&parts, &hash).is_valid());
+}
+
+/// The events logged while `f` runs, with their levels and fields.
+fn logged(f: impl FnOnce()) -> Vec<(tracing::Level, String)> {
+    use std::sync::Mutex;
+    use tracing::{
+        field::{Field, Visit},
+        span, Event, Metadata, Subscriber,
+    };
+
+    struct Fields(String);
+    impl Visit for Fields {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.0.push_str(&format!("{}={value:?} ", field.name()));
+        }
+    }
+    struct Capture(Arc<Mutex<Vec<(tracing::Level, String)>>>);
+    impl Subscriber for Capture {
+        fn enabled(&self, _: &Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &span::Attributes<'_>) -> span::Id {
+            span::Id::from_u64(1)
+        }
+        fn record(&self, _: &span::Id, _: &span::Record<'_>) {}
+        fn record_follows_from(&self, _: &span::Id, _: &span::Id) {}
+        fn event(&self, event: &Event<'_>) {
+            let mut fields = Fields(String::new());
+            event.record(&mut fields);
+            self.0
+                .lock()
+                .unwrap()
+                .push((*event.metadata().level(), fields.0));
+        }
+        fn enter(&self, _: &span::Id) {}
+        fn exit(&self, _: &span::Id) {}
+    }
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    tracing::subscriber::with_default(Capture(events.clone()), f);
+    let events = events.lock().unwrap().clone();
+    events
+}
+
+struct LogContext;
+static ZERO: u64 = 0;
+impl mina_core::log::EventContext for LogContext {
+    fn timestamp(&self) -> Timestamp {
+        Timestamp::ZERO
+    }
+    fn time(&self) -> &'_ dyn tracing::Value {
+        &ZERO
+    }
+    fn node_id(&self) -> &'_ dyn tracing::Value {
+        &ZERO
+    }
+    fn log_node_id(&self) -> bool {
+        false
+    }
+}
+
+/// A refusal of parts that make the hash is logged at warn, naming the peer
+/// and why in this node's words: were an honest peer's parts ever refused,
+/// the logs would show it.
+#[test]
+fn a_refusal_is_logged_with_the_peer_and_the_reason() {
+    use mina_core::ActionEvent;
+
+    let fixture = Fixture::new();
+    let (parts, hash) = fixture.parts(FEE);
+    let tampered = with_more_trees(&fixture, &parts);
+    let (mut state, [sender, _]) = fixture.syncing(&hash);
+    let now = Timestamp::ZERO + Duration::from_secs(1000);
+    reduce(
+        &mut state,
+        StagedAction::PartsPeerFetchPending {
+            peer_id: sender,
+            rpc_id: 1,
+        },
+        now,
+    );
+    let followups = reduce(
+        &mut state,
+        StagedAction::PartsPeerFetchSuccess {
+            peer_id: sender,
+            rpc_id: 1,
+            parts: tampered,
+        },
+        now,
+    );
+    let [crate::Action::TransitionFrontier(crate::TransitionFrontierAction::Sync(
+        TransitionFrontierSyncAction::Ledger(
+            crate::transition_frontier::sync::ledger::TransitionFrontierSyncLedgerAction::Staged(
+                refused @ StagedAction::PartsPeerInvalid { .. },
+            ),
+        ),
+    ))] = &followups[..]
+    else {
+        panic!("no refusal: {followups:?}");
+    };
+    let StagedAction::PartsPeerInvalid { reason, .. } = refused else {
+        unreachable!()
+    };
+    assert_eq!(reason, "scan state: 26 trees, not 1 to 25");
+
+    let events = logged(|| refused.action_event(&LogContext));
+    assert_eq!(events.len(), 1, "{events:?}");
+    let (level, fields) = &events[0];
+    assert_eq!(*level, tracing::Level::WARN);
+    assert!(fields.contains(&sender.to_string()), "{fields}");
+    assert!(fields.contains(reason.as_str()), "{fields}");
+    reduce(&mut state, refused.clone(), now);
+    let attempts = staged(&state).fetch_attempts().unwrap();
+    assert!(matches!(
+        attempts.get(&sender),
+        Some(PartsRpc::Invalid { .. })
+    ));
 }

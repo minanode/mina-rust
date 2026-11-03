@@ -2995,17 +2995,18 @@ fn staged_ledger_reconstruct(
             }
         }
         Err(_) => {
-            // The first failure only: the sync asks another peer after one,
-            // and each dump writes the whole snarked ledger.
-            static DUMPED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !DUMPED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                if let Err(e) = dump_reconstruct_to_file(&snarked_ledger, &parts) {
-                    mina_core::error!(
+            // One dump of a failure with parts: the sync asks another peer
+            // after one, and each dump writes the whole snarked ledger.
+            use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+            static DUMPED: AtomicBool = AtomicBool::new(false);
+            if parts.is_some() && !DUMPED.load(Relaxed) {
+                match dump_reconstruct_to_file(&snarked_ledger, &parts) {
+                    Ok(()) => DUMPED.store(true, Relaxed),
+                    Err(e) => mina_core::error!(
                         mina_core::log::system_time();
                         kind = "LedgerService::dump - Failed reconstruct",
                         summary = format!("Failed to save reconstruction to file: {e:?}")
-                    );
+                    ),
                 }
             }
         }

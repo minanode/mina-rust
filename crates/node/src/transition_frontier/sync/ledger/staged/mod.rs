@@ -167,16 +167,32 @@ impl StagedLedgerAuxAndPendingCoinbasesValidated {
         parts: &Arc<StagedLedgerAuxAndPendingCoinbases>,
         expected_hash: &MinaBaseStagedLedgerHashStableV1,
     ) -> Self {
-        match StagedLedgerAuxAndPendingCoinbasesValid::convert(parts) {
-            Ok((valid, hash))
-                if &hash == expected_hash
-                    && valid.has_required_protocol_states()
-                    && valid.scan_state.check_shape().is_ok() =>
-            {
-                Self::Valid(Arc::new(valid))
-            }
-            _ => Self::Invalid(parts.clone()),
+        match Self::check(parts, expected_hash) {
+            Ok(valid) => Self::Valid(Arc::new(valid)),
+            Err(_) => Self::Invalid(parts.clone()),
         }
+    }
+
+    /// The parts converted, if they are valid for `expected_hash`, or why
+    /// they are not. The reason is in this node's words, with at most
+    /// numbers from the parts, so that it can be logged: a refusal of an
+    /// honest peer's parts must show in the logs.
+    pub fn check(
+        parts: &StagedLedgerAuxAndPendingCoinbases,
+        expected_hash: &MinaBaseStagedLedgerHashStableV1,
+    ) -> Result<StagedLedgerAuxAndPendingCoinbasesValid, String> {
+        let (valid, hash) = StagedLedgerAuxAndPendingCoinbasesValid::convert(parts)?;
+        if &hash != expected_hash {
+            return Err("they make another staged ledger hash".into());
+        }
+        if !valid.has_required_protocol_states() {
+            return Err("their protocol states are not the ones their scan state needs".into());
+        }
+        valid
+            .scan_state
+            .check_shape()
+            .map_err(|error| format!("scan state: {error}"))?;
+        Ok(valid)
     }
 
     pub fn is_valid(&self) -> bool {
