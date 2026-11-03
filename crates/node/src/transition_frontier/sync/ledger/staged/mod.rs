@@ -413,8 +413,8 @@ mod tests {
     /// Two relays that applied the blocks themselves hold completed (`Done`)
     /// merge jobs with their proofs, and send every tree without them, one
     /// from the first tree and one from the last. Wherever the two streams
-    /// meet, the web node's union makes the staged ledger hash of the full
-    /// scan state, and has each tree once, in order.
+    /// meet, the web node receives each tree once, in order and lean, and the
+    /// union makes the staged ledger hash of the full scan state.
     #[test]
     fn lean_trees_from_two_relays_make_the_full_staged_ledger_hash() {
         use mina_p2p_messages::binprot::BinProtRead;
@@ -434,7 +434,9 @@ mod tests {
         };
         // Tree `i`: its root merge job done with sequence number `i + 1`,
         // and below it one job done and one waiting for its second proof,
-        // which is pending work and stays.
+        // which is pending work and stays. Below those, a job with both
+        // proofs not merged yet, pending work too, marks the tree with
+        // sequence number `100 + i`, so that lean trees still differ.
         let tree = |template: &Tree, i: u64| {
             let Tree::Node {
                 depth,
@@ -465,13 +467,32 @@ mod tests {
             let mut sub_value = sub_value.clone();
             sub_value[0].1 = done(i + 1);
             sub_value[1].1 = MergeJob::Part(Box::new(proof.clone()));
+            let Tree::Node {
+                depth: rest_depth,
+                value: rest_value,
+                sub_tree: leaves,
+            } = &**rest
+            else {
+                panic!("a scan state tree has three levels of merge nodes")
+            };
+            let mut rest_value = rest_value.clone();
+            rest_value[0].1 = MergeJob::Full(Box::new(Full {
+                left: proof.clone(),
+                right: proof.clone(),
+                seq_no: v2::ParallelScanSequenceNumberStableV1((100 + i).into()),
+                status: Status::Todo,
+            }));
             Tree::Node {
                 depth: *depth,
                 value,
                 sub_tree: Box::new(Tree::Node {
                     depth: *sub_depth,
                     value: sub_value,
-                    sub_tree: rest.clone(),
+                    sub_tree: Box::new(Tree::Node {
+                        depth: *rest_depth,
+                        value: rest_value,
+                        sub_tree: leaves.clone(),
+                    }),
                 }),
             }
         };
@@ -491,11 +512,18 @@ mod tests {
         .is_valid());
         let lean = lean_trees(&full.scan_state);
         assert!(bytes_of(&lean) < bytes_of(&full_trees(&full.scan_state)));
+        // Each tree lean is smaller than full, and differs from the others.
+        for (i, (lean_tree, full_tree)) in lean.iter().zip(full_trees(&full.scan_state)).enumerate()
+        {
+            let size = |tree| bytes_of(std::slice::from_ref(tree));
+            assert!(size(lean_tree) < size(&full_tree), "tree {i}");
+            assert!(!lean[..i].contains(lean_tree), "tree {i}");
+        }
 
         for first in 0..TREES {
             let union = union_of_two_streams(&full, first);
-            assert_ne!(union.scan_state, full.scan_state, "meeting after {first}");
-            assert_eq!(lean_trees(&union.scan_state), lean, "meeting after {first}");
+            // The trees as received, not leaned again.
+            assert_eq!(full_trees(&union.scan_state), lean, "meeting after {first}");
             assert!(
                 StagedLedgerAuxAndPendingCoinbasesValidated::validate(&Arc::new(union), &hash)
                     .is_valid(),
@@ -545,7 +573,7 @@ mod tests {
         let trees = lean.len();
         for first in [0, 1, trees / 2, trees - 1] {
             let union = union_of_two_streams(&full, first);
-            assert_eq!(lean_trees(&union.scan_state), lean, "meeting after {first}");
+            assert_eq!(full_trees(&union.scan_state), lean, "meeting after {first}");
             let (received, union_hash) =
                 StagedLedgerAuxAndPendingCoinbasesValid::convert(&union).unwrap();
             assert_eq!(union_hash, hash, "meeting after {first}");
