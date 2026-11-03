@@ -977,13 +977,16 @@ pub enum InvalidPendingCoinbase {
 }
 
 /// The leaf a stack id names in a pending coinbase tree of `depth`: its id's
-/// bits reversed. OCaml's `create_exn'` builds each stack's path from the leaf
-/// up with the id's lowest bit last, so that bit picks the root's child, and
-/// `make_tree` adds every id from 0 to `2^depth - 1`; nothing later adds or
-/// moves one. [`merkle_tree::MiniMerkleTree::fill_with`] has the same table
-/// for depth 5.
+/// `depth` bits reversed. OCaml's `create_exn'` lists each stack's path from
+/// the leaf up, the id's highest bit first and its lowest bit last, at the
+/// root; the sparse ledger's `add_path` stores as the index the sum of 2^i for
+/// each `Right` at list position i. So the index's highest bit, read at the
+/// root as [`Address::from_index`] does, is the id's lowest bit. `make_tree`
+/// adds every id from 0 to `2^depth - 1`; nothing later adds or moves one.
+/// [`merkle_tree::MiniMerkleTree::fill_with`] has the same table for depth 5.
 ///
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/2ee6e004ba8c6a0541056076aab22ea162f7eb3a/src/lib/mina_base/pending_coinbase.ml#L1028-L1050>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/2ee6e004ba8c6a0541056076aab22ea162f7eb3a/src/lib/sparse_ledger_lib/sparse_ledger.ml#L166-L174>
 pub fn stack_leaf_index(stack_id: u64, depth: usize) -> u64 {
     if depth == 0 {
         return 0;
@@ -1445,6 +1448,16 @@ mod wire_tree_tests {
         let mut deeper = wire();
         deeper.tree.depth = UInt64::from(depth() as u64 + 1);
         assert!(reason(&deeper).contains("depth"), "{}", reason(&deeper));
+    }
+
+    #[test]
+    fn a_position_list_longer_than_the_stacks_is_refused() {
+        // Each stack in use has its own leaf: at most 2^depth of them.
+        let mut wire = wire();
+        wire.pos_list = (0..=(1u64 << depth()))
+            .map(|i| MinaBasePendingCoinbaseStackIdStableV1(UInt64::from(i % 2)))
+            .collect();
+        assert!(reason(&wire).contains("positions"), "{}", reason(&wire));
     }
 
     #[test]

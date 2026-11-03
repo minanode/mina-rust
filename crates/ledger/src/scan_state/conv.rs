@@ -2785,6 +2785,14 @@ impl TryFrom<&MinaBasePendingCoinbaseStableV2> for PendingCoinbase {
             }
         }
 
+        // Each stack in use has its own leaf, so no more positions than leaves
+        // (OCaml's depth is chosen to fit the scan state's trees).
+        if pos_list.len() as u64 > capacity {
+            return Err(invalid(format!(
+                "{} positions in use, more than {capacity} stacks",
+                pos_list.len()
+            )));
+        }
         let in_range = |id: &MinaBasePendingCoinbaseStackIdStableV1| id.as_u64() < capacity;
         if !in_range(new_pos) || !pos_list.iter().all(in_range) {
             return Err(invalid("a stack id out of range".into()));
