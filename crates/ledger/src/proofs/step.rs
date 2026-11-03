@@ -34,7 +34,7 @@ use crate::{
         },
         BACKEND_TICK_ROUNDS_N, BACKEND_TOCK_ROUNDS_N,
     },
-    verifier::{get_srs, get_srs_mut},
+    verifier::get_srs_mut,
 };
 use anyhow::Context;
 use ark_ff::{BigInteger256, One, Zero};
@@ -2221,15 +2221,7 @@ fn wrap_compute_sg(challenges: &[[u64; 2]]) -> GroupAffine<Fp> {
         .collect::<Vec<_>>();
 
     let coeffs = b_poly_coefficients(&challenges);
-    let p = DensePolynomial::from_coefficients_vec(coeffs);
-
-    let comm = {
-        use poly_commitment::SRS;
-
-        let srs = get_srs::<Fq>();
-        srs.commit_non_hiding(&p, 1)
-    };
-    comm.chunks[0]
+    super::wrap::commit_challenge_polynomial(&DensePolynomial::from_coefficients_vec(coeffs))
 }
 
 struct ExpandProofParams<'a> {

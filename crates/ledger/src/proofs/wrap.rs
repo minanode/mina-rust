@@ -38,7 +38,7 @@ use crate::{
         BACKEND_TICK_ROUNDS_N,
     },
     scan_state::transaction_logic::local_state::LazyValue,
-    verifier::get_srs,
+    verifier::get_srs_mut,
 };
 
 use super::{
@@ -556,16 +556,20 @@ pub fn dummy_ipa_wrap_sg() -> GroupAffine<Fp> {
             .collect::<Vec<_>>();
 
         let coeffs = b_poly_coefficients(&dummy);
-        let p = DensePolynomial::from_coefficients_vec(coeffs);
-
-        let comm = {
-            use poly_commitment::SRS;
-
-            let srs = get_srs::<Fq>();
-            srs.commit_non_hiding(&p, 1)
-        };
-        comm.chunks[0]
+        commit_challenge_polynomial(&DensePolynomial::from_coefficients_vec(coeffs))
     })
+}
+
+/// The commitment to a challenge polynomial of a wrap proof, with this
+/// thread's prover SRS, which the step locks next. The verifier's SRS
+/// (`get_srs::<Fq>()`) holds the same points; a prover that used it made
+/// them a second time, at its first proof.
+pub(super) fn commit_challenge_polynomial(p: &DensePolynomial<Fq>) -> GroupAffine<Fp> {
+    let srs = get_srs_mut::<Fq>();
+    let srs = srs
+        .lock()
+        .expect("get_srs_mut returns an SRS no panic has poisoned");
+    srs.commit_non_hiding(p, 1).chunks[0]
 }
 
 pub struct ChallengePolynomial {
