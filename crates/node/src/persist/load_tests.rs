@@ -1060,6 +1060,36 @@ fn a_pending_coinbase_missing_a_stack_index_is_damage() {
 }
 
 #[test]
+fn a_pending_coinbase_of_another_depth_is_damage() {
+    let stored = Stored::new(8, 3);
+    let mem = stored.store();
+    tamper_pending_coinbase(&stored, &mem, |pending_coinbase| {
+        let depth = pending_coinbase.tree.depth.as_u64();
+        pending_coinbase.tree.depth = (depth + 1).into();
+    });
+    let reason = discarded(load_from(&mem, Some(stored.tip_slot())));
+    assert!(
+        reason.contains("pending coinbase") && reason.contains("depth"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_pending_coinbase_position_out_of_range_is_damage() {
+    let stored = Stored::new(8, 3);
+    let mem = stored.store();
+    tamper_pending_coinbase(&stored, &mem, |pending_coinbase| {
+        let stacks = 1u64 << constraint_constants().pending_coinbase_depth;
+        pending_coinbase.new_pos = v2::MinaBasePendingCoinbaseStackIdStableV1(stacks.into());
+    });
+    let reason = discarded(load_from(&mem, Some(stored.tip_slot())));
+    assert!(
+        reason.contains("pending coinbase") && reason.contains("out of range"),
+        "{reason}"
+    );
+}
+
+#[test]
 fn cancellation_during_file_reads_keeps_the_generation_and_stops_the_load() {
     use super::load_control::LoadControl;
     let stored = Stored::new(32, 3);

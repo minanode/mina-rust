@@ -249,6 +249,37 @@ mod tests {
         );
     }
 
+    /// A peer's parts whose pending coinbase is of another depth, or names a
+    /// stack out of range, are refused by the conversion itself, before their
+    /// hash is compared.
+    #[test]
+    fn parts_with_a_pending_coinbase_of_another_depth_or_position_are_invalid() {
+        fn deeper(pending_coinbase: &mut v2::MinaBasePendingCoinbaseStableV2) {
+            let depth = pending_coinbase.tree.depth.as_u64();
+            pending_coinbase.tree.depth = (depth + 1).into();
+        }
+        fn past_the_stacks(pending_coinbase: &mut v2::MinaBasePendingCoinbaseStableV2) {
+            let stacks = 1u64 << constraint_constants().pending_coinbase_depth;
+            pending_coinbase.new_pos = v2::MinaBasePendingCoinbaseStackIdStableV1(stacks.into());
+        }
+        let tampers: [(fn(&mut v2::MinaBasePendingCoinbaseStableV2), &str); 2] =
+            [(deeper, "depth"), (past_the_stacks, "out of range")];
+        let (wire, hash) = parts();
+        for (tamper, expected) in tampers {
+            let mut tampered = (*wire).clone();
+            tamper(&mut tampered.pending_coinbase);
+            let error = StagedLedgerAuxAndPendingCoinbasesValid::convert(&tampered)
+                .err()
+                .expect("refused");
+            assert!(error.contains(expected), "{error}");
+            assert!(!StagedLedgerAuxAndPendingCoinbasesValidated::validate(
+                &Arc::new(tampered),
+                &hash
+            )
+            .is_valid());
+        }
+    }
+
     /// Parts that make the expected hash are kept converted, and convert
     /// back to the parts the peer sent, also through serde; others are
     /// invalid.
