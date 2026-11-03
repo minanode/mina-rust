@@ -166,19 +166,25 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsStreamingRpcAction {
                                     | P2pStreamingRpcLocalState::Responded { .. },
                                 ..
                             } => true,
-                            // The part on its way when we cancelled never came
-                            // within a part's timeout: the channel is free again.
+                            // The part on its way when we cancelled has not
+                            // come within a part's timeout: the channel takes
+                            // a new request, and drops that part if it comes
+                            // later (`streaming_rpc_cancelled`, one at most).
                             P2pChannelsStreamingRpcState::Ready {
                                 local:
                                     P2pStreamingRpcLocalState::Cancelled {
                                         time: cancelled, ..
                                     },
                                 ..
-                            } => request.kind().timeout(&state.config.timeouts).is_some_and(
-                                |timeout| {
-                                    time.checked_sub(*cancelled).is_some_and(|t| t >= timeout)
-                                },
-                            ),
+                            } => {
+                                p.channels.streaming_rpc_cancelled.is_none()
+                                    && request.kind().timeout(&state.config.timeouts).is_some_and(
+                                        |timeout| {
+                                            time.checked_sub(*cancelled)
+                                                .is_some_and(|t| t >= timeout)
+                                        },
+                                    )
+                            }
                             _ => false,
                         }
                 })
@@ -216,6 +222,13 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsStreamingRpcAction {
             } => state
                 .get_ready_peer(peer_id)
                 .is_some_and(|p| match &p.channels.streaming_rpc {
+                    // The part that was on its way when we cancelled, after
+                    // the channel took a new request.
+                    P2pChannelsStreamingRpcState::Ready { .. }
+                        if p.channels.streaming_rpc_cancelled == Some(*id) =>
+                    {
+                        true
+                    }
                     P2pChannelsStreamingRpcState::Ready {
                         local:
                             P2pStreamingRpcLocalState::Requested {
@@ -250,6 +263,14 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsStreamingRpcAction {
             } => state
                 .get_ready_peer(peer_id)
                 .is_some_and(|p| match &p.channels.streaming_rpc {
+                    // The empty answer to a request we cancelled, after the
+                    // channel took a new one. First: the new request is the
+                    // one in the slot.
+                    P2pChannelsStreamingRpcState::Ready { .. }
+                        if p.channels.streaming_rpc_cancelled == Some(*id) =>
+                    {
+                        response.is_none()
+                    }
                     P2pChannelsStreamingRpcState::Ready {
                         local:
                             P2pStreamingRpcLocalState::Requested {

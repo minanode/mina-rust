@@ -49,6 +49,7 @@ impl P2pChannelsStreamingRpcState {
 
         let next_local_rpc_id = &mut channels_state.next_local_rpc_id;
         let streaming_rpc_state = &mut channels_state.streaming_rpc;
+        let cancelled_rpc = &mut channels_state.streaming_rpc_cancelled;
 
         match action {
             P2pChannelsStreamingRpcAction::Init { .. } => {
@@ -100,6 +101,10 @@ impl P2pChannelsStreamingRpcState {
                     return Ok(());
                 };
 
+                if let P2pStreamingRpcLocalState::Cancelled { id, .. } = local {
+                    // Its part on its way may still come: dropped then.
+                    *cancelled_rpc = Some(*id);
+                }
                 *next_local_rpc_id += 1;
                 *local = P2pStreamingRpcLocalState::Requested {
                     time: meta.time(),
@@ -165,6 +170,15 @@ impl P2pChannelsStreamingRpcState {
                 Ok(())
             }
             P2pChannelsStreamingRpcAction::ResponsePartReceived { response, id, .. } => {
+                if *cancelled_rpc == Some(id) {
+                    // The part on its way when we cancelled, after the
+                    // channel took a new request: not needed.
+                    *cancelled_rpc = None;
+                    return Ok(());
+                }
+                // The peer sends a cancelled request's last part before any
+                // of the next request's: it is not coming.
+                *cancelled_rpc = None;
                 let Self::Ready { local, .. } = streaming_rpc_state else {
                     bug_condition!(
                         "`P2pChannelsStreamingRpcAction::ResponsePartReceived` with state {:?}",
@@ -246,6 +260,13 @@ impl P2pChannelsStreamingRpcState {
                 response,
                 ..
             } => {
+                if *cancelled_rpc == Some(rpc_id) {
+                    // The empty answer to a request we cancelled, after the
+                    // channel took a new one.
+                    *cancelled_rpc = None;
+                    return Ok(());
+                }
+                *cancelled_rpc = None;
                 let Self::Ready { local, .. } = streaming_rpc_state else {
                     bug_condition!(
                         "`P2pChannelsStreamingRpcAction::ResponseReceived` with state {:?}",

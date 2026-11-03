@@ -597,3 +597,150 @@ fn after_a_bad_union_the_retry_is_one_stream() {
     assert_eq!(asked.len(), 1, "{ran:#?}");
     assert!(!asked[0].contains("FromLast"), "{asked:?}");
 }
+
+fn channel_message(
+    state: &mut crate::State,
+    peer: PeerId,
+    msg: StreamingRpcChannelMsg,
+    now: Timestamp,
+) -> Vec<String> {
+    run(
+        state,
+        P2pChannelsMessageReceivedAction {
+            peer_id: peer,
+            message: Box::new(msg.into()),
+        },
+        now,
+    )
+}
+
+/// A request cancelled with its first part on its way, then, after a part's
+/// timeout, a new request on the same channel. Returns the two ids.
+fn reused_after_a_cancel(state: &mut crate::State) -> (P2pStreamingRpcId, P2pStreamingRpcId) {
+    run(state, StagedAction::PartsPeerFetchInit, at_ms(1_000));
+    let old = local_rpc(state, &near()).unwrap();
+    run(
+        state,
+        P2pChannelsStreamingRpcAction::RequestCancel {
+            peer_id: near(),
+            id: old,
+        },
+        at_ms(1_001),
+    );
+    let request = P2pStreamingRpcRequest::StagedLedgerParts(v2::StateHash::zero());
+    let send = new_request(state, near(), request);
+    run(state, send, at_ms(31_001));
+    let new = local_rpc(state, &near()).unwrap();
+    assert_ne!(old, new);
+    (old, new)
+}
+
+/// The cancelled request's part, or its empty answer, comes after the
+/// channel took a new request: it is dropped, and the new request goes on.
+#[test]
+fn a_late_message_for_a_cancelled_request_is_dropped_after_reuse() {
+    let data = staged_ledger(5);
+    for empty in [false, true] {
+        let mut state = staged_node(2, true);
+        let (old, new) = reused_after_a_cancel(&mut state);
+        let late = (!empty).then(|| {
+            P2pStreamingRpcResponse::StagedLedgerParts(from_first_part(&data, 0).unwrap())
+        });
+        let ran = channel_message(
+            &mut state,
+            near(),
+            StreamingRpcChannelMsg::Response(old, late),
+            at_ms(31_002),
+        );
+        assert!(!ran.iter().any(|a| a.contains("Disconnection")), "{ran:#?}");
+        assert!(
+            !ran.iter().any(|a| a.contains("PartsPeerFetch")),
+            "{ran:#?}"
+        );
+        assert_eq!(local_rpc(&state, &near()), Some(new));
+        // The new request's first part is taken as usual.
+        let ran = channel_message(
+            &mut state,
+            near(),
+            StreamingRpcChannelMsg::Response(
+                new,
+                from_first_part(&data, 0).map(P2pStreamingRpcResponse::StagedLedgerParts),
+            ),
+            at_ms(31_003),
+        );
+        assert!(!ran.iter().any(|a| a.contains("Disconnection")), "{ran:#?}");
+        assert!(
+            ran.iter().any(|a| a.contains("ResponseNextPartGet")),
+            "{ran:#?}"
+        );
+    }
+}
+
+/// Only one cancelled request is kept track of: the channel takes no third
+/// request while the first one's part may still come. Once it comes, it
+/// does.
+#[test]
+fn a_second_reuse_waits_for_the_first_cancelled_part() {
+    let data = staged_ledger(5);
+    let mut state = staged_node(2, true);
+    let (old, new) = reused_after_a_cancel(&mut state);
+    run(
+        &mut state,
+        P2pChannelsStreamingRpcAction::RequestCancel {
+            peer_id: near(),
+            id: new,
+        },
+        at_ms(31_002),
+    );
+    let request = P2pStreamingRpcRequest::StagedLedgerParts(v2::StateHash::zero());
+    let third = new_request(&state, near(), request);
+    assert!(!third.is_enabled(&state, at_ms(70_000)));
+    channel_message(
+        &mut state,
+        near(),
+        StreamingRpcChannelMsg::Response(
+            old,
+            from_first_part(&data, 0).map(P2pStreamingRpcResponse::StagedLedgerParts),
+        ),
+        at_ms(70_001),
+    );
+    assert!(third.is_enabled(&state, at_ms(70_002)));
+}
+
+/// Parts put together that fail the hash check leave the first stream
+/// cancelled with a tree on its way. The retry, a part's timeout later,
+/// reuses that channel, and the tree then comes: dropped, no disconnection.
+#[test]
+fn the_retry_after_a_bad_union_drops_the_cancelled_tree() {
+    let mut state = staged_node(2, true);
+    run(&mut state, StagedAction::PartsPeerFetchInit, at_ms(1_000));
+    let first = local_rpc(&state, &near()).unwrap();
+    let last = local_rpc(&state, &other()).unwrap();
+    let data = staged_ledger(5);
+    for sent in 0..5 {
+        part(&mut state, near(), first, from_first_part(&data, sent));
+    }
+    for sent in 0..4 {
+        part(&mut state, other(), last, from_last_part(&data, sent));
+    }
+    assert!(matches!(
+        local(&state, &near()),
+        P2pStreamingRpcLocalState::Cancelled { .. }
+    ));
+    state.p2p.ready_mut().unwrap().peers.remove(&other());
+    let ran = run(&mut state, StagedAction::PartsPeerFetchInit, at_ms(32_001));
+    assert_eq!(requests(&ran).len(), 1, "{ran:#?}");
+    let retry = local_rpc(&state, &near()).unwrap();
+    assert_ne!(retry, first);
+    let ran = channel_message(
+        &mut state,
+        near(),
+        StreamingRpcChannelMsg::Response(
+            first,
+            from_first_part(&data, 5).map(P2pStreamingRpcResponse::StagedLedgerParts),
+        ),
+        at_ms(32_002),
+    );
+    assert!(!ran.iter().any(|a| a.contains("Disconnection")), "{ran:#?}");
+    assert_eq!(local_rpc(&state, &near()), Some(retry));
+}
