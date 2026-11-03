@@ -147,6 +147,25 @@ export const PEER_WAIT_MS = 45_000;
 const POLL_MS = 1_000;
 /** The poll while the node dials: the first peer shows within this. */
 const CONNECT_POLL_MS = 200;
+/** How long the dial is polled that often: a peer connects within a few
+ * seconds, or the dial is failing. */
+export const CONNECT_FAST_MS = 10_000;
+/** The poll of a node still without a peer a minute after the screen said
+ * why (PEER_WAIT_MS). */
+const NO_PEER_POLL_MS = 5_000;
+
+/**
+ * How long the boot waits before it asks the node again, `dialledMs` after
+ * it started dialling: every 200 ms in the first 10 s, so that the first
+ * peer shows at once, then once a second, as once a peer is connected, and
+ * every 5 s from a minute after the screen said why there is no peer.
+ */
+export function pollDelay(connected: boolean, dialledMs: number): number {
+  if (connected) return POLL_MS;
+  if (dialledMs < CONNECT_FAST_MS) return CONNECT_POLL_MS;
+  if (dialledMs < PEER_WAIT_MS + 60_000) return POLL_MS;
+  return NO_PEER_POLL_MS;
+}
 
 /** localStorage `webnodeFrontierStore` (`on` or `off`) overrides the build,
  * as on the Angular page. */
@@ -697,9 +716,9 @@ export class Boot {
     });
     this.step("connect", { state: "current", detail: "Dialling the relay." });
     for (;;) {
-      const dialling = this.stepState("connect").state !== "done";
+      const hasPeer = this.stepState("connect").state === "done";
       await new Promise(resolve =>
-        setTimeout(resolve, dialling ? CONNECT_POLL_MS : POLL_MS),
+        setTimeout(resolve, pollDelay(hasPeer, Date.now() - connectFrom)),
       );
       let status;
       try {
