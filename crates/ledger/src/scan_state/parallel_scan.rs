@@ -3100,6 +3100,51 @@ mod tests {
         Some((acc.0.wrapping_add(x.0), acc.1))
     }
 
+    /// A receiver given trees without their `Done` merge jobs, as OCaml and
+    /// the staged ledger stream send them, continues as the sender does: the
+    /// same available and next-update jobs, the same emitted proofs and the
+    /// same hash, through many tree emissions. The lean copy is made lean
+    /// again before every update, so every intermediate state is covered.
+    #[test]
+    fn leaner_trees_continue_like_full_trees() {
+        let mut emitted = 0;
+        for max_base_jobs in [2, 16, 64] {
+            for delay in [0, 1, 2] {
+                let mut full = ParallelScan::<i64, i64>::empty(max_base_jobs, delay);
+                let mut lean = full.clone();
+                for step in 0..120 {
+                    lean = lean.with_leaner_trees();
+                    assert_eq!(hash(&full), hash(&lean));
+                    assert_eq!(
+                        format!("{:?}", full.all_jobs()),
+                        format!("{:?}", lean.all_jobs())
+                    );
+                    assert_eq!(
+                        format!("{:?}", full.jobs_for_next_update()),
+                        format!("{:?}", lean.jobs_for_next_update())
+                    );
+
+                    let count = match step % 4 {
+                        0 => 1,
+                        1 => max_base_jobs / 2,
+                        _ => max_base_jobs,
+                    };
+                    let jobs = flatten(full.work_for_next_update(count));
+                    let done: Vec<i64> = jobs.iter().map(job_done).collect();
+                    let data = vec![step as i64; count as usize];
+                    let from_full = full.update(data.clone(), done.clone(), |_| 0).unwrap();
+                    let from_lean = lean.update(data, done, |_| 0).unwrap();
+                    assert_eq!(from_full, from_lean);
+                    assert_eq!(full.last_emitted_value(), lean.last_emitted_value());
+                    assert_eq!(hash(&full), hash(&lean));
+                    emitted += usize::from(from_full.is_some());
+                }
+            }
+        }
+        // 1080 updates emit 639 results.
+        assert_eq!(emitted, 639);
+    }
+
     fn job_done(job: &AvailableJob<i64, i64>) -> i64 {
         match job {
             AvailableJob::Base(x) => *x,

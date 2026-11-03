@@ -2886,6 +2886,8 @@ mod long_run_tests {
 
     /// The same on a stored root: MINA_SCAN_STATE_PARTS names a frontier
     /// store's `parts-<state_hash>.bin`, which starts with the scan state.
+    /// Besides the hash, the receiver has the same pending work, the same
+    /// last emitted proof and the same referenced states and accounts.
     #[test]
     #[ignore = "requires MINA_SCAN_STATE_PARTS: a frontier store's parts file"]
     fn leaner_wire_trees_keep_a_stored_scan_state_hash() {
@@ -2897,9 +2899,34 @@ mod long_run_tests {
         let full =
             v2::TransactionSnarkScanStateStableV2::binprot_read(&mut bytes.as_slice()).unwrap();
         let lean = with_leaner_wire_trees(&full);
+        assert_ne!(full, lean, "the stored root has no Done merge jobs");
         let sent = ScanState::try_from(&full).unwrap();
         let received = ScanState::try_from(&lean).unwrap();
         assert_eq!(received.hash(), sent.hash());
+        assert_eq!(
+            received.all_work_statements_exn(),
+            sent.all_work_statements_exn()
+        );
+        assert_eq!(
+            received.work_statements_for_new_diff(),
+            sent.work_statements_for_new_diff()
+        );
+        let latest = |scan: &ScanState| {
+            scan.latest_ledger_proof()
+                .map(|(proof, txns)| (proof.statement(), txns.len()))
+        };
+        assert_eq!(latest(&received), latest(&sent));
+        assert_eq!(received.free_space(), sent.free_space());
+        assert_eq!(received.next_on_new_tree(), sent.next_on_new_tree());
+        assert_eq!(received.tree_metrics(), sent.tree_metrics());
+        assert_eq!(
+            received.required_state_hashes(),
+            sent.required_state_hashes()
+        );
+        assert_eq!(
+            received.staged_accounts_referenced(),
+            sent.staged_accounts_referenced()
+        );
     }
 
     #[test]
