@@ -11,8 +11,9 @@ With ENCODED_SHA256, the SHA-256 of the uploaded brotli file, a brotli answer
 must be that file byte for byte: a decoder may ignore bytes after the end of
 the stream, and a browser's may not.
 
-Run it on a throwaway object first (MINAWEB.md), then deploy.sh runs it on
-each release before the Pages deploy. Exits non-zero on the first failure.
+Run it on a throwaway object first, twice: the edge may answer a cache miss
+and a hit (cf-cache-status) differently. deploy.sh then runs it on each
+release before the Pages deploy. Exits non-zero on the first failure.
 """
 import gzip
 import hashlib
@@ -78,7 +79,9 @@ def check(url, pinned, encoded=None, fetch=get):
     for client, accept, allowed in CLIENTS:
         status, headers, body = fetch(url, accept)
         encoding = (headers.get("Content-Encoding") or "identity").strip().lower()
-        prefix = f"{client}: HTTP {status}, Content-Encoding {encoding}, {len(body)} bytes"
+        cache = headers.get("cf-cache-status")
+        prefix = (f"{client}: HTTP {status}, Content-Encoding {encoding}, {len(body)} bytes"
+                  + (f", cf-cache-status {cache}" if cache else ""))
         assert status == 200, f"{prefix}: not 200"
         assert encoding in allowed, f"{prefix}: not one of {sorted(allowed)}"
         assert headers.get("Access-Control-Allow-Origin") == ORIGIN, f"{prefix}: no CORS for {ORIGIN}"
