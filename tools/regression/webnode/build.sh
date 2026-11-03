@@ -78,6 +78,8 @@
 #                Without it, observer builds still pin canonical prover hashes;
 #                starting a prover role fails if its files are unavailable.
 #   VERIFIER_CACHES  auto (default) or omit; archives omit host-local caches
+#                (the verifier index and, with PROVER_CIRCUITS, Lagrange
+#                basis caches)
 #   SOURCE_DATE_EPOCH  reproducible payload timestamp, when set
 #   WASM_URL     a directory URL on another host the page loads the WASM
 #                from, for a static host that caps files below its 35 MB
@@ -264,6 +266,14 @@ done
 if [[ -n $PROVER_CIRCUITS ]]; then
 	[[ -d $PROVER_CIRCUITS ]] || die "PROVER_CIRCUITS is not a directory: $PROVER_CIRCUITS"
 	cp -L "$PROVER_CIRCUITS"/* "$CSTAGE/"
+	# The Lagrange basis caches, if this machine's node has written them:
+	# about 10 s less per prover start. The prover checks that a cache names
+	# its SRS and computes the basis otherwise (lagrange_cache.rs).
+	if [[ ${VERIFIER_CACHES:-auto} != omit ]]; then
+		for cache in "$HOME/.mina/circuit-blobs/$CIRCUITS"/lagrange_basis_*.bin; do
+			[[ -f $cache ]] && cp "$cache" "$CSTAGE/"
+		done
+	fi
 fi
 # Canonical prover pins and build-specific cache pins in both hosting modes.
 # A partial, unknown or changed prover set fails before compilation.

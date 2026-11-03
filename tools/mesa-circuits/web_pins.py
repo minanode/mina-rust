@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Validate hosted circuit assets and print canonical build pins.
 
-Prover files must match the OCaml manifest. The two verifier caches retain
-build-specific hashes. Canonical prover pins are emitted even for observer
-builds that omit the prover files, so a later role cannot load unpinned bytes.
+Prover files must match the OCaml manifest. The two verifier caches and the
+Lagrange basis caches retain build-specific hashes. Canonical prover pins are
+emitted even for observer builds that omit the prover files, so a later role
+cannot load unpinned bytes.
 """
 import argparse
 import hashlib
@@ -12,6 +13,12 @@ import re
 
 ROOT = Path(__file__).resolve().parents[2]
 CACHES = {"block_verifier_index.postcard", "transaction_verifier_index.postcard"}
+# Lagrange basis caches (crates/ledger/src/proofs/lagrange_cache.rs).
+LAGRANGE = re.compile(r"lagrange_basis_(?:pallas|vesta)_[0-9]{1,2}\.bin")
+
+
+def is_cache(name):
+    return name in CACHES or LAGRANGE.fullmatch(name) is not None
 
 
 def manifest(network):
@@ -30,7 +37,7 @@ def manifest(network):
 def build_pins(network, directory, require_provers=False):
     pins = manifest(network)
     files = {p.name: p for p in directory.iterdir()}
-    unknown = files.keys() - pins.keys() - CACHES
+    unknown = {name for name in files.keys() - pins.keys() if not is_cache(name)}
     if unknown:
         raise ValueError(f"unknown circuit file: {sorted(unknown)[0]}")
     present = files.keys() & pins.keys()
@@ -44,7 +51,7 @@ def build_pins(network, directory, require_provers=False):
         if name in pins and digest != pins[name]:
             raise ValueError(f"canonical SHA-256 mismatch: {name}")
         # Prover hashes stay manifest-derived; only caches get staged hashes.
-        if name in CACHES:
+        if is_cache(name):
             pins[name] = digest
     return ";".join(f"4.0.2{network}/{name}={digest}" for name, digest in sorted(pins.items()))
 

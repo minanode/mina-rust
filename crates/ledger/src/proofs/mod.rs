@@ -12,6 +12,7 @@ mod conv;
 pub mod field;
 pub mod fork_circuits;
 pub mod group_map;
+pub mod lagrange_cache;
 pub mod merge;
 pub mod numbers;
 pub mod opt_sponge;
