@@ -33,7 +33,7 @@ use crate::{
 use mina_p2p_messages::{list::List, v2};
 use redux::EnablingCondition;
 
-fn other() -> PeerId {
+pub(super) fn other() -> PeerId {
     PeerId::from_bytes([14; 32])
 }
 
@@ -45,7 +45,7 @@ fn stats(fastest_ms: u64) -> P2pSyncPeerStats {
 
 /// A node at the staged ledger with two WebRTC relays, `advertised` or not,
 /// fetching with `streams` at once.
-fn staged_node(streams: usize, advertised: bool) -> crate::State {
+pub(super) fn staged_node(streams: usize, advertised: bool) -> crate::State {
     let (mut state, root) = initialized_node();
     add_peer(&mut state, near(), false, &root, Some(stats(150)));
     add_peer(&mut state, other(), false, &root, Some(stats(170)));
@@ -90,13 +90,13 @@ fn assert_cancelled(ran: &[String], peer: PeerId, id: P2pStreamingRpcId) {
     );
 }
 
-fn requests(ran: &[String]) -> Vec<&String> {
+pub(super) fn requests(ran: &[String]) -> Vec<&String> {
     ran.iter()
         .filter(|a| a.contains("RequestSend") && a.contains("StagedLedgerParts"))
         .collect()
 }
 
-fn local_rpc(state: &crate::State, peer: &PeerId) -> Option<P2pStreamingRpcId> {
+pub(super) fn local_rpc(state: &crate::State, peer: &PeerId) -> Option<P2pStreamingRpcId> {
     state
         .p2p
         .get_ready_peer(peer)?
@@ -105,7 +105,7 @@ fn local_rpc(state: &crate::State, peer: &PeerId) -> Option<P2pStreamingRpcId> {
         .pending_local_rpc_id()
 }
 
-fn local(state: &crate::State, peer: &PeerId) -> P2pStreamingRpcLocalState {
+pub(super) fn local(state: &crate::State, peer: &PeerId) -> P2pStreamingRpcLocalState {
     match &state
         .p2p
         .get_ready_peer(peer)

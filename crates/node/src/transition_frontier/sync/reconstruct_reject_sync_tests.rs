@@ -41,18 +41,18 @@ use crate::{
 };
 
 const BALANCE: u64 = 1_000_000_000;
-const FEE: u64 = 5_000_000;
+pub(super) const FEE: u64 = 5_000_000;
 
 /// A snarked ledger of one account, and the block a scan state's transfer
 /// to it is in.
-struct Fixture {
+pub(super) struct Fixture {
     snarked: Mask,
     receiver: Account,
     state: v2::MinaStateProtocolStateValueStableV2,
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let id = AccountId::new(Account::rand().public_key, TokenId::default());
         let receiver = Account::create_with(id, Balance::from_u64(BALANCE));
         let mut snarked = Mask::create(LEDGER_DEPTH);
@@ -77,12 +77,29 @@ impl Fixture {
         Arc<StagedLedgerAuxAndPendingCoinbases>,
         v2::MinaBaseStagedLedgerHashStableV1,
     ) {
+        self.parts_in_trees(fee, 1)
+    }
+
+    /// The same with `trees` scan state trees: the transfer in the first,
+    /// the others empty.
+    pub(super) fn parts_in_trees(
+        &self,
+        fee: u64,
+        trees: usize,
+    ) -> (
+        Arc<StagedLedgerAuxAndPendingCoinbases>,
+        v2::MinaBaseStagedLedgerHashStableV1,
+    ) {
         let constants = constraint_constants();
         let mut staged = Mask::create(LEDGER_DEPTH);
         let paid = Account::create_with(self.receiver.id(), Balance::from_u64(BALANCE + FEE));
         staged.get_or_create_account(paid.id(), paid).unwrap();
         let mut scan_state =
             v2::TransactionSnarkScanStateStableV2::from(&ScanState::empty(constants));
+        let empty = scan_state.scan_state.trees.0.clone();
+        for _ in 1..trees {
+            scan_state.scan_state.trees.1.push_back(empty.clone());
+        }
         leaves_mut(&mut scan_state.scan_state.trees.0)[0] =
             done_fee_transfer(&self.receiver, fee, &self.state);
         let mut pending_coinbase = PendingCoinbase::create(constants.pending_coinbase_depth);
@@ -122,8 +139,15 @@ impl Fixture {
         (result, synced.has_children())
     }
 
-    fn rebuild(&self, parts: Arc<StagedLedgerAuxAndPendingCoinbasesValid>) -> Result<(), String> {
+    pub(super) fn rebuild(
+        &self,
+        parts: Arc<StagedLedgerAuxAndPendingCoinbasesValid>,
+    ) -> Result<(), String> {
         self.rebuild_over(parts).0
+    }
+
+    pub(super) fn snarked_ledger_hash(&self) -> v2::LedgerHash {
+        hash_of(&self.snarked)
     }
 
     /// A root ledger sync fetching the parts that make `hash` from two
@@ -166,7 +190,7 @@ fn valid(
     }
 }
 
-fn staged(state: &crate::State) -> &TransitionFrontierSyncLedgerStagedState {
+pub(super) fn staged(state: &crate::State) -> &TransitionFrontierSyncLedgerStagedState {
     state
         .transition_frontier
         .sync
@@ -208,7 +232,7 @@ fn received(
 }
 
 /// The parts the rebuild is pending for.
-fn rebuilding(state: &crate::State) -> Arc<StagedLedgerAuxAndPendingCoinbasesValid> {
+pub(super) fn rebuilding(state: &crate::State) -> Arc<StagedLedgerAuxAndPendingCoinbasesValid> {
     let (_, parts) = staged(state).target_with_parts().unwrap();
     parts.unwrap().clone()
 }

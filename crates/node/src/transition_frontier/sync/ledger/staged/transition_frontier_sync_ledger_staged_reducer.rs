@@ -495,27 +495,37 @@ impl TransitionFrontierSyncLedgerStagedState {
                 else {
                     return;
                 };
-                if let Some(StagedLedgerPartsSender {
-                    peer_id,
-                    other_attempts,
-                }) = sender.take()
-                {
-                    // A peer's parts that make the staged ledger hash but
-                    // don't rebuild the staged ledger: rejected as parts that
-                    // don't make it are, and asked of another peer.
-                    let mut attempts = other_attempts;
-                    attempts.insert(
+                if let Some(sender) = sender.take() {
+                    // Parts that make the staged ledger hash but don't
+                    // rebuild the staged ledger. From one peer, its answer is
+                    // rejected as parts that don't make the hash are. Put
+                    // together from two (STAGED-SPLIT), either may have sent
+                    // the part that fails: both count as invalid and neither
+                    // is rejected, as when such parts don't make the hash.
+                    // Either way the next fetch is from one peer at a time,
+                    // so a peer whose parts fail again is the one rejected.
+                    let put_together = sender.may_be_put_together();
+                    let StagedLedgerPartsSender {
                         peer_id,
-                        PeerStagedLedgerPartsFetchState::Invalid { time: meta.time() },
-                    );
+                        other_attempts: mut attempts,
+                    } = sender;
+                    let invalid = PeerStagedLedgerPartsFetchState::Invalid { time: meta.time() };
+                    for attempt in attempts.values_mut() {
+                        if attempt.fetch_pending_rpc_id().is_some() {
+                            *attempt = invalid.clone();
+                        }
+                    }
+                    attempts.insert(peer_id, invalid);
                     *state = Self::PartsFetchPending {
                         time: meta.time(),
                         target: target.clone(),
                         attempts,
-                        single_stream: false,
+                        single_stream: true,
                     };
                     let dispatcher = state_context.into_dispatcher();
-                    dispatcher.push(P2pChannelsRpcAction::SyncAnswerRejected { peer_id });
+                    if !put_together {
+                        dispatcher.push(P2pChannelsRpcAction::SyncAnswerRejected { peer_id });
+                    }
                     dispatcher.push(TransitionFrontierSyncLedgerStagedAction::PartsPeerFetchInit);
                     return;
                 }

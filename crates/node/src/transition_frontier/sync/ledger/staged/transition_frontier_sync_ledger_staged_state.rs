@@ -23,7 +23,8 @@ pub enum TransitionFrontierSyncLedgerStagedState {
         target: SyncLedgerTargetWithStaged,
         attempts: BTreeMap<PeerId, PeerStagedLedgerPartsFetchState>,
         /// Fetch from one peer at a time: parts put together from two
-        /// peers didn't hash to the target (STAGED-SPLIT).
+        /// peers didn't hash to the target (STAGED-SPLIT), or parts failed
+        /// to rebuild the staged ledger.
         #[serde(default)]
         single_stream: bool,
     },
@@ -67,15 +68,28 @@ pub enum TransitionFrontierSyncLedgerStagedState {
 /// The peer whose parts the staged ledger is rebuilt from, and the attempts
 /// of the other peers. The staged ledger hash doesn't cover all of the parts
 /// (the scan state hash leaves out its completed jobs), so parts that make it
-/// can still fail to rebuild the staged ledger. That peer's answer is then
-/// rejected and the fetch goes on from these attempts, as OCaml's bootstrap
-/// starts over when the parts it got fail to rebuild.
+/// can still fail to rebuild the staged ledger. The fetch then goes on from
+/// these attempts, one peer at a time, as OCaml's bootstrap starts over when
+/// the parts it got fail to rebuild. That peer's answer is rejected, unless
+/// the parts may have been put together from two peers'.
 ///
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/bootstrap_controller/bootstrap_controller.ml#L478-L508>
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StagedLedgerPartsSender {
     pub peer_id: PeerId,
     pub other_attempts: BTreeMap<PeerId, PeerStagedLedgerPartsFetchState>,
+}
+
+impl StagedLedgerPartsSender {
+    /// Whether the parts may have been put together from `peer_id`'s stream
+    /// and another peer's (STAGED-SPLIT): that peer's request was pending
+    /// when they came, and the p2p layer cancelled it. Either peer may then
+    /// have sent a part that fails.
+    pub fn may_be_put_together(&self) -> bool {
+        self.other_attempts
+            .values()
+            .any(|attempt| attempt.fetch_pending_rpc_id().is_some())
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
