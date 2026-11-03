@@ -83,3 +83,32 @@ checks the same way.
 - Tested in the browser only: the web node page boots and starts its prover's
   threads under the policy with no violation (`minaweb-check.mjs`,
   `minaweb-roles-check.mjs` with `CSP_REPORTS`).
+
+## ark-ff and ark-ff-macros
+
+arkworks' finite fields, kept in the tree for a faster multiplication on wasm32.
+Wired in and skipped by the formatters and checks the same way as rustrtc.
+
+- Upstream: https://github.com/arkworks-rs/algebra, MIT or Apache-2.0
+  (`ark-ff/LICENSE-MIT`, `ark-ff/LICENSE-APACHE`).
+- Versions: 0.5.0 of both from crates.io, the `.crate`s with SHA-256
+  `a177aba0ed1e0fbb62aa9f6d0502e9b46dad8c2eab04c14258a1212d2557ea70` (`ark-ff`)
+  and `09be120733ee33f7693ceaa202ca41accd5653b779563608f1234f78ae07c4b3`
+  (`ark-ff-macros`), built from upstream commit
+  `7ad88c46e859a94ab8e0b19fd8a217c3dc472f1c` (`.cargo_vcs_info.json`).
+- Kept: each package as published. The first commit adds them unchanged.
+- Our change, one commit on top: on wasm32, multiplication and squaring of a
+  4-limb field below 2^255 (both Pasta fields) run on nine 29-bit limbs
+  (`ark-ff/src/fields/models/fp/fp9.rs`). WebAssembly has no 64x64->128-bit
+  multiply, so arkworks' 64-bit code splits each product into four and tracks
+  carries with comparisons; 29-bit products sum in a `u64` with no carry
+  handling. Elements keep arkworks' representation and every result is the same
+  `BigInt`, so nothing outside the field changes. The `MontConfig` derive writes
+  each field's multiplication, so `ark-ff-macros` calls the same helpers. Other
+  targets are unchanged.
+- Tests:
+  `cargo test --release --manifest-path vendor/ark-ff/Cargo.toml --test fp9`
+  checks the limb code against `num-bigint` on every target. With
+  `RUSTFLAGS="--cfg ark_ff_fp9"` the field operations take the wasm32 path
+  natively and are checked too. The crate's own unit tests need upstream's
+  dev-dependencies, which the published package leaves out.
