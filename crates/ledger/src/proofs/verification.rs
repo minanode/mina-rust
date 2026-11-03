@@ -1224,13 +1224,16 @@ mod on_fail {
     }
 
     fn dump_to_file_impl<D: BinProtWrite>(data: &D, filename: &str) -> std::io::Result<()> {
+        // A web node has no work dir: the failed verification must still
+        // return, as a failure.
+        let debug_dir = mina_core::try_get_debug_dir()
+            .ok_or_else(|| std::io::Error::other("no work dir to dump to"))?;
         let bin = {
             let mut vec = Vec::with_capacity(128 * 1024);
             data.binprot_write(&mut vec)?;
             vec
         };
 
-        let debug_dir = mina_core::get_debug_dir();
         let filename = debug_dir
             .join(generate_new_filename(filename, "binprot", &bin)?)
             .to_string_lossy()
@@ -1260,5 +1263,20 @@ mod on_fail {
             }
         }
         Err(std::io::Error::other("no filename available"))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        /// Without a work dir, as on a web node, the dump of a failed
+        /// verification is an error, not a panic. `dump_to_file` skips the
+        /// dump in tests, so its implementation is called here.
+        #[test]
+        fn a_dump_without_a_work_dir_is_an_error() {
+            assert!(
+                mina_core::try_get_debug_dir().is_none(),
+                "a test set a work dir"
+            );
+            assert!(super::dump_to_file_impl(&7i32, "verify_block").is_err());
+        }
     }
 }
