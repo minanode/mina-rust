@@ -8,6 +8,7 @@ import io
 import os
 from pathlib import Path
 import subprocess
+import socket
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -19,6 +20,15 @@ spec.loader.exec_module(gate)
 
 
 class GateTests(unittest.TestCase):
+    def test_bind_preflight_rejects_occupied_and_duplicate_ports(self):
+        with self.assertRaises(ValueError):
+            gate.check_ports(4440, 4440)
+        with socket.socket() as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            port = occupied.getsockname()[1]
+            with self.assertRaises(OSError):
+                gate.check_ports(port, 9560)
+
     def test_network_selection_reaches_the_reference_verifier(self):
         for network, signature_kind in (("mainnet", "mainnet"), ("devnet", "testnet")):
             with self.subTest(network=network):

@@ -124,6 +124,14 @@ def port_number(value):
     return port
 
 
+def check_ports(http_port, libp2p_port):
+    if http_port == libp2p_port:
+        raise ValueError("HTTP and libp2p ports must be different")
+    for port in (http_port, libp2p_port):
+        with socket.socket() as probe:
+            probe.bind(("0.0.0.0", port))
+
+
 def argument_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
@@ -152,9 +160,7 @@ def main():
         if not os.access(path, os.X_OK):
             parser.error(f"{name} must be executable")
         setattr(args, name, path)
-    for port in (args.http_port, args.libp2p_port):
-        with socket.socket() as probe:
-            probe.bind(("0.0.0.0", port))
+    check_ports(args.http_port, args.libp2p_port)
     output = args.output.resolve()
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
     (output / "tmp").mkdir(mode=0o700)
