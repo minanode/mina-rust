@@ -51,6 +51,7 @@ use crate::{
 
 use super::{
     constants::ProofConstants,
+    double_add::{double_add_chain, inverses_or_zero},
     field::{field, Boolean, CircuitVar, FieldWitness, GroupAffine, ToBoolean},
     public_input::messages::{dummy_ipa_step_sg, MessagesForNextWrapProof},
     step,
@@ -286,6 +287,63 @@ pub mod scalar_challenge {
         };
 
         let mut n_acc = F::zero();
+
+        // Each row adds two of `t`'s images by the endomorphism or their
+        // negations, each followed by the accumulator: the whole chain with
+        // one inversion, and the rows' `inv` with another, rather than five
+        // for each row.
+        let q = |b_x: bool, b_y: bool| {
+            let (b_x, b_y): (F, F) = (F::from(b_x), F::from(b_y));
+            (
+                (F::one() + ((endo_base - F::one()) * b_x)) * xt,
+                (b_y.double() - F::one()) * yt,
+            )
+        };
+        // Only for whole rows: with another width, the row loop below runs as
+        // before, on the rows that fit.
+        let chain = match NBITS % bits_per_row {
+            0 => {
+                let qs: Vec<(F, F)> = bits.chunks(2).map(|bs| q(bs[0], bs[1])).collect();
+                double_add_chain((acc.x, acc.y), &qs).map(|steps| (qs, steps))
+            }
+            _ => None,
+        };
+        if let Some((qs, steps)) = chain {
+            let mut xp = acc.x;
+            let invs: Vec<F> = steps
+                .chunks(2)
+                .map(|row| {
+                    let (xr, xs) = (row[0].x, row[1].x);
+                    let v = (xp - xr) * (xr - xs);
+                    xp = xs;
+                    v
+                })
+                .collect();
+            let invs = inverses_or_zero(&invs);
+            for ((bs, (qs, steps)), inv) in bits
+                .chunks(bits_per_row)
+                .zip(qs.chunks(2).zip(steps.chunks(2)))
+                .zip(invs)
+            {
+                let b: [F; 4] = std::array::from_fn(|j| w.exists(F::from(bs[j])));
+                for (&(xq, yq), step) in qs.iter().zip(steps) {
+                    w.exists(xq);
+                    w.exists(yq);
+                    w.exists(step.s1);
+                    w.exists(step.s1_squared);
+                    w.exists(step.s2);
+                    w.exists(step.x);
+                    w.exists(step.y);
+                }
+                w.exists(inv);
+                acc = make_group::<F>(steps[1].x, steps[1].y);
+                n_acc = w.exists(
+                    (((n_acc.double() + b[0]).double() + b[1]).double() + b[2]).double() + b[3],
+                );
+            }
+            return acc;
+        }
+
         for i in 0..rows {
             let n_acc_prev = n_acc;
             let b1 = w.exists(F::from(bits[i * bits_per_row]));
@@ -344,6 +402,120 @@ pub mod scalar_challenge {
         let _ = endo::<F, F2, NBITS>(res.to_affine(), chal, w);
         res.to_affine()
     }
+
+    #[cfg(test)]
+    mod tests {
+        use ark_ec::AffineRepr;
+        use ark_ff::UniformRand;
+        use mina_curves::pasta::{Fp, Fq};
+        use rand::{rngs::StdRng, SeedableRng};
+
+        use super::*;
+
+        /// `endo_cvar` as it was before `double_add_chain`: row by row, on
+        /// the whole rows of `NBITS` bits.
+        fn endo_by_rows<F, F2, const NBITS: usize>(
+            t: CircuitVar<GroupAffine<F>>,
+            scalar: F2,
+            w: &mut Witness<F>,
+        ) -> GroupAffine<F>
+        where
+            F: FieldWitness,
+            F2: FieldWitness,
+        {
+            let bits: [bool; NBITS] = bits_msb::<F2, NBITS>(scalar);
+
+            let bits_per_row = 4;
+            let rows = NBITS / bits_per_row;
+
+            let GroupAffine::<F> { x: xt, y: yt, .. } = *t.value();
+            let (endo_base, _) = endos::<F>();
+
+            let mut acc = {
+                let tmp = match t {
+                    CircuitVar::Var(_) => w.exists(xt * endo_base),
+                    CircuitVar::Constant(_) => xt * endo_base,
+                };
+                let p = w.add_fast(*t.value(), make_group::<F>(tmp, yt));
+                w.add_fast(p, p)
+            };
+
+            let mut n_acc = F::zero();
+            for i in 0..rows {
+                let n_acc_prev = n_acc;
+                let b1 = w.exists(F::from(bits[i * bits_per_row]));
+                let b2 = w.exists(F::from(bits[(i * bits_per_row) + 1]));
+                let b3 = w.exists(F::from(bits[(i * bits_per_row) + 2]));
+                let b4 = w.exists(F::from(bits[(i * bits_per_row) + 3]));
+
+                let GroupAffine::<F> { x: xp, y: yp, .. } = acc;
+                let xq1 = w.exists((F::one() + ((endo_base - F::one()) * b1)) * xt);
+                let yq1 = w.exists((b2.double() - F::one()) * yt);
+                let s1 = w.exists((yq1 - yp) / (xq1 - xp));
+                let s1_squared = w.exists(s1.square());
+                let s2 = w.exists((yp.double() / (xp.double() + xq1 - s1_squared)) - s1);
+                let xr = w.exists(xq1 + s2.square() - s1_squared);
+                let yr = w.exists(((xp - xr) * s2) - yp);
+                let xq2 = w.exists((F::one() + ((endo_base - F::one()) * b3)) * xt);
+                let yq2 = w.exists((b4.double() - F::one()) * yt);
+                let s3 = w.exists((yq2 - yr) / (xq2 - xr));
+                let s3_squared = w.exists(s3.square());
+                let s4 = w.exists((yr.double() / (xr.double() + xq2 - s3_squared)) - s3);
+                let xs = w.exists(xq2 + s4.square() - s3_squared);
+                let ys = w.exists(((xr - xs) * s4) - yr);
+                let _inv = w.exists(((xp - xr) * (xr - xs)).inverse().unwrap_or_default());
+
+                acc = make_group::<F>(xs, ys);
+                n_acc = w.exists(
+                    (((n_acc_prev.double() + b1).double() + b2).double() + b3).double() + b4,
+                );
+            }
+
+            acc
+        }
+
+        /// The point `f` returns, or `None` if it panics, and the values it
+        /// pushed until then.
+        fn run<F: FieldWitness>(
+            f: impl FnOnce(&mut Witness<F>) -> GroupAffine<F>,
+        ) -> (Option<GroupAffine<F>>, Vec<F>) {
+            let mut w = Witness::empty();
+            let point = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut w))).ok();
+            (point, w.aux().to_vec())
+        }
+
+        /// At every width `endo_cvar` pushes the values the row-by-row loop
+        /// pushes and returns its point. A multiple of 4 takes the chain;
+        /// another width runs the loop on the rows that fit, as before, so
+        /// 1 to 3 bits push no row at all.
+        #[test]
+        fn endo_is_the_row_loop_at_every_width() {
+            fn check<F: FieldWitness, const NBITS: usize>(rng: &mut StdRng) {
+                let points = [
+                    GroupAffine::<F>::generator(),
+                    GroupAffine::<F>::rand(rng),
+                    GroupAffine::<F>::rand(rng),
+                ];
+                let scalars = [F::zero(), F::one(), -F::one(), F::rand(rng), F::rand(rng)];
+                for p in points {
+                    for t in [CircuitVar::Var(p), CircuitVar::Constant(p)] {
+                        for s in scalars {
+                            let new = run(|w| endo_cvar::<F, F, NBITS>(t, s, w));
+                            let old = run(|w| endo_by_rows::<F, F, NBITS>(t, s, w));
+                            assert!(old.0.is_some(), "{NBITS} bits");
+                            assert_eq!(new, old, "{NBITS} bits");
+                        }
+                    }
+                }
+            }
+            macro_rules! widths {
+                ($rng:expr, $f:ty, $($nbits:literal),*) => { $(check::<$f, $nbits>($rng);)* };
+            }
+            let mut rng = StdRng::seed_from_u64(3);
+            widths!(&mut rng, Fp, 1, 2, 3, 4, 5, 6, 7, 8, 12, 128);
+            widths!(&mut rng, Fq, 1, 2, 3, 4, 5, 6, 7, 8, 12, 128);
+        }
+    }
 }
 
 pub fn add_fast<F>(
@@ -380,7 +552,7 @@ where
         }
     });
 
-    let _x21_inv = w.exists({
+    let x21_inv = w.exists({
         if same_x_bool {
             F::zero()
         } else {
@@ -393,7 +565,8 @@ where
             let x1_squared = x1.square();
             (x1_squared + x1_squared + x1_squared) / (y1 + y1)
         } else {
-            (y2 - y1) / (x2 - x1)
+            // `(y2 - y1) / (x2 - x1)`, without inverting `x2 - x1` again.
+            (y2 - y1) * x21_inv
         }
     });
 
@@ -464,6 +637,32 @@ pub mod plonk_curve_ops {
         let bits_msb: [bool; NBITS] = w.exists(bits_msb::<F2, NBITS>(scalar));
         let mut acc = w.add_fast(base, base);
         let mut n_acc = F::zero();
+
+        // Each bit adds the base or its negation, then the accumulator: the
+        // whole chain with one inversion, rather than two for each bit.
+        let qs: Vec<(F, F)> = bits_msb
+            .iter()
+            .map(|b| (x_base, y_base * (F::from(*b).double() - F::one())))
+            .collect();
+        if let Some(steps) = double_add_chain((acc.x, acc.y), &qs) {
+            for (bs, steps) in bits_msb
+                .chunks(BITS_PER_CHUNK)
+                .zip(steps.chunks(BITS_PER_CHUNK))
+            {
+                n_acc = w.exists(bs.iter().fold(n_acc, |acc, b| acc.double() + F::from(*b)));
+                for step in steps {
+                    w.exists(step.s1);
+                    w.exists(step.s1_squared);
+                    w.exists(step.s2);
+                    let x_res = w.exists(step.x);
+                    let y_res = w.exists(step.y);
+                    acc = make_group(x_res, y_res);
+                }
+            }
+            let mut bits_lsb = bits_msb;
+            bits_lsb.reverse();
+            return (acc, bits_lsb);
+        }
 
         for chunk in 0..chunks {
             let bs: [bool; BITS_PER_CHUNK] =

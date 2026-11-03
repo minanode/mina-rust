@@ -9,6 +9,7 @@ pub mod caching;
 pub mod circuit_blobs;
 pub mod constants;
 mod conv;
+mod double_add;
 pub mod field;
 pub mod fork_circuits;
 pub mod group_map;
