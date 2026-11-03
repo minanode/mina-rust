@@ -64,10 +64,12 @@ fn self_requeue_limit(kind: ActionKind) -> Option<usize> {
         // Each call handles one step of the account read queue and dispatches
         // itself again only after a step that made progress: a ready read
         // handed to its completion, or a due retry. A ready read holds one of
-        // `MAX_ACCOUNT_READS` read slots, and a retried read waits for its new
-        // response, so a chain has at most `MAX_ACCOUNT_READS` ready steps, one
-        // retry and the call that stops.
-        ActionKind::TransactionPoolProcessAccountReads => Some(MAX_ACCOUNT_READS + 2),
+        // `MAX_ACCOUNT_READS` read slots. Only the reconciliation at the head
+        // of the queue retries, since `BestTipChanged` puts every other read
+        // behind the reconciliations, and its retry leaves the head queued.
+        // So a chain is either a retry or at most `MAX_ACCOUNT_READS` ready
+        // steps, and then the call that stops.
+        ActionKind::TransactionPoolProcessAccountReads => Some(MAX_ACCOUNT_READS + 1),
         // A Kademlia request refused at once (the backoff, the peer target,
         // the seed policy) ends inside the batch that made it, and its error
         // asks for the next batch. The lookup starts a batch only while fewer
@@ -117,7 +119,7 @@ mod tests {
     fn self_requeue_is_not_a_cycle() {
         assert!(!contains_cycle(&[TIMEOUTS, READS, READS]));
         assert!(!contains_cycle(&[READS, FETCH, READS, FETCH]));
-        assert_eq!(self_requeue_limit(READS), Some(MAX_ACCOUNT_READS + 2));
+        assert_eq!(self_requeue_limit(READS), Some(MAX_ACCOUNT_READS + 1));
         assert_eq!(self_requeue_limit(FETCH), None);
     }
 }
