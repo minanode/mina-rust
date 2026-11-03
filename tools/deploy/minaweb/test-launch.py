@@ -592,7 +592,7 @@ class BrotliWasmTest(unittest.TestCase):
         self.assertIn("--immutable --checksum", upload)
         order = [next(i for i, c in enumerate(commands) if c.startswith(p)) for p in (
             "rclone copy upload ", "rclone copy upload-br ", "rclone check upload ",
-            "rclone check upload-br ", "python3 -B check-wasm-encoding.py ", "npx wrangler")]
+            "rclone check upload-br ", "python3 -I -B check-wasm-encoding.py ", "npx wrangler")]
         self.assertEqual(order, sorted(order))
         self.assertIn("check-wasm-encoding.py https://assets.minaweb.org/releases/c/r/wasm/x.wasm "
                       f"{'a' * 64} {'b' * 64}", "\n".join(commands))
@@ -619,7 +619,7 @@ class BrotliWasmTest(unittest.TestCase):
         def trailing(url, accept):
             status, message, body = edge(url, accept)
             return status, message, body + b"x" if message["Content-Encoding"] == "br" else body
-        with self.assertRaisesRegex(AssertionError, "not the uploaded brotli file"):
+        with self.assertRaisesRegex(encoding_check.CheckFailed, "not the uploaded brotli file"):
             encoding_check.check("https://x/w.wasm", pinned, sent, fetch=trailing)
         failures = {
             # Brotli to a client that asked for gzip only.
@@ -630,8 +630,88 @@ class BrotliWasmTest(unittest.TestCase):
             "not the pinned": lambda url, accept: (200, headers("br" if accept and "br" in accept else None), encoded),
         }
         for message, fetch in failures.items():
-            with self.subTest(message=message), self.assertRaisesRegex(AssertionError, message):
+            with self.subTest(message=message), self.assertRaisesRegex(encoding_check.CheckFailed, message):
                 encoding_check.check("https://x/w.wasm", pinned, sent, fetch=fetch)
+
+    def test_the_encoding_check_reads_every_header_field(self):
+        pinned = hashlib.sha256(self.WASM).hexdigest()
+        encoded = brotli(self.WASM)
+        sent = hashlib.sha256(encoded).hexdigest()
+        def answer(*pairs):
+            message = Message()
+            for name, value in pairs:
+                message[name] = value
+            return lambda url, accept: (200, message, encoded)
+        base = [("Content-Type", "application/wasm"), ("Access-Control-Allow-Origin", "https://minaweb.org")]
+        for fetch, message in (
+            # Two fields: a client decodes `br, gzip` and fails at the gzip layer.
+            (answer(*base, ("Content-Encoding", "br"), ("Content-Encoding", "gzip")),
+             "2 Content-Encoding fields"),
+            (answer(*base, ("Content-Encoding", "br, gzip")), "is not one coding"),
+            (answer(("Content-Type", "application/wasm"), ("Access-Control-Allow-Origin", "https://minaweb.org"),
+                    ("Access-Control-Allow-Origin", "https://minaweb.org"), ("Content-Encoding", "br")),
+             "2 Access-Control-Allow-Origin fields"),
+            (answer(("Content-Type", "application/wasm"), ("Content-Type", "application/wasm"),
+                    ("Access-Control-Allow-Origin", "https://minaweb.org"), ("Content-Encoding", "br")),
+             "2 Content-Type fields"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(encoding_check.CheckFailed, message):
+                encoding_check.check("https://x/w.wasm", pinned, sent, fetch=fetch)
+
+    def test_the_encoding_check_fails_over_http_under_python_optimize(self):
+        """The checker as deploy.sh runs it, but with PYTHONOPTIMIZE=1 and
+        without -I, against local HTTP edges: each bad edge exits non-zero."""
+        import http.server
+        import subprocess
+        import threading
+        pinned = hashlib.sha256(self.WASM).hexdigest()
+        encoded = brotli(self.WASM)
+        sent = hashlib.sha256(encoded).hexdigest()
+        def edge(answer):
+            class Handler(http.server.BaseHTTPRequestHandler):
+                def log_message(self, *_):
+                    pass
+                def do_GET(self):
+                    headers, body = answer(self.headers.get("Accept-Encoding"))
+                    self.send_response(200)
+                    for name, value in headers:
+                        self.send_header(name, value)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            return server
+        base = [("Content-Type", "application/wasm"), ("Access-Control-Allow-Origin", "https://minaweb.org")]
+        def negotiated(accept, extra=()):
+            if accept is None or "br" in accept:
+                return base + [("Content-Encoding", "br"), *extra], encoded
+            return base, self.WASM
+        edges = {
+            "good": lambda accept: negotiated(accept),
+            "wrong bytes": lambda accept: (base, b"not the pinned WASM"),
+            "two codings": lambda accept: (base + [("Content-Encoding", "br"), ("Content-Encoding", "gzip")], encoded),
+            "two codings in one field": lambda accept: (base + [("Content-Encoding", "br, gzip")], encoded),
+            "two origins": lambda accept: negotiated(accept, [("Access-Control-Allow-Origin", "https://minaweb.org")]),
+        }
+        environ = dict(os.environ, PYTHONOPTIMIZE="1")
+        for name, answer in edges.items():
+            server = edge(answer)
+            try:
+                url = f"http://127.0.0.1:{server.server_address[1]}/w.wasm"
+                run = subprocess.run([sys.executable, "-B", str(HERE / "check-wasm-encoding.py"), url, pinned, sent],
+                                     env=environ, capture_output=True, text=True, timeout=120)
+            finally:
+                server.shutdown()
+                server.server_close()
+            with self.subTest(edge=name):
+                if name == "good":
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    self.assertEqual(run.stdout.count("decodes to the pinned WASM"), len(encoding_check.CLIENTS))
+                else:
+                    self.assertNotEqual(run.returncode, 0, run.stdout)
+                    self.assertNotIn("decodes to the pinned WASM", run.stdout.splitlines()[-1] if run.stdout else "")
+                    self.assertIn("check-wasm-encoding:", run.stderr)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,9 @@ With ENCODED_SHA256, the SHA-256 of the uploaded brotli file, a brotli answer
 must be that file byte for byte: a decoder may ignore bytes after the end of
 the stream, and a browser's may not.
 
-Run it on a throwaway object first, twice: the edge may answer a cache miss
+Every check raises and exits non-zero, also under `python -O`; deploy.sh
+runs it with `python3 -I`, which ignores PYTHON* variables. Run it on a
+throwaway object first, twice: the edge may answer a cache miss
 and a hit (cf-cache-status) differently. deploy.sh then runs it on each
 release before the Pages deploy. Exits non-zero on the first failure.
 """
@@ -62,36 +64,76 @@ def get(url, accept):
         conn.close()
 
 
-def decode(encoding, body):
-    if encoding == "identity":
-        return body
-    if encoding == "gzip":
-        return gzip.decompress(body)
-    if encoding == "br":
-        return subprocess.run(["node", "-e", BROTLI], input=body, check=True,
-                              capture_output=True).stdout
-    raise AssertionError(f"no decoder for {encoding}")
+class CheckFailed(Exception):
+    """An answer the asset host must not give. Raised, never asserted:
+    `python -O` (PYTHONOPTIMIZE) removes every assert."""
+
+
+def require(ok, message):
+    if not ok:
+        raise CheckFailed(message)
+
+
+def fields(headers, name):
+    """Every field of `name` as sent. A client joins repeated fields into one
+    list, so a check of the first alone could pass an answer a browser then
+    fails to decode."""
+    return [value.strip() for value in headers.get_all(name) or []]
+
+
+def one_field(headers, name, prefix):
+    values = fields(headers, name)
+    require(len(values) == 1, f"{prefix}: {len(values)} {name} fields, not one")
+    return values[0]
+
+
+def content_coding(headers, prefix):
+    """The answer's one content coding: `identity` without the header,
+    else the single coding of its single field."""
+    values = fields(headers, "Content-Encoding")
+    require(len(values) <= 1, f"{prefix}: {len(values)} Content-Encoding fields")
+    if not values:
+        return "identity"
+    codings = [c.strip().lower() for c in values[0].split(",") if c.strip()]
+    require(len(codings) == 1, f"{prefix}: Content-Encoding {values[0]!r} is not one coding")
+    return codings[0]
+
+
+def decode(encoding, body, prefix):
+    try:
+        if encoding == "identity":
+            return body
+        if encoding == "gzip":
+            return gzip.decompress(body)
+        if encoding == "br":
+            return subprocess.run(["node", "-e", BROTLI], input=body, check=True,
+                                  capture_output=True).stdout
+    except (OSError, EOFError, subprocess.CalledProcessError) as error:
+        raise CheckFailed(f"{prefix}: doesn't decode as {encoding}: {error}") from None
+    raise CheckFailed(f"{prefix}: no decoder for {encoding}")
 
 
 def check(url, pinned, encoded=None, fetch=get):
-    """One line per client; raises AssertionError on the first failure."""
+    """One line per client; raises CheckFailed on the first failure."""
     lines = []
     for client, accept, allowed in CLIENTS:
         status, headers, body = fetch(url, accept)
-        encoding = (headers.get("Content-Encoding") or "identity").strip().lower()
+        shown = ", ".join(fields(headers, "Content-Encoding")) or "none"
         cache = headers.get("cf-cache-status")
-        prefix = (f"{client}: HTTP {status}, Content-Encoding {encoding}, {len(body)} bytes"
+        prefix = (f"{client}: HTTP {status}, Content-Encoding {shown}, {len(body)} bytes"
                   + (f", cf-cache-status {cache}" if cache else ""))
-        assert status == 200, f"{prefix}: not 200"
-        assert encoding in allowed, f"{prefix}: not one of {sorted(allowed)}"
-        assert headers.get("Access-Control-Allow-Origin") == ORIGIN, f"{prefix}: no CORS for {ORIGIN}"
-        assert (headers.get("Content-Type") or "").split(";")[0].strip() == "application/wasm", \
-            f"{prefix}: not application/wasm"
+        require(status == 200, f"{prefix}: not 200")
+        encoding = content_coding(headers, prefix)
+        require(encoding in allowed, f"{prefix}: {encoding} is not one of {sorted(allowed)}")
+        require(one_field(headers, "Access-Control-Allow-Origin", prefix) == ORIGIN,
+                f"{prefix}: no CORS for {ORIGIN}")
+        mime = one_field(headers, "Content-Type", prefix).split(";")[0].strip().lower()
+        require(mime == "application/wasm", f"{prefix}: {mime}, not application/wasm")
         if encoding == "br" and encoded:
             sent = hashlib.sha256(body).hexdigest()
-            assert sent == encoded, f"{prefix}: not the uploaded brotli file ({sent})"
-        got = hashlib.sha256(decode(encoding, body)).hexdigest()
-        assert got == pinned, f"{prefix}: decodes to {got}, not the pinned {pinned}"
+            require(sent == encoded, f"{prefix}: not the uploaded brotli file ({sent})")
+        got = hashlib.sha256(decode(encoding, body, prefix)).hexdigest()
+        require(got == pinned, f"{prefix}: decodes to {got}, not the pinned {pinned}")
         lines.append(f"{prefix}: decodes to the pinned WASM")
     return lines
 
@@ -102,7 +144,7 @@ def main():
     try:
         for line in check(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) == 4 else None):
             print(line)
-    except AssertionError as error:
+    except CheckFailed as error:
         raise SystemExit(f"check-wasm-encoding: {error}") from None
 
 

@@ -88,7 +88,9 @@ def deploy_commands(bucket, release, project, commit, wasm=None):
                      "# What the asset host sends each kind of client, decoded by its own",
                      "# Content-Encoding only, must be the pinned WASM; as brotli, the",
                      "# uploaded file byte for byte.",
-                     f"python3 -B check-wasm-encoding.py {q(wasm['url'])} {q(wasm['sha256'])} "
+                     # -I: no PYTHON* variables (PYTHONOPTIMIZE among them), and no
+                     # module from the bundle's directory.
+                     f"python3 -I -B check-wasm-encoding.py {q(wasm['url'])} {q(wasm['sha256'])} "
                      f"{q(wasm['encoded_sha256'])}"]
     commands += ["# Verify asset CORS/CORP and MIME types before deploying Pages.",
                  'test "${ASSET_HEADERS_VERIFIED:-}" = yes',
