@@ -75,6 +75,82 @@ pub fn mainnet_blocks() -> Vec<ArcBlockWithHash> {
         .collect()
 }
 
+/// A done base job, as a scan state holds one once its proof is in: a fee
+/// transfer of `fee` to `receiver`, in the block of `state`. The scan state
+/// hash leaves done jobs out, and a staged ledger rebuild applies their
+/// transactions again. Its statement is a captured mainnet one, which the
+/// rebuild doesn't check against the transaction.
+pub fn done_fee_transfer(
+    receiver: &Account,
+    fee: u64,
+    state: &v2::MinaStateProtocolStateValueStableV2,
+) -> v2::TransactionSnarkScanStateStableV2TreesABase {
+    use ledger::{
+        scan_state::{
+            currency::{Fee, Slot},
+            scan_state::transaction_snark::{LedgerProof, OneOrTwo, TransactionWithWitness},
+            transaction_logic::{
+                FeeTransfer, SingleFeeTransfer, Transaction, TransactionStatus, WithStatus,
+            },
+        },
+        sparse_ledger::SparseLedger,
+    };
+    use mina_curves::pasta::Fp;
+
+    let bytes = include_bytes!("../../../ledger/src/verifier/fixtures/mainnet-551267-1.bin");
+    let work = v2::TransactionSnarkWorkTStableV2::binprot_read(&mut bytes.as_slice()).unwrap();
+    let proof = match &work.proofs {
+        v2::TransactionSnarkWorkTStableV2Proofs::One(proof) => proof,
+        v2::TransactionSnarkWorkTStableV2Proofs::Two((proof, _)) => proof,
+    };
+    let statement = LedgerProof::try_from(proof).unwrap().statement();
+    let transfer = SingleFeeTransfer::create(
+        receiver.public_key.clone(),
+        Fee::from_u64(fee),
+        receiver.token_id.clone(),
+    );
+    let job = TransactionWithWitness {
+        transaction_with_status: WithStatus {
+            data: Transaction::FeeTransfer(
+                FeeTransfer::of_singles(OneOrTwo::One(transfer)).unwrap(),
+            ),
+            status: TransactionStatus::Applied,
+        },
+        state_hash: (state.try_hash().unwrap().to_field().unwrap(), Fp::from(0)),
+        init_stack: statement.source.pending_coinbase_stack.clone(),
+        statement,
+        first_pass_ledger_witness: SparseLedger::create(DEPTH, Fp::from(0)),
+        second_pass_ledger_witness: SparseLedger::create(DEPTH, Fp::from(0)),
+        block_global_slot: Slot::from_u32(0),
+        hash_cache: Default::default(),
+    };
+    (
+        v2::ParallelScanWeightStableV1 {
+            base: 1u64.into(),
+            merge: 0u64.into(),
+        },
+        v2::TransactionSnarkScanStateStableV2ScanStateTreesABaseT1::Full(Box::new(
+            v2::TransactionSnarkScanStateStableV2ScanStateTreesABaseT1Full {
+                job: (&job).into(),
+                seq_no: v2::ParallelScanSequenceNumberStableV1(1u64.into()),
+                status: v2::ParallelScanJobStatusStableV1::Done,
+            },
+        )),
+    )
+}
+
+/// The leaves of a scan state tree in its wire form.
+pub fn leaves_mut(
+    tree: &mut v2::TransactionSnarkScanStateStableV2ScanStateTreesA,
+) -> &mut Vec<v2::TransactionSnarkScanStateStableV2TreesABase> {
+    match tree {
+        v2::TransactionSnarkScanStateStableV2ScanStateTreesA::Leaf(leaves) => leaves,
+        v2::TransactionSnarkScanStateStableV2ScanStateTreesA::Node { sub_tree, .. } => {
+            leaves_mut(sub_tree)
+        }
+    }
+}
+
 /// Slots between two blocks of the synthetic chains.
 pub const SLOTS_PER_BLOCK: u32 = 2;
 
