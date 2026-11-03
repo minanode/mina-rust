@@ -144,6 +144,12 @@ export interface Sent {
   stage: SentStage;
   detail: string | null;
   inclusion: Inclusion | null;
+  /** Absent: this run's node has had it, in its pool or a block. Set for a
+   * payment kept from before a restart, whose node starts with an empty
+   * pool: "unchecked" until a look answers, "failed" while looks fail,
+   * then "missing" while a look finds it in neither the pool nor a
+   * block. */
+  check?: "unchecked" | "failed" | "missing";
 }
 
 /** One look at the node for a sent payment. `undefined` is a lookup that
@@ -226,20 +232,4 @@ export function nextStage(
     detail: `${left}Not in this node's pool now; waiting for a block.`,
     inclusion: null,
   };
-}
-
-/** The nonce for a new payment from this account: the account's, past any
- * of its payments this tab sent that are still pending. */
-export function nextNonce(account: Account, sent: readonly Sent[]): number {
-  let nonce = account.nonce;
-  for (const s of sent) {
-    if (
-      s.from === account.publicKey &&
-      (s.stage === "pending" || s.stage === "included") &&
-      s.nonce >= nonce
-    ) {
-      nonce = s.nonce + 1;
-    }
-  }
-  return nonce;
 }
