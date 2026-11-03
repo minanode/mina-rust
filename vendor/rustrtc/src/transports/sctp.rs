@@ -224,6 +224,26 @@ pub(crate) struct ChunkRecord {
     expiry: Option<Instant>,
 }
 
+impl ChunkRecord {
+    /// Marks the chunk for retransmission. `transmit_count` counts the
+    /// transmission this schedules, once: a chunk still marked from an
+    /// earlier T3, fast retransmit or probe is not counted again (vendored
+    /// change, SCTP-CC).
+    fn mark_for_retransmit(&mut self) {
+        if !self.needs_retransmit {
+            self.transmit_count += 1;
+        }
+        self.needs_retransmit = true;
+    }
+
+    /// Transmissions made so far: a pending retransmission is counted in
+    /// `transmit_count` but has not gone out yet (vendored change, SCTP-CC).
+    fn transmissions_sent(&self) -> u32 {
+        self.transmit_count
+            .saturating_sub(u32::from(self.needs_retransmit))
+    }
+}
+
 #[derive(Debug)]
 struct InboundStream {
     next_ssn: u16,
@@ -492,6 +512,10 @@ struct SctpInner {
     // even if this SACK happened to drain flight_size back below cwnd (the
     // common loopback case, where one SACK can ack an entire window).
     window_limited: AtomicBool,
+    // Set by a T3 expiry and cleared by the next SACK: until feedback, send
+    // one packet of retransmissions and no new data (RFC 9260 section 7.2.3;
+    // vendored change, SCTP-CC).
+    t3_awaiting_feedback: AtomicBool,
 
     // Outgoing Packet Queue to prevent deadlocks
     outgoing_packet_tx: packet_queue::Sender,
@@ -773,10 +797,9 @@ fn apply_sack_to_sent_queue(
 
             if record.missing_reports >= DUP_THRESH && !record.abandoned && can_fast_retransmit {
                 record.missing_reports = 0;
-                record.transmit_count += 1;
+                record.mark_for_retransmit();
                 record.sent_time = now; // Reset timer for retransmission
                 record.fast_retransmit = true;
-                record.needs_retransmit = true;
                 record.fast_retransmit_time = Some(now);
 
                 // aiortc-style loss handling: remove from flight size when marked lost
@@ -985,6 +1008,7 @@ impl SctpTransport {
             outbound_queue: Mutex::new(VecDeque::new()),
             queued_bytes: AtomicUsize::new(0),
             window_limited: AtomicBool::new(false),
+            t3_awaiting_feedback: AtomicBool::new(false),
             last_sack_time: Mutex::new(None),
             t1_chunk: Mutex::new(None),
             t1_failures: AtomicU32::new(0),
@@ -1679,7 +1703,7 @@ impl SctpInner {
                     // reliable chunk with no FORWARD-TSN to unblock it would
                     // permanently freeze the cumulative ACK point.
                     let is_pr_sctp = record.max_retransmits.is_some() || record.expiry.is_some();
-                    if is_pr_sctp && record.transmit_count >= self.max_tsn_retransmits {
+                    if is_pr_sctp && record.transmissions_sent() >= self.max_tsn_retransmits {
                         record.abandoned = true;
                         debug!(
                             "T3: abandoning PR-SCTP TSN {} after {} transmits",
@@ -1696,12 +1720,8 @@ impl SctpInner {
                     // another, backed-off, T3 per few chunks (vendored change,
                     // SCTP-CC). One that is acked before it goes out is not
                     // resent. A chunk still marked from an earlier T3, fast
-                    // retransmit or probe is counted once, so partial
-                    // reliability's limit counts retransmissions, not timers.
-                    if !record.needs_retransmit {
-                        record.transmit_count += 1;
-                    }
-                    record.needs_retransmit = true;
+                    // retransmit or probe is counted once.
+                    record.mark_for_retransmit();
                     record.sent_time = now;
                     trace!(
                         "T3 retransmit: marking TSN {} for retransmission (transmit #{})",
@@ -1735,6 +1755,7 @@ impl SctpInner {
         // out in the first round trip after a timeout (vendored change,
         // SCTP-CC).
         self.cwnd_tx.store(CWND_AFTER_RTO, Ordering::SeqCst);
+        self.t3_awaiting_feedback.store(true, Ordering::SeqCst);
 
         // Notify the run_loop to call transmit() immediately
         self.timer_notify.notify_one();
@@ -2095,6 +2116,7 @@ impl SctpInner {
                 let mut last_sack = self.last_sack_time.lock();
                 *last_sack = Some(Instant::now());
             }
+            self.t3_awaiting_feedback.store(false, Ordering::SeqCst);
 
             let mut buf = chunk.clone();
             let cumulative_tsn_ack = buf.get_u32();
@@ -2199,10 +2221,7 @@ impl SctpInner {
                         && old_rwnd as usize <= record.payload.len()
                         && a_rwnd as usize >= record.payload.len()
                     {
-                        if !record.needs_retransmit {
-                            record.transmit_count += 1;
-                        }
-                        record.needs_retransmit = true;
+                        record.mark_for_retransmit();
                         if *probe == Some(tsn) {
                             *probe = None;
                         }
@@ -3361,7 +3380,10 @@ impl SctpInner {
         if now.duration_since(*self.last_send_or_ack.lock()) < self.tlp_pto() {
             return false;
         }
-        if self.window_probe.lock().is_some() || self.tlp_probe_sent.load(Ordering::Relaxed) {
+        if self.window_probe.lock().is_some()
+            || self.tlp_probe_sent.load(Ordering::Relaxed)
+            || self.t3_awaiting_feedback.load(Ordering::Relaxed)
+        {
             return false;
         }
         // Only probe when there is unacked in-flight data (a tail to recover).
@@ -3382,8 +3404,7 @@ impl SctpInner {
             && !record.acked
             && !record.abandoned
         {
-            record.needs_retransmit = true;
-            record.transmit_count = record.transmit_count.saturating_add(1);
+            record.mark_for_retransmit();
             record.sent_time = now;
             if !record.in_flight {
                 record.in_flight = true;
@@ -3734,7 +3755,17 @@ impl SctpInner {
             4 * MAX_SCTP_PACKET_SIZE
         };
 
-        let mut retransmit_budget = burst_limit;
+        // After a T3 and before feedback, one packet of retransmissions and
+        // nothing else (RFC 9260 section 7.2.3).
+        let awaiting_feedback = self.t3_awaiting_feedback.load(Ordering::Relaxed);
+        let mut retransmit_budget = if awaiting_feedback {
+            burst_limit.min(MAX_SCTP_PACKET_SIZE - SCTP_COMMON_HEADER_SIZE)
+        } else {
+            burst_limit
+        };
+        // Marked chunks left for lack of window keep the window in use, so
+        // their SACKs grow it (RFC 9260 section 7.2.1).
+        let mut retransmit_waiting = false;
 
         // 2. Retransmit Phase (Priority)
         let mut in_flight_chunks = 0usize;
@@ -3773,6 +3804,8 @@ impl SctpInner {
                     // (in apply_sack_to_sent_queue for fast retransmit, or handle_timeout for RTO)
                     record.sent_time = Instant::now();
                     chunks_to_send.push(record.payload.clone());
+                } else if record.needs_retransmit && !record.acked && !record.abandoned {
+                    retransmit_waiting = true;
                 }
                 // Count after retransmission restores in_flight. Gap ACKs,
                 // loss and abandonment already clear this flag, so the peer
@@ -3797,7 +3830,11 @@ impl SctpInner {
             // RFC 9260 section 6.1(B): when flight is below cwnd, one
             // complete DATA chunk may cross it. Keep the burst budget
             // separate: limited cwnd overbooking must not enlarge a burst.
-            let mut congestion_budget = cwnd_val.saturating_sub(flight);
+            let mut congestion_budget = if awaiting_feedback {
+                0
+            } else {
+                cwnd_val.saturating_sub(flight)
+            };
             let mut burst_budget = retransmit_budget;
             let mut probing = false;
             let mut batch: Vec<OutboundChunk> = Vec::new();
@@ -3838,7 +3875,7 @@ impl SctpInner {
                 // We were window-limited if the budget or the per-batch cap ran
                 // out while data still remained queued (i.e. the pipe was full
                 // and the window, not the application, throttled this drain).
-                window_limited = !outbound.is_empty() || batch.len() >= 1000;
+                window_limited = !outbound.is_empty() || batch.len() >= 1000 || retransmit_waiting;
             }
             self.window_limited.store(window_limited, Ordering::Relaxed);
             if dequeued_bytes > 0 {
@@ -3937,8 +3974,10 @@ impl SctpInner {
         if record.abandoned {
             return true;
         }
+        // Count retransmissions made, not one still waiting for the window
+        // (vendored change, SCTP-CC).
         if let Some(max_r) = record.max_retransmits
-            && record.transmit_count > max_r as u32
+            && record.transmissions_sent() > max_r as u32
         {
             return true;
         }
@@ -7985,7 +8024,9 @@ mod tests {
                 1000,
                 ChunkRecord {
                     payload: Bytes::from_static(b"test data that will be retransmitted"),
-                    sent_time: Instant::now() - Duration::from_secs(1), // Already timed out
+                    // Instant counts from its first use in the process: move
+                    // the clock forward below rather than back here.
+                    sent_time: Instant::now(),
                     transmit_count: 1,
                     missing_reports: 0,
                     abandoned: false,
@@ -8010,20 +8051,15 @@ mod tests {
 
             let current_rto = sctp.inner.rto_state.lock().rto;
 
-            // Reset sent_time to be older than current RTO to trigger timeout
-            {
-                let mut sent_queue = sctp.inner.sent_queue.lock();
-                if let Some(record) = sent_queue.get_mut(&1000) {
-                    // Make sent_time at least RTO + 1 second in the past
-                    record.sent_time = Instant::now() - Duration::from_secs_f64(current_rto + 1.0);
-                }
-            }
+            // Expire the timer: RTO + 1 second after the chunk was sent.
+            let expire_at = sctp.inner.sent_queue.lock()[&1000].sent_time
+                + Duration::from_secs_f64(current_rto + 1.0);
 
             // Clear the rate limiting guard to simulate RTO timeout
             *sctp.inner.last_t3_fire_time.lock() = None;
 
             // Trigger timeout
-            sctp.inner.handle_timeout().await.unwrap();
+            sctp.inner.handle_timeout_at(expire_at).await.unwrap();
 
             // Check state
             let state = *sctp.inner.state.lock();
@@ -8054,6 +8090,12 @@ mod tests {
                 println!("Connection closed after {} retransmissions", i);
                 break;
             }
+
+            // The sender resends the marked chunk before the next timer; a
+            // T3 counts a chunk that is still marked only once.
+            *sctp.inner.data_send_after.lock() = None;
+            sctp.inner.transmit().await.unwrap();
+            assert!(!sctp.inner.sent_queue.lock()[&1000].needs_retransmit);
         }
 
         // Verify connection state after 5 retransmissions
@@ -11000,10 +11042,14 @@ mod tests {
             max_retransmits: None,
             expiry: None,
         };
+        // An older chunk below the tail: TLP probes the tail and restarts its
+        // timer, so this one makes the T3 fire.
+        sctp.inner.sent_queue.lock().insert(99, chunk.clone());
         sctp.inner.sent_queue.lock().insert(100, chunk);
         *sctp.inner.last_send_or_ack.lock() = sent_at;
 
         let probes_before = sctp.inner.stats_tlp_probes.load(Ordering::Relaxed);
+        let t3_before = sctp.inner.stats_t3_expiries.load(Ordering::Relaxed);
 
         // 1. TLP fires first (sleep-branch order).
         let tlp_fired = sctp.inner.maybe_send_tlp_probe(expired);
@@ -11015,15 +11061,19 @@ mod tests {
         let probes_after = sctp.inner.stats_tlp_probes.load(Ordering::Relaxed);
         assert_eq!(probes_after, probes_before + 1, "TLP probe counter");
 
-        let q = sctp.inner.sent_queue.lock();
-        let record = q.get(&100).unwrap();
-        // TLP bumped to 2; T3 finds the chunk already marked and leaves the
-        // count. At minimum, needs_retransmit is set and transmit_count >= 2.
-        assert!(
-            record.transmit_count >= 2,
-            "transmit_count must be at least 2 (TLP=2, T3 may also bump)"
+        assert_eq!(
+            sctp.inner.stats_t3_expiries.load(Ordering::Relaxed),
+            t3_before + 1,
+            "T3 fires for the older chunk"
         );
-        assert!(record.needs_retransmit, "TSN must be marked for retransmit");
+        let q = sctp.inner.sent_queue.lock();
+        // TLP marked the tail (count 2); T3 finds it still marked and does
+        // not count it again. T3 marks the older chunk once.
+        for tsn in [99, 100] {
+            let record = &q[&tsn];
+            assert!(record.needs_retransmit, "TSN {tsn} must be marked");
+            assert_eq!(record.transmit_count, 2, "TSN {tsn} is counted once");
+        }
     }
 
     /// B.10 verification (RFC 4960 §8.1): a HEARTBEAT round-trip must update the
@@ -11913,5 +11963,164 @@ mod receive_bounds_tests {
             .get(&1)
             .map(|s| s.pending.len());
         assert!(pending.unwrap_or(0) <= MAX_INBOUND_STREAM_PENDING_HARD);
+    }
+
+    /// A sender with `chunks` full DATA chunks queued, as many sent as the
+    /// initial window allows, TSNs from 100 (vendored change, SCTP-CC).
+    async fn t3_fixture(
+        chunks: usize,
+    ) -> (
+        Arc<SctpTransport>,
+        packet_queue::Sender,
+        impl core::future::Future<Output = ()>,
+    ) {
+        let (sctp, tx, runner) = transport_with_runner(Default::default()).await;
+        let inner = &sctp.inner;
+        inner.next_tsn.store(100, Ordering::Relaxed);
+        inner.cumulative_tsn_ack.store(99, Ordering::Relaxed);
+        inner.advanced_peer_ack_tsn.store(99, Ordering::Relaxed);
+        inner.peer_rwnd.store(1_000_000, Ordering::Relaxed);
+        inner.rto_state.lock().rto = 1.0;
+        inner
+            .send_data(1, &vec![0; DEFAULT_MAX_PAYLOAD_SIZE * chunks])
+            .await
+            .unwrap();
+        inner.transmit().await.unwrap();
+        (sctp, tx, runner)
+    }
+
+    /// Expires T3 for every outstanding chunk, moving the clock forward
+    /// (Instant counts from its first use), and lifts the pacing gate.
+    async fn t3_expire(inner: &SctpInner, after: Duration) {
+        let latest = inner
+            .sent_queue
+            .lock()
+            .values()
+            .map(|r| r.sent_time)
+            .max()
+            .unwrap();
+        inner.handle_timeout_at(latest + after).await.unwrap();
+        *inner.data_send_after.lock() = None;
+    }
+
+    fn cum_ack_sack(cum_tsn: u32) -> Bytes {
+        let mut sack = BytesMut::new();
+        sack.put_u32(cum_tsn);
+        sack.put_u32(1_000_000);
+        sack.put_u16(0);
+        sack.put_u16(0);
+        sack.freeze()
+    }
+
+    /// RFC 9260 section 7.2.3: cwnd 1 MTU and ssthresh half of it, at least
+    /// 4 MTU; a chunk still marked is counted once by the next T3, and again
+    /// once it has been resent.
+    #[tokio::test]
+    async fn t3_window_threshold_and_counts() {
+        let (sctp, _tx, _runner) = t3_fixture(3).await;
+        let inner = &sctp.inner;
+        t3_expire(inner, Duration::from_secs(2)).await;
+        assert_eq!(inner.cwnd_tx.load(Ordering::Relaxed), MAX_SCTP_PACKET_SIZE);
+        assert_eq!(inner.ssthresh.load(Ordering::Relaxed), 6000);
+        assert_eq!(inner.rto_state.lock().rto, 2.0);
+        t3_expire(inner, Duration::from_secs(3)).await;
+        assert!(
+            inner
+                .sent_queue
+                .lock()
+                .values()
+                .all(|r| r.transmit_count == 2)
+        );
+        assert_eq!(inner.rto_state.lock().rto, 4.0);
+        assert_eq!(
+            inner.ssthresh.load(Ordering::Relaxed),
+            4 * MAX_SCTP_PACKET_SIZE
+        );
+        inner.transmit().await.unwrap();
+        assert_eq!(inner.stats_retransmissions.load(Ordering::Relaxed), 1);
+        t3_expire(inner, Duration::from_secs(5)).await;
+        let q = inner.sent_queue.lock();
+        assert_eq!(q[&100].transmit_count, 3);
+        assert_eq!(q[&101].transmit_count, 2);
+        assert_eq!(q[&102].transmit_count, 2);
+    }
+
+    /// After a T3 with only retransmissions left, their SACKs still grow cwnd
+    /// by slow start (RFC 9260 section 7.2.1): the marked chunks waiting for
+    /// the window keep it in use.
+    #[tokio::test]
+    async fn t3_recovery_slow_starts_with_retransmissions_pending() {
+        let (sctp, _tx, _runner) = t3_fixture(3).await;
+        let inner = &sctp.inner;
+        assert!(inner.outbound_queue.lock().is_empty());
+        t3_expire(inner, Duration::from_secs(2)).await;
+        inner.transmit().await.unwrap();
+        assert_eq!(inner.stats_retransmissions.load(Ordering::Relaxed), 1);
+        inner.handle_sack(cum_ack_sack(100)).await.unwrap();
+        let cwnd = inner.cwnd_tx.load(Ordering::Relaxed);
+        assert!(cwnd > MAX_SCTP_PACKET_SIZE, "cwnd={cwnd}");
+        // The grown window sends both remaining retransmissions.
+        *inner.data_send_after.lock() = None;
+        inner.transmit().await.unwrap();
+        assert_eq!(inner.stats_retransmissions.load(Ordering::Relaxed), 3);
+        assert!(
+            inner
+                .sent_queue
+                .lock()
+                .values()
+                .all(|r| !r.needs_retransmit)
+        );
+    }
+
+    /// After a T3, one packet goes out before feedback, with no new data
+    /// even with new data queued (RFC 9260 section 7.2.3); a SACK lifts it.
+    #[tokio::test]
+    async fn t3_sends_one_packet_before_feedback() {
+        let (sctp, _tx, _runner) = t3_fixture(20).await;
+        let inner = &sctp.inner;
+        assert!(!inner.outbound_queue.lock().is_empty());
+        let next_tsn = inner.next_tsn.load(Ordering::Relaxed);
+        t3_expire(inner, Duration::from_secs(2)).await;
+        let packets_before = inner.stats_packets_sent.load(Ordering::Relaxed);
+        inner.transmit().await.unwrap();
+        *inner.data_send_after.lock() = None;
+        inner.transmit().await.unwrap();
+        let packets = inner.stats_packets_sent.load(Ordering::Relaxed) - packets_before;
+        assert_eq!(packets, 1);
+        assert_eq!(
+            inner.next_tsn.load(Ordering::Relaxed),
+            next_tsn,
+            "no new data"
+        );
+        assert!(inner.flight_size.load(Ordering::Relaxed) <= MAX_SCTP_PACKET_SIZE);
+        inner.handle_sack(cum_ack_sack(100)).await.unwrap();
+        assert!(!inner.t3_awaiting_feedback.load(Ordering::Relaxed));
+    }
+
+    /// Partial reliability counts retransmissions made: after a T3 with one
+    /// retry allowed per message, a chunk still waiting for the window keeps
+    /// its retry; one that has been resent is abandoned as before.
+    #[tokio::test]
+    async fn t3_keeps_a_waiting_partial_reliability_retry() {
+        let (sctp, _tx, _runner) = t3_fixture(3).await;
+        let inner = &sctp.inner;
+        for (tsn, r) in inner.sent_queue.lock().iter_mut() {
+            r.max_retransmits = Some(1);
+            r.ssn = *tsn as u16; // Independent one-chunk messages.
+        }
+        inner.has_pr_sctp.store(true, Ordering::Relaxed);
+        t3_expire(inner, Duration::from_secs(2)).await;
+        inner.transmit().await.unwrap();
+        let q = inner.sent_queue.lock();
+        assert!(
+            q.get(&100).is_none_or(|r| r.abandoned),
+            "resent once: abandoned, and dropped once the ack point passes it"
+        );
+        for tsn in [101, 102] {
+            assert!(
+                q[&tsn].needs_retransmit && !q[&tsn].abandoned,
+                "TSN {tsn} keeps its one retry"
+            );
+        }
     }
 }
