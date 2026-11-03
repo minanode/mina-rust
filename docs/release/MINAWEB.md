@@ -6,19 +6,19 @@ commands after review. The initial app is the view-only minaweb UI on devnet.
 
 ## Release contract
 
-Use a clean, reviewed commit containing the exact seed-relay allowlist and
-disabled browser discovery/signalling channels from PR 173, and the WASM
-integrity check from PR 181. The page reaches the relay through the relay's
+Use a clean, reviewed commit containing the exact seed-relay allowlist, the
+disabled browser discovery and signalling channels, and the WASM integrity
+check, all in 0.20.1 and later. The page reaches the relay through the relay's
 direct HTTPS signalling listener. The relay introduces peers to each other only
 in browser sharing's limited relay mode, which is off unless the owner turns it
 on; see [Browser sharing](#browser-sharing).
 
 The released **0.20.0 binary is not suitable for a public relay**: it predates
-PR 173. Use the 0.20.1 release, which includes PR 173, or a reviewed main commit
-built with `tools/deploy/relay/build-relay.sh`. Record the binary's full
-embedded commit, SHA-256 and CLI help, not the version string alone.
-`start-relay.sh` rejects 0.20.0, which has neither `--webrtc-signaling-relay`
-nor `--webrtc-sharing-relay`. Stock 0.20.0 remains useful for historical
+the seed-relay allowlist. Use 0.20.1 or later, or a reviewed main commit built
+with `tools/deploy/relay/build-relay.sh`. Record the binary's full embedded
+commit, SHA-256 and CLI help, not the version string alone. `start-relay.sh`
+rejects 0.20.0, which has neither `--webrtc-signaling-relay` nor
+`--webrtc-sharing-relay`. Stock 0.20.0 remains useful for historical
 comparisons, not launch acceptance.
 
 The bundle contains `browser/`, `upload/`, `manifest.json`, `SHA256SUMS` and
@@ -41,8 +41,8 @@ minaweb.org runs two relays on Hetzner Cloud, in two EU locations:
 | `relay2.minaweb.org` | Helsinki (hel1)    | DNS-only A record to its IPv4 |
 
 The page lists every relay, and each web node dials all of them. It keeps
-following the chain while one relay is down. The seed allowlist from PR 173
-holds exactly the listed relays.
+following the chain while one relay is down. The seed allowlist holds exactly
+the listed relays.
 
 Each host stands alone: its own libp2p identity and peer ID, TURN secret,
 credential service, coturn, firewall, certificate and peer limit. Hosts share no
@@ -126,10 +126,10 @@ other page does:
 The per-address limit needs the visitor's address. The relay takes it from
 `X-Forwarded-For` only when the request comes from a proxy on the same host
 (loopback), using the last address the proxy added. `relay.nginx.conf` sets the
-header from `$remote_addr`; Caddy sets it by default. An include from before PR
-#261 does not set it, so nginx passes on whatever `X-Forwarded-For` the visitor
-sent, and a visitor can claim any address. Install the new include before
-turning sharing on. The relay keeps an address only while that peer is
+header from `$remote_addr`; Caddy sets it by default. An include from before
+0.21.0 does not set it, so nginx passes on whatever `X-Forwarded-For` the
+visitor sent, and a visitor can claim any address. Install the new include
+before turning sharing on. The relay keeps an address only while that peer is
 connected, at most 1024 of them, and only in sharing mode; no log or request
 record holds it.
 
@@ -159,8 +159,8 @@ review. Install all four parts together, in this order. A binary with the flag
 behind an older nginx include trusts the visitor's own `X-Forwarded-For`, so a
 visitor could claim any address for the per-address limit.
 
-1. Install a release built from main with PR #261 (`build-relay.sh`), with the
-   `start-relay.sh` from the same commit, as under
+1. Install 0.21.0 or later, or a release built from main (`build-relay.sh`),
+   with the `start-relay.sh` from the same commit, as under
    [Routine release and rollback](#routine-release-and-rollback). Do not switch
    `current` yet. Check that the new binary has the flag:
 
@@ -184,7 +184,7 @@ visitor could claim any address for the per-address limit.
    The count is 2: the signalling and credential locations.
 
 3. Set exactly one `SHARING_RELAY=on` line in `relay.env`. A relay installed
-   before PR #261 has no such line, and a bare `sed` substitution then changes
+   before 0.21.0 has no such line, and a bare `sed` substitution then changes
    nothing, so remove any old line and append the new one:
 
    ```bash
