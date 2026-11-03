@@ -3,6 +3,67 @@ pub use std::thread::*;
 #[cfg(target_arch = "wasm32")]
 pub use wasm_thread::*;
 
+/// Where a rayon pool that its process builds after start is: the web node
+/// builds its global pool on its own, without anyone waiting for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolState {
+    Building,
+    Ready,
+    Failed,
+}
+
+/// Whether to stop waiting for a pool in `state`, `waited_ms` into a wait of
+/// at most `limit_ms`: `Some(true)` when it is built, `Some(false)` when it
+/// failed or still isn't built at the limit, `None` to wait on. A pool that is
+/// built counts before the limit does.
+pub fn pool_wait_outcome(state: PoolState, waited_ms: f64, limit_ms: f64) -> Option<bool> {
+    match state {
+        PoolState::Ready => Some(true),
+        PoolState::Failed => Some(false),
+        PoolState::Building if waited_ms >= limit_ms => Some(false),
+        PoolState::Building => None,
+    }
+}
+
+#[cfg(test)]
+mod pool_wait_tests {
+    use super::*;
+
+    const LIMIT: f64 = 20_000.0;
+
+    #[test]
+    fn a_built_pool_is_ready_at_once() {
+        assert_eq!(pool_wait_outcome(PoolState::Ready, 0.0, LIMIT), Some(true));
+        // Even past the limit, or with none: a built pool is used.
+        assert_eq!(
+            pool_wait_outcome(PoolState::Ready, LIMIT * 2.0, LIMIT),
+            Some(true)
+        );
+        assert_eq!(pool_wait_outcome(PoolState::Ready, 0.0, 0.0), Some(true));
+    }
+
+    #[test]
+    fn a_failed_pool_is_given_up_at_once() {
+        assert_eq!(
+            pool_wait_outcome(PoolState::Failed, 0.0, LIMIT),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn a_pool_still_building_is_waited_for_until_the_limit() {
+        assert_eq!(pool_wait_outcome(PoolState::Building, 0.0, LIMIT), None);
+        assert_eq!(
+            pool_wait_outcome(PoolState::Building, LIMIT - 1.0, LIMIT),
+            None
+        );
+        assert_eq!(
+            pool_wait_outcome(PoolState::Building, LIMIT, LIMIT),
+            Some(false)
+        );
+    }
+}
+
 #[cfg(target_family = "wasm")]
 mod main_thread {
     use crate::channels::{mpsc, oneshot};
