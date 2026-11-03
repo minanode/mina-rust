@@ -648,6 +648,9 @@ class BrotliWasmTest(unittest.TestCase):
             (answer(*base, ("Content-Encoding", "br"), ("Content-Encoding", "gzip")),
              "2 Content-Encoding fields"),
             (answer(*base, ("Content-Encoding", "br, gzip")), "is not one coding"),
+            # Empty and blank elements are elements: a browser keeps the bytes encoded.
+            *((answer(*base, ("Content-Encoding", value)), "is not one coding")
+              for value in ("br,", ",br", ",br,", "br, ", " ,br", "br, ,", " ")),
             (answer(("Content-Type", "application/wasm"), ("Access-Control-Allow-Origin", "https://minaweb.org"),
                     ("Access-Control-Allow-Origin", "https://minaweb.org"), ("Content-Encoding", "br")),
              "2 Access-Control-Allow-Origin fields"),
@@ -683,16 +686,23 @@ class BrotliWasmTest(unittest.TestCase):
             threading.Thread(target=server.serve_forever, daemon=True).start()
             return server
         base = [("Content-Type", "application/wasm"), ("Access-Control-Allow-Origin", "https://minaweb.org")]
-        def negotiated(accept, extra=()):
+        def negotiated(accept, coding=(("Content-Encoding", "br"),), extra=()):
+            """A correct answer to every client but the brotli one, which gets
+            `coding` and `extra` as its headers: each bad edge has one fault."""
             if accept is None or "br" in accept:
-                return base + [("Content-Encoding", "br"), *extra], encoded
+                return base + list(coding) + list(extra), encoded
             return base, self.WASM
+        def bad_coding(*coding):
+            return lambda accept: negotiated(accept, coding=coding)
         edges = {
             "good": lambda accept: negotiated(accept),
             "wrong bytes": lambda accept: (base, b"not the pinned WASM"),
-            "two codings": lambda accept: (base + [("Content-Encoding", "br"), ("Content-Encoding", "gzip")], encoded),
-            "two codings in one field": lambda accept: (base + [("Content-Encoding", "br, gzip")], encoded),
-            "two origins": lambda accept: negotiated(accept, [("Access-Control-Allow-Origin", "https://minaweb.org")]),
+            "two codings": bad_coding(("Content-Encoding", "br"), ("Content-Encoding", "gzip")),
+            "two codings in one field": bad_coding(("Content-Encoding", "br, gzip")),
+            "two origins": lambda accept: negotiated(accept, extra=[("Access-Control-Allow-Origin", "https://minaweb.org")]),
+            # Empty and blank elements: a browser keeps the bytes encoded.
+            **{f"Content-Encoding {value!r}": bad_coding(("Content-Encoding", value))
+               for value in ("br,", ",br", ",br,", "br, ", " , br", "br,  ,")},
         }
         environ = dict(os.environ, PYTHONOPTIMIZE="1")
         for name, answer in edges.items():

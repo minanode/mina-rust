@@ -19,6 +19,7 @@ release before the Pages deploy. Exits non-zero on the first failure.
 """
 import gzip
 import hashlib
+import re
 import subprocess
 import sys
 from http.client import HTTPConnection, HTTPSConnection
@@ -64,6 +65,10 @@ def get(url, accept):
         conn.close()
 
 
+# An HTTP token (RFC 9110, 5.6.2): a coding name has no other characters.
+TOKEN = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+
+
 class CheckFailed(Exception):
     """An answer the asset host must not give. Raised, never asserted:
     `python -O` (PYTHONOPTIMIZE) removes every assert."""
@@ -94,9 +99,12 @@ def content_coding(headers, prefix):
     require(len(values) <= 1, f"{prefix}: {len(values)} Content-Encoding fields")
     if not values:
         return "identity"
-    codings = [c.strip().lower() for c in values[0].split(",") if c.strip()]
-    require(len(codings) == 1, f"{prefix}: Content-Encoding {values[0]!r} is not one coding")
-    return codings[0]
+    # Every comma-separated element counts, empty ones too: `br,` is not
+    # `br` to a browser, which hands over the bytes still encoded.
+    elements = [c.strip() for c in values[0].split(",")]
+    require(len(elements) == 1 and TOKEN.fullmatch(elements[0]),
+            f"{prefix}: Content-Encoding {values[0]!r} is not one coding")
+    return elements[0].lower()
 
 
 def decode(encoding, body, prefix):
