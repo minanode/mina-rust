@@ -356,9 +356,10 @@ the archive argument checks the executable's version, build metadata and CLI
 help without starting another node. Record this as CLI-only smoke; it does not
 qualify bootstrap or sync.
 
-### Deferred web build and public relay
+### Web build and public relay
 
-These gates belong to the separate web release, not native 0.20.1.
+Run these gates for a release that ships the web node archive, as 0.21.0 did. A
+native-only release skips them.
 
 - [ ] Agent: build and typecheck the web UI, then build the complete devnet WASM
       bundle from the clean candidate. Supply the qualified devnet relay
