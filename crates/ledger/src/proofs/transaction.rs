@@ -51,6 +51,7 @@ use crate::{
 
 use super::{
     constants::ProofConstants,
+    double_add::{double_add_chain, inverses_or_zero},
     field::{field, Boolean, CircuitVar, FieldWitness, GroupAffine, ToBoolean},
     public_input::messages::{dummy_ipa_step_sg, MessagesForNextWrapProof},
     step,
@@ -286,6 +287,59 @@ pub mod scalar_challenge {
         };
 
         let mut n_acc = F::zero();
+
+        // Each row adds two of `t`'s images by the endomorphism or their
+        // negations, each followed by the accumulator: the whole chain with
+        // one inversion, and the rows' `inv` with another, rather than five
+        // for each row.
+        let q = |b_x: bool, b_y: bool| {
+            let (b_x, b_y): (F, F) = (F::from(b_x), F::from(b_y));
+            (
+                (F::one() + ((endo_base - F::one()) * b_x)) * xt,
+                (b_y.double() - F::one()) * yt,
+            )
+        };
+        let qs: Vec<(F, F)> = bits.chunks(2).map(|bs| q(bs[0], bs[1])).collect();
+        let steps = match NBITS % bits_per_row {
+            0 => double_add_chain((acc.x, acc.y), &qs),
+            _ => None,
+        };
+        if let Some(steps) = steps {
+            let mut xp = acc.x;
+            let invs: Vec<F> = steps
+                .chunks(2)
+                .map(|row| {
+                    let (xr, xs) = (row[0].x, row[1].x);
+                    let v = (xp - xr) * (xr - xs);
+                    xp = xs;
+                    v
+                })
+                .collect();
+            let invs = inverses_or_zero(&invs);
+            for ((bs, (qs, steps)), inv) in bits
+                .chunks(bits_per_row)
+                .zip(qs.chunks(2).zip(steps.chunks(2)))
+                .zip(invs)
+            {
+                let b: [F; 4] = std::array::from_fn(|j| w.exists(F::from(bs[j])));
+                for (&(xq, yq), step) in qs.iter().zip(steps) {
+                    w.exists(xq);
+                    w.exists(yq);
+                    w.exists(step.s1);
+                    w.exists(step.s1_squared);
+                    w.exists(step.s2);
+                    w.exists(step.x);
+                    w.exists(step.y);
+                }
+                w.exists(inv);
+                acc = make_group::<F>(steps[1].x, steps[1].y);
+                n_acc = w.exists(
+                    (((n_acc.double() + b[0]).double() + b[1]).double() + b[2]).double() + b[3],
+                );
+            }
+            return acc;
+        }
+
         for i in 0..rows {
             let n_acc_prev = n_acc;
             let b1 = w.exists(F::from(bits[i * bits_per_row]));
@@ -380,7 +434,7 @@ where
         }
     });
 
-    let _x21_inv = w.exists({
+    let x21_inv = w.exists({
         if same_x_bool {
             F::zero()
         } else {
@@ -393,7 +447,8 @@ where
             let x1_squared = x1.square();
             (x1_squared + x1_squared + x1_squared) / (y1 + y1)
         } else {
-            (y2 - y1) / (x2 - x1)
+            // `(y2 - y1) / (x2 - x1)`, without inverting `x2 - x1` again.
+            (y2 - y1) * x21_inv
         }
     });
 
@@ -464,6 +519,32 @@ pub mod plonk_curve_ops {
         let bits_msb: [bool; NBITS] = w.exists(bits_msb::<F2, NBITS>(scalar));
         let mut acc = w.add_fast(base, base);
         let mut n_acc = F::zero();
+
+        // Each bit adds the base or its negation, then the accumulator: the
+        // whole chain with one inversion, rather than two for each bit.
+        let qs: Vec<(F, F)> = bits_msb
+            .iter()
+            .map(|b| (x_base, y_base * (F::from(*b).double() - F::one())))
+            .collect();
+        if let Some(steps) = double_add_chain((acc.x, acc.y), &qs) {
+            for (bs, steps) in bits_msb
+                .chunks(BITS_PER_CHUNK)
+                .zip(steps.chunks(BITS_PER_CHUNK))
+            {
+                n_acc = w.exists(bs.iter().fold(n_acc, |acc, b| acc.double() + F::from(*b)));
+                for step in steps {
+                    w.exists(step.s1);
+                    w.exists(step.s1_squared);
+                    w.exists(step.s2);
+                    let x_res = w.exists(step.x);
+                    let y_res = w.exists(step.y);
+                    acc = make_group(x_res, y_res);
+                }
+            }
+            let mut bits_lsb = bits_msb;
+            bits_lsb.reverse();
+            return (acc, bits_lsb);
+        }
 
         for chunk in 0..chunks {
             let bs: [bool; BITS_PER_CHUNK] =
