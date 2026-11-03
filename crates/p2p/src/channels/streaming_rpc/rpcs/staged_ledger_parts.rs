@@ -176,9 +176,18 @@ impl StagedLedgerPartsSendProgress {
                     .clone()
                     .into(),
             ),
-            Self::PreviousIncompleteZkappUpdatesSent { data, .. } => {
-                Some(data.scan_state.scan_state.trees.0.clone().into())
-            }
+            // Trees go without their completed merge jobs, as OCaml sends
+            // them. A node that applied the blocks itself keeps those jobs'
+            // proofs, about half of a full scan state's bytes, and the
+            // receiver neither hashes nor uses them.
+            Self::PreviousIncompleteZkappUpdatesSent { data, .. } => Some(
+                data.scan_state
+                    .scan_state
+                    .trees
+                    .0
+                    .with_leaner_trees()
+                    .into(),
+            ),
             Self::ScanStateTreesSending {
                 data, tree_index, ..
             } => data
@@ -188,7 +197,7 @@ impl StagedLedgerPartsSendProgress {
                 .1
                 .iter()
                 .nth(*tree_index)
-                .cloned()
+                .map(ScanStateTree::with_leaner_trees)
                 .map(Into::into),
             _ => None,
         }

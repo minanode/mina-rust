@@ -2818,6 +2818,90 @@ mod long_run_tests {
         scan.hash();
     }
 
+    fn with_leaner_wire_trees(
+        scan_state: &mina_p2p_messages::v2::TransactionSnarkScanStateStableV2,
+    ) -> mina_p2p_messages::v2::TransactionSnarkScanStateStableV2 {
+        let mut lean = scan_state.clone();
+        let trees = &mut lean.scan_state.trees;
+        trees.0 = trees.0.with_leaner_trees();
+        trees
+            .1
+            .iter_mut()
+            .for_each(|tree| *tree = tree.with_leaner_trees());
+        lean
+    }
+
+    /// The staged ledger stream sends trees without their completed merge
+    /// jobs, as OCaml's binable writes them. The receiver's scan state hashes
+    /// the same as the sender's.
+    #[test]
+    fn leaner_wire_trees_keep_the_scan_state_hash() {
+        use super::{transaction_snark::LedgerProof, ScanState};
+        use crate::scan_state::parallel_scan::{merge, JobStatus, SequenceNumber, Value};
+        use mina_p2p_messages::{binprot::BinProtRead, v2};
+        use std::sync::Arc;
+
+        let bytes = include_bytes!("../verifier/fixtures/mainnet-551267-1.bin");
+        let work = v2::TransactionSnarkWorkTStableV2::binprot_read(&mut bytes.as_slice()).unwrap();
+        let wire = match &work.proofs {
+            v2::TransactionSnarkWorkTStableV2Proofs::One(p) => p,
+            v2::TransactionSnarkWorkTStableV2Proofs::Two((p, _)) => p,
+        };
+        let proof = Arc::new(LedgerProof::try_from(wire).unwrap());
+        let mut scan = ScanState::empty(mina_core::constants::constraint_constants());
+        let Value::Node(root) = &mut scan.scan_state.trees[0].values[0] else {
+            panic!("root is a merge node")
+        };
+        root.job = merge::Job::Full(merge::Record {
+            left: proof.clone(),
+            right: proof.clone(),
+            seq_no: SequenceNumber::new(1),
+            state: JobStatus::Done,
+        });
+        let Value::Node(left) = &mut scan.scan_state.trees[0].values[1] else {
+            panic!("a merge node")
+        };
+        left.job = merge::Job::Part(proof.clone());
+
+        let full = v2::TransactionSnarkScanStateStableV2::from(&scan);
+        let lean = with_leaner_wire_trees(&full);
+        let size = |s: &v2::TransactionSnarkScanStateStableV2| {
+            let mut bytes = Vec::new();
+            mina_p2p_messages::binprot::BinProtWrite::binprot_write(s, &mut bytes).unwrap();
+            bytes.len()
+        };
+        // The Done job's two proofs are gone, the Part job's proof is kept.
+        assert!(size(&lean) < size(&full));
+        assert_eq!(with_leaner_wire_trees(&lean), lean);
+        let received = ScanState::try_from(&lean).unwrap();
+        assert!(matches!(
+            &received.scan_state.trees[0].values[1],
+            Value::Node(merge::Merge {
+                job: merge::Job::Part(_),
+                ..
+            })
+        ));
+        assert_eq!(received.hash(), scan.hash());
+    }
+
+    /// The same on a stored root: MINA_SCAN_STATE_PARTS names a frontier
+    /// store's `parts-<state_hash>.bin`, which starts with the scan state.
+    #[test]
+    #[ignore = "requires MINA_SCAN_STATE_PARTS: a frontier store's parts file"]
+    fn leaner_wire_trees_keep_a_stored_scan_state_hash() {
+        use super::ScanState;
+        use mina_p2p_messages::{binprot::BinProtRead, v2};
+
+        let path = std::env::var_os("MINA_SCAN_STATE_PARTS").unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        let full =
+            v2::TransactionSnarkScanStateStableV2::binprot_read(&mut bytes.as_slice()).unwrap();
+        let lean = with_leaner_wire_trees(&full);
+        let sent = ScanState::try_from(&full).unwrap();
+        let received = ScanState::try_from(&lean).unwrap();
+        assert_eq!(received.hash(), sent.hash());
+    }
+
     #[test]
     fn mismatched_work_bundle_lengths_return_error() {
         // OCaml one_or_two.ml zip rejects both unequal-cardinality cases.
