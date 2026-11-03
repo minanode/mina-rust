@@ -14,7 +14,10 @@ pub use transition_frontier_sync_ledger_staged_service::*;
 use std::sync::Arc;
 
 use ledger::{
-    scan_state::{pending_coinbase::PendingCoinbase, scan_state::ScanState},
+    scan_state::{
+        pending_coinbase::{InvalidPendingCoinbase, PendingCoinbase},
+        scan_state::ScanState,
+    },
     staged_ledger::hash::StagedLedgerHash,
 };
 use mina_p2p_messages::{
@@ -59,10 +62,17 @@ impl StagedLedgerAuxAndPendingCoinbasesValid {
     /// make with their ledger hash.
     fn convert(
         parts: &StagedLedgerAuxAndPendingCoinbases,
-    ) -> Result<(Self, MinaBaseStagedLedgerHashStableV1), InvalidBigInt> {
-        let scan_state: ScanState = (&parts.scan_state).try_into()?;
-        let mut pending_coinbase: PendingCoinbase = (&parts.pending_coinbase).try_into()?;
-        let ledger_hash: Fp = parts.staged_ledger_hash.to_field()?;
+    ) -> Result<(Self, MinaBaseStagedLedgerHashStableV1), String> {
+        let scan_state: ScanState = (&parts.scan_state)
+            .try_into()
+            .map_err(|error: InvalidBigInt| format!("scan state: {error}"))?;
+        let mut pending_coinbase: PendingCoinbase = (&parts.pending_coinbase)
+            .try_into()
+            .map_err(|error: InvalidPendingCoinbase| error.to_string())?;
+        let ledger_hash: Fp = parts
+            .staged_ledger_hash
+            .to_field()
+            .map_err(|error: InvalidBigInt| format!("staged ledger hash: {error}"))?;
         let hash = StagedLedgerHash::of_aux_ledger_and_coinbase_hash(
             scan_state.hash(),
             ledger_hash,
@@ -222,6 +232,21 @@ mod tests {
             needed_blocks: List::new(),
         };
         (Arc::new(parts), hash)
+    }
+
+    /// A peer's parts whose pending coinbase keeps the expected root but
+    /// misses a stack index (which the staged ledger hash doesn't cover) are
+    /// invalid.
+    #[test]
+    fn parts_with_a_pending_coinbase_missing_an_index_are_invalid() {
+        let (wire, hash) = parts();
+        let mut tampered = (*wire).clone();
+        let indexes = &mut tampered.pending_coinbase.tree.indexes;
+        *indexes = indexes.iter().skip(1).cloned().collect();
+        assert!(
+            !StagedLedgerAuxAndPendingCoinbasesValidated::validate(&Arc::new(tampered), &hash)
+                .is_valid()
+        );
     }
 
     /// Parts that make the expected hash are kept converted, and convert

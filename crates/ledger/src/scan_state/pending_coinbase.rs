@@ -966,6 +966,31 @@ impl PendingCoinbaseWitness {
     }
 }
 
+/// Why a pending coinbase received from a peer or read from a store is
+/// refused.
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum InvalidPendingCoinbase {
+    #[error("a field element is out of range")]
+    Field(#[from] InvalidBigInt),
+    #[error("the pending coinbase tree is invalid: {0}")]
+    Tree(String),
+}
+
+/// The leaf a stack id names in a pending coinbase tree of `depth`: its id's
+/// bits reversed. OCaml's `create_exn'` builds each stack's path from the leaf
+/// up with the id's lowest bit last, so that bit picks the root's child, and
+/// `make_tree` adds every id from 0 to `2^depth - 1`; nothing later adds or
+/// moves one. [`merkle_tree::MiniMerkleTree::fill_with`] has the same table
+/// for depth 5.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/2ee6e004ba8c6a0541056076aab22ea162f7eb3a/src/lib/mina_base/pending_coinbase.ml#L1028-L1050>
+pub fn stack_leaf_index(stack_id: u64, depth: usize) -> u64 {
+    if depth == 0 {
+        return 0;
+    }
+    stack_id.reverse_bits() >> (u64::BITS as usize - depth)
+}
+
 /// Keep it a bit generic, in case we need a merkle tree somewhere else
 pub mod merkle_tree {
     use crate::{AccountIndex, AddressIterator, Direction, HashesMatrix};
@@ -1247,6 +1272,187 @@ pub mod merkle_tree {
     //     , add_path
     //     , merkle_root )]
     // end
+}
+
+/// Converting a pending coinbase from the wire rebuilds it from its leaves
+/// (`conv.rs`). These keep the root hash a peer or store declares and change
+/// what is under it.
+#[cfg(test)]
+mod wire_tree_tests {
+    use mina_p2p_messages::{
+        number::UInt64,
+        v2::{
+            MinaBasePendingCoinbaseMerkleTreeVersionedStableV2Tree as Tree,
+            MinaBasePendingCoinbaseStableV2, MinaBasePendingCoinbaseStackIdStableV1,
+            MinaBasePendingCoinbaseStackVersionedStableV1, PendingCoinbaseHash,
+        },
+    };
+
+    use super::*;
+
+    #[cfg(target_family = "wasm")]
+    use wasm_bindgen_test::wasm_bindgen_test as test;
+
+    fn depth() -> usize {
+        constraint_constants().pending_coinbase_depth
+    }
+
+    /// A pending coinbase as nodes keep it: created, then two stacks used.
+    fn honest() -> PendingCoinbase {
+        let depth = depth();
+        let mut pending_coinbase = PendingCoinbase::create(depth);
+        for (slot, new) in [(3, true), (4, false), (9, true)] {
+            let stack = pending_coinbase
+                .latest_stack(new)
+                .push_state(Fp::from(slot as u64 + 100), Slot::from_u32(slot));
+            pending_coinbase
+                .update_coinbase_stack(depth, stack, new)
+                .unwrap();
+        }
+        pending_coinbase.merkle_root();
+        pending_coinbase
+    }
+
+    fn wire() -> MinaBasePendingCoinbaseStableV2 {
+        (&honest()).into()
+    }
+
+    fn reason(wire: &MinaBasePendingCoinbaseStableV2) -> String {
+        match PendingCoinbase::try_from(wire) {
+            Ok(_) => panic!("accepted"),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    fn leaves(tree: &mut Tree) -> Vec<&mut MinaBasePendingCoinbaseStackVersionedStableV1> {
+        match tree {
+            Tree::Account(stack) => vec![stack],
+            Tree::Node(_, left, right) => {
+                let mut all = leaves(left);
+                all.extend(leaves(right));
+                all
+            }
+            Tree::Hash(_) => vec![],
+        }
+    }
+
+    fn root_hash(tree: &Tree) -> PendingCoinbaseHash {
+        match tree {
+            Tree::Node(hash, ..) | Tree::Hash(hash) => hash.clone(),
+            Tree::Account(_) => panic!("a leaf at the root"),
+        }
+    }
+
+    #[test]
+    fn an_honest_tree_converts_back_to_itself() {
+        let mut original = honest();
+        let wire = wire();
+        let mut back = PendingCoinbase::try_from(&wire).unwrap();
+        assert_eq!(back.merkle_root(), original.merkle_root());
+        assert!(back.hash_extra() == original.hash_extra());
+        // The same tree and positions; the index list in any order (it is
+        // written from a `HashMap`).
+        let again = MinaBasePendingCoinbaseStableV2::from(&back);
+        assert_eq!(again.tree.tree, wire.tree.tree);
+        assert_eq!(
+            (&again.pos_list, &again.new_pos),
+            (&wire.pos_list, &wire.new_pos)
+        );
+        let sorted = |w: &MinaBasePendingCoinbaseStableV2| {
+            let mut indexes: Vec<_> = w
+                .tree
+                .indexes
+                .iter()
+                .map(|(id, index)| (id.as_u64(), index.as_u64()))
+                .collect();
+            indexes.sort();
+            indexes
+        };
+        assert_eq!(sorted(&again), sorted(&wire));
+        // Every stack id at OCaml's leaf, as `fill_with`'s table has them.
+        for (id, addr) in &original.tree.indexes {
+            assert_eq!(
+                addr.to_index().as_u64(),
+                stack_leaf_index(id.as_u64(), depth())
+            );
+        }
+        assert_eq!(stack_leaf_index(1, 5), 16);
+        assert_eq!(stack_leaf_index(30, 5), 15);
+    }
+
+    #[test]
+    fn a_changed_leaf_under_the_declared_root_is_refused() {
+        let mut wire = wire();
+        let other: MinaBasePendingCoinbaseStackVersionedStableV1 =
+            (&Stack::empty().push_state(Fp::from(7u64), Slot::from_u32(1))).into();
+        let root = root_hash(&wire.tree.tree);
+        *leaves(&mut wire.tree.tree).remove(0) = other;
+        assert_eq!(root_hash(&wire.tree.tree), root);
+        assert!(reason(&wire).contains("stored hash"), "{}", reason(&wire));
+    }
+
+    #[test]
+    fn a_missing_or_moved_index_is_refused() {
+        let mut missing = wire();
+        missing.tree.indexes = missing.tree.indexes.iter().skip(1).cloned().collect();
+        assert!(
+            reason(&missing).contains("stack indexes"),
+            "{}",
+            reason(&missing)
+        );
+
+        let mut moved = wire();
+        let mut indexes: Vec<_> = moved.tree.indexes.iter().cloned().collect();
+        let (first, second) = (indexes[0].1.clone(), indexes[1].1.clone());
+        indexes[0].1 = second;
+        indexes[1].1 = first;
+        moved.tree.indexes = indexes.into_iter().collect();
+        assert!(reason(&moved).contains("at leaf"), "{}", reason(&moved));
+
+        let mut twice = wire();
+        let mut indexes: Vec<_> = twice.tree.indexes.iter().cloned().collect();
+        indexes[1] = indexes[0].clone();
+        twice.tree.indexes = indexes.into_iter().collect();
+        assert!(reason(&twice).contains("twice"), "{}", reason(&twice));
+    }
+
+    #[test]
+    fn a_pruned_or_reshaped_tree_is_refused() {
+        // A subtree replaced by its correct hash: same root, no leaves.
+        let mut pruned = wire();
+        if let Tree::Node(_, left, _) = &mut pruned.tree.tree {
+            let hash = root_hash(left);
+            **left = Tree::Hash(hash);
+        }
+        assert!(
+            reason(&pruned).contains("complete tree"),
+            "{}",
+            reason(&pruned)
+        );
+
+        // A leaf where a node belongs.
+        let mut short = wire();
+        if let Tree::Node(_, left, _) = &mut short.tree.tree {
+            let leaf = leaves(left).remove(0).clone();
+            **left = Tree::Account(leaf);
+        }
+        assert!(
+            reason(&short).contains("complete tree"),
+            "{}",
+            reason(&short)
+        );
+
+        let mut deeper = wire();
+        deeper.tree.depth = UInt64::from(depth() as u64 + 1);
+        assert!(reason(&deeper).contains("depth"), "{}", reason(&deeper));
+    }
+
+    #[test]
+    fn a_stack_id_out_of_range_is_refused() {
+        let mut wire = wire();
+        wire.new_pos = MinaBasePendingCoinbaseStackIdStableV1(UInt64::from(1u64 << depth()));
+        assert!(reason(&wire).contains("out of range"), "{}", reason(&wire));
+    }
 }
 
 #[cfg(test)]
