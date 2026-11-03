@@ -212,11 +212,16 @@ impl P2pChannelsStreamingRpcState {
                 if let Some(response) = peer.channels.streaming_rpc.local_done_response() {
                     match partner {
                         Some((partner, partner_rpc_id)) if partner_cancelled => {
-                            dispatcher.push(P2pChannelsEffectfulAction::MessageSend {
-                                peer_id: partner,
-                                msg_id: MsgId::first(),
-                                msg: StreamingRpcChannelMsg::Cancel(partner_rpc_id).into(),
-                            });
+                            // Neither relay has sent its whole stream: both
+                            // are told to stop, so each drops what it holds
+                            // and takes our next request.
+                            for (peer_id, id) in [(partner, partner_rpc_id), (peer_id, id)] {
+                                dispatcher.push(P2pChannelsEffectfulAction::MessageSend {
+                                    peer_id,
+                                    msg_id: MsgId::first(),
+                                    msg: StreamingRpcChannelMsg::Cancel(id).into(),
+                                });
+                            }
                         }
                         Some((partner, partner_rpc_id)) => {
                             dispatcher.push(P2pChannelsStreamingRpcAction::RequestCancel {

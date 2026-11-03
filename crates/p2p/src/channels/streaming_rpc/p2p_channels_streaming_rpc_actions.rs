@@ -149,16 +149,38 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsStreamingRpcAction {
                     )
                 })
             }
-            P2pChannelsStreamingRpcAction::RequestSend { peer_id, id, .. } => {
+            P2pChannelsStreamingRpcAction::RequestSend {
+                peer_id,
+                id,
+                request,
+                ..
+            } => {
                 state.get_ready_peer(peer_id).is_some_and(|p| {
-                    matches!(
-                        &p.channels.streaming_rpc,
-                        P2pChannelsStreamingRpcState::Ready {
-                            local: P2pStreamingRpcLocalState::WaitingForRequest { .. }
-                                | P2pStreamingRpcLocalState::Responded { .. },
-                            ..
-                        } if p.channels.next_local_rpc_id() == *id
-                    )
+                    // A peer that did not advertise it can't decode it.
+                    (!request.is_from_last() || p.channels.staged_ledger_from_last)
+                        && p.channels.next_local_rpc_id() == *id
+                        && match &p.channels.streaming_rpc {
+                            P2pChannelsStreamingRpcState::Ready {
+                                local:
+                                    P2pStreamingRpcLocalState::WaitingForRequest { .. }
+                                    | P2pStreamingRpcLocalState::Responded { .. },
+                                ..
+                            } => true,
+                            // The part on its way when we cancelled never came
+                            // within a part's timeout: the channel is free again.
+                            P2pChannelsStreamingRpcState::Ready {
+                                local:
+                                    P2pStreamingRpcLocalState::Cancelled {
+                                        time: cancelled, ..
+                                    },
+                                ..
+                            } => request.kind().timeout(&state.config.timeouts).is_some_and(
+                                |timeout| {
+                                    time.checked_sub(*cancelled).is_some_and(|t| t >= timeout)
+                                },
+                            ),
+                            _ => false,
+                        }
                 })
             }
             P2pChannelsStreamingRpcAction::Timeout { peer_id, id } => {
