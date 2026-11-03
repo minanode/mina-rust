@@ -156,7 +156,7 @@ const DUP_THRESH: u8 = 3;
 // Use IW10 (RFC 6928) for faster ramp-up, matching modern TCP behaviour
 const CWND_INITIAL: usize = MAX_SCTP_PACKET_SIZE * 10; // 10 * 1200 = 12000 bytes
 const SSTHRESH_MIN: usize = MAX_SCTP_PACKET_SIZE * 4; // 4 * 1200 = 4800 bytes
-const CWND_MIN_AFTER_RTO: usize = MAX_SCTP_PACKET_SIZE * 4; // 4 * 1200 = 4800 bytes (faster recovery after RTO)
+const CWND_AFTER_RTO: usize = MAX_SCTP_PACKET_SIZE; // RFC 9260 section 7.2.3: 1 MTU
 
 // Memory limits for inbound queues - balanced for memory efficiency and loss tolerance
 // These values provide good memory efficiency while maintaining tolerance for packet loss
@@ -1695,9 +1695,13 @@ impl SctpInner {
                     // a lost fast retransmission among them waited for
                     // another, backed-off, T3 per few chunks (vendored change,
                     // SCTP-CC). One that is acked before it goes out is not
-                    // resent.
+                    // resent. A chunk still marked from an earlier T3, fast
+                    // retransmit or probe is counted once, so partial
+                    // reliability's limit counts retransmissions, not timers.
+                    if !record.needs_retransmit {
+                        record.transmit_count += 1;
+                    }
                     record.needs_retransmit = true;
-                    record.transmit_count += 1;
                     record.sent_time = now;
                     trace!(
                         "T3 retransmit: marking TSN {} for retransmission (transmit #{})",
@@ -1725,16 +1729,12 @@ impl SctpInner {
         let cwnd = self.cwnd_tx.load(Ordering::SeqCst);
         let new_ssthresh = (cwnd / 2).max(4 * MAX_SCTP_PACKET_SIZE);
         self.ssthresh.store(new_ssthresh, Ordering::SeqCst);
-        // RFC 4960 §7.2.3 prescribes cwnd = 1*MTU after RTO, but on lossy
-        // (non-congested) links — WiFi, TURN relays — repeated RTOs pin the
-        // window to the floor and throttle throughput for many RTTs. Halve the
-        // window instead (cwnd >= ssthresh, never below the floor): this keeps
-        // loss recovery fast and matches the "halve on loss" semantics used by
-        // modern congestion controllers, while still backing off under true
-        // congestion. cwnd remains below ssthresh so slow-start ramps it back
-        // up quickly once acks resume.
-        self.cwnd_tx
-            .store(new_ssthresh.max(CWND_MIN_AFTER_RTO), Ordering::SeqCst);
+        // RFC 9260 section 7.2.3: cwnd = 1 MTU after a T3, and slow start
+        // back to ssthresh. With every outstanding chunk marked, the halved
+        // window kept before let up to half the old window of retransmissions
+        // out in the first round trip after a timeout (vendored change,
+        // SCTP-CC).
+        self.cwnd_tx.store(CWND_AFTER_RTO, Ordering::SeqCst);
 
         // Notify the run_loop to call transmit() immediately
         self.timer_notify.notify_one();
@@ -5030,13 +5030,10 @@ mod tests {
         );
     }
 
-    /// Reproducer for BUG #4: on T3 (RTO) the congestion window is collapsed all
-    // the way to `CWND_MIN_AFTER_RTO` (4*MTU) regardless of how large it was,
-    /// even though `ssthresh` is only set to cwnd/2. RFC 4960 §7.2.3 halves the
-    /// window on loss; collapsing to the floor on every RTO pins throughput to
-    /// the minimum on lossy (but non-congested) links like WiFi / TURN relays.
+    /// On T3, cwnd drops to 1 MTU and ssthresh to half of cwnd, at least
+    /// 4 MTU (RFC 9260 section 7.2.3).
     #[tokio::test]
-    async fn test_bug4_cwnd_collapses_below_ssthresh_on_rto() {
+    async fn t3_sets_cwnd_to_one_mtu() {
         let (socket_tx, _) = crate::platform::sync::watch::channel(None);
         let ice_conn = crate::transports::ice::conn::IceConn::new(
             socket_tx.subscribe(),
@@ -5067,6 +5064,9 @@ mod tests {
 
         // A well-opened window.
         let big_cwnd = 50 * MAX_SCTP_PACKET_SIZE; // 60000
+        // Instant counts from its first use in the process: move the clock
+        // forward rather than back.
+        let sent_at = Instant::now();
         sctp.inner.cwnd_tx.store(big_cwnd, Ordering::SeqCst);
         sctp.inner.ssthresh.store(usize::MAX, Ordering::SeqCst);
 
@@ -5074,7 +5074,7 @@ mod tests {
             100,
             ChunkRecord {
                 payload: Bytes::from_static(b"x"),
-                sent_time: Instant::now() - Duration::from_secs(10),
+                sent_time: sent_at,
                 transmit_count: 1,
                 missing_reports: 0,
                 abandoned: false,
@@ -5091,26 +5091,19 @@ mod tests {
             },
         );
 
-        sctp.inner.handle_timeout().await.unwrap();
+        sctp.inner
+            .handle_timeout_at(sent_at + Duration::from_secs(2))
+            .await
+            .unwrap();
 
         let cwnd_after = sctp.inner.cwnd_tx.load(Ordering::SeqCst);
         let ssthresh_after = sctp.inner.ssthresh.load(Ordering::SeqCst);
-        // FIX: cwnd halves to ~ssthresh instead of collapsing to the floor.
         assert_eq!(
             ssthresh_after,
             (big_cwnd / 2).max(4 * MAX_SCTP_PACKET_SIZE),
             "ssthresh should be cwnd/2"
         );
-        assert!(
-            cwnd_after >= ssthresh_after,
-            "FIX: cwnd ({}) should halve to >= ssthresh ({}) on RTO, not collapse to floor",
-            cwnd_after,
-            ssthresh_after
-        );
-        assert!(
-            cwnd_after < big_cwnd,
-            "cwnd must still back off (be smaller than before RTO)"
-        );
+        assert_eq!(cwnd_after, MAX_SCTP_PACKET_SIZE, "cwnd should be 1 MTU");
     }
 
     /// Counterpart for BUG #3 fix: T3 should mark up to a burst limit of
@@ -8949,7 +8942,7 @@ mod tests {
     /// Test: cwnd collapse under TURN rate limiting prevents data transmission.
     ///
     /// When TURN rate-limits, repeated fast recovery entries and T3 timeouts
-    /// collapse cwnd to CWND_MIN_AFTER_RTO (1200 bytes). Combined with high
+    /// collapse cwnd to CWND_AFTER_RTO (1200 bytes). Combined with high
     /// RTO backoff, new data barely gets transmitted. This test verifies the
     /// cwnd recovery mechanism (ssthresh raise when cwnd approaches floor).
     #[tokio::test]
@@ -9036,13 +9029,12 @@ mod tests {
         let final_rto = sctp.inner.rto_state.lock().rto;
 
         println!("\n=== After T3 timeouts (simulating TURN rate limit) ===");
-        println!("cwnd: {} (min={})", final_cwnd, CWND_MIN_AFTER_RTO);
+        println!("cwnd: {} (min={})", final_cwnd, CWND_AFTER_RTO);
         println!("ssthresh: {} (min={})", final_ssthresh, SSTHRESH_MIN);
         println!("RTO: {:.1}s", final_rto);
 
-        // BUG #4 fix: cwnd backs off (halves) on RTO but does NOT collapse to
-        // the floor — it stays at >= the halved ssthresh. It must still be
-        // smaller than the initial window and never below the floor.
+        // cwnd drops to 1 MTU on RTO (RFC 9260 section 7.2.3): smaller than
+        // the initial window, never below 1 MTU.
         assert!(
             final_cwnd < CWND_INITIAL,
             "cwnd should back off after T3 timeouts (was {}, now {})",
@@ -9050,7 +9042,7 @@ mod tests {
             final_cwnd
         );
         assert!(
-            final_cwnd >= CWND_MIN_AFTER_RTO,
+            final_cwnd >= CWND_AFTER_RTO,
             "cwnd must never drop below the floor"
         );
 
@@ -9131,10 +9123,10 @@ mod tests {
         }
 
         let recovered_cwnd = sctp.inner.cwnd_tx.load(Ordering::SeqCst);
-        println!("\n=== cwnd behavior under TURN rate limiting (BUG #4 fixed) ===",);
+        println!("\n=== cwnd behavior under TURN rate limiting ===",);
         println!(
-            "cwnd backed off to {} after T3 (halved, not collapsed to floor {})",
-            final_cwnd, CWND_MIN_AFTER_RTO
+            "cwnd backed off to {} after T3 (1 MTU is {})",
+            final_cwnd, CWND_AFTER_RTO
         );
         println!("RTO backed off to {:.1}s", final_rto);
         println!(
@@ -9142,7 +9134,7 @@ mod tests {
             5, recovered_cwnd
         );
 
-        // BUG #4 fix: cwnd recovers via slow-start once SACKs resume, instead of
+        // cwnd recovers by slow start once SACKs resume, instead of
         // being pinned at the floor forever.
         assert!(
             recovered_cwnd > final_cwnd,
