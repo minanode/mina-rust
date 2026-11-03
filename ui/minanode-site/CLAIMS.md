@@ -234,9 +234,9 @@ the subject of the private measurement; they do not link to unavailable files.
 - Sources: `coordinator: private pre-release evidence; Web node and web build`
 - Figures: `WebAssembly`, `full node in a browser tab`, `syncs the chain`
 - Caveat kept: "over WebRTC" is C21. "press Start" joined the metric on 1
-  November 2026: since PR #253 nothing loads until the visitor presses Start.
-  The public web node at minaweb.org runs on devnet (C83). "syncs mainnet"
-  became "syncs the chain" on 1 November 2026, at the owner's request.
+  November 2026: since then, nothing loads until the visitor presses Start. The
+  public web node at minaweb.org runs on devnet (C83). "syncs mainnet" became
+  "syncs the chain" on 1 November 2026, at the owner's request.
 
 ### C83 Web node on minaweb.org
 
