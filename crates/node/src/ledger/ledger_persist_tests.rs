@@ -827,7 +827,7 @@ fn load_through(
     loop {
         match wait_event(events) {
             PersistEvent::Loaded(result) => return *result,
-            // The store's summary, before a load that didn't restore.
+            // The store's summary, before the load's result.
             PersistEvent::Summary(_) => {}
             other => panic!("unexpected event: {other:?}"),
         }
@@ -973,12 +973,11 @@ fn a_restore_loads_what_the_ledger_thread_checkpointed() {
     };
     assert_eq!(attempts().map(|a| a.count), Some(1));
     assert!(writer.send(PersistJob::RestoreDone));
-    // Jobs run in order: once a later job is answered, the record is gone.
-    assert!(writer.send(PersistJob::ChainPut {
-        chain: chain.clone(),
-        blocks: Vec::new(),
-    }));
-    assert!(matches!(wait_event(&events), PersistEvent::ChainPut(Ok(_))));
+    // The cleared record, as the status sees it.
+    match wait_event(&events) {
+        PersistEvent::RestoreFacts(facts) => assert_eq!(facts.prior_attempts, Some(0)),
+        other => panic!("unexpected event: {other:?}"),
+    }
     assert_eq!(attempts(), None);
     drop(manager);
 
@@ -1093,6 +1092,7 @@ fn restored_insert(
         }),
         control: std::sync::Arc::new(crate::persist::load_control::LoadControl::default()),
     }))));
+    assert!(matches!(wait_event(&events), PersistEvent::Summary(_)));
     match wait_event(&events) {
         PersistEvent::Loaded(result) => {
             assert!(
@@ -1103,6 +1103,7 @@ fn restored_insert(
         other => panic!("unexpected event: {other:?}"),
     }
     assert!(writer.send(PersistJob::RestoreDone));
+    assert!(matches!(wait_event(&events), PersistEvent::RestoreFacts(_)));
     // Jobs run in order: once a later one is answered, the record is gone.
     assert!(writer.send(PersistJob::ChainPut {
         chain: chain.to_vec(),

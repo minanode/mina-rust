@@ -71,6 +71,40 @@ export interface FrontierStore {
   unavailable: string | null;
   /** Another process, or another tab of this browser, holds the store. */
   locked: boolean;
+  /** What a reload does with the saved chain; null until the store is
+   * open, or from nodes before 0.21.1. */
+  savedChain: SavedChain | null;
+}
+
+/** What a reload does with the saved chain, by the node's restore rules. */
+export type SavedChain =
+  /** The restore at startup is under way. */
+  | { state: "checking" }
+  /** No chain saved yet: a reload syncs again. */
+  | { state: "not_saved" }
+  /** A reload restores the chain to this height. */
+  | { state: "saved"; height: number }
+  /** A chain is saved, but a reload syncs again, for `reason`. */
+  | { state: "not_restorable"; reason: string }
+  /** The node couldn't tell, for `reason`. */
+  | { state: "unknown"; reason: string };
+
+function savedChain(value: unknown): SavedChain | null {
+  const c = obj(value);
+  switch (c?.state) {
+    case "checking":
+    case "not_saved":
+      return { state: c.state };
+    case "saved": {
+      const height = num(c.height);
+      return height === null ? null : { state: "saved", height };
+    }
+    case "not_restorable":
+    case "unknown":
+      return { state: c.state, reason: str(c.reason) ?? "" };
+    default:
+      return null;
+  }
 }
 
 function frontierStore(value: unknown): FrontierStore | null {
@@ -80,6 +114,7 @@ function frontierStore(value: unknown): FrontierStore | null {
     open: bool(f.open) ?? false,
     unavailable: str(f.unavailable),
     locked: bool(f.locked) ?? false,
+    savedChain: savedChain(f.saved_chain),
   };
 }
 

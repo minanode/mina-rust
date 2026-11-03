@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
-import type { FrontierStore } from "@minanode/node-client";
+import type { FrontierStore, SavedChain } from "@minanode/node-client";
 
 const state = vi.hoisted(() => ({
   store: null as FrontierStore | null,
@@ -25,15 +25,27 @@ vi.mock("@minanode/node-client/react", () => ({
 
 const { FrontierStoreCard } = await import("./boot");
 const { SecondTabBanner } = await import("../app/second-tab-banner");
-const { storeLabel, storeState } = await import("../lib/store");
+const { savedChainLabel, storeLabel, storeState } = await import(
+  "../lib/store"
+);
 
-const open: FrontierStore = { open: true, unavailable: null, locked: false };
+const open: FrontierStore = {
+  open: true,
+  unavailable: null,
+  locked: false,
+  savedChain: null,
+};
 const opening: FrontierStore = { ...open, open: false };
 const locked: FrontierStore = {
   open: false,
   unavailable: "the store is locked by another process",
   locked: true,
+  savedChain: null,
 };
+const withChain = (savedChain: SavedChain): FrontierStore => ({
+  ...open,
+  savedChain,
+});
 
 beforeEach(() => {
   state.store = null;
@@ -58,6 +70,45 @@ test("the store's status, as the Overview and Start-up show it", () => {
     kind: "unavailable",
     reason: "disk full",
   });
+});
+
+test("the saved chain, as the Overview and Start-up show it", () => {
+  const on = storeState(true, open);
+  const label = (chain: SavedChain | null) => savedChainLabel(on, chain);
+  expect(label({ state: "not_saved" })).toBe("Not saved yet");
+  expect(label({ state: "saved", height: 583765 })).toBe("Saved at #583765");
+  expect(label({ state: "not_restorable", reason: "stale" })).toBe(
+    "Saved, but a reload syncs again",
+  );
+  expect(label({ state: "checking" })).toBe("Checking");
+  expect(label({ state: "unknown", reason: "no clock" })).toBe("Not known");
+  // Older nodes don't say; a store not open in this tab has none.
+  expect(label(null)).toBeNull();
+  const saved: SavedChain = { state: "saved", height: 5 };
+  expect(savedChainLabel(storeState(true, locked), saved)).toBeNull();
+  expect(savedChainLabel(storeState(false, withChain(saved)), saved)).toBe(
+    null,
+  );
+});
+
+test("the card: the saved chain's height, or why a reload syncs again", () => {
+  state.store = withChain({ state: "not_saved" });
+  render(<FrontierStoreCard />);
+  expect(screen.getByText("Not saved yet")).toBeTruthy();
+  cleanup();
+  state.store = withChain({ state: "saved", height: 583765 });
+  render(<FrontierStoreCard />);
+  expect(screen.getByText("Saved at #583765")).toBeTruthy();
+  expect(screen.queryByText("Why")).toBeNull();
+  cleanup();
+  const reason = "the stored tip is at slot 9, 1200 slots behind the clock";
+  state.store = withChain({ state: "not_restorable", reason });
+  render(<FrontierStoreCard />);
+  expect(screen.getByText("Saved, but a reload syncs again")).toBeTruthy();
+  expect(screen.getByText(reason)).toBeTruthy();
+  expect(screen.queryByText(/Saved at/)).toBeNull();
+  // One docs link, whatever the state.
+  expect(screen.getAllByRole("link")).toHaveLength(1);
 });
 
 test("before the node says, or while the store opens: no reset", () => {

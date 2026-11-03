@@ -18,6 +18,11 @@
  *   MINAWEB_WASM_URL        the WASM, required
  *   MINAWEB_WASM_SHA256     its SHA-256, required
  *   MINAWEB_WASM_BYTES      its size, for the download's progress
+ *   MINAWEB_WASM_COMPRESSED_BYTES
+ *                           the size the WASM's host sends it at, when the
+ *                           host compresses it, for the start screen. The
+ *                           build's own .br size is no guide: a CDN may
+ *                           compress it again, or not at all
  *   MINAWEB_START_BYTES     the other files every start loads (the glue,
  *                           its snippets, the verifier indexes the build
  *                           ships, the genesis config and peer list), for
@@ -37,7 +42,12 @@ export interface BuildConfig {
   iceServersUrls: string[];
   frontierStore: boolean;
   glueUrl: string;
-  wasm: { url: string; sha256: string; bytes: number | null };
+  wasm: {
+    url: string;
+    sha256: string;
+    bytes: number | null;
+    compressedBytes: number | null;
+  };
   /** The other files every start loads, in bytes (MINAWEB_START_BYTES). */
   startBytes: number | null;
   commit: string | null;
@@ -111,6 +121,10 @@ export function readBuildConfig(
     );
   }
   const bytes = /^\d+$/.test(bytesText) ? Number(bytesText) : null;
+  const compressedText = env.MINAWEB_WASM_COMPRESSED_BYTES ?? "";
+  const compressedBytes = /^\d+$/.test(compressedText)
+    ? Number(compressedText)
+    : null;
   const startText = env.MINAWEB_START_BYTES ?? "";
   const startBytes = /^\d+$/.test(startText) ? Number(startText) : null;
   const seedUrls = list(env.MINAWEB_SEED_URLS);
@@ -124,7 +138,7 @@ export function readBuildConfig(
     ),
     frontierStore: store === "on",
     glueUrl: env.MINAWEB_GLUE_URL || "/assets/webnode/pkg/mina_node_web.js",
-    wasm: { url: wasmUrl, sha256, bytes },
+    wasm: { url: wasmUrl, sha256, bytes, compressedBytes },
     startBytes,
     commit: env.MINAWEB_COMMIT || fromInfo("stamp") || null,
   };

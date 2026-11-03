@@ -44,6 +44,7 @@ import {
 import { Loaded, PolledAge } from "minanode-dashboard/components/states";
 
 import { Link, navigate } from "../app/router";
+import { useStatusCatchUp } from "../lib/tip";
 
 const POLL_MS = 5_000;
 const SHOWN = 40;
@@ -235,6 +236,10 @@ export function BestChain() {
   );
   const { status } = useNodeStatus();
   const tip = status.data?.bestTip?.hash ?? null;
+  // The newest page's first block is the best tip this list knows.
+  useStatusCatchUp(
+    below === null ? (chain.data?.headers[0]?.height ?? null) : null,
+  );
 
   return (
     <PageSection

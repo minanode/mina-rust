@@ -8,9 +8,12 @@ use super::{
 };
 use crate::{
     ledger::write::LedgerWriteState,
-    persist::event::{
-        PersistChainPutDone, PersistCheckpointDone, PersistOpened, PersistRestored,
-        PersistSnapshotInfo, PersistStoreSummary, PersistWriteError,
+    persist::{
+        event::{
+            PersistChainPutDone, PersistCheckpointDone, PersistOpened, PersistRestored,
+            PersistSnapshotInfo, PersistStoreSummary, PersistWriteError,
+        },
+        load::RestoreFacts,
     },
 };
 
@@ -84,11 +87,17 @@ pub enum TransitionFrontierPersistAction {
     LoadProgress {
         completed_stages: u64,
     },
-    /// The store's newest manifest after a load that didn't restore: a load
-    /// that gave up a damaged generation fell back to the older one.
+    /// The store's newest manifest after a load: a load that gave up a
+    /// damaged generation fell back to the older one.
     #[action_event(level = info, fields(generation = store.generation))]
     StoreSummary {
         store: Box<PersistStoreSummary>,
+    },
+    /// What the loader would decide a restore on now: after the attempts
+    /// record is cleared, or when the rest of the summary couldn't be read.
+    #[action_event(level = debug, fields(generation = facts.generation))]
+    StoreRestoreFacts {
+        facts: Box<RestoreFacts>,
     },
     /// The load crossed its idle timeout: request cancellation. Once
     /// cancellation is accepted, bound the wait for its acknowledgement.
@@ -181,7 +190,9 @@ impl redux::EnablingCondition<crate::State> for TransitionFrontierPersistAction 
                     && tf.sync.is_synced()
                     && tf.root().is_some_and(|root| root.is_genesis())
             }
-            Self::StoreSummary { .. } => persist.ready().is_some(),
+            Self::StoreSummary { .. } | Self::StoreRestoreFacts { .. } => {
+                persist.ready().is_some()
+            }
             Self::LoadLedgersOnly { .. }
             | Self::LoadAbsent { .. }
             | Self::LoadDiscarded { .. }

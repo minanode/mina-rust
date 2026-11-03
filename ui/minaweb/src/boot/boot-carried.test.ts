@@ -21,7 +21,7 @@ const CONFIG: BuildConfig = {
   iceServersUrls: [],
   frontierStore: false,
   glueUrl: "/glue.js",
-  wasm: { url: "/node.wasm", sha256: "00", bytes: null },
+  wasm: { url: "/node.wasm", sha256: "00", bytes: null, compressedBytes: null },
   startBytes: null,
   commit: null,
 };

@@ -14,6 +14,7 @@ describe("the build's web node", () => {
         MINAWEB_WASM_URL: "/assets/webnode/pkg/x.wasm",
         MINAWEB_WASM_SHA256: SHA.toUpperCase(),
         MINAWEB_WASM_BYTES: "37785897",
+        MINAWEB_WASM_COMPRESSED_BYTES: "5904563",
         MINAWEB_START_BYTES: "6754551",
         MINAWEB_COMMIT: "abc",
       }),
@@ -25,7 +26,12 @@ describe("the build's web node", () => {
       iceServersUrls: [],
       frontierStore: true,
       glueUrl: "/assets/webnode/pkg/mina_node_web.js",
-      wasm: { url: "/assets/webnode/pkg/x.wasm", sha256: SHA, bytes: 37785897 },
+      wasm: {
+        url: "/assets/webnode/pkg/x.wasm",
+        sha256: SHA,
+        bytes: 37785897,
+        compressedBytes: 5904563,
+      },
       startBytes: 6754551,
       commit: "abc",
     });
@@ -46,7 +52,12 @@ describe("the build's web node", () => {
       relays: [RELAY],
       frontierStore: false,
       seedUrls: ["/webnode-mainnet/peers.txt"],
-      wasm: { url: "/assets/webnode/pkg/y.wasm", sha256: SHA, bytes: 5 },
+      wasm: {
+        url: "/assets/webnode/pkg/y.wasm",
+        sha256: SHA,
+        bytes: 5,
+        compressedBytes: null,
+      },
       startBytes: null,
       commit: "def",
     });

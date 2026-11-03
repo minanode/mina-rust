@@ -45,6 +45,10 @@ function answer(query: {
   });
 }
 
+/** The header's best tip, from the shared /status. */
+let statusTip: number | null = null;
+const refreshStatus = vi.fn();
+
 const polled = <T,>(data: T) => ({
   data,
   error: null,
@@ -57,7 +61,12 @@ vi.mock("@minanode/node-client/react", () => ({
   useBestChainHeaders: (query: { limit?: number; maxHeight?: number }) =>
     polled(answer(query)),
   useVerificationOf: () => polled({ receipts: [] }),
-  useNodeStatus: () => ({ status: polled(null) }),
+  useNodeStatus: () => ({
+    status: {
+      ...polled(statusTip === null ? null : { bestTip: { height: statusTip } }),
+      refresh: refreshStatus,
+    },
+  }),
   useNodeClient: () => ({ baseUrl: "http://node" }),
   usePoll: () => polled({ receipts: [] }),
 }));
@@ -123,4 +132,20 @@ test("the page links the docs on blocks it did not check", () => {
   render(<BlocksPage />);
   const link = screen.getByRole("link", { name: /Web node docs/ });
   expect(link.getAttribute("href")).toBe(NOT_CHECKED_DOCS_URL);
+});
+
+test("a list with a block above the header's tip asks /status again", () => {
+  root = 100;
+  statusTip = 159;
+  refreshStatus.mockClear();
+  render(<BestChain />);
+  // The list's newest block is 160: the header's 159 is one behind.
+  expect(refreshStatus).toHaveBeenCalledTimes(1);
+  cleanup();
+
+  statusTip = 160;
+  refreshStatus.mockClear();
+  render(<BestChain />);
+  expect(refreshStatus).not.toHaveBeenCalled();
+  statusTip = null;
 });
