@@ -11,9 +11,9 @@ before creating the final tag. Commands below describe owner publication work.
 An agent preparing a readiness PR must not execute public writes.
 
 0.20.1 is a native-node release: its assets and `SHA256SUMS` contain only the
-two Linux archives. Minaweb and the downloadable web archive have a separate
-release described in the [0.21.0 notes](0.21.0.md). Keep the web download page
-hidden for 0.20.1; none of the web gates below qualifies a 0.20.1 asset.
+two Linux archives. From 0.21.0, the web archive ships in the same release as
+the two Linux archives, and one `SHA256SUMS` lists all three; see
+[Web archive](#web-archive).
 
 ## Set up and back up the keys
 
@@ -447,12 +447,14 @@ record the digest, and test pulls on fresh matching hosts as in
       acceptance or launch claim remains. Follow step 5 above. Retain the final
       public commit, signed tag, archive digests and image digest together.
 
-## Separate web release (not 0.20.1)
+## Web archive
 
-The web archive has a separate release, output directory and checksum list. The
-native builder never calls the web packager. Set `WEB_VERSION` to the separately
-approved web workspace version and `WEB_DIST` to a new directory outside the
-native 0.20.1 output. Do not build or upload a web asset as 0.20.1.
+From 0.21.0, the web archive is an asset of the same release as the native
+archives, and the release has one `SHA256SUMS` for all three. The native builder
+never calls the web packager. Set `WEB_VERSION` to the release version and
+`WEB_DIST` to a new directory outside `dist`. Build the web archive, check it,
+then copy it into `dist` and append its checksum line to `dist/SHA256SUMS`
+before signing.
 
 ```sh
 export RELAY="$PUBLIC_WEBRTC_MULTIADDRS" # comma-separated, one per relay
@@ -460,6 +462,9 @@ nice -n 10 env CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 
   tools/regression/lock.sh build -- \
   python3 -B tools/release/build-web.py "$WEB_VERSION" --output "$WEB_DIST"
 (cd "$WEB_DIST" && sha256sum --check SHA256SUMS)
+cp "$WEB_DIST/mina-web-$WEB_VERSION.tar.gz" dist/
+cat "$WEB_DIST/SHA256SUMS" >>dist/SHA256SUMS
+(cd dist && sha256sum --check SHA256SUMS)
 ```
 
 - [ ] Owner: fill in the real public relay multiaddrs once their identities
@@ -491,10 +496,11 @@ nice -n 10 env CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 
       Check that the override replaces the allowlist, and verify COOP/COEP, WASM
       MIME type, corruption refusal and loopback-only binding. Stop both owned
       processes. Retain the two browser receipts with the release evidence.
-- [ ] Owner: upload `mina-web-<version>.tar.gz` and its separate `SHA256SUMS`
-      only to the approved web release. Sign and verify that checksum list;
-      never append the web archive to native 0.20.1 checksums. The packager
-      neither signs nor uploads and refuses to alter a signed checksum set.
+- [ ] Owner: upload `mina-web-<version>.tar.gz` with the two native archives and
+      the combined `SHA256SUMS` to the same draft release, then sign and verify
+      that one list as in steps 3 and 4. Never append to a list that is already
+      signed. The packager neither signs nor uploads and refuses to alter a
+      signed checksum set.
 - [ ] Owner: keep `ui/minanode-site/app/docs/_run-web-node` private and its
       `content/docs.ts` entry `hidden: true` throughout native 0.20.1. Before
       publishing the separate web release, introduce independent web version and
