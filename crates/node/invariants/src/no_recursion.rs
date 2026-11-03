@@ -68,6 +68,12 @@ fn self_requeue_limit(kind: ActionKind) -> Option<usize> {
         // response, so a chain has at most `MAX_ACCOUNT_READS` ready steps, one
         // retry and the call that stops.
         ActionKind::TransactionPoolProcessAccountReads => Some(MAX_ACCOUNT_READS + 2),
+        // A Kademlia request refused at once (the backoff, the peer target,
+        // the seed policy) ends inside the batch that made it, and its error
+        // asks for the next batch. The lookup starts a batch only while fewer
+        // than 3 requests are in flight and each refusal ends one of them, so
+        // a chain holds the first batch and at most 3 more.
+        ActionKind::P2pNetworkKadBootstrapCreateRequests => Some(4),
         _ => None,
     }
 }
