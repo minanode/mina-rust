@@ -501,12 +501,6 @@ cat "$WEB_DIST/SHA256SUMS" >>dist/SHA256SUMS
       that one list as in steps 3 and 4. Never append to a list that is already
       signed. The packager neither signs nor uploads and refuses to alter a
       signed checksum set.
-- [ ] Owner: keep `ui/minanode-site/app/docs/_run-web-node` private and its
-      `content/docs.ts` entry `hidden: true` throughout native 0.20.1. Before
-      publishing the separate web release, introduce independent web version and
-      download metadata, verify the asset and signed checksums, then rename the
-      route to `run-web-node` and remove `hidden: true`. Build and check the
-      site again before deploying it. Native publication never unhides it.
 
 ### OCaml 4.0.4 tools
 
