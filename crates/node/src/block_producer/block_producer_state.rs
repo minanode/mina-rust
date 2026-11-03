@@ -494,11 +494,14 @@ impl BlockProducerCurrentState {
     /// ([`crate::State::producing_block_after_genesis`]). The end does not
     /// depend on the lead, so a slot that has started stays due to its end.
     pub fn won_slot_is_due(&self, now: redux::Timestamp, lead: Duration) -> bool {
-        // TODO(binier): maybe have runtime estimate
+        // How long before its slot starts a block's production begins. The
+        // parent is chosen when production starts, so a shorter lead picks a
+        // later best tip. A browser block proof takes about 6 to 10 s on 8
+        // cores; a slower machine finishes a few seconds into its 90 s slot.
         #[cfg(not(target_arch = "wasm32"))]
         const BLOCK_PRODUCTION_ESTIMATE: u64 = Duration::from_secs(6).as_nanos() as u64;
         #[cfg(target_arch = "wasm32")]
-        const BLOCK_PRODUCTION_ESTIMATE: u64 = Duration::from_secs(20).as_nanos() as u64;
+        const BLOCK_PRODUCTION_ESTIMATE: u64 = Duration::from_secs(10).as_nanos() as u64;
 
         match self {
             Self::WonSlot { won_slot, .. } | Self::WonSlotWait { won_slot, .. } => {
