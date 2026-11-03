@@ -516,6 +516,10 @@ struct SctpInner {
     // one packet of retransmissions and no new data (RFC 9260 section 7.2.3;
     // vendored change, SCTP-CC).
     t3_awaiting_feedback: AtomicBool,
+    // The one packet a T3 allows has not gone out yet. Spent by the first
+    // DATA sent after the T3, whichever transmit() call sends it; restored by
+    // the next T3 (vendored change, SCTP-CC).
+    t3_packet_unsent: AtomicBool,
 
     // Outgoing Packet Queue to prevent deadlocks
     outgoing_packet_tx: packet_queue::Sender,
@@ -1009,6 +1013,7 @@ impl SctpTransport {
             queued_bytes: AtomicUsize::new(0),
             window_limited: AtomicBool::new(false),
             t3_awaiting_feedback: AtomicBool::new(false),
+            t3_packet_unsent: AtomicBool::new(false),
             last_sack_time: Mutex::new(None),
             t1_chunk: Mutex::new(None),
             t1_failures: AtomicU32::new(0),
@@ -1756,6 +1761,7 @@ impl SctpInner {
         // SCTP-CC).
         self.cwnd_tx.store(CWND_AFTER_RTO, Ordering::SeqCst);
         self.t3_awaiting_feedback.store(true, Ordering::SeqCst);
+        self.t3_packet_unsent.store(true, Ordering::SeqCst);
 
         // Notify the run_loop to call transmit() immediately
         self.timer_notify.notify_one();
@@ -3756,13 +3762,19 @@ impl SctpInner {
         };
 
         // After a T3 and before feedback, one packet of retransmissions and
-        // nothing else (RFC 9260 section 7.2.3).
+        // nothing else (RFC 9260 section 7.2.3). The packet is association
+        // state, not per call: once it has gone out, later calls send no DATA
+        // until a SACK. Chunks already queued here (a SACK) share it.
         let awaiting_feedback = self.t3_awaiting_feedback.load(Ordering::Relaxed);
-        let mut retransmit_budget = if awaiting_feedback {
-            burst_limit.min(MAX_SCTP_PACKET_SIZE - SCTP_COMMON_HEADER_SIZE)
-        } else {
+        let mut retransmit_budget = if !awaiting_feedback {
             burst_limit
+        } else if self.t3_packet_unsent.load(Ordering::Relaxed) {
+            let queued: usize = chunks_to_send.iter().map(|chunk| chunk.len()).sum();
+            burst_limit.min((MAX_SCTP_PACKET_SIZE - SCTP_COMMON_HEADER_SIZE).saturating_sub(queued))
+        } else {
+            0
         };
+        let control_chunks = chunks_to_send.len();
         // Marked chunks left for lack of window keep the window in use, so
         // their SACKs grow it (RFC 9260 section 7.2.1).
         let mut retransmit_waiting = false;
@@ -3815,6 +3827,10 @@ impl SctpInner {
                     in_flight_chunks += 1;
                 }
             }
+        }
+
+        if awaiting_feedback && chunks_to_send.len() > control_chunks {
+            self.t3_packet_unsent.store(false, Ordering::SeqCst);
         }
 
         // 3. Send New Data - batch drain outbound queue under one lock
@@ -12095,6 +12111,45 @@ mod receive_bounds_tests {
         assert!(inner.flight_size.load(Ordering::Relaxed) <= MAX_SCTP_PACKET_SIZE);
         inner.handle_sack(cum_ack_sack(100)).await.unwrap();
         assert!(!inner.t3_awaiting_feedback.load(Ordering::Relaxed));
+    }
+
+    /// The packet a T3 allows is spent across transmit() calls: two 600-byte
+    /// chunks that both fit the 1-MTU window go out one per SACK, not one per
+    /// call (RFC 9260 section 7.2.3).
+    #[tokio::test]
+    async fn t3_packet_allowance_spans_transmit_calls() {
+        let (sctp, _tx, _runner) = transport_with_runner(Default::default()).await;
+        let inner = &sctp.inner;
+        inner.next_tsn.store(100, Ordering::Relaxed);
+        inner.cumulative_tsn_ack.store(99, Ordering::Relaxed);
+        inner.advanced_peer_ack_tsn.store(99, Ordering::Relaxed);
+        inner.peer_rwnd.store(1_000_000, Ordering::Relaxed);
+        inner.rto_state.lock().rto = 1.0;
+        for _ in 0..2 {
+            inner.send_data(1, &[0; 584]).await.unwrap();
+        }
+        inner.transmit().await.unwrap();
+        assert!(
+            inner
+                .sent_queue
+                .lock()
+                .values()
+                .all(|r| r.payload.len() == 600)
+        );
+        t3_expire(inner, Duration::from_secs(2)).await;
+        let packets_before = inner.stats_packets_sent.load(Ordering::Relaxed);
+        inner.transmit().await.unwrap();
+        *inner.data_send_after.lock() = None;
+        inner.transmit().await.unwrap();
+        let packets = inner.stats_packets_sent.load(Ordering::Relaxed) - packets_before;
+        assert_eq!(packets, 1);
+        assert_eq!(inner.stats_retransmissions.load(Ordering::Relaxed), 1);
+        assert_eq!(inner.flight_size.load(Ordering::Relaxed), 600);
+        // Feedback releases the next retransmission.
+        inner.handle_sack(cum_ack_sack(100)).await.unwrap();
+        *inner.data_send_after.lock() = None;
+        inner.transmit().await.unwrap();
+        assert_eq!(inner.stats_retransmissions.load(Ordering::Relaxed), 2);
     }
 
     /// Partial reliability counts retransmissions made: after a T3 with one
