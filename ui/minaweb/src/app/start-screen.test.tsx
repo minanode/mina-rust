@@ -6,23 +6,25 @@ import type { BuildConfig } from "../boot/build-config";
 
 const R1 = "12D3KooWC4k4X9Ub9JBbLWov3UCH1q4MH7iVEZM2dVfx1dhnYSMo";
 const R2 = "12D3KooWN3uRLCr1uZHCVQ11CdvYdXTsQinGQ8JDMah3MZy8M8Q7";
-const config = vi.hoisted((): BuildConfig => ({
-  network: "devnet",
-  relays: [],
-  seedUrls: [],
-  genesisUrl: "/genesis.json",
-  iceServersUrls: [],
-  frontierStore: false,
-  glueUrl: "/glue.js",
-  wasm: {
-    url: "/node.wasm",
-    sha256: "00",
-    bytes: 39_138_241,
-    compressedBytes: 5_904_563,
-  },
-  startBytes: null,
-  commit: null,
-}));
+const config = vi.hoisted(
+  (): BuildConfig => ({
+    network: "devnet",
+    relays: [],
+    seedUrls: [],
+    genesisUrl: "/genesis.json",
+    iceServersUrls: [],
+    frontierStore: false,
+    glueUrl: "/glue.js",
+    wasm: {
+      url: "/node.wasm",
+      sha256: "00",
+      bytes: 39_138_241,
+      compressedBytes: 5_904_563,
+    },
+    startBytes: null,
+    commit: null,
+  }),
+);
 config.relays = [
   `/dns4/relay1.minaweb.org/tcp/443/webrtc/https/p2p/${R1}`,
   `/dns4/relay2.minaweb.org/tcp/443/webrtc/https/p2p/${R2}`,
@@ -86,6 +88,41 @@ test("without a compressed size or relays, the figures say less", () => {
   } finally {
     Object.assign(config, saved);
   }
+});
+
+test("a browser that can't run the node is told why, and Start is off", () => {
+  const onStart = vi.fn();
+  render(
+    <StartScreen
+      role={VIEWER}
+      onStart={onStart}
+      problem={{
+        kind: "webrtc",
+        title: "WebRTC is off in this browser",
+        detail: "No RTCPeerConnection.",
+        hint: "Turn WebRTC on for this site.",
+      }}
+    />,
+  );
+  const alert = screen.getByRole("note");
+  expect(alert.dataset.failure).toBe("webrtc");
+  expect(alert.textContent).toContain("WebRTC is off in this browser");
+  expect(alert.textContent).toContain("Turn WebRTC on for this site.");
+  const start = screen.getByRole("button", {
+    name: "Start the web node in this tab",
+  });
+  expect((start as HTMLButtonElement).disabled).toBe(true);
+  start.click();
+  expect(onStart).not.toHaveBeenCalled();
+});
+
+test("a browser that can run it gets no notice", () => {
+  render(<StartScreen role={VIEWER} onStart={() => {}} />);
+  expect(screen.queryByRole("note")).toBeNull();
+  const start = screen.getByRole("button", {
+    name: "Start the web node in this tab",
+  });
+  expect((start as HTMLButtonElement).disabled).toBe(false);
 });
 
 test("the boot runs the same steps the start screen shows", () => {
