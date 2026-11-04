@@ -481,7 +481,7 @@ impl P2pServiceWebrtc for NodeTestingService {
         P2pServiceWebrtc::event_sender(&self.real)
     }
 
-    fn cmd_sender(&self) -> &mpsc::TrackedUnboundedSender<Cmd> {
+    fn cmd_sender(&self) -> &webrtc::queue::Sender<Cmd> {
         P2pServiceWebrtc::cmd_sender(&self.real)
     }
 

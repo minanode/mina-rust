@@ -19,7 +19,7 @@ pub enum NonDeterministicEvent {
 impl NonDeterministicEvent {
     pub fn new(event: &Event) -> Option<Box<Self>> {
         Some(match event {
-            Event::P2p(e) => match e {
+            Event::P2p(e) => match e.unwrapped() {
                 P2pEvent::Connection(e) => match e {
                     P2pConnectionEvent::Finalized(id, res) => {
                         Self::P2pConnectionFinalized(*id, res.clone()).into()
@@ -28,8 +28,9 @@ impl NonDeterministicEvent {
                     _ => return None,
                 },
                 P2pEvent::Channel(_) => return None,
-                #[cfg(feature = "p2p-libp2p")]
                 P2pEvent::MioEvent(_) => return None,
+                // `unwrapped` has removed every permit wrapper.
+                P2pEvent::WithPermit { .. } => return None,
             },
             Event::Rpc(id, req) => match req.as_ref() {
                 RpcRequest::P2pConnectionIncoming(_) => return None,

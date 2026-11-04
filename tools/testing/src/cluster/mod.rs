@@ -448,6 +448,7 @@ impl Cluster {
             global: GlobalConfig {
                 build: BuildEnv::get().into(),
                 snarker: testing_config.snark_worker,
+                snark_work_fee: None,
                 consensus_constants: consensus_consts.clone(),
                 client_port: Some(http_port),
                 testing_run: true,
