@@ -35,10 +35,11 @@ its block prover, and adds robustness fixes for staged ledger data. See
 - **Web node**: the Overview and Start-up pages say what a reload does with
   the saved chain: Not saved yet, Saved at #N, or Saved, but a reload syncs
   again, with the reason. `/status` reports it as `frontier_store.saved_chain`.
-  The loader and the status decide with one set of restore rules, on the facts
-  the store thread reads from the newest manifest, the attempts record and the
-  stored tip's block, so the status never says saved when a restart would
-  bootstrap. The loader's checks and outcomes are unchanged.
+  The loader and the status use the same restore eligibility rules, on the
+  facts the store thread reads from the newest manifest, the attempts record
+  and the stored tip's block. Damage that the loader's content checks find on
+  restore can still make the node sync again. The loader's checks and outcomes
+  are unchanged.
   ([#10](https://github.com/minanode/mina-rust/pull/10))
 
 ### Changed
@@ -176,16 +177,17 @@ its block prover, and adds robustness fixes for staged ledger data. See
   of the last phase. It said "Synced" over a 20-minute-old answer.
   ([#6](https://github.com/minanode/mina-rust/pull/6))
 - **Web node**: the Send page keeps the payments this tab sent across a role
-  change's restart and a reload, in the tab's sessionStorage. It keeps the
-  hash, sender, recipient, amount, fee, nonce, time sent and status, never a
-  key or the memo: every open payment, and at most 20 that are done, none
-  sent more than a day ago. A kept payment holds its nonce once the
+  change's restart and a reload, in the tab's sessionStorage. It keeps the hash,
+  sender, recipient, amount, fee, nonce, time sent and status, never a key or
+  the memo. Open payments that may still hold a nonce stay; past a limit, the
+  oldest superseded open ones go. It keeps at most 20 finished payments and
+  drops those sent more than a day ago. A kept payment holds its nonce once the
   restarted node finds it in its pool or a block; until then, and while the
-  key's account is unknown, Send waits, with Retry when a lookup fails. If
-  it is in neither, the page says so and the next payment competes for its
-  nonce, with a button to send the same payment again; the page looks again
-  right before signing it, and the pool's Duplicate keeps the nonce held.
-  Nonces are uint32. ([#9](https://github.com/minanode/mina-rust/pull/9))
+  key's account is unknown, Send waits, with Retry when a lookup fails. If it is
+  in neither, the page says so and the next payment competes for its nonce, with
+  a button to send the same payment again; the page looks again right before
+  signing it, and the pool's Duplicate keeps the nonce held. Nonces are uint32.
+  ([#9](https://github.com/minanode/mina-rust/pull/9))
 
 ## [0.21.0] - 2026-11-02
 
