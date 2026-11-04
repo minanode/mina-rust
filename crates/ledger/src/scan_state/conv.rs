@@ -2677,77 +2677,134 @@ impl From<&pending_coinbase::StackId> for MinaBasePendingCoinbaseStackIdStableV1
     }
 }
 
+/// A pending coinbase from the wire, rebuilt from its leaves. The staged
+/// ledger hash covers only its root, `pos_list` and `new_pos`, so a tree whose
+/// stored inner hashes or stack indexes don't follow from its leaves would
+/// pass that hash and then misbehave when the node uses it. OCaml makes the
+/// tree complete, every stack at the leaf its id names (see
+/// [`pending_coinbase::stack_leaf_index`]), and keeps it so; this conversion
+/// refuses any other shape, recomputes every inner hash from the leaves
+/// (refusing one that differs from the stored hash), and refuses indexes other
+/// than OCaml's and stack ids out of range. Bootstrap parts from peers and
+/// frontier store restores both convert through here.
 impl TryFrom<&MinaBasePendingCoinbaseStableV2> for PendingCoinbase {
-    type Error = InvalidBigInt;
+    type Error = pending_coinbase::InvalidPendingCoinbase;
 
     fn try_from(value: &MinaBasePendingCoinbaseStableV2) -> Result<Self, Self::Error> {
+        use pending_coinbase::{merkle_tree::TreeHasher, InvalidPendingCoinbase};
+        use MinaBasePendingCoinbaseMerkleTreeVersionedStableV2Tree::{Account, Node};
+
         let MinaBasePendingCoinbaseStableV2 {
             tree,
             pos_list,
             new_pos,
         } = value;
+        let MinaBasePendingCoinbaseMerkleTreeVersionedStableV2 {
+            indexes,
+            depth,
+            tree,
+        } = tree;
+        let invalid = |reason: String| InvalidPendingCoinbase::Tree(reason);
+
+        let expected_depth = mina_core::constants::constraint_constants().pending_coinbase_depth;
+        if depth.as_u64() != expected_depth as u64 {
+            return Err(invalid(format!(
+                "depth {}, not {expected_depth}",
+                depth.as_u64()
+            )));
+        }
+        let depth = expected_depth;
+        let capacity = 1u64 << depth;
+
+        /// Walks a complete tree of `depth`, left to right, recomputing each
+        /// inner hash from its children. Never deeper than `depth`, whatever
+        /// the wire nesting.
+        fn rebuild(
+            node: &MinaBasePendingCoinbaseMerkleTreeVersionedStableV2Tree,
+            addr: Address,
+            depth: usize,
+            matrix: &mut HashesMatrix,
+            values: &mut Vec<Stack>,
+        ) -> Result<Fp, InvalidPendingCoinbase> {
+            let hash = match node {
+                Account(stack) if addr.length() == depth => {
+                    let stack: Stack = stack.try_into()?;
+                    let hash = StackHasher::hash_value(&stack);
+                    values.push(stack);
+                    hash
+                }
+                Node(stored, left, right) if addr.length() < depth => {
+                    let left = rebuild(left, addr.child_left(), depth, matrix, values)?;
+                    let right = rebuild(right, addr.child_right(), depth, matrix, values)?;
+                    let height = depth - addr.length() - 1;
+                    let hash = StackHasher::merge_hash(height, left, right);
+                    if stored.to_field::<Fp>()? != hash {
+                        return Err(InvalidPendingCoinbase::Tree(format!(
+                            "the stored hash of node {} is not its children's",
+                            addr.to_linear_index()
+                        )));
+                    }
+                    hash
+                }
+                _ => {
+                    return Err(InvalidPendingCoinbase::Tree(format!(
+                        "not a complete tree of depth {depth} at node {}",
+                        addr.to_linear_index()
+                    )))
+                }
+            };
+            matrix.set(&addr, hash);
+            Ok(hash)
+        }
+
+        let mut hashes_matrix = HashesMatrix::new(depth);
+        let mut values = Vec::with_capacity(capacity as usize);
+        rebuild(
+            tree,
+            Address::root(),
+            depth,
+            &mut hashes_matrix,
+            &mut values,
+        )?;
+
+        if indexes.len() as u64 != capacity {
+            return Err(invalid(format!(
+                "{} stack indexes, not {capacity}",
+                indexes.len()
+            )));
+        }
+        let mut our_index = std::collections::HashMap::with_capacity(capacity as usize);
+        for (stack_id, stack_index) in indexes.iter() {
+            let (id, index) = (stack_id.as_u64(), stack_index.as_u64());
+            if id >= capacity || index != pending_coinbase::stack_leaf_index(id, depth) {
+                return Err(invalid(format!("stack {id} at leaf {index}")));
+            }
+            let addr = Address::from_index(crate::AccountIndex::from(index as usize), depth);
+            if our_index.insert(stack_id.into(), addr).is_some() {
+                return Err(invalid(format!("stack {id} indexed twice")));
+            }
+        }
+
+        // Each stack in use has its own leaf, so no more positions than leaves
+        // (OCaml's depth is chosen to fit the scan state's trees).
+        if pos_list.len() as u64 > capacity {
+            return Err(invalid(format!(
+                "{} positions in use, more than {capacity} stacks",
+                pos_list.len()
+            )));
+        }
+        let in_range = |id: &MinaBasePendingCoinbaseStackIdStableV1| id.as_u64() < capacity;
+        if !in_range(new_pos) || !pos_list.iter().all(in_range) {
+            return Err(invalid("a stack id out of range".into()));
+        }
 
         Ok(Self {
-            tree: {
-                // NOTE: Same implementation than with `SparseLedger`
-
-                use MinaBasePendingCoinbaseMerkleTreeVersionedStableV2Tree::{Account, Hash, Node};
-
-                fn build_matrix(
-                    matrix: &mut HashesMatrix,
-                    addr: Address,
-                    node: &MinaBasePendingCoinbaseMerkleTreeVersionedStableV2Tree,
-                    values: &mut Vec<Stack>,
-                ) -> Result<(), InvalidBigInt> {
-                    match node {
-                        Account(stack) => {
-                            let stack: Stack = stack.try_into()?;
-                            matrix.set(&addr, <StackHasher as pending_coinbase::merkle_tree::TreeHasher::<Stack>>::hash_value(&stack));
-                            values.push(stack);
-                        }
-                        Hash(hash) => {
-                            matrix.set(&addr, hash.to_field()?);
-                        }
-                        Node(hash, left, right) => {
-                            matrix.set(&addr, hash.to_field()?);
-                            build_matrix(matrix, addr.child_left(), left, values)?;
-                            build_matrix(matrix, addr.child_right(), right, values)?;
-                        }
-                    }
-                    Ok(())
-                }
-
-                let MinaBasePendingCoinbaseMerkleTreeVersionedStableV2 {
-                    indexes,
-                    depth,
-                    tree,
-                } = tree;
-
-                let depth = depth.as_u64() as usize;
-                let mut our_index = std::collections::HashMap::with_capacity(indexes.len());
-                // let mut index_list = std::collections::VecDeque::with_capacity(indexes.len());
-                let mut hashes_matrix = HashesMatrix::new(depth);
-                let mut values = Vec::new();
-
-                for (stack_id, stack_index) in indexes.iter() {
-                    let stack_id: pending_coinbase::StackId = stack_id.into();
-                    let stack_index = crate::AccountIndex::from(stack_index.as_u64() as usize);
-
-                    let addr = Address::from_index(stack_index, depth);
-
-                    our_index.insert(stack_id, addr);
-                    // index_list.push_back(stack_id);
-                }
-
-                build_matrix(&mut hashes_matrix, Address::root(), tree, &mut values)?;
-
-                pending_coinbase::merkle_tree::MiniMerkleTree {
-                    values,
-                    indexes: our_index,
-                    hashes_matrix,
-                    depth,
-                    _hasher: std::marker::PhantomData,
-                }
+            tree: pending_coinbase::merkle_tree::MiniMerkleTree {
+                values,
+                indexes: our_index,
+                hashes_matrix,
+                depth,
+                _hasher: std::marker::PhantomData,
             },
             pos_list: pos_list.iter().rev().map(Into::into).collect(),
             new_pos: new_pos.into(),
