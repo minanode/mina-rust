@@ -152,7 +152,7 @@ export function runRoleArgs(
 
 /**
  * `run`'s options object, from the build and the visitor's own choices:
- * the role never changes it. It never turns on `peerDiscovery` (PR #173):
+ * the role never changes it. It never turns on `peerDiscovery`:
  * the node dials the build's seed relays only. It takes no incoming
  * connections either, unless the visitor turned sharing on
  * (boot/sharing.ts): then it takes the browsers those relays introduce.
