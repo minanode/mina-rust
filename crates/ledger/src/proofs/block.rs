@@ -3094,6 +3094,48 @@ mod mesa_tests {
         assert_eq!(hashes, pinned(PINNED_MAINNET_548149));
     }
 
+    /// The genesis block proof, the browser prover's benchmark, is pinned
+    /// too: a change that makes witness generation faster must leave both
+    /// witnesses and the proof as they were.
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_genesis_block_proof_is_pinned() {
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let provers = provers();
+        let hashes = proof_hashes(&genesis_input(), &provers);
+        eprintln!("mainnet genesis (step, wrap witnesses; proof): {hashes:?}");
+        assert_eq!(hashes, pinned(PINNED_MAINNET_GENESIS));
+    }
+
+    /// The step witness of the real transition 548414 to 548415 is pinned:
+    /// its step verifies OCaml's block proof and OCaml's ledger proof, which
+    /// the offline blocks don't carry. With the genesis winner's key it fails
+    /// the rows where the key matters, so it is checked, not proved.
+    #[test]
+    #[ignore = "needs the Mesa circuit blobs: tools/mesa-circuits/generate.sh <dir>, \
+                then MINA_CIRCUIT_BLOBS_BASE_DIR=<dir>/circuit-blobs"]
+    fn mesa_real_transition_step_witness_is_pinned() {
+        use crate::proofs::transaction::witness_hashes;
+
+        let _turn = PROVING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let provers = provers();
+        let mut real = offline_input(REAL_548415);
+        real.prover_state.producer_private_key = genesis_input().prover_state.producer_private_key;
+        witness_hashes::enable();
+        let (outcome, aux_len) = check_constraints(&real, &provers);
+        let hashes = witness_hashes::take();
+        eprintln!("mainnet 548415 (step witness): {hashes:?}");
+        assert_eq!(aux_len, StepBlockProof::AUX_LEN);
+        assert!(matches!(outcome, Outcome::NotSatisfied(_)), "{outcome:?}");
+        let (primary, aux) = PINNED_MAINNET_548415_STEP;
+        assert_eq!(hashes, [(primary.to_string(), aux.to_string())]);
+    }
+
     type Pinned = ([(&'static str, &'static str); 2], &'static str);
 
     fn pinned((witnesses, proof): Pinned) -> (Vec<(String, String)>, String) {
@@ -3118,6 +3160,26 @@ mod mesa_tests {
             ),
         ],
         "0c12c845886d294b7080ac26f51f52065aa6ed25996ae2fdb18e391d5e09420b",
+    );
+
+    /// As above, from the code before WITNESS-PERF (`122384fa1`).
+    const PINNED_MAINNET_GENESIS: Pinned = (
+        [
+            (
+                "9569131710b6ae1fccc0c9330ab0721399325f07dac962b01fd58c4a34d3c40e",
+                "530cb4756d4eba9bf98edd5b4a124bac8f96ed56072528caad45e7b8bdeaab52",
+            ),
+            (
+                "74b1a4278b61daba28cbdbadb6dcb62d97fb02f5389d4488cad3935e1c126d2a",
+                "10948b17bf3f49a6b203febe9e3a5366c9db8521f5fcd91884a993d2a1cae867",
+            ),
+        ],
+        "8afdd4c261cbd1ddccf0b75f3ab4d0622ead4123ef1619601a12d926e8f668a5",
+    );
+
+    const PINNED_MAINNET_548415_STEP: (&str, &str) = (
+        "73921875a86f635b7c889329af71a50648a051ec1dfab06594d97821dfe06f9d",
+        "91645e8ef538fff8ea6222a1e67cfd27663298611ab14e5804d16da0a49dd455",
     );
 
     const PINNED_MAINNET_548149: Pinned = (
