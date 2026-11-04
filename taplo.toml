@@ -3,6 +3,8 @@ exclude = [
   "**/node_modules/**",
   "**/target/**",
   "**/.git/**",
+  "vendor/ark-ff/**",
+  "vendor/ark-ff-macros/**",
   "vendor/rustrtc/**",
   "vendor/wasm_thread/**",
 ]

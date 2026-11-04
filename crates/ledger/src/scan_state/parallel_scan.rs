@@ -911,6 +911,55 @@ impl<BaseJob, MergeJob> ParallelScan<BaseJob, MergeJob> {
         });
         trees.saturating_add(values).saturating_add(acc)
     }
+
+    /// Checks that the trees have the shape `empty` and `update` give them:
+    /// one to `max_trees` trees, each a complete tree of depth
+    /// `ceil_log2(max_base_jobs)`, its merge nodes before its leaves. The
+    /// scan state hash doesn't cover that shape. It hashes the jobs that
+    /// aren't done one after another, whatever tree they are in, so trees cut
+    /// differently, or more trees holding only done jobs, make the same hash.
+    /// Such trees can fail to rebuild a staged ledger, or make a later
+    /// `update` panic.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/parallel_scan/parallel_scan.ml#L1401-L1409>
+    pub fn check_shape(&self) -> Result<(), String> {
+        let shape = (self.max_base_jobs > 0)
+            .then(|| ceil_log2(self.max_base_jobs))
+            .and_then(|depth| {
+                let leaves = 1usize.checked_shl(u32::try_from(depth).ok()?)?;
+                let len = leaves.checked_mul(2)? - 1;
+                let max_trees = (depth + 1)
+                    .checked_mul(self.delay.checked_add(1)?)?
+                    .checked_add(1)?;
+                Some((depth, leaves, len, max_trees))
+            });
+        let Some((depth, leaves, len, max_trees)) = shape else {
+            return Err(format!(
+                "no tree shape for {} base jobs and a delay of {}",
+                self.max_base_jobs, self.delay
+            ));
+        };
+        if self.trees.is_empty() || self.trees.len() as u64 > max_trees {
+            return Err(format!("{} trees, not 1 to {max_trees}", self.trees.len()));
+        }
+        for (index, tree) in self.trees.iter().enumerate() {
+            let complete = tree.values.len() == len
+                && tree
+                    .values
+                    .iter()
+                    .enumerate()
+                    .all(|(i, value)| match value {
+                        Value::Node(_) => i < leaves - 1,
+                        Value::Leaf(_) => i >= leaves - 1,
+                    });
+            if !complete {
+                return Err(format!(
+                    "tree {index} is not a complete tree of depth {depth}"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 pub(super) enum ResetKind {
@@ -2673,6 +2722,9 @@ where
     let result_opt = s2
         .update(data.clone(), completed_jobs.clone(), |_| 0)
         .unwrap();
+    // Every scan state an update makes has the shape the parts a peer or a
+    // store bring are checked for.
+    assert_eq!(s2.check_shape(), Ok(()));
 
     assert_job_count(
         s1,
@@ -2714,6 +2766,60 @@ mod tests {
     use rand::Rng;
 
     use super::*;
+
+    /// Trees the hash doesn't see: trees holding only done base jobs, and
+    /// trees of another depth, keep the scan state's hash but fail the shape
+    /// check. With more trees than an update leaves, the next update panics.
+    #[test]
+    fn trees_the_hash_does_not_see_fail_the_shape_check() {
+        let mut state = ParallelScan::<i64, i64>::empty(8, 2);
+        assert_eq!(state.check_shape(), Ok(()));
+        state.update(vec![1; 8], vec![], |_| 0).unwrap();
+        assert_eq!(state.trees.len(), 2);
+        assert_eq!(state.check_shape(), Ok(()));
+        let done = Tree {
+            values: vec![Value::Leaf(base::Base {
+                weight: Weight { base: 1, merge: 0 },
+                job: base::Job::Full(base::Record {
+                    job: 7,
+                    seq_no: SequenceNumber::new(1),
+                    state: JobStatus::Done,
+                }),
+            })]
+            .into(),
+        };
+
+        let mut shallow = state.clone();
+        shallow.trees.push(done.clone());
+        assert_eq!(hash(&shallow), hash(&state));
+        assert_eq!(
+            shallow.check_shape(),
+            Err("tree 2 is not a complete tree of depth 3".into())
+        );
+
+        let mut more = state.clone();
+        while more.trees.len() as u64 <= more.max_trees() {
+            more.trees.push(done.clone());
+        }
+        assert_eq!(hash(&more), hash(&state));
+        assert_eq!(
+            more.check_shape(),
+            Err(format!("14 trees, not 1 to {}", more.max_trees()))
+        );
+        let update = std::panic::catch_unwind(|| {
+            let mut more = more.clone();
+            let _ = more.update(vec![1], vec![], |_| 0);
+        });
+        assert!(update.is_err(), "an update of more trees than it leaves");
+
+        let mut misplaced = state.clone();
+        let mut values: Vec<_> = misplaced.trees[0].values.iter().cloned().collect();
+        values.swap(0, 14);
+        misplaced.trees[0] = Tree {
+            values: values.into(),
+        };
+        assert!(misplaced.check_shape().is_err());
+    }
 
     #[test]
     fn status_404_metrics_count_todo_and_keep_oldest_first() {
@@ -3075,6 +3181,7 @@ mod tests {
             let old_tuple = s.acc.clone();
 
             let res_opt = s.update(data, jobs_done, |_| 0).unwrap();
+            assert_eq!(s.check_shape(), Ok(()));
 
             if let Some(res) = res_opt {
                 let tuple = if old_tuple.is_some() {
