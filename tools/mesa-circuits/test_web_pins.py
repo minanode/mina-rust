@@ -64,5 +64,20 @@ class WebPinsTests(unittest.TestCase):
                 build_pins("devnet", directory, require_provers=True)
 
 
+    def test_lagrange_caches_get_staged_pins(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            directory = Path(scratch)
+            shutil.copytree(self.root / "mainnet", directory, dirs_exist_ok=True)
+            (directory / "lagrange_basis_vesta_16.bin").write_bytes(b"abc")
+            value = build_pins("mainnet", directory, require_provers=True)
+            self.assertEqual(len(value.split(";")), 25)
+            self.assertIn("4.0.2mainnet/lagrange_basis_vesta_16.bin=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", value)
+            for name in ("lagrange_basis_other_16.bin", "lagrange_basis_vesta_16.bin.partial", "lagrange_basis_vesta_123.bin"):
+                with self.subTest(name=name), tempfile.TemporaryDirectory() as other:
+                    (Path(other) / name).write_bytes(b"abc")
+                    with self.assertRaisesRegex(ValueError, "unknown circuit"):
+                        build_pins("mainnet", Path(other))
+
+
 if __name__ == "__main__":
     unittest.main()

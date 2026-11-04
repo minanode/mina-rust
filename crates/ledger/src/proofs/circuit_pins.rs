@@ -6,8 +6,8 @@ use std::{collections::BTreeMap, path::Path};
 const DEVNET: &str = include_str!("../../../../tools/mesa-circuits/devnet-blobs.sha256");
 const MAINNET: &str = include_str!("../../../../tools/mesa-circuits/mainnet-blobs.sha256");
 
-/// Only prover files in the manifests and the two optional verifier caches
-/// are hosted circuit assets. Cache pins describe this build's serialized
+/// Only prover files in the manifests, the two optional verifier caches and
+/// the optional Lagrange basis caches are hosted circuit assets. Cache pins describe this build's serialized
 /// indices; prover pins must also agree with the canonical manifests.
 pub(super) fn canonical_pin(filename: &str) -> std::io::Result<Option<&'static str>> {
     use std::path::Component;
@@ -36,7 +36,8 @@ pub(super) fn canonical_pin(filename: &str) -> std::io::Result<Option<&'static s
             if matches!(
                 name,
                 "block_verifier_index.postcard" | "transaction_verifier_index.postcard"
-            ) {
+            ) || is_lagrange_cache(name)
+            {
                 return Ok(None);
             }
         }
@@ -45,6 +46,24 @@ pub(super) fn canonical_pin(filename: &str) -> std::io::Result<Option<&'static s
         std::io::ErrorKind::InvalidData,
         format!("circuit file {filename} refused: no canonical SHA-256 for this file"),
     ))
+}
+
+/// Whether `name` is a Lagrange basis cache, `lagrange_basis_<curve>_<log2
+/// n>.bin` (`super::lagrange_cache`). Like the verifier caches, it has a build
+/// pin and no canonical one.
+fn is_lagrange_cache(name: &str) -> bool {
+    let Some(rest) = name
+        .strip_prefix("lagrange_basis_")
+        .and_then(|rest| rest.strip_suffix(".bin"))
+    else {
+        return false;
+    };
+    let Some((curve, log2)) = rest.split_once('_') else {
+        return false;
+    };
+    matches!(curve, "pallas" | "vesta")
+        && (1..=2).contains(&log2.len())
+        && log2.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Build pins for every hosted asset, including same-origin assets. Prover
@@ -209,6 +228,35 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("no canonical SHA-256"));
+        }
+    }
+
+    #[cfg_attr(not(target_family = "wasm"), test)]
+    #[cfg_attr(target_family = "wasm", wasm_bindgen_test::wasm_bindgen_test)]
+    fn lagrange_caches_need_a_build_pin() {
+        const DIGEST: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        for file in [
+            "4.0.2mainnet/lagrange_basis_vesta_16.bin",
+            "4.0.2devnet/lagrange_basis_pallas_15.bin",
+        ] {
+            assert_eq!(canonical_pin(file).unwrap(), None);
+            let pins = CircuitPins::parse(&format!("{file}={DIGEST}")).unwrap();
+            pins.check_hosted(file, b"abc").unwrap();
+            assert!(pins.check_hosted(file, b"abd").is_err());
+            assert!(CircuitPins::default().check_hosted(file, b"abc").is_err());
+        }
+        for name in [
+            "lagrange_basis_other_16.bin",
+            "lagrange_basis_vesta_.bin",
+            "lagrange_basis_vesta_1x.bin",
+            "lagrange_basis_vesta_123.bin",
+            "lagrange_basis_vesta_16.bin.partial",
+            "lagrange_basis_vesta16.bin",
+        ] {
+            assert!(
+                canonical_pin(&format!("4.0.2mainnet/{name}")).is_err(),
+                "{name}"
+            );
         }
     }
 

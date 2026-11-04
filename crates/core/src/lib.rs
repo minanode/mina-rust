@@ -58,9 +58,16 @@ mod work_dir {
     pub fn get_debug_dir() -> PathBuf {
         get_work_dir().join("debug")
     }
+
+    /// The debug directory, if a work dir is set: a web node has none.
+    pub fn try_get_debug_dir() -> Option<PathBuf> {
+        HOME_DIR.get().map(|dir| dir.join("debug"))
+    }
 }
 
-pub use work_dir::{get_debug_dir, get_work_dir, init_work_dir_if_unset, set_work_dir};
+pub use work_dir::{
+    get_debug_dir, get_work_dir, init_work_dir_if_unset, set_work_dir, try_get_debug_dir,
+};
 
 use rand::prelude::*;
 #[inline(always)]

@@ -164,8 +164,16 @@ fn js_error_is_fatal(error: &JsValue) -> bool {
     js_sys::Reflect::get(error, &JsValue::from_str("fatal")).is_ok_and(|v| v.is_truthy())
 }
 
-/// Prover threads: at most 8 (I34b measured 4 and 8), one core left to the
-/// node. `globalThis.MINA_BLOCK_PROVER_THREADS` overrides it.
+/// Prover threads: one per logical core, at most 8.
+/// `globalThis.MINA_BLOCK_PROVER_THREADS` overrides it.
+///
+/// A block proof uses every thread it is given and the prover is idle between
+/// slots. On an 8-core VM, leaving a core to the node cost more than it saved:
+/// a block proof took 9.1 s with 8 threads, 11.1 s with 7 and 11.7 s with 12.
+/// With two other cores busy, 8 threads (11.7 s) still beat 6 (13.4 s); with
+/// four busy, 8 and 4 threads were about even (18.6 and 17.9 s). Not measured
+/// yet: machines with more than 8 cores, real 2- and 4-core devices, and
+/// contention with the full node and its UI.
 fn prover_threads() -> u32 {
     let configured = js_sys::Reflect::get(
         &js_sys::global(),
@@ -180,7 +188,7 @@ fn prover_threads() -> u32 {
     let cores = thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    cores.saturating_sub(1).clamp(1, 8) as u32
+    cores.clamp(1, 8) as u32
 }
 
 struct AbortOnDrop(futures::future::AbortHandle);

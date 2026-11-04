@@ -247,6 +247,7 @@ fn completed_reconstruction_forwards_success_and_error() {
                     time: Timestamp::ZERO,
                     target,
                     parts: None,
+                    sender: None,
                 }
                 .into(),
             });
