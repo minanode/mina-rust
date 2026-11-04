@@ -1140,7 +1140,7 @@ fn reduce_collect(state: &mut State, now: Timestamp, action: impl Into<Action>) 
 #[test]
 fn a_worker_sharing_the_prover_takes_no_job_near_our_won_slot() {
     use std::time::Duration;
-    // Natively the block takes 6 s to produce (20 s in a browser).
+    // Natively the block takes 6 s to produce (10 s in a browser).
     const ESTIMATE_S: i64 = 6;
     let genesis = genesis();
     let slot = 30;

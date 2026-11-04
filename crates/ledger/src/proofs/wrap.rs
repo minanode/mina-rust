@@ -38,7 +38,7 @@ use crate::{
         BACKEND_TICK_ROUNDS_N,
     },
     scan_state::transaction_logic::local_state::LazyValue,
-    verifier::get_srs,
+    verifier::get_srs_mut,
 };
 
 use super::{
@@ -202,13 +202,9 @@ pub fn create_oracle_with_public_input<F: FieldWitness>(
     use mina_poseidon::{constants::PlonkSpongeConstantsKimchi, sponge::DefaultFrSponge};
     use poly_commitment::commitment::shift_scalar;
 
-    // TODO: Don't clone the SRS here
-    let srs = (*verifier_index.srs).clone();
     let log_size_of_group = verifier_index.domain.log_size_of_group;
-    let lgr_comm = make_lagrange::<F>(&srs, log_size_of_group);
-
-    let lgr_comm: Vec<PolyComm<F::OtherCurve>> =
-        lgr_comm.into_iter().take(public_input.len()).collect();
+    let lgr_comm =
+        lagrange_commitments::<F>(&verifier_index.srs, log_size_of_group, public_input.len());
     let lgr_comm_refs: Vec<_> = lgr_comm.iter().collect();
 
     let p_comm = PolyComm::<F::OtherCurve>::multi_scalar_mul(
@@ -261,17 +257,23 @@ pub fn create_oracle_with_public_input<F: FieldWitness>(
     }
 }
 
-fn make_lagrange<F: FieldWitness>(
+/// The first `n` commitments of the Lagrange basis of the domain of
+/// 2^`domain_log2` rows, from `srs`'s cache of Lagrange bases, which every
+/// clone of the SRS shares. Only the `n` commitments are copied.
+fn lagrange_commitments<F: FieldWitness>(
     srs: &poly_commitment::ipa::SRS<F::OtherCurve>,
     domain_log2: u32,
+    n: usize,
 ) -> Vec<PolyComm<F::OtherCurve>> {
     let domain_size = 2u64.pow(domain_log2) as usize;
 
     let x_domain = EvaluationDomain::<F>::new(domain_size).expect("invalid argument");
 
-    let lagrange_bases = srs.get_lagrange_basis(x_domain)[..domain_size].to_vec();
-    // lagrange_bases[..domain_size].to_vec()
-    lagrange_bases.clone()
+    srs.get_lagrange_basis(x_domain)[..domain_size]
+        .iter()
+        .take(n)
+        .cloned()
+        .collect()
 }
 
 /// Defined in `plonk_checks.ml`
@@ -556,16 +558,20 @@ pub fn dummy_ipa_wrap_sg() -> GroupAffine<Fp> {
             .collect::<Vec<_>>();
 
         let coeffs = b_poly_coefficients(&dummy);
-        let p = DensePolynomial::from_coefficients_vec(coeffs);
-
-        let comm = {
-            use poly_commitment::SRS;
-
-            let srs = get_srs::<Fq>();
-            srs.commit_non_hiding(&p, 1)
-        };
-        comm.chunks[0]
+        commit_challenge_polynomial(&DensePolynomial::from_coefficients_vec(coeffs))
     })
+}
+
+/// The commitment to a challenge polynomial of a wrap proof, with this
+/// thread's prover SRS, which the step locks next. The verifier's SRS
+/// (`get_srs::<Fq>()`) holds the same points; a prover that used it made
+/// them a second time, at its first proof.
+pub(super) fn commit_challenge_polynomial(p: &DensePolynomial<Fq>) -> GroupAffine<Fp> {
+    let srs = get_srs_mut::<Fq>();
+    let srs = srs
+        .lock()
+        .expect("get_srs_mut returns an SRS no panic has poisoned");
+    srs.commit_non_hiding(p, 1).chunks[0]
 }
 
 pub struct ChallengePolynomial {
@@ -1023,8 +1029,7 @@ pub mod pseudo {
             let all = all_possible_domains.iter().map(Domain::log2_size);
             Iterator::max(all).unwrap() // `rust-analyzer` is confused if we use `all.max()`
         };
-        let shifts = make_shifts(&domain);
-        let shifts = Box::new(*shifts.shifts());
+        let shifts = Box::new(make_shifts(&domain));
 
         PseudoDomain {
             domain,
