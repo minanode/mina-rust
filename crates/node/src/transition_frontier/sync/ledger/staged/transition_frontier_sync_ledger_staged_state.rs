@@ -29,6 +29,7 @@ pub enum TransitionFrontierSyncLedgerStagedState {
         time: Timestamp,
         target: SyncLedgerTargetWithStaged,
         parts: Arc<StagedLedgerAuxAndPendingCoinbasesValid>,
+        sender: StagedLedgerPartsSender,
     },
     ReconstructEmpty {
         time: Timestamp,
@@ -38,6 +39,8 @@ pub enum TransitionFrontierSyncLedgerStagedState {
         time: Timestamp,
         target: SyncLedgerTargetWithStaged,
         parts: Option<Arc<StagedLedgerAuxAndPendingCoinbasesValid>>,
+        /// For parts a peer sent, not for an empty staged ledger.
+        sender: Option<StagedLedgerPartsSender>,
     },
     ReconstructError {
         time: Timestamp,
@@ -55,6 +58,20 @@ pub enum TransitionFrontierSyncLedgerStagedState {
         target: SyncLedgerTargetWithStaged,
         needed_protocol_states: BTreeMap<StateHash, MinaStateProtocolStateValueStableV2>,
     },
+}
+
+/// The peer whose parts the staged ledger is rebuilt from, and the attempts
+/// of the other peers. The staged ledger hash doesn't cover all of the parts
+/// (the scan state hash leaves out its completed jobs), so parts that make it
+/// can still fail to rebuild the staged ledger. That peer's answer is then
+/// rejected and the fetch goes on from these attempts, as OCaml's bootstrap
+/// starts over when the parts it got fail to rebuild.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/bootstrap_controller/bootstrap_controller.ml#L478-L508>
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StagedLedgerPartsSender {
+    pub peer_id: PeerId,
+    pub other_attempts: BTreeMap<PeerId, PeerStagedLedgerPartsFetchState>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

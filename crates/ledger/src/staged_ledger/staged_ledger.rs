@@ -270,17 +270,20 @@ impl StagedLedger {
         })
     }
 
-    /// Builds a staged ledger from parts persisted by this node: its ledger
-    /// (the snarked ledger with the scan state's transactions already applied),
-    /// its scan state and its pending coinbase collection.
+    /// Builds a staged ledger from persisted parts: its ledger (the snarked
+    /// ledger with the scan state's transactions already applied), its scan
+    /// state and its pending coinbase collection. The parts may come from a
+    /// store this node didn't write.
     ///
     /// Unlike [`Self::of_scan_state_pending_coinbases_and_snarked_ledger`], it
     /// re-applies no transaction, and unlike `of_scan_state_and_ledger_unchecked`
-    /// it doesn't check the scan state's invariants either: the parts were
-    /// checked when they were first built. The caller must check
-    /// [`Self::hash`] against the staged ledger hash of the block the parts
-    /// belong to, which commits to all three, and discard the result if they
-    /// differ. That check is the validation.
+    /// it doesn't check the scan state's invariants either. The caller must
+    /// check [`Self::hash`] against the staged ledger hash of the block the
+    /// parts belong to and discard the result if they differ. That hash covers
+    /// the ledger's root, the scan state (all of it but completed merge jobs,
+    /// which the scan state hash leaves out, as OCaml's does) and the pending
+    /// coinbase's root and positions; the pending coinbase's inner hashes and
+    /// stack indexes are checked when it is converted from the wire.
     ///
     /// OCaml has no equivalent: its persistent frontier rebuilds the root
     /// staged ledger with
