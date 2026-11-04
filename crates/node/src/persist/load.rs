@@ -1259,8 +1259,8 @@ fn read_parts_file<B: StoreBackend>(
 }
 
 /// The root's scan state, pending coinbase and protocol states, checked to
-/// be of the root's staged ledger and to hold every protocol state the scan
-/// state needs.
+/// be of the root's staged ledger, to have the shape of a scan state this
+/// node builds, and to hold every protocol state the scan state needs.
 fn decode_parts(
     name: &str,
     bytes: Vec<u8>,
@@ -1278,6 +1278,10 @@ fn decode_parts(
     let scan_state: ScanState = (&parts.scan_state)
         .try_into()
         .map_err(|error| corrupt(format!("scan state: {error:?}")))?;
+    // Not covered by the staged ledger hash gate.
+    scan_state
+        .check_shape()
+        .map_err(|error| corrupt(format!("scan state: {error}")))?;
     let pending_coinbase: PendingCoinbase = (&parts.pending_coinbase)
         .try_into()
         .map_err(|error| corrupt(format!("pending coinbase: {error:?}")))?;
