@@ -232,6 +232,36 @@ its example now uses 0.22.0. A packaging dry run does not publish an image or
 change the running site's downloads. Unsigned dry-run archive hashes must not
 replace the public release-note checksum placeholder.
 
+The site switch does not deploy minaweb.org or the relays. Do the
+[published web and relay switch](#published-web-and-relay-switch) next.
+
+## Published web and relay switch
+
+After a release that ships the web node archive, as 0.21.0 and 0.22.0 did,
+minaweb.org and both relays run the tagged commit. A native-only release skips
+this step, as it skips the
+[web build and public relay](#web-build-and-public-relay) gates. A build from a
+commit before the release's version change reports the previous version, even
+when its code matches the release. A build deployed before publication therefore
+still needs replacing.
+
+1. Build the minaweb.org bundle and the relay binary from the tagged commit.
+   Follow
+   [Routine release and rollback](MINAWEB.md#routine-release-and-rollback).
+2. With the owner's approval, deploy the page. Then update relay1, check it, and
+   update relay2.
+3. Check that the page and both relays report the tagged commit:
+
+```sh
+git rev-parse "v0.22.0^{commit}"
+curl -fsS https://minaweb.org/build-info.json |
+  python3 -c 'import json, sys; print(json.load(sys.stdin)["commit"])'
+readlink -f /opt/mina-relay/current # on each relay
+```
+
+The release is complete when the tag's commit, the page's commit and the last
+part of each relay's path are the same.
+
 ## 0.20.1 release-candidate checklist
 
 Every unchecked item is a pending gate. Historical results do not qualify a new
