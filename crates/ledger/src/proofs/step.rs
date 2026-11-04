@@ -34,7 +34,7 @@ use crate::{
         },
         BACKEND_TICK_ROUNDS_N, BACKEND_TOCK_ROUNDS_N,
     },
-    verifier::{get_srs, get_srs_mut},
+    verifier::get_srs_mut,
 };
 use anyhow::Context;
 use ark_ff::{BigInteger256, One, Zero};
@@ -419,12 +419,9 @@ pub mod step_verifier {
 
     fn tick_shifts(log2_size: u64) -> Box<[Fp; PERMUTS]> {
         // caml_pasta_fp_plonk_verifier_index_shifts
-        use kimchi::circuits::polynomials::permutation::Shifts;
-
         let num_coeff = 1 << log2_size;
         let domain = Radix2EvaluationDomain::<Fp>::new(num_coeff).unwrap();
-        let shifts = Shifts::new(&domain);
-        Box::from(*shifts.shifts())
+        Box::new(plonk_checks::make_shifts(&domain))
     }
 
     fn domain_generator(log2_size: u64) -> Fp {
@@ -2221,15 +2218,7 @@ fn wrap_compute_sg(challenges: &[[u64; 2]]) -> GroupAffine<Fp> {
         .collect::<Vec<_>>();
 
     let coeffs = b_poly_coefficients(&challenges);
-    let p = DensePolynomial::from_coefficients_vec(coeffs);
-
-    let comm = {
-        use poly_commitment::SRS;
-
-        let srs = get_srs::<Fq>();
-        srs.commit_non_hiding(&p, 1)
-    };
-    comm.chunks[0]
+    super::wrap::commit_challenge_polynomial(&DensePolynomial::from_coefficients_vec(coeffs))
 }
 
 struct ExpandProofParams<'a> {

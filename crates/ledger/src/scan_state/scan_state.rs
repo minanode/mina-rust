@@ -2431,6 +2431,13 @@ impl ScanState {
         }
     }
 
+    /// Checks the shape of the trees, which the scan state hash doesn't
+    /// cover ([`ParallelScan::check_shape`]). Every scan state this node or
+    /// OCaml builds has it; parts from a peer or a store must be checked.
+    pub fn check_shape(&self) -> Result<(), String> {
+        self.scan_state.check_shape()
+    }
+
     pub fn required_state_hashes(&self) -> HashSet<Fp> {
         self.staged_transactions()
             .into_iter()

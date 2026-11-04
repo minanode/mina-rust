@@ -3,7 +3,7 @@ use std::rc::Rc;
 use ark_ff::{Field, One};
 use ark_poly::Radix2EvaluationDomain;
 use kimchi::{
-    circuits::expr::RowOffset,
+    circuits::{expr::RowOffset, wires::PERMUTS},
     curve::KimchiCurve,
     proof::{PointEvaluations, ProofEvaluations},
 };
@@ -368,12 +368,93 @@ pub fn checked<F: FieldWitness>(
     Boolean::all(&list[..], w)
 }
 
-pub fn make_shifts<F: FieldWitness>(
-    domain: &Radix2EvaluationDomain<F>,
-) -> kimchi::circuits::polynomials::permutation::Shifts<F> {
-    // let value = 1 << log2_size;
-    // let domain = Domain::<Fq>::new(value).unwrap();
-    kimchi::circuits::polynomials::permutation::Shifts::new(domain)
+/// The permutation shifts of `domain`, as `Shifts::new(domain).shifts()`,
+/// sampled once for each field and domain. The step and wrap witnesses and
+/// proof verification need them several times for each proof.
+pub fn make_shifts<F: FieldWitness>(domain: &Radix2EvaluationDomain<F>) -> [F; PERMUTS] {
+    use std::{any::Any, sync::Mutex};
+
+    type Made<F> = Vec<(Radix2EvaluationDomain<F>, [F; PERMUTS])>;
+    // One entry for each field, keyed by its type.
+    static MADE: Mutex<Vec<Box<dyn Any + Send>>> = Mutex::new(Vec::new());
+
+    let mut made = MADE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let index = match made.iter().position(|made| made.is::<Made<F>>()) {
+        Some(index) => index,
+        None => {
+            made.push(Box::new(Made::<F>::new()));
+            made.len() - 1
+        }
+    };
+    let made = made[index]
+        .downcast_mut::<Made<F>>()
+        .expect("found by its type");
+    if let Some((_, shifts)) = made.iter().find(|(made, _)| made == domain) {
+        return *shifts;
+    }
+    let shifts = sample_shifts(domain);
+    made.push((*domain, shifts));
+    shifts
+}
+
+/// The shifts kimchi's `Shifts::new` samples for `domain`, without the map
+/// from every cell of the domain to its shifted element that it also makes:
+/// 7 multiplications for each of up to 2^16 rows, which only a prover uses.
+///
+/// Kimchi: <https://github.com/o1-labs/proof-systems/blob/ab84160fa2c22290a8506a7742ac1378879fc386/kimchi/src/circuits/polynomials/permutation.rs#L148-L197>
+fn sample_shifts<F: FieldWitness>(domain: &Radix2EvaluationDomain<F>) -> [F; PERMUTS] {
+    use ark_poly::EvaluationDomain;
+    use blake2::{Blake2b512, Digest};
+
+    // A quadratic non-residue outside the domain, from the hash of the
+    // next `input`.
+    let sample = |input: &mut u32| loop {
+        *input += 1;
+        let mut h = Blake2b512::new();
+        h.update(input.to_be_bytes());
+        let shift = F::from_random_bytes(&h.finalize()[..31])
+            .expect("our field elements fit in more than 31 bytes");
+        if shift.legendre().is_qnr() && !domain.evaluate_vanishing_polynomial(shift).is_zero() {
+            break shift;
+        }
+    };
+
+    let mut shifts = [F::zero(); PERMUTS];
+    shifts[0] = F::one();
+    let mut input: u32 = 7;
+    for index in 1..PERMUTS {
+        let mut shift = sample(&mut input);
+        // They have to be distinct.
+        while shifts.contains(&shift) {
+            shift = sample(&mut input);
+        }
+        shifts[index] = shift;
+    }
+    shifts
+}
+
+#[cfg(test)]
+mod make_shifts_tests {
+    use ark_poly::EvaluationDomain;
+    use kimchi::circuits::polynomials::permutation::Shifts;
+
+    use super::*;
+
+    /// The shifts `make_shifts` samples and keeps are `Shifts::new`'s, for
+    /// every domain of 2^0 to 2^16 rows of either field, sampled or found.
+    #[test]
+    fn make_shifts_are_kimchis() {
+        fn check<F: FieldWitness>() {
+            for log2_size in 0..=16 {
+                let domain = Radix2EvaluationDomain::<F>::new(1 << log2_size).unwrap();
+                let kimchi = *Shifts::new(&domain).shifts();
+                assert_eq!(make_shifts(&domain), kimchi, "2^{log2_size}");
+                assert_eq!(make_shifts(&domain), kimchi, "2^{log2_size} again");
+            }
+        }
+        check::<Fp>();
+        check::<Fq>();
+    }
 }
 
 pub fn ft_eval0<F: FieldWitness, const NLIMB: usize>(
