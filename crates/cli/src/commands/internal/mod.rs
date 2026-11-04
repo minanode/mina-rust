@@ -17,6 +17,13 @@ pub enum InternalCommand {
     /// Verify an uptime Proof_data file against its original statement/digest.
     #[command(hide = true)]
     VerifyUptimeWork { proof_data: std::path::PathBuf },
+    /// Check Lagrange basis cache files against the prover SRS, as the prover
+    /// does before using one. The web build ships only caches that pass.
+    #[command(hide = true)]
+    CheckLagrangeCache {
+        #[arg(required = true)]
+        files: Vec<std::path::PathBuf>,
+    },
 }
 
 impl Internal {
@@ -29,6 +36,20 @@ impl Internal {
                 .stack_size(64 * 1024 * 1024)
                 .build()?
                 .install(|| verify_uptime_work(&proof_data)),
+            InternalCommand::CheckLagrangeCache { files } => {
+                let mut failed = 0;
+                for file in &files {
+                    match ledger::proofs::lagrange_cache::check_file(file) {
+                        Ok(()) => println!("{}: ok", file.display()),
+                        Err(error) => {
+                            eprintln!("{}: {error}", file.display());
+                            failed += 1;
+                        }
+                    }
+                }
+                anyhow::ensure!(failed == 0, "{failed} of {} caches refused", files.len());
+                Ok(())
+            }
         }
     }
 }
