@@ -15,7 +15,7 @@
 #                           "$(id -u)" "$(id -g)" >> .env
 #   MINA_STATE_DIR=./mina-state   the state dir; a native node's full path,
 #                                 e.g. /home/you/.mina (stop that node first)
-#   MINA_IMAGE=ghcr.io/minanode/mina-rust:0.21.0
+#   MINA_IMAGE=ghcr.io/minanode/mina-rust:0.22.0
 #   MINA_NODE_ARGS=--libp2p-external-ip 203.0.113.7
 #                                 more options for `mina node`
 #   MINA_LIBP2P_PORT=8302         the peer port, inside and outside
@@ -32,7 +32,7 @@ name: minanode
 services:
   mina:
     # Published default: switch with the site after each image publication.
-    image: ${MINA_IMAGE:-ghcr.io/minanode/mina-rust:0.21.0}
+    image: ${MINA_IMAGE:-ghcr.io/minanode/mina-rust:0.22.0}
     container_name: ${MINA_CONTAINER_NAME:-mina}
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"

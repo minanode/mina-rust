@@ -7,7 +7,7 @@ description:
 
 # Run with Docker
 
-The community release image is `ghcr.io/minanode/mina-rust:0.21.0`. It contains
+The community release image is `ghcr.io/minanode/mina-rust:0.22.0`. It contains
 the native node and its built-in dashboard. For supported platforms, volume
 ownership, port bindings and role-specific Compose examples, follow
 [the current Docker guide](https://minanode.org/docs/docker/).
