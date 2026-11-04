@@ -6,19 +6,19 @@ commands after review. The initial app is the view-only minaweb UI on devnet.
 
 ## Release contract
 
-Use a clean, reviewed commit containing the exact seed-relay allowlist and
-disabled browser discovery/signalling channels from PR 173, and the WASM
-integrity check from PR 181. The page reaches the relay through the relay's
+Use a clean, reviewed commit containing the exact seed-relay allowlist, the
+disabled browser discovery and signalling channels, and the WASM integrity
+check, all in 0.20.1 and later. The page reaches the relay through the relay's
 direct HTTPS signalling listener. The relay introduces peers to each other only
 in browser sharing's limited relay mode, which is off unless the owner turns it
 on; see [Browser sharing](#browser-sharing).
 
 The released **0.20.0 binary is not suitable for a public relay**: it predates
-PR 173. Use the 0.20.1 release, which includes PR 173, or a reviewed main commit
-built with `tools/deploy/relay/build-relay.sh`. Record the binary's full
-embedded commit, SHA-256 and CLI help, not the version string alone.
-`start-relay.sh` rejects 0.20.0, which has neither `--webrtc-signaling-relay`
-nor `--webrtc-sharing-relay`. Stock 0.20.0 remains useful for historical
+the seed-relay allowlist. Use 0.20.1 or later, or a reviewed main commit built
+with `tools/deploy/relay/build-relay.sh`. Record the binary's full embedded
+commit, SHA-256 and CLI help, not the version string alone. `start-relay.sh`
+rejects 0.20.0, which has neither `--webrtc-signaling-relay` nor
+`--webrtc-sharing-relay`. Stock 0.20.0 remains useful for historical
 comparisons, not launch acceptance.
 
 The bundle contains `browser/`, `upload/`, `manifest.json`, `SHA256SUMS` and
@@ -41,8 +41,8 @@ minaweb.org runs two relays on Hetzner Cloud, in two EU locations:
 | `relay2.minaweb.org` | Helsinki (hel1)    | DNS-only A record to its IPv4 |
 
 The page lists every relay, and each web node dials all of them. It keeps
-following the chain while one relay is down. The seed allowlist from PR 173
-holds exactly the listed relays.
+following the chain while one relay is down. The seed allowlist holds exactly
+the listed relays.
 
 Each host stands alone: its own libp2p identity and peer ID, TURN secret,
 credential service, coturn, firewall, certificate and peer limit. Hosts share no
@@ -126,10 +126,10 @@ other page does:
 The per-address limit needs the visitor's address. The relay takes it from
 `X-Forwarded-For` only when the request comes from a proxy on the same host
 (loopback), using the last address the proxy added. `relay.nginx.conf` sets the
-header from `$remote_addr`; Caddy sets it by default. An include from before PR
-#261 does not set it, so nginx passes on whatever `X-Forwarded-For` the visitor
-sent, and a visitor can claim any address. Install the new include before
-turning sharing on. The relay keeps an address only while that peer is
+header from `$remote_addr`; Caddy sets it by default. An include from before
+0.21.0 does not set it, so nginx passes on whatever `X-Forwarded-For` the
+visitor sent, and a visitor can claim any address. Install the new include
+before turning sharing on. The relay keeps an address only while that peer is
 connected, at most 1024 of them, and only in sharing mode; no log or request
 record holds it.
 
@@ -159,8 +159,8 @@ review. Install all four parts together, in this order. A binary with the flag
 behind an older nginx include trusts the visitor's own `X-Forwarded-For`, so a
 visitor could claim any address for the per-address limit.
 
-1. Install a release built from main with PR #261 (`build-relay.sh`), with the
-   `start-relay.sh` from the same commit, as under
+1. Install 0.21.0 or later, or a release built from main (`build-relay.sh`),
+   with the `start-relay.sh` from the same commit, as under
    [Routine release and rollback](#routine-release-and-rollback). Do not switch
    `current` yet. Check that the new binary has the flag:
 
@@ -175,8 +175,8 @@ visitor could claim any address for the per-address limit.
    value the visitor sent:
 
    ```bash
-   sed "s/<RELAY_DOMAIN>/$RELAY_DOMAIN/g" tools/deploy/minaweb/relay.nginx.conf \
-     >/etc/nginx/conf.d/minaweb.conf
+   sed "s/<RELAY_DOMAIN>/$RELAY_DOMAIN/g" \
+     tools/deploy/minaweb/relay.nginx.conf >/etc/nginx/conf.d/minaweb.conf
    nginx -t && systemctl reload nginx
    grep -c 'X-Forwarded-For $remote_addr' /etc/nginx/conf.d/minaweb.conf
    ```
@@ -184,7 +184,7 @@ visitor could claim any address for the per-address limit.
    The count is 2: the signalling and credential locations.
 
 3. Set exactly one `SHARING_RELAY=on` line in `relay.env`. A relay installed
-   before PR #261 has no such line, and a bare `sed` substitution then changes
+   before 0.21.0 has no such line, and a bare `sed` substitution then changes
    nothing, so remove any old line and append the new one:
 
    ```bash
@@ -233,7 +233,7 @@ Keep the nginx include: it is the safe one either way.
    `rclone` remote named `r2`, provider Cloudflare, region `auto`, endpoint
    `https://ACCOUNT_ID.r2.cloudflarestorage.com`. Use `rclone config`
    interactively; never put credentials in shell history or this repository. See
-   [Cloudflare's rclone setup](https://developers.cloudflare.com/r2/examples/rclone/).
+   [Cloudflare's rclone setup][r2-rclone].
 3. Authenticate Wrangler with `npx wrangler login`, or inject a narrowly scoped
    account Pages token from a secret manager. Record the installed Wrangler and
    rclone versions with the release receipt.
@@ -281,23 +281,41 @@ call below is relative to `https://api.cloudflare.com/client/v4`:
    `tools/deploy/minaweb/r2-cors.json` as the body. The API takes Wrangler's
    format unchanged.
 4. Attach the asset host with
-   `POST .../r2/buckets/minaweb-assets/domains/custom` and
-   `{"domain":"assets.minaweb.org","zoneId":"ZONE_ID","enabled":true,"minTLS":"1.2"}`.
+   `POST .../r2/buckets/minaweb-assets/domains/custom` and this body:
+
+   ```json
+   {
+     "domain": "assets.minaweb.org",
+     "zoneId": "ZONE_ID",
+     "enabled": true,
+     "minTLS": "1.2"
+   }
+   ```
+
    R2 creates the proxied DNS record itself. Its certificate was active within
    five minutes.
+
 5. Attach the site with `POST .../pages/projects/minaweb/domains` and
    `{"name":"minaweb.org"}`. This call creates no DNS record. Create a proxied
    `CNAME` from `minaweb.org` to `minaweb.pages.dev` with
    `POST /zones/ZONE_ID/dns_records`. The domain becomes active once the record
    resolves.
 6. For `www`, create a proxied `AAAA` record for `www.minaweb.org` to `100::`.
-   Then load `tools/deploy/minaweb/cloudflare-redirects.json` with
-   `PUT /zones/ZONE_ID/rulesets/phases/http_request_dynamic_redirect/entrypoint`.
+   Then load `tools/deploy/minaweb/cloudflare-redirects.json` with:
+
+   ```text
+   PUT /zones/ZONE_ID/rulesets/phases/http_request_dynamic_redirect/entrypoint
+   ```
+
    The rule sends a 301 to `https://minaweb.org` and keeps the path and the
    query.
+
 7. Load the asset headers of [R2 and Pages headers](#r2-and-pages-headers),
-   `tools/deploy/minaweb/cloudflare-asset-headers.json`, with
-   `PUT /zones/ZONE_ID/rulesets/phases/http_response_headers_transform/entrypoint`.
+   `tools/deploy/minaweb/cloudflare-asset-headers.json`, with:
+
+   ```text
+   PUT /zones/ZONE_ID/rulesets/phases/http_response_headers_transform/entrypoint
+   ```
 
 A `PUT` to a phase entrypoint replaces every rule in that phase. Read the phase
 first with `GET` on the same path. If it already holds other rules, add each new
@@ -357,8 +375,8 @@ Four settings need more than these permissions. Set them in the dashboard:
   works:
 
   ```bash
-  curl -s -H 'Accept: text/html' \
-    -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36' \
+  UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)'
+  curl -s -H 'Accept: text/html' -A "$UA Chrome/130.0 Safari/537.36" \
     https://minaweb.org/ | grep beacon.min.js
   ```
 
@@ -367,16 +385,20 @@ Four settings need more than these permissions. Set them in the dashboard:
   visitor reads the WASM and the verifier caches from the bucket. The
   response-header Transform Rule sets browser caching, not edge caching. Create
   a Cache Rule on the zone:
+  - **Match**: Hostname equals `assets.minaweb.org` AND URI Path starts with
+    `/releases/`.
+  - **Cache eligibility**: Eligible for cache.
+  - **Edge TTL**: Use cache-control header if present, use default Cloudflare
+    caching behavior if not.
+  - **Browser TTL**: Respect origin.
 
-  | Setting           | Value                                                                      |
-  | ----------------- | -------------------------------------------------------------------------- |
-  | Match             | Hostname equals `assets.minaweb.org` AND URI Path starts with `/releases/` |
-  | Cache eligibility | Eligible for cache                                                         |
-  | Edge TTL          | Use cache-control header if present                                        |
-  | Browser TTL       | Respect origin                                                             |
+  The expression form of the match is:
 
-  The expression form of the match is
-  `(http.host eq "assets.minaweb.org" and starts_with(http.request.uri.path, "/releases/"))`.
+  ```text
+  (http.host eq "assets.minaweb.org"
+    and starts_with(http.request.uri.path, "/releases/"))
+  ```
+
   The release objects carry `public, max-age=31536000, immutable` from upload,
   and each release has its own prefix, so a cached object never goes stale. To
   check, fetch the WASM twice. The second response has `cf-cache-status: HIT`.
@@ -406,11 +428,13 @@ hcloud server create --name "$NAME" --location "$LOCATION" \
   --user-data-from-file tools/deploy/minaweb/cloud-init.yaml
 hcloud server enable-protection "$NAME" delete rebuild
 IPV4=$(hcloud server ip "$NAME")
+RECORD="{\"type\":\"A\",\"name\":\"$NAME.minaweb.org\",\"content\":\"$IPV4\","
+RECORD="$RECORD\"proxied\":false,\"ttl\":300}"
 # The token goes to curl on stdin, not in its arguments.
 printf 'header = "Authorization: Bearer %s"\n' "$CF_API_TOKEN" |
   curl -fsS -K - -X POST -H 'Content-Type: application/json' \
     "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records" \
-    --data "{\"type\":\"A\",\"name\":\"$NAME.minaweb.org\",\"content\":\"$IPV4\",\"proxied\":false,\"ttl\":300}"
+    --data "$RECORD"
 ```
 
 Both relays are `cpx32` servers. They have no IPv6 address, so there is no AAAA
@@ -606,8 +630,9 @@ Two builds on 2026-11-01 gave
 to the relay, check its SHA-256 there, and install it with its own user:
 
 ```bash
-echo "3b01c87dc14fbc6b62b963b269a48b5b19537eaf5d7a60d7d8894a6b0a96cb7b  coturn-4.18.0-noble-amd64.tar" |
-  sha256sum -c
+printf '%s  %s\n' \
+  3b01c87dc14fbc6b62b963b269a48b5b19537eaf5d7a60d7d8894a6b0a96cb7b \
+  coturn-4.18.0-noble-amd64.tar | sha256sum -c
 useradd --system --user-group --home-dir / --no-create-home \
   --shell /usr/sbin/nologin turnserver
 install -d -m 755 /opt/coturn/4.18.0
@@ -617,9 +642,8 @@ ln -sfn 4.18.0 /opt/coturn/current
 ```
 
 coturn is then not an Ubuntu package, so unattended upgrades do not update it.
-Watch the
-[coturn security advisories](https://github.com/coturn/coturn/security/advisories).
-For a new release, update the pin, build, compare and install it into its own
+Watch the [coturn security advisories][coturn-advisories]. For a new release,
+update the pin, build, compare and install it into its own
 `/opt/coturn/VERSION`. Switch `current`, restart coturn and rerun the TURN probe
 under [TLS and firewall](#tls-and-firewall). Keep the previous directory to roll
 back.
@@ -664,7 +688,8 @@ PY
 install -m 644 tools/deploy/minaweb/turn.env.example /etc/mina-relay/turn.env
 # TURN_IPV4 is this host's address; turn.env contains no secret.
 sed -i "s/^TURN_IPV4=.*/TURN_IPV4=$VPS_IPV4/" /etc/mina-relay/turn.env
-install -m 644 tools/deploy/minaweb/mina-turn-credentials.service /etc/systemd/system/
+install -m 644 tools/deploy/minaweb/mina-turn-credentials.service \
+  /etc/systemd/system/
 systemctl daemon-reload
 ! runuser -u mina -- test -r /etc/mina-relay/turn.secret
 systemctl enable --now mina-turn-credentials
@@ -757,7 +782,8 @@ printf '#!/bin/sh\nnginx -t && systemctl reload nginx\n' \
 chmod 755 /etc/letsencrypt/renewal-hooks/deploy/reload-nginx
 SSH_FROM=OWNER_CIDR tools/deploy/relay/firewall.sh
 ufw status verbose
-install -m 644 tools/deploy/minaweb/mina-turn-egress.service /etc/systemd/system/
+install -m 644 tools/deploy/minaweb/mina-turn-egress.service \
+  /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now mina-turn-egress
 nft list table inet mina_turn
@@ -778,7 +804,8 @@ nft list table inet mina_turn
 systemctl start mina-relay
 systemctl is-active --quiet mina-relay
 runuser -u mina -- python3 -c \
-  'import json; assert json.load(open("/etc/mina-relay/ice-servers.json")) == []'
+  'import json, sys; assert json.load(open(sys.argv[1])) == []' \
+  /etc/mina-relay/ice-servers.json
 ```
 
 The local TURN probe works on its own allocations only. It asks the issuer for
@@ -888,7 +915,8 @@ install -m 644 tools/deploy/minaweb/sshd-relay.conf \
 install -d -m 755 /run/sshd
 sshd -t
 systemctl reload-or-restart ssh
-sshd -T | grep -E '^(permitrootlogin|passwordauthentication|authenticationmethods) '
+sshd -T |
+  grep -E '^(permitrootlogin|passwordauthentication|authenticationmethods) '
 ```
 
 Expected: `permitrootlogin without-password` (sshd's name for
@@ -901,8 +929,8 @@ to its operator API:
 
 ```bash
 ssh -N -L 13001:127.0.0.1:3000 OWNER@"$RELAY_DOMAIN" &
-python3 -B tools/deploy/minaweb/check.py "/srv/evidence/$RELAY_DOMAIN" --relay-only \
-  --relay "https://$RELAY_DOMAIN" --turn-ip "$VPS_IPV4" \
+python3 -B tools/deploy/minaweb/check.py "/srv/evidence/$RELAY_DOMAIN" \
+  --relay-only --relay "https://$RELAY_DOMAIN" --turn-ip "$VPS_IPV4" \
   --relay-http http://127.0.0.1:13001
 ```
 
@@ -931,12 +959,16 @@ hours: keep the file private and delete it after the test.
 
 ## R2 and Pages headers
 
-Set the bucket CORS policy with
-`npx wrangler r2 bucket cors set minaweb-assets --file tools/deploy/minaweb/r2-cors.json`.
+Set the bucket CORS policy with:
+
+```bash
+npx wrangler r2 bucket cors set minaweb-assets \
+  --file tools/deploy/minaweb/r2-cors.json
+```
+
 This is Wrangler's `rules`/`allowed` format, permitting only
 `https://minaweb.org`. The dashboard uses a different format; do not paste this
-file there. See the
-[R2 command reference](https://developers.cloudflare.com/r2/reference/wrangler-commands/).
+file there. See the [R2 command reference][r2-commands].
 
 On hostname `assets.minaweb.org`, create response-header Transform Rules that
 set `Access-Control-Allow-Origin: https://minaweb.org` and
@@ -1106,8 +1138,11 @@ SPKI_HASHES="$(spki "$CA_DIR/root.crt"),$(spki "$CA_DIR/intermediate.crt")"
 Start the browser with those certificate pins:
 
 ```bash
+RULES="MAP minaweb.test 127.0.0.1:4274,MAP assets.minaweb.test 127.0.0.1:4275"
+RULES="$RULES,MAP relay1.minaweb.test 127.0.0.1:4276"
+PINS="--ignore-certificate-errors-spki-list=$SPKI_HASHES"
 BASE=https://minaweb.test PAGE=/ AUTOSTART=1 EVERY_MS=5000 UNTIL_SYNCED=30 \
-  CHROME_ARGS="--host-resolver-rules=MAP minaweb.test 127.0.0.1:4274,MAP assets.minaweb.test 127.0.0.1:4275,MAP relay1.minaweb.test 127.0.0.1:4276 --ignore-certificate-errors-spki-list=$SPKI_HASHES" \
+  CHROME_ARGS="--host-resolver-rules=$RULES $PINS" \
   OUT=/srv/evidence/local-browser node tools/regression/webnode/run.mjs 15
 ```
 
@@ -1198,7 +1233,8 @@ configuration, so don't run it twice.
 
    ```bash
    systemctl stop mina-relay
-   (umask 077 && tar -C /var/lib -cf "/root/state-backup-$(date -u +%Y%m%dT%H%M).tar" mina-relay)
+   (umask 077 && tar -C /var/lib \
+     -cf "/root/state-backup-$(date -u +%Y%m%dT%H%M).tar" mina-relay)
    systemctl start mina-relay
    ```
 
@@ -1242,7 +1278,8 @@ configuration, so don't run it twice.
    os.umask(0o077)  # the new file holds the secret: root-only from the start
    secret = Path('/etc/mina-relay/turn.secret').read_text().strip()
    s = Path('tools/deploy/minaweb/turnserver.conf').read_text()
-   s = s.replace('<VPS_PUBLIC_IPV4>', sys.argv[1]).replace('<RELAY_DOMAIN>', sys.argv[2])
+   s = s.replace('<VPS_PUBLIC_IPV4>', sys.argv[1])
+   s = s.replace('<RELAY_DOMAIN>', sys.argv[2])
    assert s.count('<TURN_AUTH_SECRET>') == 1
    new = Path('/etc/turnserver.conf.new')
    new.unlink(missing_ok=True)  # never reuse a file left by an interrupted run
@@ -1359,3 +1396,7 @@ monitoring. Keep operational logs short and private.
 - [ ] Owner: decide whether each relay runs `SHARING_RELAY=on`
       ([Browser sharing](#browser-sharing)); off needs nothing.
 - [ ] Owner: approve launch announcement only after all gates pass.
+
+[r2-rclone]: https://developers.cloudflare.com/r2/examples/rclone/
+[coturn-advisories]: https://github.com/coturn/coturn/security/advisories
+[r2-commands]: https://developers.cloudflare.com/r2/reference/wrangler-commands/

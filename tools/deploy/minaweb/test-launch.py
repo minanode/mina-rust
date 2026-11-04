@@ -448,6 +448,34 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual(seen["ICE_SERVERS"], "")
         self.assertNotIn("RELAYS", seen)
 
+    def test_deploy_script_uploads_immutable_release(self):
+        def build(command, env, **_):
+            out = Path(command[1])
+            (out / "browser").mkdir(parents=True)
+            (out / "browser/build-info.json").write_text(json.dumps(two_relay_build()))
+            (out / "browser/serve.json").write_text("{}")
+            (out / "upload/wasm").mkdir(parents=True)
+            (out / "upload/wasm/mina_node_web_bg.wasm").write_bytes(b"\0asm")
+        environ = {"RELAYS": f"relay1.minaweb.org={PEER} relay2.minaweb.org={PEER2}",
+                   "PROVER_CIRCUITS": "/provers", "PATH": os.environ["PATH"]}
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, environ, clear=True), \
+                patch.object(sys, "argv", ["release.py", "HEAD", str(Path(temp) / "out")]), \
+                patch.object(release, "git", side_effect=lambda *a: "" if a[0] == "status" else "c" * 40), \
+                patch.object(release, "verify_caches"), patch.object(release, "build_pins"), \
+                patch.object(release.subprocess, "run", side_effect=build), patch("sys.stdout"):
+            release.main()
+            out = Path(temp) / "out"
+            name = json.loads((out / "manifest.json").read_text())["release"]
+            deploy = (out / "deploy.sh").read_text().splitlines()
+        self.assertRegex(name, r"^releases/c{40}/[0-9a-f]{32}$")
+        destination = f"r2:minaweb-assets/{name}"
+        copy = [line for line in deploy if line.startswith("rclone copy ")]
+        self.assertEqual(len(copy), 1)
+        self.assertTrue(copy[0].startswith(f"rclone copy upload {destination} "))
+        self.assertIn("--header-upload 'Cache-Control: public, max-age=31536000, immutable'",
+                      copy[0])
+        self.assertIn(f"rclone check upload {destination} --download --one-way", deploy)
+
     def test_relay_list(self):
         one = f"/dns4/relay1.minaweb.org/tcp/443/webrtc/https/p2p/{PEER}"
         two = f"/ip4/192.0.2.1/tcp/3540/webrtc/http/p2p/{PEER2}"
