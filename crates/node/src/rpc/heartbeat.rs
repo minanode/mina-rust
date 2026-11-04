@@ -238,9 +238,10 @@ pub(crate) mod tests {
     /// digest, mina-signer being what the heartbeat receiver verified with; it
     /// matches OCaml's `String_sign` regression vectors (see
     /// `test_string_signing_matches_ocaml`). The test key is
-    /// `AccountSecretKey::deterministic(0)`. Refreshed for R24g's `root` field
-    /// using mina-signer 3.1.0 after checking both OCaml String_sign vectors
-    /// and the previous heartbeat signature (wave-3a-integration.md).
+    /// `AccountSecretKey::deterministic(0)`. The expected values come from
+    /// mina-signer 3.1.0, checked first against both OCaml `String_sign`
+    /// vectors and the previous heartbeat signature. Last refreshed for the
+    /// transaction pool's `max_size` and `minimum_fee_per_weight_unit`.
     #[test]
     fn test_heartbeat_signing() {
         use base64::{engine::general_purpose::URL_SAFE, Engine as _};
@@ -260,21 +261,22 @@ pub(crate) mod tests {
                 r#"{"status":{"chain_id":null,"transition_frontier":{"root":null,"best_tip":null,"#,
                 r#""sync":{"time":null,"status":"Synced","phase":"Running","target":null}},"#,
                 r#""peers_count":10,"snark_pool":{"total_jobs":0,"snarks":0},"#,
-                r#""transaction_pool":{"transactions":0,"transactions_for_propagation":0,"#,
+                r#""transaction_pool":{"max_size":0,"minimum_fee_per_weight_unit":null,"#,
+                r#""transactions":0,"transactions_for_propagation":0,"#,
                 r#""transaction_candidates":0},"current_block_production_attempt":null},"#,
                 r#""node_timestamp":0,"#,
                 r#""peer_id":"2bEgBrPTzL8wov2D4Kz34WVLCxR4uCarsBmHYXWKQA5wvBQzd9H","#,
                 r#""last_produced_block_info":null}"#
             )
         );
-        assert_eq!(&signed.payload, "eyJzdGF0dXMiOnsiY2hhaW5faWQiOm51bGwsInRyYW5zaXRpb25fZnJvbnRpZXIiOnsicm9vdCI6bnVsbCwiYmVzdF90aXAiOm51bGwsInN5bmMiOnsidGltZSI6bnVsbCwic3RhdHVzIjoiU3luY2VkIiwicGhhc2UiOiJSdW5uaW5nIiwidGFyZ2V0IjpudWxsfX0sInBlZXJzX2NvdW50IjoxMCwic25hcmtfcG9vbCI6eyJ0b3RhbF9qb2JzIjowLCJzbmFya3MiOjB9LCJ0cmFuc2FjdGlvbl9wb29sIjp7InRyYW5zYWN0aW9ucyI6MCwidHJhbnNhY3Rpb25zX2Zvcl9wcm9wYWdhdGlvbiI6MCwidHJhbnNhY3Rpb25fY2FuZGlkYXRlcyI6MH0sImN1cnJlbnRfYmxvY2tfcHJvZHVjdGlvbl9hdHRlbXB0IjpudWxsfSwibm9kZV90aW1lc3RhbXAiOjAsInBlZXJfaWQiOiIyYkVnQnJQVHpMOHdvdjJENEt6MzRXVkxDeFI0dUNhcnNCbUhZWFdLUUE1d3ZCUXpkOUgiLCJsYXN0X3Byb2R1Y2VkX2Jsb2NrX2luZm8iOm51bGx9");
+        assert_eq!(&signed.payload, "eyJzdGF0dXMiOnsiY2hhaW5faWQiOm51bGwsInRyYW5zaXRpb25fZnJvbnRpZXIiOnsicm9vdCI6bnVsbCwiYmVzdF90aXAiOm51bGwsInN5bmMiOnsidGltZSI6bnVsbCwic3RhdHVzIjoiU3luY2VkIiwicGhhc2UiOiJSdW5uaW5nIiwidGFyZ2V0IjpudWxsfX0sInBlZXJzX2NvdW50IjoxMCwic25hcmtfcG9vbCI6eyJ0b3RhbF9qb2JzIjowLCJzbmFya3MiOjB9LCJ0cmFuc2FjdGlvbl9wb29sIjp7Im1heF9zaXplIjowLCJtaW5pbXVtX2ZlZV9wZXJfd2VpZ2h0X3VuaXQiOm51bGwsInRyYW5zYWN0aW9ucyI6MCwidHJhbnNhY3Rpb25zX2Zvcl9wcm9wYWdhdGlvbiI6MCwidHJhbnNhY3Rpb25fY2FuZGlkYXRlcyI6MH0sImN1cnJlbnRfYmxvY2tfcHJvZHVjdGlvbl9hdHRlbXB0IjpudWxsfSwibm9kZV90aW1lc3RhbXAiOjAsInBlZXJfaWQiOiIyYkVnQnJQVHpMOHdvdjJENEt6MzRXVkxDeFI0dUNhcnNCbUhZWFdLUUE1d3ZCUXpkOUgiLCJsYXN0X3Byb2R1Y2VkX2Jsb2NrX2luZm8iOm51bGx9");
         assert_eq!(
             &signed.signature.field,
-            "21591907503138568507511927066594681457669824843755395181133460748356312052825"
+            "24969831968654842889925727194676440410880165675883382953886401198262969236468"
         );
         assert_eq!(
             &signed.signature.scalar,
-            "20970727517380612997319779643799431855146986630623614310402581414217508614509"
+            "19202476952568135408293355283326515676818178462915907454645098805679129988545"
         );
         assert!(signed.verify_signature());
     }
