@@ -16,7 +16,7 @@ use mina_p2p_messages::v2::{
 };
 use mina_signer::CompressedPubKey;
 use once_cell::sync::Lazy;
-use poly_commitment::{ipa::SRS, SRS as _};
+use poly_commitment::{commitment::CommitmentCurve, ipa::SRS, SRS as _};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, Mutex,
@@ -32,6 +32,26 @@ pub static VERIFIER_INDEX: Lazy<Arc<VerifierIndex<Fq>>> = Lazy::new(|| {
         .into()
 });
 
+type SrsCache = Vec<(std::any::TypeId, Box<dyn std::any::Any + Send + Sync>)>;
+
+/// The SRS of each field, made once for the whole process.
+static SRS_CACHE: Mutex<SrsCache> = Mutex::new(Vec::new());
+
+fn srs_cache() -> std::sync::MutexGuard<'static, SrsCache> {
+    SRS_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn cached_srs<F: FieldWitness>(cache: &SrsCache) -> Option<Arc<SRS<F::OtherCurve>>> {
+    let type_id = std::any::TypeId::of::<F>();
+    cache.iter().find(|(id, _)| *id == type_id).map(|(_, srs)| {
+        srs.downcast_ref::<Arc<SRS<F::OtherCurve>>>()
+            .expect("cached by its field's type id")
+            .clone()
+    })
+}
+
 /// Returns the Structured Reference String (SRS) for proof verification.
 /// Lazily created and cached for the whole process, shared by every thread:
 /// it is immutable, and creating one takes about 2 s, which the per-thread
@@ -40,26 +60,44 @@ pub static VERIFIER_INDEX: Lazy<Arc<VerifierIndex<Fq>>> = Lazy::new(|| {
 ///
 /// TODO: Use directly from proof-systems (<https://github.com/o1-labs/mina-rust/issues/1749>)
 pub fn get_srs<F: FieldWitness>() -> Arc<SRS<F::OtherCurve>> {
-    use std::any::{Any, TypeId};
-
-    type Cached = Vec<(TypeId, Box<dyn Any + Send + Sync>)>;
     // Held while an SRS is created, so that it is created once.
-    static CACHE: Mutex<Cached> = Mutex::new(Vec::new());
-
-    let type_id = TypeId::of::<F>();
-    let mut cache = CACHE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some((_, srs)) = cache.iter().find(|(id, _)| *id == type_id) {
-        return srs
-            .downcast_ref::<Arc<SRS<F::OtherCurve>>>()
-            .expect("cached by its field's type id")
-            .clone();
+    let mut cache = srs_cache();
+    if let Some(srs) = cached_srs::<F>(&cache) {
+        return srs;
     }
     let srs = Arc::new(SRS::<F::OtherCurve>::create(
         <F as proofs::field::FieldWitness>::Scalar::SRS_DEPTH,
     ));
-    cache.push((type_id, Box::new(srs.clone())));
+    cache.push((std::any::TypeId::of::<F>(), Box::new(srs.clone())));
+    srs
+}
+
+/// [`get_srs`], made on the current rayon pool if it isn't made yet:
+/// `SRS::create_parallel` gives the same points, in the same order, as
+/// `SRS::create`, in a fraction of the 2.4 s a web node's start spent on it.
+/// Only for a process whose rayon pool is built (the web node, after
+/// `init_rayon`): elsewhere rayon would build a default pool first.
+///
+/// The cache's lock is not held while the SRS is made: a thread that held it
+/// while it waited for the pool could block every pool thread that asks for
+/// the SRS meanwhile, and itself if it is one of them and takes such a job.
+/// A [`get_srs`] at the same moment may then make one too; every caller gets
+/// the first one stored.
+pub fn get_srs_parallel<F: FieldWitness>() -> Arc<SRS<F::OtherCurve>>
+where
+    <F::OtherCurve as CommitmentCurve>::Map: Sync,
+{
+    if let Some(srs) = cached_srs::<F>(&srs_cache()) {
+        return srs;
+    }
+    let srs = Arc::new(SRS::<F::OtherCurve>::create_parallel(
+        <F as proofs::field::FieldWitness>::Scalar::SRS_DEPTH,
+    ));
+    let mut cache = srs_cache();
+    if let Some(first) = cached_srs::<F>(&cache) {
+        return first;
+    }
+    cache.push((std::any::TypeId::of::<F>(), Box::new(srs.clone())));
     srs
 }
 
@@ -318,6 +356,32 @@ pub mod snark_work;
 #[cfg(test)]
 mod srs_tests {
     use super::*;
+
+    /// The SRS made on the pool is the one `SRS::create` makes: its points
+    /// in the same order, and the same blinder.
+    #[test]
+    fn the_srs_made_in_parallel_is_the_sequential_one() {
+        const DEPTH: usize = 256;
+        let fp = SRS::<<Fp as FieldWitness>::OtherCurve>::create(DEPTH);
+        let par = SRS::<<Fp as FieldWitness>::OtherCurve>::create_parallel(DEPTH);
+        assert_eq!(par.g, fp.g);
+        assert_eq!(par.h, fp.h);
+        let fq = SRS::<<Fq as FieldWitness>::OtherCurve>::create(DEPTH);
+        let par = SRS::<<Fq as FieldWitness>::OtherCurve>::create_parallel(DEPTH);
+        assert_eq!(par.g, fq.g);
+        assert_eq!(par.h, fq.h);
+    }
+
+    /// `get_srs_parallel` and `get_srs` share one SRS per field: whichever
+    /// is first makes it, and the other returns it.
+    #[test]
+    fn the_parallel_and_the_sequential_srs_are_one() {
+        let parallel = get_srs_parallel::<Fp>();
+        assert!(Arc::ptr_eq(&parallel, &get_srs::<Fp>()));
+        assert_eq!(parallel.g.len(), <Fp as FieldWitness>::Scalar::SRS_DEPTH);
+        let sequential = get_srs::<Fq>();
+        assert!(Arc::ptr_eq(&sequential, &get_srs_parallel::<Fq>()));
+    }
 
     /// One SRS per field for the whole process (I5d4): a thread that
     /// verifies after another one has made it doesn't make its own.

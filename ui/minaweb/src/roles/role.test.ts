@@ -118,7 +118,7 @@ describe("run's arguments", () => {
     expect(runRoleArgs(VIEWER, null).coinbaseReceiver).toBeNull();
   });
 
-  test("no role turns on peer discovery (PR #173)", () => {
+  test("no role turns on peer discovery", () => {
     for (const options of [
       runOptions(true, null),
       runOptions(false, [{ urls: "stun:stun.example.org" }]),

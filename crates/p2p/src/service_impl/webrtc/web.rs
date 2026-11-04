@@ -264,8 +264,12 @@ pub async fn webrtc_signal_send(
 
     let offer = bs58::encode(serde_json::to_string(&offer)?).into_string();
     let url = format!("{url}/{offer}");
+    // A GET without a body and without headers of its own is a simple CORS
+    // request: no preflight, so the offer reaches the relay a round trip
+    // sooner, and each dial costs the relay's per-address request limit one
+    // request instead of two. The offer is in the path; a content type would
+    // describe nothing.
     let request = Request::new_with_str(&url)?;
-    request.headers().set("content-type", "application/json")?;
 
     let window = web_sys::window().unwrap();
     let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;

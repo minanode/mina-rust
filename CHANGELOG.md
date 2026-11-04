@@ -16,120 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the store thread reads from the newest manifest, the attempts record and the
   stored tip's block, so the status never says saved when a restart would
   bootstrap. The loader's checks and outcomes are unchanged.
-- **Web node**: sharing with other browsers, off by default: a switch on the
-  Peers page, behind a warning that other visitors and modified pages get your
-  IP address and that it uses your upload. A sharing page still dials only its
-  relays, takes at most 4 browsers they introduce, serves at most 2 bootstraps
-  at once (counted from the requests it serves), checks only their public
-  addresses and mDNS names, and introduces no one. `--webrtc-sharing-relay`
-  introduces only pages that turned it on, within limits per peer key, per
-  address and in total; `start-relay.sh` keeps it off unless
-  `SHARING_RELAY=on` (PR #261).
-- **Web node**: import a Mina encrypted key file (the JSON OCaml and `mina
-  wallet generate` write) on the key screen: pick the file or paste it, and
-  type its password. The WASM decrypts it off the page's thread, behind the
-  same real-funds warning as a raw key. A held key can also be downloaded as a
-  key file for a native node (PR #263).
-
-- **Web node**: an optional coinbase receiver on the block producer's start
-  card, checked by the node's own key check and carried across the role
-  change's restart to `run()`, as the native `--coinbase-receiver`. The
-  producer pages keep labels, values and status; how stake counts and how the
-  expected wins are worked out move to the block producer docs. The slot
-  detail and slot rows get the styles the web node's stylesheet missed
-  (PR #259).
-- **Documentation**: the minanode.org docs navigation shows its pages in five
-  groups (Get started, Native node, Node roles, Web node, and Reference and
-  help), on desktop and mobile and on the docs home. Every docs page is
-  revised to the technical-writing and unslop guides, with no URL, section id
-  or fact changed. How the web node connects is now titled How the web node
-  works (PR #260).
-- **Documentation**: web node launch docs for 0.21.0. minanode.org publishes
-  Run the web node yourself, How the web node connects, Run a relay and the
-  Docker relay section. The connections page covers sync from the nearest
-  relay, the Not checked label, one role per tab and opt-in sharing. Run a
-  relay covers `--webrtc-sharing-relay` and keeps Caddy to a private relay.
-  The block producer page covers key-file import and export in the web node.
-  The home and Get started web node cards link to minaweb.org, the web archive
-  has its own 0.21.0 release metadata, and new 0.21.0 release notes list what
-  the release ships (PR #258).
-
-- **Web node**: a Peers page of its own: one row per relay in the build's
-  list, connected or not, with whether the link is direct or through TURN, its
-  round trip, data in and out, best tip and since when; sharing with other
-  browsers shown as off; and a hidden minanode.org docs page, "How the web
-  node connects", that it links to. The route, round trip and bytes come from
-  the page's own WebRTC connections, without addresses (PR #256).
-
-- **Web node**: serve the web node page under a strict Content-Security-Policy
-  made from each build's origins (no inline script, no eval, no framing), with
-  X-Frame-Options and a Permissions-Policy, from every host and the web
-  archive; the launch gate checks the exact policy and the browser checks fail
-  on any violation. wasm_thread is vendored without eval (PR #251).
+  ([#10](https://github.com/minanode/mina-rust/pull/10))
 
 ### Changed
 
-- **WebRTC**: remove `--webrtc-signaling-relay`, which introduced every peer to
-  every other. `--webrtc-sharing-relay` introduces only pages that turned
-  sharing on, within limits. Direct HTTP signalling is unchanged.
-  `start-relay.sh` accepts the 0.20.1 release or a build of main, and refuses
-  the old flag in `EXTRA_ARGS` (PR #268).
-- **Deployment**: relay2.minaweb.org runs in Hetzner hel1, installed from the
-  runbook on a fresh host with sharing on; its peer ID is in the runbook and
-  `release.env.example`. The runbook's `hcloud` command now creates relays
-  without IPv6, behind the shared firewall and with protection, and its TLS
-  step installs the nginx reload hook for renewals (PR #275).
-- **Dashboard**: the first stage of a won slot reads "Scheduled" with its
-  clock time, in place of "Won (VRF)" and an offset from the slot. It times
-  when the producer picked the slot as its next attempt, not the VRF
-  evaluation. The web node shows the same (PR #274).
-- **Web node**: docs links name the docs page ("Block producer docs", "Web
-  node docs"), one per page. The Blocks page, an unchecked block and the
-  one-role rule link their web node docs sections. "Start-up" on the Overview
-  links to that page, and the Pool card reads "Senders with several pending"
-  (PR #272).
-- **Web node**: hardening from the security reviews of sharing and key
-  handling. The page refuses a saved key that asks for more than 1,200,000
-  PBKDF2 iterations, checks that a key carried across a role change derives
-  its public key, and asks before deleting the saved copy of a held key. The
-  WASM wipes passwords, private keys and Argon2i key material when it drops
-  them. The Caddy relay include caps signalling bodies at 128 KiB and is for
-  private relays only, and MINAWEB.md says the relay trusts
-  `X-Forwarded-For` from any local process (PR #271).
-- **Relay kit**: relays run coturn 4.18.0 built by `build-coturn.sh` from a
-  pinned tarball instead of Ubuntu's 4.6.1 (CVE-2026-68554), in a systemd
-  sandbox, with a TURN probe that checks its guards. TURN usernames are one
-  per address, so `user-quota` caps each address. The journal is the only
-  system log (7 days), SSH is key-only, nginx sends HSTS, and new hosts
-  upgrade at first boot and reboot for security updates. `firewall.sh` needs
-  `SSH_FROM`, and MINAWEB.md has one procedure to turn sharing on (PR #266).
-- **Web node**: ledger queries, block requests and the staged ledger go to the
-  nearest relay first, ranked by how fast each answers; far relays get one
-  request at a time, and take over when the nearest one times out, stalls,
-  drops or sends an answer that fails its checks. A page with a 14 ms and a
-  190 ms relay synced in 58 to 69 s, instead of 62 to 181 s. libp2p peers keep
-  their order (PR #265).
-- **Deployment**: the minaweb kit takes a list of relays (two at launch, in
-  Hetzner fsn1 and hel1): the page dials every one and fetches expiring TURN
-  credentials from each relay's own service, renewing each list on its own;
-  the Content-Security-Policy, the archive's `--relay`, the launch check (per
-  relay, with a `--relay-only` mode) and the runbook (scriptable per-host
-  steps, nginx only) follow. One relay still works as before (PR #255).
-- **Web node**: open minaweb.org on a start screen (start the node in this tab,
-  or download and run it yourself) instead of downloading and starting the
-  node at once; before Start the page loads only its own files. A reload the
-  page makes for a role change, the store's reset or a retry starts the node
-  straight away; the browser checks assert the rule (PR #253).
-- **Web node**: keep the tab's key across role restarts with no passphrase,
-  carried under a one-time non-extractable WebCrypto key in IndexedDB and
-  consumed at the next load; a key saved in the browser but locked asks once
-  for its own passphrase, and the passphrase screens remain only as a fallback
-  (PR #252).
 - **Web node**: the start screen lists the six start-up steps, waiting, each
   with a figure from the build (the WASM's size, the relays' names), and links
   "How the web node works". After Start the boot screen keeps the same page
   and runs the same list in place. `MINAWEB_WASM_COMPRESSED_BYTES` adds the
   size the host sends the WASM at to the download step.
+  ([#3](https://github.com/minanode/mina-rust/pull/3))
 
 ### Fixed
 
@@ -138,9 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page opened then showed a newer block than the header (#583746 under
   #583745). The page asks `/status` again on every navigation, and when the
   Blocks list holds a block above the header's tip.
+  ([#4](https://github.com/minanode/mina-rust/pull/4))
 - **Web node**: the header's status chip says "Stale", with the tip it last
   had and the answer's age, once `/status` hasn't answered for 20 s, instead
   of the last phase. It said "Synced" over a 20-minute-old answer.
+  ([#6](https://github.com/minanode/mina-rust/pull/6))
 - **Web node**: the Send page keeps the payments this tab sent across a role
   change's restart and a reload, in the tab's sessionStorage. It keeps the
   hash, sender, recipient, amount, fee, nonce, time sent and status, never a
@@ -151,7 +49,121 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it is in neither, the page says so and the next payment competes for its
   nonce, with a button to send the same payment again; the page looks again
   right before signing it, and the pool's Duplicate keeps the nonce held.
-  Nonces are uint32.
+  Nonces are uint32. ([#9](https://github.com/minanode/mina-rust/pull/9))
+
+## [0.21.0] - 2026-11-02
+
+0.21.0 launches the web node, a beta on devnet. See
+[the release notes](docs/release/0.21.0.md) for details and known issues.
+
+### Added
+
+- **Web node**: sharing with other browsers, off by default: a switch on the
+  Peers page, behind a warning that other visitors and modified pages get your
+  IP address and that it uses your upload. A sharing page still dials only its
+  relays, takes at most 4 browsers they introduce, serves at most 2 bootstraps
+  at once (counted from the requests it serves), checks only their public
+  addresses and mDNS names, and introduces no one. `--webrtc-sharing-relay`
+  introduces only pages that turned it on, within limits per peer key, per
+  address and in total; `start-relay.sh` keeps it off unless
+  `SHARING_RELAY=on`.
+- **Web node**: import a Mina encrypted key file (the JSON OCaml and `mina
+  wallet generate` write) on the key screen: pick the file or paste it, and
+  type its password. The WASM decrypts it off the page's thread, behind the
+  same real-funds warning as a raw key. A held key can also be downloaded as a
+  key file for a native node.
+- **Web node**: an optional coinbase receiver on the block producer's start
+  card, checked by the node's own key check and carried across the role
+  change's restart to `run()`, as the native `--coinbase-receiver`. The
+  producer pages keep labels, values and status; how stake counts and how the
+  expected wins are worked out move to the block producer docs. The slot
+  detail and slot rows get the styles the web node's stylesheet missed.
+- **Documentation**: the minanode.org docs navigation shows its pages in five
+  groups (Get started, Native node, Node roles, Web node, and Reference and
+  help), on desktop and mobile and on the docs home. Every docs page is
+  revised to the technical-writing and unslop guides, with no URL, section id
+  or fact changed. How the web node connects is now titled How the web node
+  works.
+- **Documentation**: web node launch docs for 0.21.0. minanode.org publishes
+  Run the web node yourself, How the web node connects, Run a relay and the
+  Docker relay section. The connections page covers sync from the nearest
+  relay, the Not checked label, one role per tab and opt-in sharing. Run a
+  relay covers `--webrtc-sharing-relay` and keeps Caddy to a private relay.
+  The block producer page covers key-file import and export in the web node.
+  The home and Get started web node cards link to minaweb.org, the web archive
+  has its own 0.21.0 release metadata, and new 0.21.0 release notes list what
+  the release ships.
+- **Web node**: a Peers page of its own: one row per relay in the build's
+  list, connected or not, with whether the link is direct or through TURN, its
+  round trip, data in and out, best tip and since when; sharing with other
+  browsers shown as off; and a hidden minanode.org docs page, "How the web
+  node connects", that it links to. The route, round trip and bytes come from
+  the page's own WebRTC connections, without addresses.
+- **Web node**: serve the web node page under a strict Content-Security-Policy
+  made from each build's origins (no inline script, no eval, no framing), with
+  X-Frame-Options and a Permissions-Policy, from every host and the web
+  archive; the launch gate checks the exact policy and the browser checks fail
+  on any violation. wasm_thread is vendored without eval.
+
+### Changed
+
+- **WebRTC**: remove `--webrtc-signaling-relay`, which introduced every peer to
+  every other. `--webrtc-sharing-relay` introduces only pages that turned
+  sharing on, within limits. Direct HTTP signalling is unchanged.
+  `start-relay.sh` accepts the 0.20.1 release or a build of main, and refuses
+  the old flag in `EXTRA_ARGS`.
+- **Deployment**: relay2.minaweb.org runs in Hetzner hel1, installed from the
+  runbook on a fresh host with sharing on; its peer ID is in the runbook and
+  `release.env.example`. The runbook's `hcloud` command now creates relays
+  without IPv6, behind the shared firewall and with protection, and its TLS
+  step installs the nginx reload hook for renewals.
+- **Dashboard**: the first stage of a won slot reads "Scheduled" with its
+  clock time, in place of "Won (VRF)" and an offset from the slot. It times
+  when the producer picked the slot as its next attempt, not the VRF
+  evaluation. The web node shows the same.
+- **Web node**: docs links name the docs page ("Block producer docs", "Web
+  node docs"), one per page. The Blocks page, an unchecked block and the
+  one-role rule link their web node docs sections. "Start-up" on the Overview
+  links to that page, and the Pool card reads "Senders with several pending".
+- **Web node**: hardening from the security reviews of sharing and key
+  handling. The page refuses a saved key that asks for more than 1,200,000
+  PBKDF2 iterations, checks that a key carried across a role change derives
+  its public key, and asks before deleting the saved copy of a held key. The
+  WASM wipes passwords, private keys and Argon2i key material when it drops
+  them. The Caddy relay include caps signalling bodies at 128 KiB and is for
+  private relays only, and MINAWEB.md says the relay trusts
+  `X-Forwarded-For` from any local process.
+- **Relay kit**: relays run coturn 4.18.0 built by `build-coturn.sh` from a
+  pinned tarball instead of Ubuntu's 4.6.1 (CVE-2026-68554), in a systemd
+  sandbox, with a TURN probe that checks its guards. TURN usernames are one
+  per address, so `user-quota` caps each address. The journal is the only
+  system log (7 days), SSH is key-only, nginx sends HSTS, and new hosts
+  upgrade at first boot and reboot for security updates. `firewall.sh` needs
+  `SSH_FROM`, and MINAWEB.md has one procedure to turn sharing on.
+- **Web node**: ledger queries, block requests and the staged ledger go to the
+  nearest relay first, ranked by how fast each answers; far relays get one
+  request at a time, and take over when the nearest one times out, stalls,
+  drops or sends an answer that fails its checks. A page with a 14 ms and a
+  190 ms relay synced in 58 to 69 s, instead of 62 to 181 s. libp2p peers keep
+  their order.
+- **Deployment**: the minaweb kit takes a list of relays (two at launch, in
+  Hetzner fsn1 and hel1): the page dials every one and fetches expiring TURN
+  credentials from each relay's own service, renewing each list on its own;
+  the Content-Security-Policy, the archive's `--relay`, the launch check (per
+  relay, with a `--relay-only` mode) and the runbook (scriptable per-host
+  steps, nginx only) follow. One relay still works as before.
+- **Web node**: open minaweb.org on a start screen (start the node in this tab,
+  or download and run it yourself) instead of downloading and starting the
+  node at once; before Start the page loads only its own files. A reload the
+  page makes for a role change, the store's reset or a retry starts the node
+  straight away; the browser checks assert the rule.
+- **Web node**: keep the tab's key across role restarts with no passphrase,
+  carried under a one-time non-extractable WebCrypto key in IndexedDB and
+  consumed at the next load; a key saved in the browser but locked asks once
+  for its own passphrase, and the passphrase screens remain only as a fallback.
+
+### Fixed
+
 - **Web node**: a second tab of the same browser, which can't open the
   frontier store the first tab holds, now says so: one caution banner, and the
   Overview and Start-up show the store as not available in this tab, with no
@@ -160,30 +172,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gives the WASM's size one way (39.2 MB of WebAssembly, with the measured
   compressed size on Start-up), shows the release version on the start
   screen, and opens the run-it-yourself docs in a new tab. Store and key
-  explanations move to the How the web node works docs (PR #290).
+  explanations move to the How the web node works docs.
 - **Web node**: the SNARK worker card always has a fee-recipient field. It
   starts with the key held or saved in the tab and takes any other public key.
   A recipient with an account on chain can ask any fee, so a fresh key no
   longer blocks the worker at 0.004 MINA. Under the 1 MINA account creation
   fee, a recipient with no account keeps Start disabled, with one line and a
-  link to the SNARK worker docs, which now cover the fee recipient (PR #286).
+  link to the SNARK worker docs, which now cover the fee recipient.
 - **Documentation**: the README and Docker guides name the published 0.20.1
   release. The minaweb runbook records the Cloudflare token scope, the pages.dev
   Bulk Redirect and its rule, the edge Cache Rule and the rule that stops the
   RUM beacon. The 0.21.0 notes add the TURN port limit and the funded-payment
-  result (PR #287).
+  result.
 - **WebRTC**: pace SCTP DATA bursts while preserving permitted cwnd overbooking,
   prevent repeated fast retransmits of the same TSN, cancel acknowledged queued
   resends, and honor tail-loss probe deadlines. Add recovery and browser
-  receive-drop diagnostics
-  (PR #264).
-
+  receive-drop diagnostics.
 - **Sync**: a bootstrap whose root moves one block while a peer is still sending
   the root's staged ledger parts keeps that root, if the snarked ledger is the
   same, instead of fetching the 35 to 40 MiB of parts again for each block. As
   in OCaml's bootstrap, the blocks after it are applied once the staged ledger
-  is rebuilt. If the request fails, the sync targets the current root
-  (PR #269).
+  is rebuilt. If the request fails, the sync targets the current root.
 - **Web node**: a web node far from its relay (150 to 250 ms) bootstraps. The
   relay's SCTP retransmission timer no longer fires on a browser's delayed SACK
   (RTO floor 1 s, RFC 9260) and its fast-recovery threshold follows the send
@@ -191,7 +200,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   five at once; and a WebRTC request times out on silence, not slowness, so a
   slow relay is not dropped mid-download. At 160 ms a bootstrap that had not
   finished in 20 minutes takes 4 to 8. WebRTC disconnection reasons are logged
-  at info (PR #257).
+  at info.
 
 ## [0.20.1] - 2026-11-02
 
@@ -199,21 +208,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **GraphQL**: add OCaml 4.0.4 pool, bootstrap and scan-state status queries,
   with source-derived schema tests and private-only access. The versioned
-  precomputed archive mutation reports the upstream unconfigured-archive error
-  (PR #229).
+  precomputed archive mutation reports the upstream unconfigured-archive error.
 
 - **Consensus**: add a pinned compiled OCaml 4.0.3 differential harness for
-  VRF, epoch data, delegation tables and fork choice (PR #213).
+  VRF, epoch data, delegation tables and fork choice.
 
 - **Web node**: package a verified, self-contained devnet web archive with a
   loopback server, an exact runtime relay override, and dependency notices
-  checked against the WASM and bundled JavaScript closure (PR #206).
+  checked against the WASM and bundled JavaScript closure.
 
 - **Uptime**: prove selected transaction work on a dedicated worker and attach
   OCaml 4.0.3-compatible SNARK work to uptime reports, including its terminal
-  zkApp segment behavior (PR #191).
+  zkApp segment behavior.
 - **SNARK worker**: embed pinned Mesa prover files and verify offline base,
-  merge and zkApp jobs (PR #185).
+  merge and zkApp jobs.
 - **Documentation**: add interactive OpenAPI documentation (Swagger UI, Stoplight
   Elements, Scalar) to the website, with `cargo xtask` for static spec generation
   ([#2119](https://github.com/o1-labs/mina-rust/pull/2119))
@@ -228,26 +236,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   older evaluations, check the parent before production, wait for a complete
   exact-hash staking ledger instead of evaluating an empty table, and move the
   VRF cache to format 3. Add multi-step producer traces to the compiled-OCaml
-  differential (PR #242).
+  differential.
 - **OCaml compatibility**: qualify archive delivery against pinned 4.0.4 fresh
   and upgraded schemas, document operator migration and history scope, and fix
-  fork-export roots to preserve transaction version 4 (PR #228).
+  fork-export roots to preserve transaction version 4.
 - **OCaml compatibility**: reconcile changed 4.0.4 references, fix default
   permission version stability, and update the compiled consensus oracle while
-  preserving known epoch-start deferrals (PR #226).
+  preserving known epoch-start deferrals.
 - **OCaml compatibility**: audit 4.0.4 reference pins, update unchanged sources
   and per-pin validation, and report release drift separately while preserving
-  fixture provenance (PR #222).
+  fixture provenance.
 - **Consensus**: validate incoming protocol states using the shared producer
-  builder, matching OCaml 4.0.4 and preserving producer timestamps (PR #223).
+  builder, matching OCaml 4.0.4 and preserving producer timestamps.
 
 - **Uptime**: preserve OCaml's zero SOK for terminal zkApp segments and record
-  only statement-evidenced exceptions in the local gate; retain pre-sync guards
-  (PR #224).
+  only statement-evidenced exceptions in the local gate; retain pre-sync guards.
 - **P2P**: bound raw DTLS/SCTP dispatch and native HTTP signaling responses,
   disconnect local queue offenders and shed the largest association under
   aggregate pressure with private metrics. Keep small healthy sessions alive
-  and move message sizing outside queue admission locks (PR #216).
+  and move message sizing outside queue admission locks.
 
 - **P2P**: bound WebRTC service queues with overload teardown and private metrics;
   settle failed channel opens and reject invalid Identify and Kademlia ordering.
@@ -256,8 +263,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   admission rejections once.
 
 - **Web node**: restrict browsers to page-supplied seed relays and make native
-  peer-to-peer WebRTC signaling relay opt-in, preserving direct HTTP signaling
-  (PR #173).
+  peer-to-peer WebRTC signaling relay opt-in, preserving direct HTTP signaling.
 
 - **Frontend**: remove Sentry error tracking dependencies and services
   ([#2130](https://github.com/o1-labs/mina-rust/pull/2130))
@@ -283,110 +289,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Ledger export**: keep token symbols and zkApp URIs that are not UTF-8 byte
   for byte in `mina ledger export` and `mina fork export`, as OCaml writes
   them, instead of replacing them with U+FFFD. Runtime-config readers accept
-  OCaml's raw bytes (PR #246).
-- **P2P**: reject malformed peer input at decoding and validation (PR #239).
+  OCaml's raw bytes.
+- **P2P**: reject malformed peer input at decoding and validation.
 - **SNARK pool**: a new best tip no longer drops stored work when the pool
   holds more works than the ledger reads' capacity. The pool reads each
   prover's account once, as OCaml does, keeps works whose read fails and reads
   them again, and never refuses the local worker's read as busy. A job whose
   proof is refused stays scheduled, as in OCaml; releasing it was considered
-  and dropped. Each own proof's outcome is logged (PR #241).
+  and dropped. Each own proof's outcome is logged.
 - **GraphQL**: `authorizationKind.verificationKeyHash` of signed and
   unauthorised account updates is the dummy verification key hash, as OCaml
-  returns, instead of null (PR #241).
+  returns, instead of null.
 - **Ledger**: reject malformed sparse ledgers, check scan state invariants and
   return an error when creating an existing account, as OCaml does. Add ledger
-  conformance tests (PR #237).
+  conformance tests.
 
 - **SNARK worker**: prove zkApp account updates whose proofs come from circuits
   with 2^16-row step domains, which panicked the worker on devnet. Make
   in-circuit division total, as OCaml's is, so a zero divisor fails the proof
-  instead of panicking (PR #230).
+  instead of panicking.
 
 - **GraphQL**: `scanState` reads only the scan tree counters from the ledger
   service, as OCaml does, instead of building, hashing and discarding every
-  scan job (PR #233).
-- **Verification**: malformed proof data is rejected during verification
-  (PR #232).
+  scan job.
+- **Verification**: malformed proof data is rejected during verification.
 - **Proving**: a panic in one proof no longer fails every later job on its
   thread. A poisoned prover SRS is made again, and the SNARK worker, uptime
   prover and native block prover fail only the job that panicked; the block
-  prover thread no longer dies, which stopped block production (PR #231).
+  prover thread no longer dies, which stopped block production.
 - **SNARK worker**: refuse a previous proof with a step domain over 2^16 or an
   evaluation of other than one chunk with an error instead of a panic, remove
   unreachable prover panics, and add custom-gate zkApp jobs (xor, rot, foreign
   field multiplication, lookup gate) and three real 2^16-row devnet jobs to the
-  prover corpus (PR #234).
+  prover corpus.
 
 - **Ledger sync**: match OCaml 4.0.4 by clearing verified empty subtrees,
   replacing reused subtree contents and indexes, and rejecting excess account
   responses. Preserve source ledgers, notify attached masks of subtree writes
-  and removals, and suppress empty snark-pool broadcasts (PR #227).
+  and removals, and suppress empty snark-pool broadcasts.
 
 - **Uptime**: allow the local release gate to select its network consistently
-  for the node, runtime config, proof verifier and HTTP signature decoder
-  (PR #217).
+  for the node, runtime config, proof verifier and HTTP signature decoder.
 
 - **Testing**: allow the private Mesa harness to use assigned port ranges,
   a pinned reference daemon and separate producer keys while Rust also sells
-  SNARK work (PR #217).
+  SNARK work.
 
 - **Uptime**: skip genesis and bootstrap placeholders during startup and frontier
-  restore, while allowing reports during catch-up from an available frontier
-  (PR #219).
+  restore, while allowing reports during catch-up from an available frontier.
 
 - **RPC and GraphQL**: answer account lookups before sync, reject malformed
   transaction encodings and public keys, correct query descriptions, and keep
-  wide command nonces as JSON integers (PR #210).
+  wide command nonces as JSON integers.
 - **Development Tools**: pin OCaml reference checks to Mina 4.0.3 and reuse
   inherited build slots for nested release commands, serializing concurrent
-  descendants (PR #211).
+  descendants.
 - **Web node**: renew expiring TURN credentials without restarting working
   connections, validate relay addresses, make web archives reproducible, and
   enforce launch-preflight and failure-screen regression checks. Reject invalid
-  ICE renewals while retaining the last good configuration and retrying
-  (PR #214).
+  ICE renewals while retaining the last good configuration and retrying.
 - **Web node**: share exact MINA account summaries across key, send and account
   screens; cover sender-specific nonces and earliest stake activation; fail the
   key-leak gate on worker, message and storage findings, including late nested
   worker registrations and every fetch header form; answer role chain reads
-  before the first tip
-  (PR #215).
+  before the first tip.
 
 - **Block producer**: handle terminal-epoch startup and finish VRF evaluation
   without overflow at the maximum protocol slot. Keep early next-epoch
   evaluation disabled pending generation and ledger-completeness guards;
-  ignore legacy VRF cache progress that may contain false losses (PR #213).
+  ignore legacy VRF cache progress that may contain false losses.
 
 - **Memory**: encode staged-ledger replies from shared parts into an exactly
-  sized buffer, avoiding the reply deep clone and nested serialization buffer
-  (PR #207).
+  sized buffer, avoiding the reply deep clone and nested serialization buffer.
 
 - **Block producer**: include the first evaluated slot in remaining-slot
-  statistics and correct the OCaml 4.0.3 catch-up references (PR #203).
+  statistics and correct the OCaml 4.0.3 catch-up references.
 
 - **Block producer**: revalidate delayed VRF epoch data after sleep or catch-up,
-  preserve current and future won slots, and ignore obsolete table responses
-  (PR #200).
+  preserve current and future won slots, and ignore obsolete table responses.
 
 - **Uptime**: retry circuit loading and retain local production events across
   forks with OCaml first-event subscription semantics. Add a verified dry-run
-  release gate and operator documentation (PR #194).
+  release gate and operator documentation.
 
 - **Transaction pool**: read ledger accounts asynchronously with bounded requests,
   ordered results and tip-change cancellation; retry failed frontier updates
-  without delaying producer transaction selection (PR #198).
+  without delaying producer transaction selection.
 
 - **Node**: recover by resynchronizing after local staged-ledger mismatches or
   failed root commits, pause block production during recovery, and expose the
-  failure in node status and dashboard health (PR #190).
+  failure in node status and dashboard health.
 - **Startup**: return clear errors for missing or malformed genesis inputs,
-  including consensus constants, on native and web nodes instead of panicking
-  (PR #190).
+  including consensus constants, on native and web nodes instead of panicking.
 
 - **Web node**: require canonical OCaml prover hashes in same-origin and
   external asset builds. Bound prover bridge initialization and show integrity,
-  worker initialization and timeout failures during role startup (PR #195).
+  worker initialization and timeout failures during role startup.
 
 ### Dependencies
 
@@ -398,117 +396,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bump serde from 1.0.219 to 1.0.228, update private API usage for compatibility
   ([#2089](https://github.com/o1-labs/mina-rust/pull/2089))
 
-## [0.20.0] - Unreleased
+## [0.20.0] - 2026-10-28
 
 0.20.0 is a beta release for devnet. See
 [the release notes](docs/release/0.20.0.md) for upgrade notes and known issues.
 
-PR numbers below are historical references to the preparation repository. A
-squashed public import does not transfer PRs or preserve their numbers. No
-public mapping exists; these plain numbers must not be linked to unrelated
-public PRs. Upstream PR links elsewhere are unchanged.
-
 ### OCaml node
 
 - **Compatibility**: follow Mesa chains with fork-aware constants, circuits,
-  block verification and OCaml peer RPCs (PR #3, #9, #13, #26).
+  block verification and OCaml peer RPCs.
 - **Interoperability**: serve history and ledgers to OCaml peers and produce
-  proved blocks on public devnet (PR #14, #17, #18, #32, #39).
+  proved blocks on public devnet.
 - **Ledger**: keep the root staged ledger over the root snarked ledger after a
-  detach, with ledger correctness matching OCaml (PR #141, #144).
+  detach, with ledger correctness matching OCaml.
 
 ### Added
 
 - **Dashboard**: embed the dashboard in `mina`, with node status, block
-  production, SNARK worker controls and local bug reports
-  (PR #51, #55, #65, #70, #80, #85).
+  production, SNARK worker controls and local bug reports.
 - **Block production**: embed Mesa devnet prover circuits, persist slot
-  checking and support native SNARK work including zkApps
-  (PR #20, #33, #43, #57, #68).
+  checking and support native SNARK work including zkApps.
 - **Operations**: add Prometheus metrics, `mina report`, `mina triage`,
-  saved frontier state enabled by default and checked restores
-  (PR #30, #33, #35, #45, #53).
+  saved frontier state enabled by default and checked restores.
 - **Ledger**: keep the staking, next epoch and root snarked ledgers' accounts
-  on disk; a bootstrap holds one full ledger in memory
-  (PR #106, #107, #127).
+  on disk; a bootstrap holds one full ledger in memory.
 - **Light client**: add `/light/best-tip`, `/light/account/{pk}` and OCaml's
-  account Merkle path GraphQL fields (PR #108).
+  account Merkle path GraphQL fields.
 - **Release**: add Linux x86_64 and arm64 archive tooling, build provenance,
-  checksums, licence material and SSH-signed `SHA256SUMS`
-  (PR #46, #52, #54, #56, #90, #93).
+  checksums, licence material and SSH-signed `SHA256SUMS`.
 - **Docker**: add a multi-arch image built from the release archives, with
-  compose files for a full node, a block producer and a relay (PR #105).
+  compose files for a full node, a block producer and a relay.
 - **Documentation**: add node-runner guides, requirements and dashboard
-  screenshots for minanode.org (PR #64, #67, #71, #78, #81, #83, #126).
+  screenshots for minanode.org.
 - **Networking**: add an optional signaling-only listener for web nodes
-  and a persisted peer identity option (PR #82, #100).
+  and a persisted peer identity option.
 
 ### Changed
 
 - **HTTP**: bind the operator HTTP API and dashboard to `127.0.0.1` by
-  default; use `--http-addr` to change the binding (PR #69).
+  default; use `--http-addr` to change the binding.
 - **HTTP**: a dashboard opened at a host name needs `--http-cors-origin`;
-  `localhost` and IP addresses work without it (PR #128).
+  `localhost` and IP addresses work without it.
 - **CLI**: read key passwords from `MINA_PRIVKEY_PASS` and `MINA_LIBP2P_PASS`,
-  never from the command line (PR #136).
-- **CLI**: refuse key files that other users can access (PR #128).
-- **CLI**: `--network mainnet` selects the embedded mainnet genesis (PR #98).
+  never from the command line.
+- **CLI**: refuse key files that other users can access.
+- **CLI**: `--network mainnet` selects the embedded mainnet genesis.
 - **CLI**: give every environment variable the `MINA_` prefix, take wallet
   amounts and fees in MINA, name the node `--node` everywhere, rename `misc` to
   `keys`, and remove `mina snark`, the catch-up RPC options and
   `wallet send --fee-payer`; see the 0.20.0 CLI upgrade note.
 - **GraphQL**: admit zkApp commands as o1js sends them, up to 1.25 MiB, with
-  bounded memory per request (PR #137).
+  bounded memory per request.
 - **Memory**: share transaction and zkApp proofs across holders and cache
-  native SNARK-pool proofs on disk by default (PR #75).
+  native SNARK-pool proofs on disk by default.
 - **Memory**: cache scan-state, block and zkApp proofs on disk; producers keep
-  proofs in memory unless started with `--proof-cache` (PR #101, #118).
+  proofs in memory unless started with `--proof-cache`.
 - **Memory**: share scan-tree chunks between snapshots, bound diagnostic stats
-  and release the last ledger write (PR #115, #116, #135).
+  and release the last ledger write.
 - **Memory**: use jemalloc `narenas:4` by default on x86_64 and check it in
-  release packaging (PR #131, #132).
+  release packaging.
 - **Memory**: use jemalloc on arm64, built for 64 KiB pages, with the same
   `narenas:4` default.
 - **Memory**: cap per-block action statistics and reduce temporary web-node
-  block-apply allocations (PR #58, #66, #72, #120).
+  block-apply allocations.
 - **Startup**: run the frontier-store load on at most four threads; a restore
-  timeout follows progress (PR #125, #139).
+  timeout follows progress.
 - **Networking**: server-side WebRTC uses the vendored rustrtc 0.4.9 by
   default through `p2p-webrtc`; `--features p2p-webrtc-rs` opts into the
   previous webrtc-rs backend at build time, with no automatic fallback.
   `mina --version` names the backend.
 - **SNARK worker**: select jobs randomly by default, with sequential selection
-  available through `--snarker-strategy seq` (PR #59).
-- **Operations**: quiet routine logs and rotate log files (PR #31).
-- **Build**: make Swagger UI opt-in and regenerate default-build notices
-  (PR #55, #56, #73).
-- **Development**: make public-network tests opt-in (PR #124).
+  available through `--snarker-strategy seq`.
+- **Operations**: quiet routine logs and rotate log files.
+- **Build**: make Swagger UI opt-in and regenerate default-build notices.
+- **Development**: make public-network tests opt-in.
 
 ### Fixed
 
 - **Sync**: handle backward epoch changes and retry rejected ledger answers;
-  delay peer refusals and avoid serving incomplete child hashes
-  (PR #62, #76).
+  delay peer refusals and avoid serving incomplete child hashes.
 - **Sync**: back off and fail over after block-fetch errors, refresh stale tip
   hints, and retry ledger, staged-ledger and block queries that never got an
-  answer (PR #86, #103, #104).
+  answer.
 - **Ledger**: retry unreadable disk reads, then exit cleanly instead of
-  aborting (PR #129).
-- **Ledger**: back off after a failed refreeze and remove stale accounts files
-  (PR #143).
-- **Ledger**: write the genesis ledger cache atomically (PR #132).
-- **Reliability**: input checks, resource limits and request handling
-  (PR #128).
+  aborting.
+- **Ledger**: back off after a failed refreeze and remove stale accounts files.
+- **Ledger**: write the genesis ledger cache atomically.
+- **Reliability**: input checks, resource limits and request handling.
 - **Networking**: retain useful advertised addresses, bound Kademlia buffers
-  and support OCaml's parallel Yamux RPCs (PR #38, #39).
+  and support OCaml's parallel Yamux RPCs.
 - **Block production**: prioritize block proving when the native SNARK
   worker also runs; a proof that cannot be read no longer stops the
-  node during block validation; that block still fails validation (PR #63,
-  #118).
+  node during block validation; that block still fails validation.
 
 ### Dependencies
 
-- **Proof systems**: update the Mesa proof-system integration (PR #9).
+- **Proof systems**: update the Mesa proof-system integration.
 
 ## [0.19.0] - 2026-01-08
 

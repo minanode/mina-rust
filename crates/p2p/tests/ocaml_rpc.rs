@@ -1267,8 +1267,10 @@ async fn webrtc_peers_keep_full_answers_without_serving_budgets() -> anyhow::Res
         budget_before,
         "WebRTC must never charge or expire OCaml budgets"
     );
-    // WebRTC still rejects a sixth outstanding ordinary request per peer.
-    for id in 100..105 {
+    // WebRTC takes as many outstanding ordinary requests per peer as it
+    // advertises, and rejects one more.
+    let webrtc_limit = mina_p2p::channels::rpc::MAX_P2P_RPC_WEBRTC_CONCURRENT_REQUESTS as u64;
+    for id in 100..100 + webrtc_limit {
         assert!(cluster
             .rust_node_mut(server)
             .dispatch_action(Rpc::RequestReceived {
@@ -1281,10 +1283,10 @@ async fn webrtc_peers_keep_full_answers_without_serving_budgets() -> anyhow::Res
         .rust_node_mut(server)
         .dispatch_action(Rpc::RequestReceived {
             peer_id: peer(1),
-            id: 105,
+            id: 100 + webrtc_limit,
             request: Box::new(P2pRpcRequest::InitialPeers),
         }));
-    for id in 100..105 {
+    for id in 100..100 + webrtc_limit {
         assert!(cluster
             .rust_node_mut(server)
             .dispatch_action(Rpc::ResponseSend {

@@ -20,6 +20,27 @@ import time
 RESULT_FIELDS = ("state_hash", "parent", "height", "slot", "verified", "validation_error")
 
 
+def check_unrelated_work_pair(first, second):
+    """Keep the control specific to a different target, not a different SOK."""
+    a, b = first["snark_work"], second["snark_work"]
+    if not a or not b:
+        raise ValueError("unrelated-work control requires two work proofs")
+    if first["submitter"] != second["submitter"]:
+        raise ValueError("unrelated-work control requires equal submitters")
+    for field in ("fee", "sok_message", "proof_sok_digest_hex", "expected_sok_digest_hex"):
+        if a[field] != b[field]:
+            raise ValueError(f"unrelated-work control requires equal {field}")
+    for decoded, work in ((first, a), (second, b)):
+        if (work["sok_matches"] is not True
+                or work["proof_sok_digest_hex"] != work["expected_sok_digest_hex"]):
+            raise ValueError("unrelated-work control requires matching SOK digests")
+        if (work["target_matches_block"] is not True or
+                work["statement"]["target"]["second_pass_ledger"] != decoded["staged_ledger_ledger_hash"]):
+            raise ValueError("unrelated-work control requires each proof's block target")
+    if first["staged_ledger_ledger_hash"] == second["staged_ledger_ledger_hash"]:
+        raise ValueError("unrelated-work control requires different block ledger targets")
+
+
 def prepare(root):
     cases = []
     for directory in sorted(root.iterdir()):
@@ -36,7 +57,14 @@ def prepare(root):
             "snark_work": request["data"].get("snark_work"),
             "submitter": request["submitter"],
         })
-    assert len(cases) >= 2
+    if len(cases) < 2:
+        raise ValueError("unrelated-work control requires at least two fixtures")
+    pair = [json.loads((root / case["case"] / "decoded.json").read_text())
+            for case in cases[:2]]
+    for case, decoded in zip(cases, pair):
+        if case["submitter"] != decoded["submitter"]:
+            raise ValueError("fixture submitter differs from decoded metadata")
+    check_unrelated_work_pair(*pair)
     controls = []
     for name in ("absent-work", "wrong-submitter", "truncated-work", "corrupt-proof", "unrelated-work"):
         case = copy.deepcopy(cases[0])

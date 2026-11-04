@@ -557,7 +557,7 @@ mod tests {
                 last_responded: at_ms(0),
             },
         };
-        channels.rpc_pipeline = P2pRpcPipeline::for_peer(false);
+        channels.rpc_pipeline = P2pRpcPipeline::for_peer(false, 5);
         channels.sync_stats = stats;
         channels
     }
@@ -595,7 +595,7 @@ mod tests {
             P2pSyncPeerScore::Unmeasured
         );
         let mut libp2p = fresh(&stats);
-        libp2p.rpc_pipeline = P2pRpcPipeline::for_peer(true);
+        libp2p.rpc_pipeline = P2pRpcPipeline::for_peer(true, 5);
         assert_eq!(libp2p.sync_peer_score(now), P2pSyncPeerScore::Unranked);
 
         stats.record_answer(at_ms(9_000), at_ms(9_050));

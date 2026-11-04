@@ -23,6 +23,8 @@
 #   WEBRTC_UDP_PORTS  --webrtc-udp-ports MIN-MAX, opened in the firewall
 #   WEBRTC_NAT_IP     --webrtc-nat-ip: the public address, when the
 #                     interface has a private one behind a 1:1 NAT
+#   WEBRTC_SCTP_WINDOW  --webrtc-sctp-window: the most bytes in flight to
+#                     one browser; empty for the default (1 MiB)
 #   EXTERNAL_IP       --libp2p-external-ip: the public address, for gossip
 #   SHARING_RELAY     on: --webrtc-sharing-relay, introduce web nodes that
 #                     turned sharing on to each other, within its limits
@@ -78,6 +80,7 @@ args=(
 [[ -z ${ICE_SERVERS_FILE:-} ]] || args+=(--webrtc-ice-servers "$ICE_SERVERS_FILE")
 [[ -z ${WEBRTC_UDP_PORTS:-} ]] || args+=(--webrtc-udp-ports "$WEBRTC_UDP_PORTS")
 [[ -z ${WEBRTC_NAT_IP:-} ]] || args+=(--webrtc-nat-ip "$WEBRTC_NAT_IP")
+[[ -z ${WEBRTC_SCTP_WINDOW:-} ]] || args+=(--webrtc-sctp-window "$WEBRTC_SCTP_WINDOW")
 [[ -z ${EXTERNAL_IP:-} ]] || args+=(--libp2p-external-ip "$EXTERNAL_IP")
 [[ ${SHARING_RELAY:-off} != on ]] || args+=(--webrtc-sharing-relay)
 # shellcheck disable=SC2206 # EXTRA_ARGS is a list of flags.

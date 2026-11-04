@@ -26,6 +26,8 @@ mod connection_auth;
 pub use connection_auth::{ConnectionAuth, ConnectionAuthEncrypted};
 
 mod ice;
-pub use ice::{IceServer, IceServersError, UdpPortRange, WebrtcConfig};
+pub use ice::{
+    IceServer, IceServersError, UdpPortRange, WebrtcConfig, DEFAULT_SCTP_WINDOW, SCTP_WINDOW_RANGE,
+};
 
 pub mod queue;

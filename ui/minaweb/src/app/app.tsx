@@ -17,6 +17,7 @@ import { SnarkWorkerPage } from "../pages/snark-worker";
 import { NotFoundPage } from "../pages/not-found";
 import { OverviewPage } from "../pages/overview";
 import { PeersPage } from "../pages/peers";
+import { checkPage, pageFacts } from "../boot/failures";
 import { autostart, startNode, useBoot } from "./boot-context";
 import { BootScreen } from "./boot-screen";
 import { matchRoute, usePathname, type Route } from "./router";
@@ -101,10 +102,17 @@ export function App() {
     document.getElementById("page-title")?.focus({ preventScroll: true });
   }, [pathname]);
 
+  // The boot's first check, before Start: a browser that can't run the
+  // node is told so at once.
+  const [problem] = React.useState(() =>
+    started ? null : checkPage(pageFacts()),
+  );
+
   if (!started) {
     return (
       <StartScreen
         role={boot.role}
+        problem={problem}
         onStart={() => {
           clicked.current = true;
           setStarted(true);

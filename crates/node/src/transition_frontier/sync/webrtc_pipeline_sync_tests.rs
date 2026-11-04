@@ -49,7 +49,7 @@ fn node(is_libp2p: bool, queued: usize) -> (crate::State, PeerId) {
             last_responded: Timestamp::ZERO,
         },
     };
-    ready.channels.rpc_pipeline = crate::p2p::channels::rpc::P2pRpcPipeline::for_peer(is_libp2p);
+    ready.channels.rpc_pipeline = crate::p2p::channels::rpc::P2pRpcPipeline::for_peer(is_libp2p, 5);
     state.p2p.ready_mut().unwrap().peers.insert(
         peer,
         P2pPeerState {
@@ -188,6 +188,33 @@ fn a_webrtc_peer_takes_five_ledger_queries_at_once() {
     // A refusal backs the peer off for a while; then a query takes the room.
     run(&mut state, SnarkedAction::PeersQuery, at(10));
     assert_eq!(pending_rpc_ids(&state, &peer), vec![0, 1, 2, 4, 5]);
+}
+
+/// A WebRTC peer that advertised a deeper limit when it connected gets that
+/// many ledger queries from one `PeersQuery`, and no more.
+#[test]
+fn a_webrtc_peer_takes_as_many_ledger_queries_as_it_advertised() {
+    let (mut state, peer) = node(false, 20);
+    let limit = crate::p2p::channels::rpc::peer_rpc_limit(Some(16));
+    assert_eq!(limit, 16);
+    state
+        .p2p
+        .ready_mut()
+        .unwrap()
+        .get_ready_peer_mut(&peer)
+        .unwrap()
+        .channels
+        .rpc_pipeline
+        .peer_limit = limit;
+    run(&mut state, SnarkedAction::PeersQuery, at(0));
+    assert_eq!(
+        pending_rpc_ids(&state, &peer),
+        (0..limit as u64).collect::<Vec<_>>()
+    );
+    let channels = &state.p2p.get_ready_peer(&peer).unwrap().channels;
+    assert!(!channels.can_send_sync_request());
+    assert_eq!(channels.sync_request_room(), 0);
+    assert_eq!(channels.unanswered_rpc_ids().count(), limit);
 }
 
 /// A WebRTC request times out after its timeout without a byte from the

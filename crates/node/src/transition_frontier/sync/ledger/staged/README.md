@@ -34,14 +34,14 @@ event_source-- rpc response received -->P2P
 end
 
 subgraph 2. Reconstruct staged ledger
-wait(can't proceed! wait for new best tip.)
 cont(continue bootstrap/catchup)
 StagedReconstructInit>StagedReconstructInit]
 StagedPartsFetchSuccess-->StagedReconstructInit
 StagedReconstructInit-- initiate reconstruction -->LedgerService
 StagedReconstructInit-->StagedReconstructPending
 LedgerService-- send result --> event_source
-event_source-.->StagedReconstructError--->wait
+event_source-.->StagedReconstructError
+StagedReconstructError-. parts don't rebuild: retry from another peer .->StagedPartsPeerFetchInit
 event_source--->StagedReconstructSuccess-->cont
 end
 ```

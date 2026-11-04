@@ -1,7 +1,9 @@
 use mina_core::{bug_condition, Substate};
 use redux::{ActionWithMeta, Timestamp};
 
-use crate::{P2pPeerState, P2pPeerStatus, P2pPeerStatusReady, P2pState};
+use crate::{
+    channels::rpc::peer_rpc_limit, P2pPeerState, P2pPeerStatus, P2pPeerStatusReady, P2pState,
+};
 
 use super::P2pPeerAction;
 
@@ -68,11 +70,10 @@ impl P2pPeerState {
                     .copied()
                     .filter(|id| !peer.is_libp2p() || id.supported_by_libp2p())
                     .collect();
-                peer.status = P2pPeerStatus::Ready(Box::new(P2pPeerStatusReady::new(
-                    incoming,
-                    meta.time(),
-                    &enabled_channels,
-                )));
+                let rpc_limit = peer_rpc_limit(peer.status.advertised_max_rpc_requests());
+                let mut ready = P2pPeerStatusReady::new(incoming, meta.time(), &enabled_channels);
+                ready.channels.rpc_pipeline.peer_limit = rpc_limit;
+                peer.status = P2pPeerStatus::Ready(Box::new(ready));
                 let is_libp2p = peer.is_libp2p;
                 if is_libp2p {
                     p2p_state
