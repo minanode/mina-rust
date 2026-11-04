@@ -72,7 +72,7 @@ export interface FrontierStore {
   /** Another process, or another tab of this browser, holds the store. */
   locked: boolean;
   /** What a reload does with the saved chain; null until the store is
-   * open, or from nodes before 0.21.1. */
+   * open, or from nodes before 0.22.0. */
   savedChain: SavedChain | null;
 }
 

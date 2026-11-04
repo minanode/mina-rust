@@ -7,8 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.22.0] - 2026-11-04
+
+0.22.0 speeds up web node sync from distant relays, the web node's start and
+its block prover, and adds robustness fixes for staged ledger data. See
+[the release notes](docs/release/0.22.0.md) for details and known issues.
+
 ### Added
 
+- **Relay**: `--webrtc-sctp-window` (`MINA_WEBRTC_SCTP_WINDOW`, and
+  `WEBRTC_SCTP_WINDOW` in the relay kit's `relay.env`) sets the SCTP congestion
+  window and the send buffer limit of every rustrtc WebRTC connection a native
+  node makes. The default rises from 256 KiB to 1 MiB. The sender is paced, so
+  a larger window raises the steady rate, not the burst size. Native libp2p
+  connections and the browser's own sending are unchanged.
+  ([#22](https://github.com/minanode/mina-rust/pull/22))
+- **Web node**: `ledger().latest().account(publicKey)` reads a default-token
+  account from the best tip's staged ledger, with its zkApp state as decimal
+  field strings and the block height, state hash, ledger hash and ledger kind
+  it was read from. The account and the block reference come from one ledger
+  snapshot. ([#31](https://github.com/minanode/mina-rust/pull/31))
+- **Deployment**: `WASM_ENCODING=br` makes `release.py` and `deploy.sh` upload
+  the build's brotli WASM as stored, with `Content-Encoding: br`.
+  `check-wasm-encoding.py` checks what the asset host sends each kind of
+  client. Without the variable, nothing changes.
+  ([#29](https://github.com/minanode/mina-rust/pull/29))
 - **Web node**: the Overview and Start-up pages say what a reload does with
   the saved chain: Not saved yet, Saved at #N, or Saved, but a reload syncs
   again, with the reason. `/status` reports it as `frontier_store.saved_chain`.
@@ -20,6 +43,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Web node**: fetch the staged ledger from two relays at once. The first
+  relay sends it from the start as before, and a second relay sends it from the
+  scan state's other end (`StagedLedgerPartsFromLast`). The web node joins the
+  parts where the two streams meet and cancels both. A node advertises the new
+  request and `Cancel` in its WebRTC offer or answer
+  (`staged_ledger_from_last`), and neither is sent to a node that did not.
+  `P2pLimits::staged_ledger_streams` is 2 in the web node and 1 on native
+  nodes. If parts joined from two relays fail the hash check or the rebuild,
+  neither relay is rejected, and the rest of the staged ledger phase fetches
+  from one relay at a time. The peers behind refused parts are kept across a
+  root retarget, at most 1024.
+  ([#39](https://github.com/minanode/mina-rust/pull/39))
+- **Web node**: a WebRTC peer accepts 16 sync requests at once and advertises
+  that as `max_rpc_requests` in its offer and answer. A browser pipelines up to
+  what the peer advertised. libp2p peers, and WebRTC peers that advertise
+  nothing, keep 5. ([#24](https://github.com/minanode/mina-rust/pull/24))
+- **p2p**: the WebRTC staged-ledger stream sends each scan-state tree with its
+  completed (`Done`) merge jobs emptied, as OCaml's binable writes a scan
+  state. The staged ledger hash is unchanged. On a devnet root stored by a
+  long-running node, the answer falls from 79.3 MB to 34.9 MB. The libp2p RPC
+  and the frontier store are unchanged.
+  ([#25](https://github.com/minanode/mina-rust/pull/25))
+- **rustrtc**: on a retransmission timeout (T3), mark every outstanding chunk
+  for retransmission, set cwnd to 1 MTU and ssthresh to max(cwnd / 2, 4 MTU),
+  and send one packet until the next SACK, as RFC 9260 sections 6.3.3 and
+  7.2.3 describe. ([#23](https://github.com/minanode/mina-rust/pull/23))
+- **Web prover**: on wasm32, ark-ff multiplies and squares 4-limb fields below
+  2^255, the Pasta fields among them, on nine 29-bit limbs instead of four
+  64-bit limbs. Field elements keep arkworks' representation, and other
+  targets keep the 64-bit code. ark-ff and ark-ff-macros 0.5.0 are vendored
+  under `vendor/` through `[patch.crates-io]`.
+  ([#14](https://github.com/minanode/mina-rust/pull/14))
+- **Web prover**: the block prover uses one thread per logical core, at most
+  8, instead of leaving one core to the node.
+  ([#15](https://github.com/minanode/mina-rust/pull/15))
+- **Prover**: read the SRS's Lagrange basis commitments from a cache file,
+  `lagrange_basis_<curve>_<log2 n>.bin`, after a random linear-combination
+  check against the SRS. A missing or refused cache is computed as before. A
+  native node then writes the computed basis next to its circuit files in
+  `~/.mina/circuit-blobs/<circuits>/`. The web build pins its caches. `mina
+  internal check-lagrange-cache` checks a cache file.
+  ([#16](https://github.com/minanode/mina-rust/pull/16))
+- **Prover**: witness generation inverts the denominators of each scalar
+  multiplication together, samples each domain's permutation shifts once,
+  commits challenge polynomials with the prover thread's SRS, and copies only
+  the public input's Lagrange commitments. The witnesses and proofs are
+  unchanged, byte for byte.
+  ([#17](https://github.com/minanode/mina-rust/pull/17),
+  [#18](https://github.com/minanode/mina-rust/pull/18),
+  [#19](https://github.com/minanode/mina-rust/pull/19),
+  [#20](https://github.com/minanode/mina-rust/pull/20))
+- **Web node**: start producing a block 10 s before its slot instead of 20 s,
+  so the block builds on a newer best tip. Native nodes keep 6 s.
+  ([#21](https://github.com/minanode/mina-rust/pull/21))
+- **Web node**: make the verifiers' SRS on the rayon pool during start-up,
+  while the genesis config, the verifier indexes and the peer list download.
+  If the pool is not ready within 20 s, or failed, the node makes the SRS on
+  its own thread as before. Native nodes are unchanged.
+  ([#26](https://github.com/minanode/mina-rust/pull/26))
+- **Web node**: the boot asks for the glue, the WASM, the genesis config's
+  check and every ICE server list at once. It polls the node every 200 ms for
+  the first 10 s of the dial, then once a second, and every 5 s once the screen
+  has said for a minute that there is no peer.
+  ([#27](https://github.com/minanode/mina-rust/pull/27))
+- **p2p**: the browser sends its WebRTC offer without `Content-Type`, so the
+  GET is a simple CORS request with no preflight. Each dial costs one
+  signalling request instead of two.
+  ([#28](https://github.com/minanode/mina-rust/pull/28))
+- **Web node**: the start screen checks the browser before Start. If WebRTC or
+  WebAssembly is off, or cross-origin isolation or shared memory is missing,
+  Start is off and the screen names the cause.
+  ([#30](https://github.com/minanode/mina-rust/pull/30))
 - **Web node**: the start screen lists the six start-up steps, waiting, each
   with a figure from the build (the WASM's size, the relays' names), and links
   "How the web node works". After Start the boot screen keeps the same page
@@ -29,6 +124,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Ledger**: a pending-coinbase tree from a peer's staged ledger parts or a
+  frontier store must be a complete tree of depth 5. The node recomputes its
+  inner hashes from the leaves, checks every stack index against the position
+  OCaml's `create_exn'` gives it, and refuses a tree that differs. The error is
+  `InvalidPendingCoinbase`.
+  ([#11](https://github.com/minanode/mina-rust/pull/11))
+- **Proofs**: when a block, transaction or zkApp proof fails verification on a
+  node without a work directory, such as the web node, the debug dump returns
+  an error instead of panicking. Verification still fails, as before.
+  ([#12](https://github.com/minanode/mina-rust/pull/12))
+- **Sync**: staged ledger parts from a peer that fail to rebuild reject that
+  peer's answer (`SyncAnswerRejected`), and the node asks another peer, as
+  OCaml's bootstrap starts over. The node panicked before. Parts from a peer
+  and from a frontier store must also have the scan-state tree shape that the
+  node builds (`ScanState::check_shape`), and a refusal is logged at warn with
+  the peer and the reason.
+  ([#13](https://github.com/minanode/mina-rust/pull/13))
+- **Uptime tooling**: `tools/uptime-release-gate.py` rejects equal HTTP and
+  libp2p ports. `verify_full_proof.py` checks its first two fixtures before it
+  builds the unrelated-work control.
+  ([#32](https://github.com/minanode/mina-rust/pull/32))
+- **Testing**: the heartbeat signing test expects the transaction pool's
+  `max_size` and `minimum_fee_per_weight_unit` fields, with values from
+  mina-signer 3.1.0. ([#35](https://github.com/minanode/mina-rust/pull/35))
+- **Testing**: `mina-node-testing` builds against the current node again, so
+  `cargo check --workspace` passes.
+  ([#36](https://github.com/minanode/mina-rust/pull/36))
+- **Testing**: 10 scenario suites pass again. The `no_recursion` invariant
+  allows three actions that dispatch themselves on purpose, up to a limit for
+  each. Each test process sets a work directory, and OCaml nodes use the public
+  `minaprotocol/mina-daemon:4.0.4-c9e2eac-noble-devnet` image.
+  ([#38](https://github.com/minanode/mina-rust/pull/38))
+- **Documentation**: the CHANGELOG and the 0.20.1 and 0.21.0 release notes
+  drop PR numbers from the repository the releases were prepared in. 0.21.0
+  has its own CHANGELOG section.
+  ([#33](https://github.com/minanode/mina-rust/pull/33),
+  [#37](https://github.com/minanode/mina-rust/pull/37))
+- **Documentation**: RELEASING.md describes one `SHA256SUMS` for the native
+  and web archives. MINAWEB.md names the Cache Rule's Edge TTL option in full.
+  A test checks the cache header `deploy.sh` uploads with.
+  ([#34](https://github.com/minanode/mina-rust/pull/34))
 - **Web node**: the header's best tip keeps up with the page. It reads the
   shared `/status`, which no poll asks again while the tab is hidden, so a
   page opened then showed a newer block than the header (#583746 under
