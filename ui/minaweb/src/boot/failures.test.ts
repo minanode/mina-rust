@@ -15,11 +15,13 @@ const SECURE_RELAY =
   "/dns4/relay.example.org/tcp/443/webrtc/https/p2p/12D3KooWGdtdRfzSWjTNnCabYQkCqjXiAkcBx9JvpgpfCMFWJsgQ";
 
 const good: PageFacts = {
+  knowsIsolation: true,
   crossOriginIsolated: true,
   isSecureContext: true,
   origin: "https://minaweb.example.org",
   hasWebAssembly: true,
   hasSharedMemory: true,
+  hasWebRtc: true,
 };
 
 describe("the page check names the real cause", () => {
@@ -49,8 +51,36 @@ describe("the page check names the real cause", () => {
     expect(checkPage({ ...good, hasSharedMemory: false })).toMatchObject({
       kind: "threads",
     });
-    expect(checkPage({ ...good, hasWebAssembly: false })).toMatchObject({
+  });
+  test("no WebAssembly: the settings that turn it off", () => {
+    const failure = checkPage({
+      ...good,
+      hasWebAssembly: false,
+      hasSharedMemory: false,
+    });
+    expect(failure).toMatchObject({
       kind: "threads",
+      title: "WebAssembly is off in this browser",
+    });
+    expect(failure?.detail).toContain("Lockdown Mode");
+  });
+  test("a browser without isolation: the browser's, not the server's", () => {
+    expect(
+      checkPage({
+        ...good,
+        knowsIsolation: false,
+        crossOriginIsolated: false,
+        hasSharedMemory: false,
+      }),
+    ).toMatchObject({
+      kind: "isolation",
+      title: "This browser is too old to run the node",
+    });
+  });
+  test("no WebRTC: a setting or an extension", () => {
+    expect(checkPage({ ...good, hasWebRtc: false })).toMatchObject({
+      kind: "webrtc",
+      title: "WebRTC is off in this browser",
     });
   });
 });
