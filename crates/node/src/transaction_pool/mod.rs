@@ -9,6 +9,7 @@ pub use transaction_pool_actions::*;
 mod transaction_pool_reducer;
 
 mod transaction_pool_effects;
+pub use transaction_pool_effects::account_read_waits_for_ledger;
 pub(crate) use transaction_pool_effects::report_account_read_error;
 
 #[cfg(test)]

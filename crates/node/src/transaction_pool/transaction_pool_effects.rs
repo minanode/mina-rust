@@ -63,16 +63,22 @@ pub(crate) fn report_account_read_error(
         return;
     };
     let Err(err) = result else { return };
-    let frontier = &state.transition_frontier;
-    let synced =
-        frontier.sync.is_synced() && frontier.best_tip().is_some_and(|tip| !tip.is_genesis());
-    if is_ledger_still_loading(synced, err) {
+    if account_read_waits_for_ledger(state, err) {
         mina_core::log::debug!(mina_core::log::system_time(); kind = "TransactionPoolLedgerLoading",
             summary = "tx pool accounts not fetched: the ledger isn't loaded yet", ledger = read.ledger_hash.to_string());
     } else {
         mina_core::log::error!(mina_core::log::system_time(); kind = "Error",
             summary = "failed to fetch accounts for tx pool", error = format!("ledger {:?}, error: {:?}", read.ledger_hash, err));
     }
+}
+
+/// Whether a failed transaction pool account read only means the node hasn't
+/// loaded its ledger yet. The pool retries such a read.
+pub fn account_read_waits_for_ledger(state: &crate::State, error: &str) -> bool {
+    let frontier = &state.transition_frontier;
+    let synced =
+        frontier.sync.is_synced() && frontier.best_tip().is_some_and(|tip| !tip.is_genesis());
+    is_ledger_still_loading(synced, error)
 }
 
 /// The ledger manager's answer for a ledger it doesn't hold.

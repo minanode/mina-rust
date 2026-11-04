@@ -7,6 +7,7 @@ use std::{
 
 use mina_node::{
     event_source::Event,
+    ledger::LedgerEvent,
     p2p::{
         connection::outgoing::P2pConnectionOutgoingInitOpts,
         webrtc::{Host, HttpSignalingInfo, SignalingMethod},
@@ -14,6 +15,7 @@ use mina_node::{
         P2pNetworkConnectionState, P2pNetworkYamuxState, P2pPeerState, P2pPeerStatus, P2pState,
         PeerId,
     },
+    transaction_pool::account_read_waits_for_ledger,
     State,
 };
 
@@ -596,18 +598,37 @@ where
 /// Runs cluster until there is a `quiet_dur` period of no events, returning
 /// `Ok(true)` in this case. If there is no such period for `timeout` period of
 /// time, then returns `Ok(false)`
+///
+/// A node that isn't synced retries its transaction pool account read once a
+/// second while its ledger isn't loaded, and a cluster that never syncs keeps
+/// retrying. That failure doesn't break the quiet period. Any other failed
+/// read does.
 pub async fn run_until_no_events(
     driver: &mut Driver<'_>,
     quiet_dur: Duration,
     timeout: Duration,
 ) -> anyhow::Result<bool> {
     let timeout = Instant::now() + timeout;
-    while driver.run_until(quiet_dur, |_, _, _| true).await? {
+    while driver
+        .run_until(quiet_dur, |_, event, state| {
+            !is_ledger_loading_retry(event, state)
+        })
+        .await?
+    {
         if Instant::now() >= timeout {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+fn is_ledger_loading_retry(event: &Event, state: &State) -> bool {
+    match event {
+        Event::Ledger(LedgerEvent::TransactionPoolAccounts {
+            result: Err(error), ..
+        }) => account_read_waits_for_ledger(state, error),
+        _ => false,
+    }
 }
 
 pub trait ConnectionPredicate {
