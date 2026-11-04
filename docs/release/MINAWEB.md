@@ -530,6 +530,18 @@ Keep `NETWORK=devnet`, HTTP 3000 and signalling 3001 on loopback, libp2p 8302,
 WebRTC UDP 40000–40999, `MAX_PEERS=100` and `EXTRA_ARGS` empty. The relay's ICE
 list is `[]`; the public address makes STUN unnecessary on the server.
 
+Leave `WEBRTC_SCTP_WINDOW` empty for the default of 1 MiB. It is the most data
+the relay keeps in flight to one browser, so it bounds how fast a distant
+browser downloads: a browser 310 ms away synced in 209 s at 1 MiB and in 276 s
+at the old 256 KiB. The setting applies to every WebRTC connection a native node
+makes, not only a relay's.
+
+It is not a memory limit. While a browser downloads, its connection's send
+buffers hold about the window, plus up to one more message and allocation
+overhead. At the default, 100 browsers downloading at once hold a little over
+100 MiB in send buffers, plus that overhead, on top of the rest of the relay's
+memory.
+
 The relay advertises a WebRTC host candidate for every interface address to
 every visitor. A Hetzner Cloud server has only `lo` and `eth0`, so it advertises
 its public IPv4 alone; relay1 does. Leave `WEBRTC_NAT_IP` empty there. Check
