@@ -50,7 +50,12 @@ members = [
   "xtask",
 ]
 # Vendored crates are patched in below, not workspace members.
-exclude = ["vendor/rustrtc", "vendor/wasm_thread"]
+exclude = [
+  "vendor/ark-ff",
+  "vendor/ark-ff-macros",
+  "vendor/rustrtc",
+  "vendor/wasm_thread",
+]
 
 resolver = "2"
 
@@ -310,6 +315,9 @@ codegen-units = 1
 [patch.crates-io]
 num-bigint = { git = "https://github.com/openmina/num-bigint", branch = "rebase-onstack" }     # branch: rebase-onstack
 num-rational = { git = "https://github.com/openmina/num-rational", branch = "rebase-onstack" } # branch: rebase-onstack
+# ark-ff 0.5.0 with a faster wasm32 multiplication, see vendor/README.md.
+ark-ff = { path = "vendor/ark-ff" }
+ark-ff-macros = { path = "vendor/ark-ff-macros" }
 # rustrtc 0.4.9 with our fixes, see vendor/README.md.
 rustrtc = { path = "vendor/rustrtc" }
 # wasm_thread 0.3.3 without eval, see vendor/README.md.
