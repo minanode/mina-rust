@@ -96,6 +96,12 @@ pub struct Offer {
     /// Port number of the signaling server of the offerer.
     /// Optional port for signaling server connections.
     pub listen_port: Option<u16>,
+
+    /// The most RPC requests the sender takes at once, unanswered, on its
+    /// RPC channel. Absent from a node that predates it, which takes
+    /// [`crate::channels::rpc::MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rpc_requests: Option<u16>,
 }
 
 /// WebRTC connection answer responding to an offer.
@@ -135,6 +141,12 @@ pub struct Answer {
     /// Peer ID of the original offerer that this answer is responding to.
     /// Ensures the answer reaches the correct peer that initiated the connection.
     pub target_peer_id: PeerId,
+
+    /// The most RPC requests the sender takes at once, unanswered, on its
+    /// RPC channel. Absent from a node that predates it, which takes
+    /// [`crate::channels::rpc::MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rpc_requests: Option<u16>,
 }
 
 /// Union type for WebRTC signaling messages.
@@ -321,6 +333,7 @@ impl std::fmt::Debug for Offer {
             .field("target_peer_id", &self.target_peer_id)
             .field("host", &self.host)
             .field("listen_port", &self.listen_port)
+            .field("max_rpc_requests", &self.max_rpc_requests)
             .finish()
     }
 }
@@ -331,6 +344,7 @@ impl std::fmt::Debug for Answer {
             .field("sdp", &RedactedSdp(&self.sdp))
             .field("identity_pub_key", &self.identity_pub_key)
             .field("target_peer_id", &self.target_peer_id)
+            .field("max_rpc_requests", &self.max_rpc_requests)
             .finish()
     }
 }
@@ -488,4 +502,45 @@ impl EncryptableType for Offer {
 impl EncryptableType for P2pConnectionResponse {
     /// Associates [`P2pConnectionResponse`] with its encrypted counterpart [`EncryptedAnswer`].
     type Encrypted = EncryptedAnswer;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::SecretKey;
+
+    fn answer(max_rpc_requests: Option<u16>) -> Answer {
+        let key = SecretKey::from_bytes([3; 32]).public_key();
+        Answer {
+            sdp: "v=0".to_owned(),
+            target_peer_id: key.peer_id(),
+            identity_pub_key: key,
+            max_rpc_requests,
+        }
+    }
+
+    /// An older node neither sends nor knows `max_rpc_requests`: without it
+    /// the JSON is what that node sent and reads, and its absence parses.
+    #[test]
+    fn max_rpc_requests_is_absent_unless_set() {
+        let old = serde_json::to_value(answer(None)).unwrap();
+        assert!(old.get("max_rpc_requests").is_none(), "{old}");
+        let parsed: Answer = serde_json::from_value(old).unwrap();
+        assert_eq!(parsed.max_rpc_requests, None);
+
+        let new = serde_json::to_value(answer(Some(16))).unwrap();
+        assert_eq!(new["max_rpc_requests"], 16);
+        let parsed: Answer = serde_json::from_value(new.clone()).unwrap();
+        assert_eq!(parsed.max_rpc_requests, Some(16));
+
+        // What an older node does with it: serde skips unknown fields.
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct OlderAnswer {
+            sdp: String,
+            identity_pub_key: PublicKey,
+            target_peer_id: PeerId,
+        }
+        serde_json::from_value::<OlderAnswer>(new).unwrap();
+    }
 }

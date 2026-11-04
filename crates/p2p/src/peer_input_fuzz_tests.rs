@@ -53,6 +53,7 @@ fn offer() -> Offer {
         target_peer_id: SecretKey::deterministic(2).public_key().peer_id(),
         host: Host::Ipv4([127, 0, 0, 1].into()),
         listen_port: Some(3000),
+        max_rpc_requests: None,
     }
 }
 

@@ -1608,6 +1608,7 @@ mod queue_tests {
                     sdp: "x".repeat(4096),
                     identity_pub_key: public_key,
                     target_peer_id: peer_id,
+                    max_rpc_requests: None,
                 })),
             ),
             P2pConnectionEvent::OfferSdpReady(peer_id, Err("x".repeat(4096))),

@@ -71,7 +71,7 @@ pub(super) fn add_peer(
             last_responded: Timestamp::ZERO,
         },
     };
-    ready.channels.rpc_pipeline = P2pRpcPipeline::for_peer(is_libp2p);
+    ready.channels.rpc_pipeline = P2pRpcPipeline::for_peer(is_libp2p, 5);
     ready.channels.streaming_rpc = P2pChannelsStreamingRpcState::Ready {
         time: Timestamp::ZERO,
         local: P2pStreamingRpcLocalState::WaitingForRequest {

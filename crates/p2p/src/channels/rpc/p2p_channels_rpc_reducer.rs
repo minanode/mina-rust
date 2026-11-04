@@ -108,7 +108,7 @@ impl P2pChannelsRpcState {
                         last_responded: redux::Timestamp::ZERO,
                     },
                 };
-                *pipeline = P2pRpcPipeline::for_peer(is_libp2p);
+                *pipeline = P2pRpcPipeline::for_peer(is_libp2p, pipeline.peer_limit);
 
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
                 let p2p_state: &P2pState = state.substate()?;
