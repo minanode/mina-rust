@@ -215,6 +215,42 @@ impl BinProtWrite for TransactionSnarkScanStateStableV2ScanStateTreesA {
     }
 }
 
+impl TransactionSnarkScanStateStableV2ScanStateTreesA {
+    /// A copy of the tree with every completed (`Done`) merge job emptied,
+    /// its weights kept: what OCaml's binable writes for a scan state. Those
+    /// jobs' proofs have been merged into their parent, the scan state hash
+    /// skips the jobs, and no job is built from them again.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/parallel_scan/parallel_scan.ml#L842-L870>
+    pub fn with_leaner_trees(&self) -> Self {
+        match self {
+            Self::Leaf(leaves) => Self::Leaf(leaves.clone()),
+            Self::Node {
+                depth,
+                value,
+                sub_tree,
+            } => Self::Node {
+                depth: *depth,
+                value: value
+                    .iter()
+                    .map(|(weight, job)| {
+                        let job = match job {
+                            TransactionSnarkScanStateStableV2ScanStateTreesAMergeT1::Full(full)
+                                if full.status == ParallelScanJobStatusStableV1::Done =>
+                            {
+                                TransactionSnarkScanStateStableV2ScanStateTreesAMergeT1::Empty
+                            }
+                            job => job.clone(),
+                        };
+                        (weight.clone(), job)
+                    })
+                    .collect(),
+                sub_tree: Box::new(sub_tree.with_leaner_trees()),
+            },
+        }
+    }
+}
+
 // TODO: many of these OfSexp/SexpOf implementations can be removed if rsexp-derive is forked and modified
 // to fix a big in how enums are handled, and to avoid intermediary wrapping types in the output
 

@@ -345,6 +345,16 @@ For a cloud host whose interface has a private address. Repeat it, or separate a
 
 Environment: `MINA_WEBRTC_NAT_IP`.
 
+#### `--webrtc-sctp-window <BYTES>`
+
+The most data, in bytes, a WebRTC connection sends before the peer acknowledges it: the cap on its SCTP congestion window. New messages also wait while this much is in flight or queued. It bounds what a peer gets each round trip, so it sets how fast a distant browser syncs from a relay. It applies to every WebRTC connection of a native node.
+
+It is send accounting, not a memory limit: while a peer downloads, its connection's send buffers hold about this much, plus up to one more message and allocation overhead.
+
+Defaults to 1048576 (1 MiB), from 65536 to 16777216.
+
+Environment: `MINA_WEBRTC_SCTP_WINDOW`.
+
 #### `--webrtc-sharing-relay`
 
 Introduce web nodes that turned on sharing with other browsers to each other, within limits per peer key, per address and in total, an hour. Two pages introduced see each other's IP address; pages that didn't turn sharing on are never introduced. Peers use this node for introductions only.

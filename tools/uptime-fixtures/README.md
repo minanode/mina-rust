@@ -58,6 +58,16 @@ signatures and reproduce them from the generated test keys. It rejects another
 network domain, a modified digest and a hex-encoded digest. It is a fixture
 checker, not a reporter implementation.
 
+`verify_full_proof.py` builds an unrelated-work control from the first two
+`full-proof` fixtures: two proofs with the same submitter, fee and SOK digest,
+for blocks with different ledger targets. It refuses to build the control if the
+decoded metadata breaks any of these. Check that without OCaml:
+
+```sh
+python3 -B tools/uptime-fixtures/test_verify_full_proof.py
+python3 -B tools/test_uptime_release_gate.py
+```
+
 ## Generate fresh reference output
 
 From the repository root, with `scripts/ocaml-mina` installed:

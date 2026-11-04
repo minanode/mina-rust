@@ -50,6 +50,9 @@ mod nearest_peer_sync_tests;
 #[path = "root_retarget_sync_tests.rs"]
 mod root_retarget_sync_tests;
 
+#[path = "reconstruct_reject_sync_tests.rs"]
+mod reconstruct_reject_sync_tests;
+
 #[path = "staged_split_sync_tests.rs"]
 mod staged_split_sync_tests;
 

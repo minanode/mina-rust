@@ -1395,6 +1395,7 @@ fn native_direct_http_signaling_survives_but_browser_rejects_incoming() {
         target_peer_id: s.0.my_id(),
         host: "127.0.0.1".parse().unwrap(),
         listen_port: None,
+        max_rpc_requests: None,
         staged_ledger_from_last: false,
     };
     let action = P2pConnectionIncomingAction::Init {

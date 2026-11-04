@@ -54,6 +54,7 @@ use tokio::sync::{Mutex, MutexGuard};
 
 pub fn setup() -> tokio::runtime::Runtime {
     mina_node_native::tracing::initialize(mina_node_native::tracing::Level::INFO);
+    init_work_dir();
     rayon::ThreadPoolBuilder::new()
         .num_threads(num_cpus::get().max(2) - 1)
         .thread_name(|i| format!("mina_rayon_{i}"))
@@ -79,6 +80,7 @@ pub fn setup_without_rt() {
                 }
             }).unwrap_or(mina_node_native::tracing::Level::INFO);
             mina_node_native::tracing::initialize(level);
+            init_work_dir();
 
             if let Err(err) = tracing_log::LogTracer::init() {
                 eprintln!("cannot initialize log tracing bridge: {err}");
@@ -92,6 +94,14 @@ pub fn setup_without_rt() {
         };
     };
     *INIT;
+}
+
+/// Block producers keep their VRF cache in the node's work directory, which a
+/// native node sets at startup. The cluster's nodes share one per process.
+fn init_work_dir() {
+    mina_node::core::init_work_dir_if_unset(|| {
+        std::env::temp_dir().join(format!("mina-node-testing-{}", std::process::id()))
+    });
 }
 
 lazy_static::lazy_static! {

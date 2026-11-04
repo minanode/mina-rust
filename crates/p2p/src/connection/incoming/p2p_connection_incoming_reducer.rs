@@ -162,6 +162,7 @@ impl P2pConnectionIncomingState {
                     sdp,
                     identity_pub_key: p2p_state.config.identity_pub_key.clone(),
                     target_peer_id: peer_id,
+                    max_rpc_requests: Some(crate::channels::rpc::advertised_max_rpc_requests()),
                     staged_ledger_from_last: true,
                 });
                 dispatcher.push(P2pConnectionIncomingAction::AnswerReady { peer_id, answer });

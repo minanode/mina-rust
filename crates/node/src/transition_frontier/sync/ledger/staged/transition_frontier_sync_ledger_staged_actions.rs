@@ -42,9 +42,13 @@ pub enum TransitionFrontierSyncLedgerStagedAction {
         rpc_id: P2pRpcId,
         parts: Arc<StagedLedgerAuxAndPendingCoinbases>,
     },
+    #[action_event(level = warn, fields(display(sender), reason))]
     PartsPeerInvalid {
         sender: PeerId,
         parts: Arc<StagedLedgerAuxAndPendingCoinbases>,
+        /// Why the parts are refused
+        /// ([`super::StagedLedgerAuxAndPendingCoinbasesValidated::check`]).
+        reason: String,
     },
     PartsPeerValid {
         sender: PeerId,

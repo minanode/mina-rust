@@ -1608,6 +1608,7 @@ mod queue_tests {
                     sdp: "x".repeat(4096),
                     identity_pub_key: public_key,
                     target_peer_id: peer_id,
+                    max_rpc_requests: None,
                     staged_ledger_from_last: false,
                 })),
             ),

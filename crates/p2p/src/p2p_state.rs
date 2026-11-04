@@ -1061,6 +1061,25 @@ pub enum P2pPeerStatus {
 }
 
 impl P2pPeerStatus {
+    /// What a WebRTC peer that is connecting advertised as the most RPC
+    /// requests it takes at once: in its answer to our offer, or in its offer
+    /// to us. `None` if it advertised nothing.
+    pub fn advertised_max_rpc_requests(&self) -> Option<u16> {
+        match self {
+            Self::Connecting(P2pConnectionState::Outgoing(
+                P2pConnectionOutgoingState::FinalizePending { answer, .. }
+                | P2pConnectionOutgoingState::FinalizeSuccess { answer, .. }
+                | P2pConnectionOutgoingState::Success { answer, .. },
+            )) => answer.as_ref()?.max_rpc_requests,
+            Self::Connecting(P2pConnectionState::Incoming(
+                P2pConnectionIncomingState::FinalizePending { offer, .. }
+                | P2pConnectionIncomingState::FinalizeSuccess { offer, .. }
+                | P2pConnectionIncomingState::Success { offer, .. },
+            )) => offer.max_rpc_requests,
+            _ => None,
+        }
+    }
+
     /// Whether a WebRTC peer that is connecting said it serves a staged
     /// ledger from its last part and takes a cancelled stream: in its answer
     /// to our offer, or in its offer to us.

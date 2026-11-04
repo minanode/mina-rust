@@ -123,7 +123,7 @@ impl P2pChannelsState {
             return slot;
         }
         let unanswered = self.unanswered_rpc_ids().count();
-        let room = super::rpc::MAX_P2P_RPC_REMOTE_CONCURRENT_REQUESTS.saturating_sub(unanswered);
+        let room = self.rpc_pipeline.peer_limit.saturating_sub(unanswered);
         if slot == 0 && !self.rpc_pipeline.has_room(&self.rpc) {
             0
         } else {

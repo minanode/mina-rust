@@ -12,6 +12,7 @@ export type FailureKind =
   | "integrity"
   | "load"
   | "start"
+  | "webrtc"
   | "peers";
 
 export interface BootFailure {
@@ -23,6 +24,9 @@ export interface BootFailure {
 }
 
 export interface PageFacts {
+  /** The browser knows cross-origin isolation at all (it has
+   * `crossOriginIsolated`): older ones don't, whatever the server sends. */
+  knowsIsolation: boolean;
   crossOriginIsolated: boolean;
   isSecureContext: boolean;
   /** `location.origin`. */
@@ -30,6 +34,8 @@ export interface PageFacts {
   hasWebAssembly: boolean;
   /** `new WebAssembly.Memory({ shared: true, ... })` works. */
   hasSharedMemory: boolean;
+  /** The page can make WebRTC connections (`RTCPeerConnection`). */
+  hasWebRtc: boolean;
 }
 
 /** The browser and the page can run the node's threads; or why not. */
@@ -37,10 +43,10 @@ export function checkPage(page: PageFacts): BootFailure | null {
   if (!page.hasWebAssembly) {
     return {
       kind: "threads",
-      title: "This browser can't run WebAssembly",
+      title: "WebAssembly is off in this browser",
       detail:
-        "The web node is a WebAssembly program. This browser has no WebAssembly, or has it turned off.",
-      hint: "Open the page in a current Chrome, Edge, Firefox or Safari.",
+        "The web node is a WebAssembly program, and this browser has no WebAssembly. Some security settings turn it off, such as Lockdown Mode on an iPhone, iPad or Mac.",
+      hint: "Exclude this site from the setting, or open the page in another browser.",
     };
   }
   if (!page.isSecureContext) {
@@ -49,6 +55,15 @@ export function checkPage(page: PageFacts): BootFailure | null {
       title: "This page needs HTTPS",
       detail: `The page is open at ${page.origin}. Browsers give the node's threads shared memory only on HTTPS pages, or on localhost.`,
       hint: "Open it over HTTPS, or from localhost.",
+    };
+  }
+  if (!page.knowsIsolation) {
+    return {
+      kind: "isolation",
+      title: "This browser is too old to run the node",
+      detail:
+        "The node's threads share memory, which browsers allow only on a cross-origin isolated page. This browser can't isolate a page.",
+      hint: "Update the browser, or open the page in a current Chrome, Edge, Firefox or Safari.",
     };
   }
   if (!page.crossOriginIsolated) {
@@ -66,7 +81,16 @@ export function checkPage(page: PageFacts): BootFailure | null {
       title: "This browser can't run WebAssembly threads",
       detail:
         "The page is isolated, but the browser refused shared WebAssembly memory. The node needs it for its threads.",
-      hint: "Open the page in a current desktop browser.",
+      hint: "Open the page in a current Chrome, Edge, Firefox or Safari.",
+    };
+  }
+  if (!page.hasWebRtc) {
+    return {
+      kind: "webrtc",
+      title: "WebRTC is off in this browser",
+      detail:
+        "The node reaches its peers over WebRTC data channels, and this browser has no RTCPeerConnection. A setting or an extension may have turned it off.",
+      hint: "Turn WebRTC on for this site, or open the page in another browser. In Firefox, the setting is media.peerconnection.enabled in about:config.",
     };
   }
   return null;
@@ -83,11 +107,13 @@ export function pageFacts(): PageFacts {
     hasSharedMemory = false;
   }
   return {
+    knowsIsolation: "crossOriginIsolated" in globalThis,
     crossOriginIsolated: globalThis.crossOriginIsolated === true,
     isSecureContext: globalThis.isSecureContext === true,
     origin: location.origin,
     hasWebAssembly: typeof WebAssembly === "object",
     hasSharedMemory,
+    hasWebRtc: typeof globalThis.RTCPeerConnection === "function",
   };
 }
 

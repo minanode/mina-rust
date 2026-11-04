@@ -186,14 +186,22 @@ fn tree_count(data: &StagedLedgerAuxAndPendingCoinbases) -> usize {
 }
 
 /// The scan state's tree `index`, the first being 0.
+///
+/// Trees go without their completed merge jobs, as OCaml sends them. A node
+/// that applied the blocks itself keeps those jobs' proofs, about half of a
+/// full scan state's bytes, and the receiver neither hashes nor uses them.
 fn tree_part(
     data: &StagedLedgerAuxAndPendingCoinbases,
     index: usize,
 ) -> Option<StagedLedgerPartsResponse> {
     let trees = &data.scan_state.scan_state.trees;
     match index.checked_sub(1) {
-        None => Some(trees.0.clone()),
-        Some(rest) => trees.1.iter().nth(rest).cloned(),
+        None => Some(trees.0.with_leaner_trees()),
+        Some(rest) => trees
+            .1
+            .iter()
+            .nth(rest)
+            .map(ScanStateTree::with_leaner_trees),
     }
     .map(Into::into)
 }
