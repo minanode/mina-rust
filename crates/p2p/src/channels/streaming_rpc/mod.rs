@@ -20,6 +20,10 @@ pub enum StreamingRpcChannelMsg {
     Next(P2pStreamingRpcId),
     Request(P2pStreamingRpcId, P2pStreamingRpcRequest),
     Response(P2pStreamingRpcId, Option<P2pStreamingRpcResponse>),
+    /// Send no more parts: the requester has them from another peer. Only
+    /// to a peer that advertised `staged_ledger_from_last`; an older one
+    /// can't decode it.
+    Cancel(P2pStreamingRpcId),
 }
 
 impl StreamingRpcChannelMsg {
@@ -28,6 +32,7 @@ impl StreamingRpcChannelMsg {
             Self::Next(id) => *id,
             Self::Request(id, _) => *id,
             Self::Response(id, _) => *id,
+            Self::Cancel(id) => *id,
         }
     }
 }

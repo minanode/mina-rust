@@ -1080,6 +1080,25 @@ impl P2pPeerStatus {
         }
     }
 
+    /// Whether a WebRTC peer that is connecting said it serves a staged
+    /// ledger from its last part and takes a cancelled stream: in its answer
+    /// to our offer, or in its offer to us.
+    pub fn advertised_staged_ledger_from_last(&self) -> bool {
+        match self {
+            Self::Connecting(P2pConnectionState::Outgoing(
+                P2pConnectionOutgoingState::FinalizePending { answer, .. }
+                | P2pConnectionOutgoingState::FinalizeSuccess { answer, .. }
+                | P2pConnectionOutgoingState::Success { answer, .. },
+            )) => answer.as_ref().is_some_and(|a| a.staged_ledger_from_last),
+            Self::Connecting(P2pConnectionState::Incoming(
+                P2pConnectionIncomingState::FinalizePending { offer, .. }
+                | P2pConnectionIncomingState::FinalizeSuccess { offer, .. }
+                | P2pConnectionIncomingState::Success { offer, .. },
+            )) => offer.staged_ledger_from_last,
+            _ => false,
+        }
+    }
+
     /// Checks if the peer is in `Connecting` state and we have finished
     /// connecting to the peer.
     pub fn is_connecting_success(&self) -> bool {

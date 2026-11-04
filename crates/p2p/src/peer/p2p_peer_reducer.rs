@@ -71,8 +71,10 @@ impl P2pPeerState {
                     .filter(|id| !peer.is_libp2p() || id.supported_by_libp2p())
                     .collect();
                 let rpc_limit = peer_rpc_limit(peer.status.advertised_max_rpc_requests());
+                let staged_ledger_from_last = peer.status.advertised_staged_ledger_from_last();
                 let mut ready = P2pPeerStatusReady::new(incoming, meta.time(), &enabled_channels);
                 ready.channels.rpc_pipeline.peer_limit = rpc_limit;
+                ready.channels.staged_ledger_from_last = staged_ledger_from_last;
                 peer.status = P2pPeerStatus::Ready(Box::new(ready));
                 let is_libp2p = peer.is_libp2p;
                 if is_libp2p {

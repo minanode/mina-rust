@@ -32,6 +32,19 @@ pub struct P2pChannelsState {
     #[serde(default)]
     pub sync_stats: P2pSyncPeerStats,
     pub streaming_rpc: P2pChannelsStreamingRpcState,
+    /// Whether the peer said it serves a staged ledger from its last part
+    /// and takes a cancelled stream (WebRTC offer or answer), so the sync
+    /// may fetch one staged ledger from it and another peer at once.
+    #[serde(default)]
+    pub staged_ledger_from_last: bool,
+    /// A streaming request we cancelled whose last message, the part on its
+    /// way or an empty answer, had not come when the channel took a new
+    /// request. That message is dropped when it comes. The peer sends it
+    /// before anything for the new request, so one for the new request means
+    /// it is not coming. One at most: the channel takes no other request
+    /// after a cancel until this one is settled.
+    #[serde(default)]
+    pub streaming_rpc_cancelled: Option<super::streaming_rpc::P2pStreamingRpcId>,
 
     pub(super) next_local_rpc_id: P2pRpcId,
     /// When a WebRTC peer last sent us anything, on any channel: a whole
@@ -83,6 +96,8 @@ impl P2pChannelsState {
                 false => P2pChannelsStreamingRpcState::Disabled,
                 true => P2pChannelsStreamingRpcState::Enabled,
             },
+            staged_ledger_from_last: false,
+            streaming_rpc_cancelled: None,
 
             next_local_rpc_id: 0,
             last_received: redux::Timestamp::ZERO,

@@ -54,6 +54,7 @@ fn offer() -> Offer {
         host: Host::Ipv4([127, 0, 0, 1].into()),
         listen_port: Some(3000),
         max_rpc_requests: None,
+        staged_ledger_from_last: false,
     }
 }
 

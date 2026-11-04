@@ -5,7 +5,7 @@ use redux::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    p2p::{channels::rpc::P2pRpcId, PeerId},
+    p2p::{channels::rpc::P2pRpcId, P2pState, PeerId},
     transition_frontier::sync::ledger::SyncLedgerTargetWithStaged,
 };
 
@@ -22,6 +22,11 @@ pub enum TransitionFrontierSyncLedgerStagedState {
         time: Timestamp,
         target: SyncLedgerTargetWithStaged,
         attempts: BTreeMap<PeerId, PeerStagedLedgerPartsFetchState>,
+        /// Fetch from one peer at a time: parts were refused, from one peer
+        /// or put together from two (STAGED-SPLIT), for this target or an
+        /// earlier one ([`Self::pending_after_refusals`]).
+        #[serde(default)]
+        single_stream: bool,
     },
     /// Fetched pieces required to reconstruct staged ledger from
     /// snarked ledger.
@@ -63,15 +68,28 @@ pub enum TransitionFrontierSyncLedgerStagedState {
 /// The peer whose parts the staged ledger is rebuilt from, and the attempts
 /// of the other peers. The staged ledger hash doesn't cover all of the parts
 /// (the scan state hash leaves out its completed jobs), so parts that make it
-/// can still fail to rebuild the staged ledger. That peer's answer is then
-/// rejected and the fetch goes on from these attempts, as OCaml's bootstrap
-/// starts over when the parts it got fail to rebuild.
+/// can still fail to rebuild the staged ledger. The fetch then goes on from
+/// these attempts, one peer at a time, as OCaml's bootstrap starts over when
+/// the parts it got fail to rebuild. That peer's answer is rejected, unless
+/// the parts may have been put together from two peers'.
 ///
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/bootstrap_controller/bootstrap_controller.ml#L478-L508>
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StagedLedgerPartsSender {
     pub peer_id: PeerId,
     pub other_attempts: BTreeMap<PeerId, PeerStagedLedgerPartsFetchState>,
+}
+
+impl StagedLedgerPartsSender {
+    /// Whether the parts may have been put together from `peer_id`'s stream
+    /// and another peer's (STAGED-SPLIT): that peer's request was pending
+    /// when they came, and the p2p layer cancelled it. Either peer may then
+    /// have sent a part that fails.
+    pub fn may_be_put_together(&self) -> bool {
+        self.other_attempts
+            .values()
+            .any(|attempt| attempt.fetch_pending_rpc_id().is_some())
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -104,7 +122,66 @@ impl TransitionFrontierSyncLedgerStagedState {
             time,
             target,
             attempts: Default::default(),
+            single_stream: false,
         }
+    }
+
+    /// [`Self::pending`] after `refusals`, the peers whose parts were
+    /// refused in an earlier fetch, of this target or another, and when
+    /// (`TransitionFrontierState::staged_parts_refusals`). Each counts as
+    /// having sent invalid parts then, so it isn't asked again before the
+    /// retry delay, and after any refusal the parts come from one peer at a
+    /// time: a peer whose own parts then fail is the one rejected. Without
+    /// it, a root retarget after parts put together from two peers failed
+    /// would ask both again at once, together, and reject neither.
+    pub fn pending_after_refusals(
+        time: Timestamp,
+        target: SyncLedgerTargetWithStaged,
+        refusals: &BTreeMap<PeerId, Timestamp>,
+    ) -> Self {
+        Self::PartsFetchPending {
+            time,
+            target,
+            attempts: refusals
+                .iter()
+                .map(|(peer_id, at)| {
+                    (
+                        *peer_id,
+                        PeerStagedLedgerPartsFetchState::Invalid { time: *at },
+                    )
+                })
+                .collect(),
+            single_stream: !refusals.is_empty(),
+        }
+    }
+
+    /// The peers behind parts refused now: for parts `sender` answered
+    /// with, `sender`; for a failed rebuild (`None`), the peer whose parts
+    /// are being rebuilt. With either, the peers whose requests were pending
+    /// as the parts came, which may have been put together from their
+    /// streams (STAGED-SPLIT).
+    pub fn refused_parts_senders(&self, sender: Option<&PeerId>) -> Vec<PeerId> {
+        let (peer_id, others) = match (self, sender) {
+            (Self::PartsFetchPending { attempts, .. }, Some(sender)) => (*sender, attempts),
+            (
+                Self::ReconstructPending {
+                    sender: Some(sender),
+                    ..
+                },
+                None,
+            ) => (sender.peer_id, &sender.other_attempts),
+            _ => return Vec::new(),
+        };
+        std::iter::once(peer_id)
+            .chain(
+                others
+                    .iter()
+                    .filter(|(id, attempt)| {
+                        **id != peer_id && attempt.fetch_pending_rpc_id().is_some()
+                    })
+                    .map(|(id, _)| *id),
+            )
+            .collect()
     }
 
     pub fn target(&self) -> &SyncLedgerTargetWithStaged {
@@ -162,6 +239,71 @@ impl TransitionFrontierSyncLedgerStagedState {
     pub fn parts_fetch_rpc_id(&self, peer_id: &PeerId) -> Option<P2pRpcId> {
         self.fetch_attempts()?.get(peer_id)?.fetch_pending_rpc_id()
     }
+
+    /// The peers whose requests for the parts are live, the one sending
+    /// them from the first part and the one from the last (STAGED-SPLIT). A
+    /// libp2p peer's request counts as from the first.
+    pub fn live_parts_streams(
+        &self,
+        now: Timestamp,
+        p2p: &P2pState,
+    ) -> (Option<PeerId>, Option<PeerId>) {
+        let (mut first, mut last) = (None, None);
+        for (peer_id, attempt) in self.fetch_attempts().into_iter().flatten() {
+            if attempt.fetch_pending_rpc_id().is_none() || attempt.is_failed_or_stale(now) {
+                continue;
+            }
+            let from_last = p2p
+                .get_ready_peer(peer_id)
+                .and_then(|peer| peer.channels.streaming_rpc.pending_local_rpc())
+                .is_some_and(|request| request.is_from_last());
+            if from_last {
+                last.get_or_insert(*peer_id);
+            } else {
+                first.get_or_insert(*peer_id);
+            }
+        }
+        (first, last)
+    }
+
+    /// Whether a second peer should send the parts from the other end: one
+    /// request is live, to a WebRTC peer that advertised
+    /// `staged_ledger_from_last`, and the node fetches from two at once
+    /// (`P2pLimits::staged_ledger_streams`).
+    pub fn wants_second_parts_stream(&self, now: Timestamp, p2p: &P2pState) -> bool {
+        if !self.is_second_parts_stream_allowed(p2p) {
+            return false;
+        }
+        match self.live_parts_streams(now, p2p) {
+            (Some(peer_id), None) | (None, Some(peer_id)) => {
+                takes_staged_ledger_from_last(p2p, &peer_id)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl TransitionFrontierSyncLedgerStagedState {
+    /// Whether the node fetches the parts from two peers at once
+    /// (`P2pLimits::staged_ledger_streams`), and parts put together from two
+    /// have not failed to hash to the target.
+    pub fn is_second_parts_stream_allowed(&self, p2p: &P2pState) -> bool {
+        matches!(
+            self,
+            Self::PartsFetchPending {
+                single_stream: false,
+                ..
+            }
+        ) && p2p.config.limits.staged_ledger_streams() > 1
+    }
+}
+
+/// Whether `peer_id` is a WebRTC peer that advertised
+/// `staged_ledger_from_last`.
+pub fn takes_staged_ledger_from_last(p2p: &P2pState, peer_id: &PeerId) -> bool {
+    p2p.get_ready_peer(peer_id)
+        .is_some_and(|peer| peer.channels.staged_ledger_from_last)
+        && !p2p.is_libp2p_peer(peer_id)
 }
 
 impl PeerStagedLedgerPartsFetchState {

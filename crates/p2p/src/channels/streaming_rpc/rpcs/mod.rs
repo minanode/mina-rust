@@ -1,7 +1,7 @@
 pub mod staged_ledger_parts;
 use staged_ledger_parts::{
-    StagedLedgerPartsReceiveProgress, StagedLedgerPartsResponse, StagedLedgerPartsResponseFull,
-    StagedLedgerPartsSendProgress,
+    StagedLedgerPartsFromLastProgress, StagedLedgerPartsReceiveProgress, StagedLedgerPartsResponse,
+    StagedLedgerPartsResponseFull, StagedLedgerPartsSendProgress,
 };
 
 use std::time::Duration;
@@ -21,6 +21,12 @@ pub enum P2pStreamingRpcKind {
 #[derive(BinProtWrite, BinProtRead, Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum P2pStreamingRpcRequest {
     StagedLedgerParts(v2::StateHash),
+    /// The same parts in another order, so that two peers can send one
+    /// staged ledger from its two ends at once (STAGED-SPLIT): the scan
+    /// state's base, its trees last first, the previous incomplete zkapp
+    /// updates, then the base. Only to a peer that advertised
+    /// `staged_ledger_from_last`; an older one can't decode it.
+    StagedLedgerPartsFromLast(v2::StateHash),
 }
 
 #[derive(Serialize, Deserialize, From, Debug, Clone)]
@@ -41,6 +47,7 @@ pub enum P2pStreamingRpcSendProgress {
 #[derive(Serialize, Deserialize, From, Debug, Clone)]
 pub enum P2pStreamingRpcReceiveProgress {
     StagedLedgerParts(StagedLedgerPartsReceiveProgress),
+    StagedLedgerPartsFromLast(StagedLedgerPartsFromLastProgress),
 }
 
 impl P2pStreamingRpcKind {
@@ -55,8 +62,22 @@ impl P2pStreamingRpcKind {
 impl P2pStreamingRpcRequest {
     pub fn kind(&self) -> P2pStreamingRpcKind {
         match self {
-            Self::StagedLedgerParts(_) => P2pStreamingRpcKind::StagedLedgerParts,
+            Self::StagedLedgerParts(_) | Self::StagedLedgerPartsFromLast(_) => {
+                P2pStreamingRpcKind::StagedLedgerParts
+            }
         }
+    }
+
+    /// The block whose staged ledger is asked for.
+    pub fn staged_ledger_block_hash(&self) -> &v2::StateHash {
+        match self {
+            Self::StagedLedgerParts(hash) | Self::StagedLedgerPartsFromLast(hash) => hash,
+        }
+    }
+
+    /// Whether the parts come from the last ([`Self::StagedLedgerPartsFromLast`]).
+    pub fn is_from_last(&self) -> bool {
+        matches!(self, Self::StagedLedgerPartsFromLast(_))
     }
 }
 
@@ -71,6 +92,7 @@ impl std::fmt::Display for P2pStreamingRpcRequest {
         write!(f, "{:?}", self.kind())?;
         match self {
             Self::StagedLedgerParts(block_hash) => write!(f, ", {block_hash}"),
+            Self::StagedLedgerPartsFromLast(block_hash) => write!(f, ", from last, {block_hash}"),
         }
     }
 }
@@ -144,7 +166,9 @@ impl P2pStreamingRpcSendProgress {
 impl P2pStreamingRpcReceiveProgress {
     pub fn kind(&self) -> P2pStreamingRpcKind {
         match self {
-            Self::StagedLedgerParts(_) => P2pStreamingRpcKind::StagedLedgerParts,
+            Self::StagedLedgerParts(_) | Self::StagedLedgerPartsFromLast(_) => {
+                P2pStreamingRpcKind::StagedLedgerParts
+            }
         }
     }
 
@@ -153,12 +177,26 @@ impl P2pStreamingRpcReceiveProgress {
             Self::StagedLedgerParts(s) => {
                 matches!(s, StagedLedgerPartsReceiveProgress::Success { .. })
             }
+            Self::StagedLedgerPartsFromLast(s) => s.data.is_some(),
         }
     }
 
     pub fn last_updated(&self) -> redux::Timestamp {
         match self {
             Self::StagedLedgerParts(s) => s.last_updated(),
+            Self::StagedLedgerPartsFromLast(s) => s.time,
+        }
+    }
+
+    /// Whether `resp` is the part this stream expects next. A part out of
+    /// order from a stream from the last is unexpected, as from any peer.
+    pub fn accepts(&self, resp: &P2pStreamingRpcResponse) -> bool {
+        match (self, resp) {
+            (Self::StagedLedgerParts(_), P2pStreamingRpcResponse::StagedLedgerParts(_)) => true,
+            (
+                Self::StagedLedgerPartsFromLast(progress),
+                P2pStreamingRpcResponse::StagedLedgerParts(resp),
+            ) => progress.accepts(resp),
         }
     }
 
@@ -168,19 +206,24 @@ impl P2pStreamingRpcReceiveProgress {
                 Self::StagedLedgerParts(progress),
                 P2pStreamingRpcResponse::StagedLedgerParts(resp),
             ) => progress.update(time, resp),
-            // _ => false,
+            (
+                Self::StagedLedgerPartsFromLast(progress),
+                P2pStreamingRpcResponse::StagedLedgerParts(resp),
+            ) => progress.update(time, resp),
         }
     }
 
     pub fn is_part_pending(&self) -> bool {
         match self {
             Self::StagedLedgerParts(progress) => progress.is_part_pending(),
+            Self::StagedLedgerPartsFromLast(progress) => progress.is_part_pending(),
         }
     }
 
     pub fn set_next_pending(&mut self, time: redux::Timestamp) -> bool {
         match self {
             Self::StagedLedgerParts(progress) => progress.set_next_pending(time),
+            Self::StagedLedgerPartsFromLast(progress) => progress.set_next_pending(time),
         }
     }
 }

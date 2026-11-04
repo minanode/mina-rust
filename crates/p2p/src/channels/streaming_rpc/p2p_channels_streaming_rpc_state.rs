@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use crate::P2pTimeouts;
 
 use super::{
-    staged_ledger_parts::StagedLedgerPartsReceiveProgress, P2pStreamingRpcId, P2pStreamingRpcKind,
-    P2pStreamingRpcReceiveProgress, P2pStreamingRpcRequest, P2pStreamingRpcResponse,
-    P2pStreamingRpcResponseFull, P2pStreamingRpcSendProgress,
+    staged_ledger_parts::{StagedLedgerPartsFromLastProgress, StagedLedgerPartsReceiveProgress},
+    P2pStreamingRpcId, P2pStreamingRpcKind, P2pStreamingRpcReceiveProgress, P2pStreamingRpcRequest,
+    P2pStreamingRpcResponse, P2pStreamingRpcResponseFull, P2pStreamingRpcSendProgress,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -44,6 +44,13 @@ pub enum P2pStreamingRpcLocalState {
         progress: P2pStreamingRpcReceiveProgress,
     },
     Responded {
+        time: redux::Timestamp,
+        id: P2pStreamingRpcId,
+        request: Box<P2pStreamingRpcRequest>,
+    },
+    /// We cancelled the request while a part was on its way: it may still
+    /// come, and is dropped. No new request goes before it.
+    Cancelled {
         time: redux::Timestamp,
         id: P2pStreamingRpcId,
         request: Box<P2pStreamingRpcRequest>,
@@ -162,6 +169,19 @@ impl P2pChannelsStreamingRpcState {
                         progress:
                             P2pStreamingRpcReceiveProgress::StagedLedgerParts(
                                 StagedLedgerPartsReceiveProgress::Success { data, .. },
+                            ),
+                        ..
+                    },
+                ..
+            } => Some(data.clone().into()),
+            Self::Ready {
+                local:
+                    P2pStreamingRpcLocalState::Requested {
+                        progress:
+                            P2pStreamingRpcReceiveProgress::StagedLedgerPartsFromLast(
+                                StagedLedgerPartsFromLastProgress {
+                                    data: Some(data), ..
+                                },
                             ),
                         ..
                     },

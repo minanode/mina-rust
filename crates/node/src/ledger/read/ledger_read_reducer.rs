@@ -1,7 +1,7 @@
 use crate::p2p::{
     channels::{
         rpc::{P2pChannelsRpcAction, P2pRpcId, P2pRpcRequest, P2pRpcResponse},
-        streaming_rpc::{P2pChannelsStreamingRpcAction, P2pStreamingRpcRequest},
+        streaming_rpc::P2pChannelsStreamingRpcAction,
     },
     P2pAction, PeerId,
 };
@@ -338,10 +338,8 @@ impl LedgerReadState {
                         }
                     }
                 }
-                if let Some((id, P2pStreamingRpcRequest::StagedLedgerParts(hash))) =
-                    peer.channels.streaming_rpc.remote_todo_request()
-                {
-                    if serving_block(state, hash).is_none() {
+                if let Some((id, request)) = peer.channels.streaming_rpc.remote_todo_request() {
+                    if serving_block(state, request.staged_ledger_block_hash()).is_none() {
                         dispatcher
                             .push(P2pChannelsStreamingRpcAction::ResponsePending { peer_id, id });
                         dispatcher.push(P2pChannelsStreamingRpcAction::ResponseSendInit {
@@ -380,11 +378,8 @@ impl LedgerReadState {
                 })
                 .or_else(|| {
                     let (id, req) = peer.channels.streaming_rpc.remote_todo_request()?;
-                    let ledger_request = match req {
-                        P2pStreamingRpcRequest::StagedLedgerParts(block_hash) => {
-                            build_staged_ledger_parts_request(state, block_hash)?
-                        }
-                    };
+                    let ledger_request =
+                        build_staged_ledger_parts_request(state, req.staged_ledger_block_hash())?;
                     Some((id, ledger_request, true))
                 })
             }) else {
@@ -549,11 +544,10 @@ fn find_peers_with_ledger_rpc(
                 .streaming_rpc
                 .remote_pending_request()
                 .into_iter()
-                .filter(|(_, peer_req)| match (req, peer_req) {
-                    (
-                        LedgerReadRequest::GetStagedLedgerAuxAndPendingCoinbases(data),
-                        P2pStreamingRpcRequest::StagedLedgerParts(block_hash),
-                    ) => &data.block_hash == block_hash,
+                .filter(|(_, peer_req)| match req {
+                    LedgerReadRequest::GetStagedLedgerAuxAndPendingCoinbases(data) => {
+                        &data.block_hash == peer_req.staged_ledger_block_hash()
+                    }
                     _ => false,
                 })
                 .map(|(rpc_id, _)| (*peer_id, rpc_id, true));

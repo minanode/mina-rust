@@ -43,6 +43,16 @@ pub struct TransitionFrontierState {
     /// Block-fetch failures are peer-wide, across hashes and sync targets.
     #[serde(default)]
     pub block_peer_query_errors: BTreeMap<crate::p2p::PeerId, redux::Timestamp>,
+    /// The peers whose staged ledger parts were refused, and when: parts
+    /// that failed the hash check or the rebuild, from the peer alone or
+    /// put together from its stream and another's (STAGED-SPLIT). Across
+    /// sync targets, like [`Self::block_peer_query_errors`]: a root
+    /// retarget starts a new fetch of the parts, which takes them from one
+    /// peer at a time and asks none of these before the retry delay
+    /// ([`super::sync::ledger::staged::TransitionFrontierSyncLedgerStagedState::pending_after_refusals`]).
+    /// Cleared once a staged ledger is rebuilt.
+    #[serde(default)]
+    pub staged_parts_refusals: BTreeMap<crate::p2p::PeerId, redux::Timestamp>,
     /// Local proof read failures while checking a fetched block's body, per
     /// block (BP-SAFE). See [`Self::block_local_check_failed`].
     #[serde(default)]
@@ -108,6 +118,7 @@ impl TransitionFrontierState {
             needed_protocol_states: Default::default(),
             sync: TransitionFrontierSyncState::Idle,
             block_peer_query_errors: Default::default(),
+            staged_parts_refusals: Default::default(),
             block_local_check_errors: Default::default(),
             blacklist: Default::default(),
             chain_diff: None,
@@ -170,6 +181,29 @@ impl TransitionFrontierState {
             {
                 self.block_peer_query_errors.remove(&oldest);
             }
+        }
+    }
+
+    /// Records that `peers` sent staged ledger parts that were refused.
+    pub fn staged_parts_refused(
+        &mut self,
+        peers: impl IntoIterator<Item = crate::p2p::PeerId>,
+        now: redux::Timestamp,
+    ) {
+        for peer in peers {
+            self.staged_parts_refusals.insert(peer, now);
+        }
+        // Bound the record even if identities churn.
+        while self.staged_parts_refusals.len() > 1024 {
+            let Some(oldest) = self
+                .staged_parts_refusals
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(peer, _)| *peer)
+            else {
+                break;
+            };
+            self.staged_parts_refusals.remove(&oldest);
         }
     }
 

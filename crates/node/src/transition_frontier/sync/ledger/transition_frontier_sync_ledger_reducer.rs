@@ -14,6 +14,22 @@ impl TransitionFrontierSyncLedgerState {
         mut state_context: crate::Substate<Self>,
         action: TransitionFrontierSyncLedgerActionWithMetaRef<'_>,
     ) {
+        // A new fetch of the staged ledger parts starts from the peers whose
+        // parts were refused, whatever the target was then.
+        let staged_parts_refusals = matches!(
+            *action.action(),
+            TransitionFrontierSyncLedgerAction::Staged(
+                TransitionFrontierSyncLedgerStagedAction::PartsFetchPending
+            )
+        )
+        .then(|| {
+            state_context
+                .unsafe_get_state()
+                .transition_frontier
+                .staged_parts_refusals
+                .clone()
+        })
+        .unwrap_or_default();
         let Ok(state) = state_context.get_substate_mut() else {
             // TODO: log or propagate
             return;
@@ -58,9 +74,10 @@ impl TransitionFrontierSyncLedgerState {
                 else {
                     return;
                 };
-                let s = TransitionFrontierSyncLedgerStagedState::pending(
+                let s = TransitionFrontierSyncLedgerStagedState::pending_after_refusals(
                     meta.time(),
                     target.clone().with_staged().unwrap(),
+                    &staged_parts_refusals,
                 );
                 *state = Self::Staged(s);
             }

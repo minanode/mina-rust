@@ -48,6 +48,7 @@ fn fetching_parts(
             time: Timestamp::ZERO,
             target: SyncLedgerTarget::root(root).with_staged().unwrap(),
             attempts: attempt.map(|a| (near(), a)).into_iter().collect(),
+            single_stream: false,
         }
         .into(),
     }
@@ -393,4 +394,113 @@ fn a_failed_request_without_a_kept_root_asks_again() {
         assert!(!TransitionFrontierSyncAction::LedgerRootRetarget.is_enabled(&state, at_ms(4_000)));
         assert_eq!(parts_target(sync_pending(&state)).unwrap().0, root_0.hash());
     }
+}
+
+/// A peer whose staged ledger parts were refused, the sole peer, when a best
+/// tip moves the root, keeping the snarked ledger (the parts are asked for
+/// again) or not (the whole root ledger sync starts over). Either way the
+/// new fetch of the parts starts from the frontier's record of the refusal:
+/// one stream, and the peer asked at the refusal's retry deadline, not
+/// before. The same for a WebRTC relay and a libp2p peer.
+#[test]
+fn a_refused_peer_keeps_its_retry_deadline_when_a_best_tip_moves_the_root() {
+    use crate::transition_frontier::sync::ledger::TransitionFrontierSyncLedgerAction as LedgerAction;
+    for libp2p in [false, true] {
+        for changed_snarked in [false, true] {
+            let case = format!("libp2p={libp2p} changed_snarked={changed_snarked}");
+            let template = template_block();
+            let root = block(&template, 1, None, 7);
+            let next = block(
+                &template,
+                2,
+                Some(&root),
+                if changed_snarked { 8 } else { 7 },
+            );
+            let tip = block(&template, 10, None, 7);
+            let next_tip = block(&template, 11, None, 7);
+            let (mut state, _) = initialized_node();
+            add_peer(&mut state, near(), libp2p, &tip, None);
+            let refused = PeerStagedLedgerPartsFetchState::Invalid { time: at_ms(1_000) };
+            state.transition_frontier.sync = TransitionFrontierSyncState::RootLedgerPending(
+                fetching_parts(&root, &tip, Some(refused)),
+            );
+            state
+                .transition_frontier
+                .staged_parts_refused([near()], at_ms(1_000));
+
+            reduce_best_tip_update(&mut state, &next_tip, &next, at_ms(2_000));
+            if changed_snarked {
+                assert!(
+                    matches!(
+                        sync_pending(&state).ledger,
+                        TransitionFrontierSyncLedgerState::Init { .. }
+                    ),
+                    "{case}"
+                );
+                // The root's new snarked ledger, synced: the staged ledger
+                // parts are next.
+                run(&mut state, LedgerAction::LocalSnarkedSuccess, at_ms(2_000));
+            } else {
+                assert!(sync_pending(&state).ledger.snarked().is_some(), "{case}");
+            }
+            run(&mut state, StagedAction::PartsFetchPending, at_ms(2_000));
+            let staged = sync_pending(&state).ledger.staged().unwrap();
+            assert!(
+                matches!(
+                    staged,
+                    TransitionFrontierSyncLedgerStagedState::PartsFetchPending {
+                        single_stream: true,
+                        ..
+                    }
+                ),
+                "{case}: {staged:?}"
+            );
+            assert!(
+                matches!(
+                    staged.fetch_attempts().unwrap()[&near()],
+                    PeerStagedLedgerPartsFetchState::Invalid { time } if time == at_ms(1_000)
+                ),
+                "{case}: {staged:?}"
+            );
+
+            let ran = run(&mut state, StagedAction::PartsPeerFetchInit, at_ms(5_999));
+            assert!(parts_request(&ran, libp2p).is_none(), "{case}: {ran:#?}");
+            let ran = run(&mut state, StagedAction::PartsPeerFetchInit, at_ms(6_000));
+            let asked = parts_request(&ran, libp2p)
+                .unwrap_or_else(|| panic!("{case}: not asked at the deadline: {ran:#?}"));
+            assert!(asked.contains(&next.hash().to_string()), "{case}: {asked}");
+            assert!(
+                state.transition_frontier.block_peer_query_errors.is_empty(),
+                "{case}"
+            );
+        }
+    }
+}
+
+/// The record of refused peers keeps the 1024 latest, and is kept in the
+/// state's JSON. A state without it reads as having none.
+#[test]
+fn the_staged_parts_refusals_are_bounded_and_kept_in_the_state_json() {
+    let (mut state, _) = initialized_node();
+    for i in 0u32..1100 {
+        let mut bytes = [0u8; 32];
+        bytes[..4].copy_from_slice(&i.to_le_bytes());
+        state
+            .transition_frontier
+            .staged_parts_refused([PeerId::from_bytes(bytes)], at_ms(u64::from(i)));
+    }
+    let refusals = &state.transition_frontier.staged_parts_refusals;
+    assert_eq!(refusals.len(), 1024);
+    assert_eq!(refusals.values().min(), Some(&at_ms(76)));
+
+    let mut json = serde_json::to_value(&state.transition_frontier).unwrap();
+    let restored: crate::transition_frontier::TransitionFrontierState =
+        serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(restored.staged_parts_refusals, *refusals);
+    json.as_object_mut()
+        .unwrap()
+        .remove("staged_parts_refusals");
+    let without: crate::transition_frontier::TransitionFrontierState =
+        serde_json::from_value(json).unwrap();
+    assert!(without.staged_parts_refusals.is_empty());
 }

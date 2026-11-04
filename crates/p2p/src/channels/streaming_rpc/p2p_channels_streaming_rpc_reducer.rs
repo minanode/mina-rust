@@ -3,14 +3,19 @@ use redux::ActionWithMeta;
 
 use crate::{
     channels::{ChannelId, ChannelMsg, MsgId, P2pChannelsEffectfulAction},
-    P2pState,
+    P2pState, PeerId,
 };
 
 use super::{
-    staged_ledger_parts::{StagedLedgerPartsReceiveProgress, StagedLedgerPartsSendProgress},
-    P2pChannelsStreamingRpcAction, P2pChannelsStreamingRpcState, P2pStreamingRpcLocalState,
-    P2pStreamingRpcRemoteState, P2pStreamingRpcRequest, P2pStreamingRpcResponseFull,
-    P2pStreamingRpcSendProgress, StreamingRpcChannelMsg,
+    staged_ledger_parts::{
+        parts_count, staged_ledger_parts_complete, take_staged_ledger_parts,
+        StagedLedgerPartsFromLastProgress, StagedLedgerPartsReceiveProgress,
+        StagedLedgerPartsSendProgress,
+    },
+    P2pChannelsStreamingRpcAction, P2pChannelsStreamingRpcState, P2pStreamingRpcId,
+    P2pStreamingRpcLocalState, P2pStreamingRpcReceiveProgress, P2pStreamingRpcRemoteState,
+    P2pStreamingRpcRequest, P2pStreamingRpcResponseFull, P2pStreamingRpcSendProgress,
+    StreamingRpcChannelMsg,
 };
 
 impl P2pChannelsStreamingRpcState {
@@ -44,6 +49,7 @@ impl P2pChannelsStreamingRpcState {
 
         let next_local_rpc_id = &mut channels_state.next_local_rpc_id;
         let streaming_rpc_state = &mut channels_state.streaming_rpc;
+        let cancelled_rpc = &mut channels_state.streaming_rpc_cancelled;
 
         match action {
             P2pChannelsStreamingRpcAction::Init { .. } => {
@@ -95,6 +101,10 @@ impl P2pChannelsStreamingRpcState {
                     return Ok(());
                 };
 
+                if let P2pStreamingRpcLocalState::Cancelled { id, .. } = local {
+                    // Its part on its way may still come: dropped then.
+                    *cancelled_rpc = Some(*id);
+                }
                 *next_local_rpc_id += 1;
                 *local = P2pStreamingRpcLocalState::Requested {
                     time: meta.time(),
@@ -105,6 +115,9 @@ impl P2pChannelsStreamingRpcState {
                             Into::into(StagedLedgerPartsReceiveProgress::BasePending {
                                 time: meta.time(),
                             })
+                        }
+                        P2pStreamingRpcRequest::StagedLedgerPartsFromLast(_) => {
+                            StagedLedgerPartsFromLastProgress::new(meta.time()).into()
                         }
                     },
                 };
@@ -157,20 +170,52 @@ impl P2pChannelsStreamingRpcState {
                 Ok(())
             }
             P2pChannelsStreamingRpcAction::ResponsePartReceived { response, id, .. } => {
-                let Self::Ready {
-                    local: P2pStreamingRpcLocalState::Requested { progress, .. },
-                    ..
-                } = streaming_rpc_state
-                else {
+                if *cancelled_rpc == Some(id) {
+                    // The part on its way when we cancelled, after the
+                    // channel took a new request: not needed.
+                    *cancelled_rpc = None;
+                    return Ok(());
+                }
+                // The peer sends a cancelled request's last part before any
+                // of the next request's: it is not coming.
+                *cancelled_rpc = None;
+                let Self::Ready { local, .. } = streaming_rpc_state else {
                     bug_condition!(
                         "`P2pChannelsStreamingRpcAction::ResponsePartReceived` with state {:?}",
                         streaming_rpc_state
                     );
                     return Ok(());
                 };
+                if let P2pStreamingRpcLocalState::Cancelled { id, request, .. } = local {
+                    // The part on its way when we cancelled: not needed.
+                    *local = P2pStreamingRpcLocalState::Responded {
+                        time: meta.time(),
+                        id: *id,
+                        request: std::mem::take(request),
+                    };
+                    return Ok(());
+                }
+                let P2pStreamingRpcLocalState::Requested { progress, .. } = local else {
+                    bug_condition!(
+                        "`P2pChannelsStreamingRpcAction::ResponsePartReceived` with state {:?}",
+                        local
+                    );
+                    return Ok(());
+                };
                 if !progress.update(meta.time(), response) {
                     bug_condition!("progress response mismatch! {progress:?}");
                 }
+                let done = progress.is_done();
+
+                // STAGED-SPLIT: another peer may be sending the same staged
+                // ledger from the other end. Once the two have every part
+                // between them, they are put together here and the other
+                // is cancelled.
+                let partner = staged_ledger_partner(p2p_state, &peer_id);
+                let partner_cancelled = !done
+                    && partner.as_ref().is_some_and(|(partner, _)| {
+                        put_staged_ledger_together(p2p_state, &peer_id, partner, meta.time())
+                    });
 
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
                 let state: &P2pState = state.substate()?;
@@ -179,6 +224,27 @@ impl P2pChannelsStreamingRpcState {
                 };
 
                 if let Some(response) = peer.channels.streaming_rpc.local_done_response() {
+                    match partner {
+                        Some((partner, partner_rpc_id)) if partner_cancelled => {
+                            // Neither relay has sent its whole stream: both
+                            // are told to stop, so each drops what it holds
+                            // and takes our next request.
+                            for (peer_id, id) in [(partner, partner_rpc_id), (peer_id, id)] {
+                                dispatcher.push(P2pChannelsEffectfulAction::MessageSend {
+                                    peer_id,
+                                    msg_id: MsgId::first(),
+                                    msg: StreamingRpcChannelMsg::Cancel(id).into(),
+                                });
+                            }
+                        }
+                        Some((partner, partner_rpc_id)) => {
+                            dispatcher.push(P2pChannelsStreamingRpcAction::RequestCancel {
+                                peer_id: partner,
+                                id: partner_rpc_id,
+                            });
+                        }
+                        None => {}
+                    }
                     dispatcher.push(P2pChannelsStreamingRpcAction::ResponseReceived {
                         peer_id,
                         id,
@@ -194,6 +260,13 @@ impl P2pChannelsStreamingRpcState {
                 response,
                 ..
             } => {
+                if *cancelled_rpc == Some(rpc_id) {
+                    // The empty answer to a request we cancelled, after the
+                    // channel took a new one.
+                    *cancelled_rpc = None;
+                    return Ok(());
+                }
+                *cancelled_rpc = None;
                 let Self::Ready { local, .. } = streaming_rpc_state else {
                     bug_condition!(
                         "`P2pChannelsStreamingRpcAction::ResponseReceived` with state {:?}",
@@ -201,6 +274,15 @@ impl P2pChannelsStreamingRpcState {
                     );
                     return Ok(());
                 };
+                if let P2pStreamingRpcLocalState::Cancelled { id, request, .. } = local {
+                    // The peer had nothing more to send when we cancelled.
+                    *local = P2pStreamingRpcLocalState::Responded {
+                        time: meta.time(),
+                        id: *id,
+                        request: std::mem::take(request),
+                    };
+                    return Ok(());
+                }
                 let P2pStreamingRpcLocalState::Requested { id, request, .. } = local else {
                     bug_condition!(
                         "`P2pChannelsStreamingRpcAction::ResponseReceived` with state {:?}",
@@ -272,7 +354,8 @@ impl P2pChannelsStreamingRpcState {
                     return Ok(());
                 };
                 match &**request {
-                    P2pStreamingRpcRequest::StagedLedgerParts(_) => {
+                    P2pStreamingRpcRequest::StagedLedgerParts(_)
+                    | P2pStreamingRpcRequest::StagedLedgerPartsFromLast(_) => {
                         *progress =
                             StagedLedgerPartsSendProgress::LedgerGetPending { time: meta.time() }
                                 .into();
@@ -296,6 +379,17 @@ impl P2pChannelsStreamingRpcState {
                     return Ok(());
                 };
                 match (&**request, &response) {
+                    (
+                        P2pStreamingRpcRequest::StagedLedgerPartsFromLast(_),
+                        Some(P2pStreamingRpcResponseFull::StagedLedgerParts(data)),
+                    ) => {
+                        *progress = StagedLedgerPartsSendProgress::FromLastSending {
+                            time: meta.time(),
+                            data: data.clone(),
+                            sent: 0,
+                        }
+                        .into();
+                    }
                     (_, Some(P2pStreamingRpcResponseFull::StagedLedgerParts(data))) => {
                         *progress = StagedLedgerPartsSendProgress::LedgerGetSuccess {
                             time: meta.time(),
@@ -303,10 +397,10 @@ impl P2pChannelsStreamingRpcState {
                         }
                         .into();
                     }
-                    (P2pStreamingRpcRequest::StagedLedgerParts(_), None) => {
+                    (_, None) => {
                         *progress =
                             StagedLedgerPartsSendProgress::Success { time: meta.time() }.into();
-                    } // _ => todo!("unexpected response send call: {response:?}"),
+                    }
                 }
 
                 let dispatcher = state_context.into_dispatcher();
@@ -395,6 +489,20 @@ impl P2pChannelsStreamingRpcState {
                                 data: data.clone(),
                                 tree_index: *tree_index + 1,
                             },
+                            StagedLedgerPartsSendProgress::FromLastSending {
+                                data, sent, ..
+                            } => {
+                                let sent = *sent + 1;
+                                if sent >= parts_count(data) {
+                                    StagedLedgerPartsSendProgress::Success { time: meta.time() }
+                                } else {
+                                    StagedLedgerPartsSendProgress::FromLastSending {
+                                        time: meta.time(),
+                                        data: data.clone(),
+                                        sent,
+                                    }
+                                }
+                            }
                             progress => {
                                 bug_condition!("unexpected state during `P2pStreamingRpcSendProgress::StagedLedgerParts`: {progress:?}");
                                 return Ok(());
@@ -458,6 +566,208 @@ impl P2pChannelsStreamingRpcState {
 
                 Ok(())
             }
+            P2pChannelsStreamingRpcAction::RequestCancel { id, .. } => {
+                let Self::Ready {
+                    local: local @ P2pStreamingRpcLocalState::Requested { .. },
+                    ..
+                } = streaming_rpc_state
+                else {
+                    bug_condition!("{:?} with state {:?}", action, streaming_rpc_state);
+                    return Ok(());
+                };
+                let P2pStreamingRpcLocalState::Requested {
+                    request, progress, ..
+                } = local
+                else {
+                    return Ok(());
+                };
+                let request = std::mem::take(request);
+                // A part asked for, or the first, may still come.
+                *local = if progress.is_part_pending() {
+                    P2pStreamingRpcLocalState::Cancelled {
+                        time: meta.time(),
+                        id,
+                        request,
+                    }
+                } else {
+                    P2pStreamingRpcLocalState::Responded {
+                        time: meta.time(),
+                        id,
+                        request,
+                    }
+                };
+
+                let dispatcher = state_context.into_dispatcher();
+                dispatcher.push(P2pChannelsEffectfulAction::MessageSend {
+                    peer_id,
+                    msg_id: MsgId::first(),
+                    msg: StreamingRpcChannelMsg::Cancel(id).into(),
+                });
+                Ok(())
+            }
+            P2pChannelsStreamingRpcAction::CancelReceived { id, .. } => {
+                let Self::Ready { remote, .. } = streaming_rpc_state else {
+                    return Ok(());
+                };
+                let P2pStreamingRpcRemoteState::Requested {
+                    id: rpc_id,
+                    request,
+                    progress,
+                    ..
+                } = remote
+                else {
+                    return Ok(());
+                };
+                if *rpc_id != id {
+                    return Ok(());
+                }
+                // Before its first part the requester waits for one: it
+                // gets an empty answer instead. After, the part it asked for
+                // has gone already, or goes before this.
+                let unsent = progress.external_data_todo() || progress.external_data_pending();
+                // Drops the parts we held for it.
+                *remote = P2pStreamingRpcRemoteState::Responded {
+                    time: meta.time(),
+                    id,
+                    request: std::mem::take(request),
+                };
+                if unsent {
+                    let dispatcher = state_context.into_dispatcher();
+                    dispatcher.push(P2pChannelsEffectfulAction::MessageSend {
+                        peer_id,
+                        msg_id: MsgId::first(),
+                        msg: StreamingRpcChannelMsg::Response(id, None).into(),
+                    });
+                }
+                Ok(())
+            }
         }
     }
+}
+
+/// The other peer streaming the same staged ledger to us from the other end,
+/// if both advertised `staged_ledger_from_last` (STAGED-SPLIT).
+fn staged_ledger_partner(
+    p2p_state: &P2pState,
+    peer_id: &PeerId,
+) -> Option<(PeerId, P2pStreamingRpcId)> {
+    let peer = p2p_state.get_ready_peer(peer_id)?;
+    if !peer.channels.staged_ledger_from_last {
+        return None;
+    }
+    let request = peer.channels.streaming_rpc.pending_local_rpc()?;
+    p2p_state.peers.iter().find_map(|(other_id, other)| {
+        let other = other.status.as_ready()?;
+        if other_id == peer_id || !other.channels.staged_ledger_from_last {
+            return None;
+        }
+        let other_request = other.channels.streaming_rpc.pending_local_rpc()?;
+        if other_request.staged_ledger_block_hash() != request.staged_ledger_block_hash()
+            || other_request.is_from_last() == request.is_from_last()
+        {
+            return None;
+        }
+        Some((
+            *other_id,
+            other.channels.streaming_rpc.pending_local_rpc_id()?,
+        ))
+    })
+}
+
+fn local_progress_mut<'a>(
+    p2p_state: &'a mut P2pState,
+    peer_id: &PeerId,
+) -> Option<&'a mut P2pStreamingRpcReceiveProgress> {
+    match &mut p2p_state
+        .get_ready_peer_mut(peer_id)?
+        .channels
+        .streaming_rpc
+    {
+        P2pChannelsStreamingRpcState::Ready {
+            local: P2pStreamingRpcLocalState::Requested { progress, .. },
+            ..
+        } => Some(progress),
+        _ => None,
+    }
+}
+
+/// If `peer_id`'s stream and `partner`'s, the same staged ledger from its
+/// two ends, have every part between them, puts them together as
+/// `peer_id`'s response and cancels `partner`'s request here: its parts go,
+/// so whether one is on its way is read before. The caller sends the
+/// cancel.
+fn put_staged_ledger_together(
+    p2p_state: &mut P2pState,
+    peer_id: &PeerId,
+    partner: &PeerId,
+    time: redux::Timestamp,
+) -> bool {
+    use P2pStreamingRpcReceiveProgress::{StagedLedgerParts, StagedLedgerPartsFromLast};
+    let complete = {
+        let progress = |peer_id| {
+            p2p_state
+                .get_ready_peer(peer_id)?
+                .channels
+                .streaming_rpc
+                .pending_local_rpc_progress()
+        };
+        match (progress(peer_id), progress(partner)) {
+            (Some(StagedLedgerParts(first)), Some(StagedLedgerPartsFromLast(last)))
+            | (Some(StagedLedgerPartsFromLast(last)), Some(StagedLedgerParts(first))) => {
+                staged_ledger_parts_complete(first, last)
+            }
+            _ => None,
+        }
+    };
+    if complete != Some(true) {
+        return false;
+    }
+    let Some(theirs) = local_progress_mut(p2p_state, partner) else {
+        return false;
+    };
+    let part_on_its_way = theirs.is_part_pending();
+    let mut theirs = match theirs {
+        StagedLedgerParts(first) => StagedLedgerParts(std::mem::take(first)),
+        StagedLedgerPartsFromLast(last) => StagedLedgerPartsFromLast(std::mem::take(last)),
+    };
+    let Some(mine) = local_progress_mut(p2p_state, peer_id) else {
+        return false;
+    };
+    let data = match (&mut *mine, &mut theirs) {
+        (StagedLedgerParts(first), StagedLedgerPartsFromLast(last))
+        | (StagedLedgerPartsFromLast(last), StagedLedgerParts(first)) => {
+            take_staged_ledger_parts(first, last)
+        }
+        _ => None,
+    };
+    let Some(data) = data else {
+        bug_condition!("staged ledger parts complete but not put together");
+        return false;
+    };
+    match mine {
+        StagedLedgerParts(first) => {
+            *first = StagedLedgerPartsReceiveProgress::Success {
+                time,
+                data: data.into(),
+            }
+        }
+        StagedLedgerPartsFromLast(last) => {
+            last.time = time;
+            last.data = Some(data.into());
+        }
+    }
+    if let Some(P2pChannelsStreamingRpcState::Ready { local, .. }) = p2p_state
+        .get_ready_peer_mut(partner)
+        .map(|peer| &mut peer.channels.streaming_rpc)
+    {
+        if let P2pStreamingRpcLocalState::Requested { id, request, .. } = local {
+            let (id, request) = (*id, std::mem::take(request));
+            *local = if part_on_its_way {
+                P2pStreamingRpcLocalState::Cancelled { time, id, request }
+            } else {
+                P2pStreamingRpcLocalState::Responded { time, id, request }
+            };
+        }
+    }
+    true
 }

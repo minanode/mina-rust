@@ -81,6 +81,19 @@ pub enum P2pChannelsStreamingRpcAction {
         peer_id: PeerId,
         id: P2pStreamingRpcId,
     },
+    /// Stop our request: its parts came from another peer as well
+    /// (STAGED-SPLIT). Only to a peer that advertised
+    /// `staged_ledger_from_last`.
+    RequestCancel {
+        peer_id: PeerId,
+        id: P2pStreamingRpcId,
+    },
+    /// The peer stopped its request to us. A request we no longer have, or
+    /// have finished, is left as it is.
+    CancelReceived {
+        peer_id: PeerId,
+        id: P2pStreamingRpcId,
+    },
 }
 
 impl P2pChannelsStreamingRpcAction {
@@ -99,7 +112,9 @@ impl P2pChannelsStreamingRpcAction {
             | Self::ResponseSendInit { peer_id, .. }
             | Self::ResponsePartNextSend { peer_id, .. }
             | Self::ResponsePartSend { peer_id, .. }
-            | Self::ResponseSent { peer_id, .. } => peer_id,
+            | Self::ResponseSent { peer_id, .. }
+            | Self::RequestCancel { peer_id, .. }
+            | Self::CancelReceived { peer_id, .. } => peer_id,
         }
     }
 }
@@ -134,16 +149,44 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsStreamingRpcAction {
                     )
                 })
             }
-            P2pChannelsStreamingRpcAction::RequestSend { peer_id, id, .. } => {
+            P2pChannelsStreamingRpcAction::RequestSend {
+                peer_id,
+                id,
+                request,
+                ..
+            } => {
                 state.get_ready_peer(peer_id).is_some_and(|p| {
-                    matches!(
-                        &p.channels.streaming_rpc,
-                        P2pChannelsStreamingRpcState::Ready {
-                            local: P2pStreamingRpcLocalState::WaitingForRequest { .. }
-                                | P2pStreamingRpcLocalState::Responded { .. },
-                            ..
-                        } if p.channels.next_local_rpc_id() == *id
-                    )
+                    // A peer that did not advertise it can't decode it.
+                    (!request.is_from_last() || p.channels.staged_ledger_from_last)
+                        && p.channels.next_local_rpc_id() == *id
+                        && match &p.channels.streaming_rpc {
+                            P2pChannelsStreamingRpcState::Ready {
+                                local:
+                                    P2pStreamingRpcLocalState::WaitingForRequest { .. }
+                                    | P2pStreamingRpcLocalState::Responded { .. },
+                                ..
+                            } => true,
+                            // The part on its way when we cancelled has not
+                            // come within a part's timeout: the channel takes
+                            // a new request, and drops that part if it comes
+                            // later (`streaming_rpc_cancelled`, one at most).
+                            P2pChannelsStreamingRpcState::Ready {
+                                local:
+                                    P2pStreamingRpcLocalState::Cancelled {
+                                        time: cancelled, ..
+                                    },
+                                ..
+                            } => {
+                                p.channels.streaming_rpc_cancelled.is_none()
+                                    && request.kind().timeout(&state.config.timeouts).is_some_and(
+                                        |timeout| {
+                                            time.checked_sub(*cancelled)
+                                                .is_some_and(|t| t >= timeout)
+                                        },
+                                    )
+                            }
+                            _ => false,
+                        }
                 })
             }
             P2pChannelsStreamingRpcAction::Timeout { peer_id, id } => {
@@ -179,11 +222,19 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsStreamingRpcAction {
             } => state
                 .get_ready_peer(peer_id)
                 .is_some_and(|p| match &p.channels.streaming_rpc {
+                    // The part that was on its way when we cancelled, after
+                    // the channel took a new request.
+                    P2pChannelsStreamingRpcState::Ready { .. }
+                        if p.channels.streaming_rpc_cancelled == Some(*id) =>
+                    {
+                        true
+                    }
                     P2pChannelsStreamingRpcState::Ready {
                         local:
                             P2pStreamingRpcLocalState::Requested {
                                 id: rpc_id,
                                 request,
+                                progress,
                                 ..
                             },
                         ..
@@ -191,7 +242,18 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsStreamingRpcAction {
                         rpc_id == id
                             && response.kind() == request.kind()
                             && response.is_within_bounds()
+                            && progress.accepts(response)
                     }
+                    // The part that was on its way when we cancelled.
+                    P2pChannelsStreamingRpcState::Ready {
+                        local:
+                            P2pStreamingRpcLocalState::Cancelled {
+                                id: rpc_id,
+                                request,
+                                ..
+                            },
+                        ..
+                    } => rpc_id == id && response.kind() == request.kind(),
                     _ => false,
                 }),
             P2pChannelsStreamingRpcAction::ResponseReceived {
@@ -201,6 +263,14 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsStreamingRpcAction {
             } => state
                 .get_ready_peer(peer_id)
                 .is_some_and(|p| match &p.channels.streaming_rpc {
+                    // The empty answer to a request we cancelled, after the
+                    // channel took a new one. First: the new request is the
+                    // one in the slot.
+                    P2pChannelsStreamingRpcState::Ready { .. }
+                        if p.channels.streaming_rpc_cancelled == Some(*id) =>
+                    {
+                        response.is_none()
+                    }
                     P2pChannelsStreamingRpcState::Ready {
                         local:
                             P2pStreamingRpcLocalState::Requested {
@@ -217,6 +287,11 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsStreamingRpcAction {
                                 .as_ref()
                                 .is_none_or(|resp| resp.kind() == request.kind())
                     }
+                    // The peer had nothing more to send when we cancelled.
+                    P2pChannelsStreamingRpcState::Ready {
+                        local: P2pStreamingRpcLocalState::Cancelled { id: rpc_id, .. },
+                        ..
+                    } => rpc_id == id && response.is_none(),
                     _ => false,
                 }),
             P2pChannelsStreamingRpcAction::RequestReceived { peer_id, .. } => state
@@ -295,6 +370,15 @@ impl redux::EnablingCondition<P2pState> for P2pChannelsStreamingRpcAction {
                     } => rpc_id == id && progress.is_done(),
                     _ => false,
                 }),
+            P2pChannelsStreamingRpcAction::RequestCancel { peer_id, id } => {
+                state.get_ready_peer(peer_id).is_some_and(|p| {
+                    p.channels.staged_ledger_from_last
+                        && p.channels.streaming_rpc.pending_local_rpc_id() == Some(*id)
+                })
+            }
+            P2pChannelsStreamingRpcAction::CancelReceived { peer_id, .. } => state
+                .get_ready_peer(peer_id)
+                .is_some_and(|p| p.channels.streaming_rpc.is_ready()),
         }
     }
 }

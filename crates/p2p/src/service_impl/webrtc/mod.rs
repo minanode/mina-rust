@@ -1609,6 +1609,7 @@ mod queue_tests {
                     identity_pub_key: public_key,
                     target_peer_id: peer_id,
                     max_rpc_requests: None,
+                    staged_ledger_from_last: false,
                 })),
             ),
             P2pConnectionEvent::OfferSdpReady(peer_id, Err("x".repeat(4096))),

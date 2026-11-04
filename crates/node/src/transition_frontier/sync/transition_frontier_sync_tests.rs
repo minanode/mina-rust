@@ -53,6 +53,12 @@ mod root_retarget_sync_tests;
 #[path = "reconstruct_reject_sync_tests.rs"]
 mod reconstruct_reject_sync_tests;
 
+#[path = "staged_split_sync_tests.rs"]
+mod staged_split_sync_tests;
+
+#[path = "staged_split_reconstruct_sync_tests.rs"]
+mod staged_split_reconstruct_sync_tests;
+
 /// Mesa mainnet block 563900, from a `get_transition_chain` answer captured
 /// from an OCaml node: the template for the blocks below.
 fn template_block() -> Block {
