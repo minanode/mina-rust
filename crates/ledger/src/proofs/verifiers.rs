@@ -464,12 +464,8 @@ fn make_verifier_index(index: VerifierIndex<Fq>) -> VerifierIndex<Fq> {
 
 /// <https://github.com/MinaProtocol/mina/blob/bfd1009abdbee78979ff0343cc73a3480e862f58/src/lib/crypto/kimchi_bindings/stubs/src/pasta_fq_plonk_verifier_index.rs#L213>
 /// <https://github.com/MinaProtocol/mina/blob/bfd1009abdbee78979ff0343cc73a3480e862f58/src/lib/pickles/common.ml#L16C1-L25C58>
-pub fn make_shifts(
-    domain: &Radix2EvaluationDomain<Fq>,
-) -> kimchi::circuits::polynomials::permutation::Shifts<Fq> {
-    // let value = 1 << log2_size;
-    // let domain = Domain::<Fq>::new(value).unwrap();
-    kimchi::circuits::polynomials::permutation::Shifts::new(domain)
+pub fn make_shifts(domain: &Radix2EvaluationDomain<Fq>) -> [Fq; kimchi::circuits::wires::PERMUTS] {
+    super::public_input::plonk_checks::make_shifts(domain)
 }
 
 // <https://github.com/MinaProtocol/mina/blob/bfd1009abdbee78979ff0343cc73a3480e862f58/src/lib/pickles/common.ml#L27>
@@ -557,7 +553,7 @@ pub fn make_zkapp_verifier_index(vk: &VerificationKey) -> VerifierIndex<Fq> {
         foreign_field_mul_comm: None,
         xor_comm: None,
         rot_comm: None,
-        shift: *shift.shifts(),
+        shift,
         permutation_vanishing_polynomial_m: once_lock_with(permutation_vanishing_polynomial(
             domain, zk_rows,
         )),

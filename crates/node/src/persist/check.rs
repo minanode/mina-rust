@@ -10,7 +10,8 @@
 //!   ledger, and with the parts, through `StagedLedger::from_persisted_unchecked`,
 //!   has the complete staged ledger hash of the checkpoint and of the root
 //!   block (I5d1's hash gate);
-//! - the parts hold every protocol state the root's scan state needs;
+//! - the root's scan state has the shape of one a node builds, and the parts
+//!   hold every protocol state it needs;
 //! - every block of the chain decodes, hashes to its name, has the recorded
 //!   height and slot, and links to the one before; the first is the
 //!   checkpoint's root, with its ledger hashes;
@@ -374,6 +375,9 @@ pub fn check_store(
         let scan_state: ScanState = (&parts.scan_state)
             .try_into()
             .map_err(|e| format!("{e:?}"))?;
+        scan_state
+            .check_shape()
+            .map_err(|e| format!("scan state: {e}"))?;
         let pending_coinbase: PendingCoinbase = (&parts.pending_coinbase)
             .try_into()
             .map_err(|e| format!("{e:?}"))?;
