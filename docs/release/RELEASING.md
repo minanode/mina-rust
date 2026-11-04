@@ -199,29 +199,36 @@ Signature formats and configuration:
 
 ## Published site switch
 
-The workspace and archive candidate version is 0.21.0. The site's `release`
+The workspace and archive candidate version is 0.22.0. The site's `release`
 object in `ui/minanode-site/content/release.ts` advertises the published 0.21.0
-archives and their matching Docker digest, switched after publication.
+archives and their matching Docker digest until 0.22.0 is published.
 `candidateVersion` records the prepared version; it does not select downloads.
 `RELEASE_FINAL=1` validates the signer and content, and does not switch
 versions.
 
-After the owner publishes and verifies the signed 0.21.0 archives and Docker
+After the owner publishes and verifies the signed 0.22.0 archives and Docker
 image, update these together before deploying the site:
 
 1. Set `release.version` to `candidateVersion`, change both `downloadUrl` and
-   `notesUrl` to `v0.21.0`, and replace `release.dockerDigest` with the verified
-   0.21.0 image index digest. Never reuse the 0.20.1 digest for 0.21.0.
-2. Change the fallback image in `docker-compose.yml` to
-   `ghcr.io/minanode/mina-rust:0.21.0`. The site serves this file through its
-   `public/docker/` symlink, so the default switched to 0.21.0 only after
+   `notesUrl` to `v0.22.0`, and replace `release.dockerDigest` with the verified
+   0.22.0 image index digest. Never reuse the 0.21.0 digest for 0.22.0.
+2. Set `webRelease.version` to 0.22.0 and its `downloadUrl` to `v0.22.0`. The
+   web archive `mina-web-0.22.0.tar.gz` is an asset of the same release.
+3. Change the fallback image in `docker-compose.yml` to
+   `ghcr.io/minanode/mina-rust:0.22.0`. The site serves this file through its
+   `public/docker/` symlink, so the default switches to 0.22.0 only after
    publication.
-3. Run the site build, typecheck and content checks below, including
+4. Replace the "Before publication" section of the release notes with the
+   published `SHA256SUMS` lines and the image digest.
+5. Update the version in the `ui/minanode-site/CLAIMS.md` entries that quote it,
+   and the current-release text in `README.md`, the Docker guides under
+   `website/docs/` and `tools/demo/`.
+6. Run the site build, typecheck and content checks below, including
    `RELEASE_FINAL=1`, and verify the archive, checksum, notes and image URLs.
    The archive names and Docker examples derive from the `release` object.
 
 The Docker workflow requires an explicit version and verified commit as inputs;
-its example now uses 0.21.0. A packaging dry run does not publish an image or
+its example now uses 0.22.0. A packaging dry run does not publish an image or
 change the running site's downloads. Unsigned dry-run archive hashes must not
 replace the public release-note checksum placeholder.
 

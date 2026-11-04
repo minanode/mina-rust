@@ -1,7 +1,7 @@
 import { siteOrigin } from "@/lib/origin";
 
 /** Packaging candidate; publication is a separate owner action. */
-export const candidateVersion = "0.21.0";
+export const candidateVersion = "0.22.0";
 
 /**
  * Published release only. Keep version, download URLs and Docker digest together.

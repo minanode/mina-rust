@@ -26,7 +26,7 @@ are at <https://minanode.org/docs/docker/>.
 First, the plan job fixes the release commit. For a release event, it is the
 commit GitHub recorded for the release when it was published; a rerun keeps it.
 By hand, it is the `commit` input, the release's full commit ID from its
-verified tag (`git rev-parse 'v0.21.0^{commit}'` after `git verify-tag`, as in
+verified tag (`git rev-parse 'v0.22.0^{commit}'` after `git verify-tag`, as in
 [RELEASING.md](RELEASING.md)). The tag must still point to that commit, and the
 commit must be in the history of the default branch, so the trust file comes
 from reviewed history. The verify steps check the tag again before they
@@ -50,7 +50,7 @@ workflow by hand from `main` with the version, the release commit and `push`
 ticked.
 
 The publish job pushes and attests only the `VERSION` tag (for example
-`0.21.0`). A final job, `shared-tags`, then moves `MAJOR.MINOR` (`0.21`) and
+`0.22.0`). A final job, `shared-tags`, then moves `MAJOR.MINOR` (`0.22`) and
 `latest` to that same digest with `docker buildx imagetools create`, which
 rebuilds nothing, using
 [move-shared-tags.sh](../../tools/release/docker/move-shared-tags.sh):
@@ -90,7 +90,7 @@ For the `minanode` organization and the `minanode/mina-rust` repository:
 ## Dry run before release day
 
 A draft release can't be read by the workflow, so rehearse on a published
-pre-release, for example `v0.21.0-rc.5`. Sign its `SHA256SUMS` and tag as in
+pre-release, for example `v0.22.0-rc.5`. Sign its `SHA256SUMS` and tag as in
 [RELEASING.md](RELEASING.md), then publish it as a pre-release. Publishing runs
 the workflow as a dry run. Check that the plan job's summary says `push: false`
 and that the dry-run job passes: signature, checksums, build commit, and both
@@ -104,7 +104,7 @@ its commit and `push` unticked.
 2. Check the run: Actions, Docker image, the run for the tag. The publish and
    `shared-tags` jobs must pass. The publish job's summary has the digest, and
    the `shared-tags` summary says which shared tags moved; for the newest
-   release, both `0.20` and `latest`.
+   release, both `0.22` and `latest`.
 3. The first time only, open the package (organization, Packages, `mina-rust`),
    then:
    - [ ] Package settings, Change visibility: **Public**.
@@ -115,7 +115,7 @@ its commit and `push` unticked.
    list:
 
    ```text
-   Docker: ghcr.io/minanode/mina-rust:0.21.0
+   Docker: ghcr.io/minanode/mina-rust:0.22.0
    (ghcr.io/minanode/mina-rust@sha256:...)
    ```
 
@@ -124,14 +124,14 @@ its commit and `push` unticked.
    without one it stops before checking anything:
 
    ```sh
-   gh attestation verify oci://ghcr.io/minanode/mina-rust:0.21.0 \
+   gh attestation verify oci://ghcr.io/minanode/mina-rust:0.22.0 \
      -R minanode/mina-rust
-   docker buildx imagetools inspect ghcr.io/minanode/mina-rust:0.21.0
-   docker run --rm ghcr.io/minanode/mina-rust:0.21.0 --version
+   docker buildx imagetools inspect ghcr.io/minanode/mina-rust:0.22.0
+   docker run --rm ghcr.io/minanode/mina-rust:0.22.0 --version
    ```
 
    `imagetools inspect` lists `linux/amd64` and `linux/arm64` and shows the
-   digest from the summary. `--version` prints `mina 0.21.0`.
+   digest from the summary. `--version` prints `mina 0.22.0`.
 
 ## If the run fails
 
@@ -147,9 +147,9 @@ the workflow decide the shared tags. Never pass `--tag ...:0.20` or
 `--tag ...:latest` by hand: for an older release, that would move them back.
 
 ```sh
-tools/release/docker/build-image.sh 0.21.0 release-0.21.0 \
-  --push ghcr.io/minanode/mina-rust:0.21.0 --metadata-file meta.json
-tools/release/docker/move-shared-tags.sh 0.21.0 \
+tools/release/docker/build-image.sh 0.22.0 release-0.22.0 \
+  --push ghcr.io/minanode/mina-rust:0.22.0 --metadata-file meta.json
+tools/release/docker/move-shared-tags.sh 0.22.0 \
   --digest "$(jq -r '."containerimage.digest"' meta.json)"
 ```
 
