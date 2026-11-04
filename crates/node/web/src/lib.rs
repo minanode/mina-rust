@@ -81,7 +81,11 @@ fn main() {
         // The block prover's iframe instantiates this module too, and builds
         // its own pool, of its own size, when it is set up.
         if !block_prover::in_prover_realm() {
-            init_rayon().await.unwrap();
+            // A failure leaves the node without the pool: `pool_ready` says
+            // so, and the start goes on without it, as before it waited.
+            if let Err(error) = init_rayon().await {
+                log::error!("the rayon pool failed to start: {error:?}");
+            }
         }
     });
 }
@@ -384,6 +388,21 @@ async fn setup_node(
     mina_node_common::Node<NodeService>,
     Option<mina_node::core::channels::oneshot::Receiver<Result<(), String>>>,
 )> {
+    // The verifiers' SRS, made on the rayon pool while the genesis config,
+    // the verifier indexes and the peer list download: about 2.4 s of the
+    // start on one thread. Without the pool (it failed, or isn't built in
+    // time), it is made on this thread below, as before.
+    let srs_on_pool = if rayon::pool_ready(rayon::POOL_WAIT_MS).await {
+        let (srs_tx, srs_rx) = ::mina_node::core::channels::oneshot::channel();
+        ::rayon::spawn(move || {
+            let _ = srs_tx.send(ledger::verifier::get_srs_parallel::<mina_curves::pasta::Fp>());
+        });
+        Some(srs_rx)
+    } else {
+        log::warn!("no rayon pool: the verifier SRS is made on the node's thread");
+        None
+    };
+
     let genesis_config: std::sync::Arc<GenesisConfig> =
         if let Some(genesis_config_url) = genesis_config_url {
             let bytes = ::mina_node::core::http::get_bytes(&genesis_config_url)
@@ -441,6 +460,12 @@ async fn setup_node(
             .flat_map(|s| s.parse().ok())
             .inspect(|p| log::debug!("Using peer: {p:?}")),
     );
+
+    let srs = match srs_on_pool {
+        Some(srs) => srs.await.context("the verifier SRS wasn't made")?,
+        None => mina_node::snark::get_srs(),
+    };
+    node_builder.verifier_srs(srs);
 
     // Block proofs or SNARK work, never both (`run` refuses that), are made
     // in an isolated prover instance with its own memory, never in this one
