@@ -212,6 +212,8 @@ fix-trailing-whitespace: ## Remove trailing whitespaces from all files
 		-not -path "./ui/*/out/*" \
 		-not -path "./ui/*/dist/*" \
 		-not -path "./.git/*" \
+		-not -path "./vendor/ark-ff/*" \
+		-not -path "./vendor/ark-ff-macros/*" \
 		-not -path "./vendor/rustrtc/*" \
 		-not -path "./vendor/wasm_thread/*" \
 		-exec sh -c 'echo "Processing: $$1"; $(SED) -i -e "s/[[:space:]]*$$//" "$$1"' _ {} \; && \
@@ -240,6 +242,8 @@ check-trailing-whitespace: ## Check for trailing whitespaces in source files
 		-not -path "./ui/*/out/*" \
 		-not -path "./ui/*/dist/*" \
 		-not -path "./.git/*" \
+		-not -path "./vendor/ark-ff/*" \
+		-not -path "./vendor/ark-ff-macros/*" \
 		-not -path "./vendor/rustrtc/*" \
 		-not -path "./vendor/wasm_thread/*" \
 		-exec grep -l '[[:space:]]$$' {} + 2>/dev/null || true); \
