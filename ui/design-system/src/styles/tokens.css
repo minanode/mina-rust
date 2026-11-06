@@ -41,11 +41,13 @@
   --color-ink-50: #f5f8f9;
   --color-ink-100: #e6ecef;
   --color-ink-200: #cdd6dc;
+  --color-ink-250: #bac6ce;
   --color-ink-300: #a3b1bb;
   --color-ink-400: #7d8d99;
   --color-ink-500: #5b6b77;
   --color-ink-600: #3e4c57;
   --color-ink-700: #2a3742;
+  --color-ink-750: #222e38;
   --color-ink-800: #1c2730;
   --color-ink-850: #141c23;
   --color-ink-900: #0e141a;
@@ -80,6 +82,9 @@
   --secondary-foreground: var(--color-ink-900);
   --muted: var(--color-ink-100);
   --muted-foreground: var(--color-ink-500);
+  /* Muted text on a tinted callout: ink-500 drops under 4.5:1 on the
+     brand, caution and destructive tints in light. */
+  --muted-on-tint: var(--color-ink-600);
   --accent: var(--color-ink-100);
   --accent-foreground: var(--color-ink-950);
   --destructive: var(--color-red-700);
@@ -95,6 +100,16 @@
   --brand-foreground: var(--color-ink-950);
   --brand-text: var(--color-teal-700);
   --brand-subtle: color-mix(in oklab, var(--color-teal-500) 10%, transparent);
+  /* A brand-tinted panel (a callout, a review): the subtle tint, except
+     where a small fill needs more than a panel can carry (below). */
+  --brand-wash: var(--brand-subtle);
+  /* A caution panel's fill, on the page and stronger inside a card. */
+  --caution-wash: color-mix(in oklab, var(--status-pending) 8%, transparent);
+  --caution-wash-strong: color-mix(
+    in oklab,
+    var(--status-pending) 14%,
+    transparent
+  );
   --brand-border: color-mix(in oklab, var(--color-teal-600) 45%, transparent);
   --gradient-from: var(--color-teal-800);
   --gradient-to: var(--color-teal-700);
@@ -130,6 +145,7 @@
   --secondary-foreground: var(--color-ink-50);
   --muted: var(--color-ink-850);
   --muted-foreground: var(--color-ink-300);
+  --muted-on-tint: var(--color-ink-300);
   --accent: var(--color-ink-800);
   --accent-foreground: var(--color-ink-50);
   --destructive: var(--color-red-400);
@@ -143,6 +159,7 @@
   --brand-foreground: var(--color-ink-950);
   --brand-text: var(--color-teal-400);
   --brand-subtle: color-mix(in oklab, var(--color-teal-500) 12%, transparent);
+  --brand-wash: var(--brand-subtle);
   --brand-border: color-mix(in oklab, var(--color-teal-500) 40%, transparent);
   --gradient-from: var(--color-teal-400);
   --gradient-to: var(--color-mint-300);
@@ -158,6 +175,41 @@
   --chart-3: var(--color-amber-400);
   --chart-4: var(--color-violet-400);
   --chart-5: var(--color-red-400);
+}
+
+/* Apps (the web node page and the node dashboard, `data-app` on <html>):
+   raised surfaces that separate from the page, borders that hold their
+   shape, and softer text for long sessions. The site keeps the theme above. */
+:root[data-app].dark {
+  --foreground: var(--color-ink-100);
+  --card: var(--color-ink-850);
+  --card-foreground: var(--color-ink-100);
+  --popover: var(--color-ink-850);
+  --popover-foreground: var(--color-ink-100);
+  --secondary: var(--color-ink-800);
+  --secondary-foreground: var(--color-ink-100);
+  --muted: var(--color-ink-800);
+  --accent: var(--color-ink-750);
+  --accent-foreground: var(--color-ink-50);
+  --border: var(--color-ink-750);
+}
+
+/* The apps' light theme: card edges that hold on the pale page, and a
+   current nav item whose fill has a shape. A panel keeps a lighter wash:
+   at its size the nav item's 16% reads as a solid block. */
+:root[data-app]:not(.dark) {
+  --border: var(--color-ink-250);
+  --brand-subtle: color-mix(in oklab, var(--color-teal-500) 16%, transparent);
+  --brand-wash: color-mix(in oklab, var(--color-teal-500) 8%, transparent);
+  /* The brown amber-700 at 8% reads grey-beige on the cool page, as if
+     disabled: a caution panel takes the light amber over the card's white,
+     opaque, so it reads amber on the page and in a card alike. */
+  --caution-wash: color-mix(in oklab, var(--color-amber-400) 14%, var(--card));
+  --caution-wash-strong: color-mix(
+    in oklab,
+    var(--color-amber-400) 18%,
+    var(--card)
+  );
 }
 
 :root {
@@ -181,6 +233,7 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-muted-on-tint: var(--muted-on-tint);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
@@ -194,6 +247,9 @@
   --color-brand-foreground: var(--brand-foreground);
   --color-brand-text: var(--brand-text);
   --color-brand-subtle: var(--brand-subtle);
+  --color-brand-wash: var(--brand-wash);
+  --color-caution-wash: var(--caution-wash);
+  --color-caution-wash-strong: var(--caution-wash-strong);
   --color-brand-border: var(--brand-border);
   --color-gradient-from: var(--gradient-from);
   --color-gradient-to: var(--gradient-to);
@@ -235,6 +291,11 @@
   --text-title--line-height: 1.12;
   --text-title--letter-spacing: -0.025em;
   --text-title--font-weight: 650;
+  /* An app page's h1: a dashboard title, smaller than the site's. */
+  --text-page: clamp(1.5rem, 1.35rem + 0.5vw, 1.875rem);
+  --text-page--line-height: 1.15;
+  --text-page--letter-spacing: -0.02em;
+  --text-page--font-weight: 650;
   --text-heading: 1.25rem;
   --text-heading--line-height: 1.35;
   --text-heading--letter-spacing: -0.01em;

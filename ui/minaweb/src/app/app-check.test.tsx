@@ -60,6 +60,11 @@ const start = () =>
   screen.getByRole("button", {
     name: "Start the web node in this tab",
   }) as HTMLButtonElement;
+// A browser that can't run the node: the button says so.
+const blocked = () =>
+  screen.getByRole("button", {
+    name: "Can't start in this browser",
+  }) as HTMLButtonElement;
 
 test("a browser that can run the node gets Start and no notice", () => {
   render(<App />);
@@ -70,7 +75,7 @@ test("a browser that can run the node gets Start and no notice", () => {
 test("without RTCPeerConnection, the start screen says WebRTC is off", () => {
   delete globals.RTCPeerConnection;
   render(<App />);
-  expect(start().disabled).toBe(true);
+  expect(blocked().disabled).toBe(true);
   const note = screen.getByRole("note");
   expect(note.dataset.failure).toBe("webrtc");
   expect(note.textContent).toContain("WebRTC is off in this browser");
@@ -79,7 +84,7 @@ test("without RTCPeerConnection, the start screen says WebRTC is off", () => {
 test("a browser that knows no isolation is too old, not misserved", () => {
   delete globals.crossOriginIsolated;
   render(<App />);
-  expect(start().disabled).toBe(true);
+  expect(blocked().disabled).toBe(true);
   expect(screen.getByRole("note").textContent).toContain(
     "This browser is too old to run the node",
   );

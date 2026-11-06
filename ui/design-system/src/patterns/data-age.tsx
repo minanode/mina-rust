@@ -42,13 +42,13 @@ function DataAge({
     >
       <p
         className={cn(
-          "inline-flex items-center gap-1.5 font-mono text-xs",
+          "inline-flex items-center gap-1.5 font-sans text-xs tabular-nums",
           stale && age !== null
             ? "text-status-pending"
             : "text-muted-foreground",
         )}
       >
-        <Clock aria-hidden className="size-3.5" />
+        <Clock aria-hidden className="size-3.5 max-sm:hidden" />
         {age === null
           ? loading
             ? "Loading…"
@@ -57,7 +57,12 @@ function DataAge({
             ? `Paused, data from ${formatAge(age)} ago`
             : stale
               ? `Data from ${formatAge(age)} ago`
-              : `Updated ${formatAge(age)} ago`}
+              : [
+                  <span key="word" className="max-sm:sr-only">
+                    Updated{" "}
+                  </span>,
+                  `${formatAge(age)} ago`,
+                ]}
       </p>
       {onRefresh ? (
         <Button
@@ -67,7 +72,8 @@ function DataAge({
           aria-label="Refresh"
           title="Refresh"
           onClick={onRefresh}
-          className="text-muted-foreground hover:text-foreground"
+          // Its glyph, not its box, on the content's right edge.
+          className="-mr-2 text-muted-foreground hover:text-foreground"
         >
           <RefreshCw aria-hidden />
         </Button>

@@ -21,6 +21,7 @@ import { Badge } from "@minanode/design-system/components/badge";
 import {
   AppShell,
   SidebarNav,
+  SidebarNavGroup,
   SidebarNavItem,
 } from "@minanode/design-system/patterns/app-shell";
 import { Banner } from "@minanode/design-system/patterns/banner";
@@ -41,33 +42,71 @@ type NavItem = {
   pages: Route["page"][];
 };
 
-export const NAV: NavItem[] = [
-  { to: "/", label: "Overview", icon: LayoutDashboard, pages: ["overview"] },
-  { to: "/snark-worker", label: "SNARK worker", icon: Cpu, pages: ["worker"] },
-  {
-    to: "/block-producer",
-    label: "Block producer",
-    icon: Box,
-    pages: ["producer"],
-  },
-  { to: "/blocks", label: "Blocks", icon: Blocks, pages: ["blocks", "block"] },
-  { to: "/account", label: "Accounts", icon: Wallet, pages: ["account"] },
-  { to: "/mempool", label: "Mempool", icon: Layers, pages: ["mempool"] },
-  { to: "/peers", label: "Peers", icon: Network, pages: ["peers"] },
-  { to: "/node-status", label: "Status", icon: FileJson, pages: ["status"] },
-  {
-    to: "/graphql-endpoint",
-    label: "GraphQL",
-    icon: Braces,
-    pages: ["graphql"],
-  },
-  {
-    to: "/report-a-problem",
-    label: "Report a problem",
-    icon: Bug,
-    pages: ["report"],
-  },
+/** The sidebar's groups, each with its pages. A group's name is its pages'
+ * eyebrow. */
+export const NAV_GROUPS: [string, NavItem[]][] = [
+  [
+    "Node",
+    [
+      {
+        to: "/",
+        label: "Overview",
+        icon: LayoutDashboard,
+        pages: ["overview"],
+      },
+      { to: "/peers", label: "Peers", icon: Network, pages: ["peers"] },
+      {
+        to: "/node-status",
+        label: "Status",
+        icon: FileJson,
+        pages: ["status"],
+      },
+      {
+        to: "/graphql-endpoint",
+        label: "GraphQL",
+        icon: Braces,
+        pages: ["graphql"],
+      },
+    ],
+  ],
+  [
+    "Chain",
+    [
+      {
+        to: "/blocks",
+        label: "Blocks",
+        icon: Blocks,
+        pages: ["blocks", "block"],
+      },
+      { to: "/account", label: "Accounts", icon: Wallet, pages: ["account"] },
+      { to: "/mempool", label: "Mempool", icon: Layers, pages: ["mempool"] },
+    ],
+  ],
+  [
+    "Roles",
+    [
+      {
+        to: "/snark-worker",
+        label: "SNARK worker",
+        icon: Cpu,
+        pages: ["worker"],
+      },
+      {
+        to: "/block-producer",
+        label: "Block producer",
+        icon: Box,
+        pages: ["producer"],
+      },
+    ],
+  ],
 ];
+
+const REPORT: NavItem = {
+  to: "/report-a-problem",
+  label: "Report a problem",
+  icon: Bug,
+  pages: ["report"],
+};
 
 const focusRing =
   "focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring";
@@ -92,15 +131,28 @@ function StatusChip() {
       className={`flex min-w-0 items-center gap-2 rounded-full ${focusRing}`}
       title="Node status: go to the overview"
     >
-      <Signal tone={view.tone} pulse={view.tone === "info"}>
-        {view.label}
-        {height ? <span className="text-foreground/80">{height}</span> : null}
-      </Signal>
       {view.key === "Synced" && view.tipAgeMs !== null ? (
-        <span className="hidden font-mono text-xs text-muted-foreground sm:inline">
+        // Before the pill, right-aligned: the pill stays on the content's
+        // right edge as the age's width changes.
+        <span className="hidden text-right font-sans text-xs text-muted-foreground tabular-nums sm:inline">
           block {formatAge(view.tipAgeMs)} old
         </span>
       ) : null}
+      <Signal tone={view.tone} pulse={view.tone === "info"}>
+        {view.label}
+        {height ? (
+          // "to" is a word; only the height is a figure.
+          <span className="text-foreground/80">
+            {height.startsWith("to ") ? (
+              <>
+                to <span className="font-mono">{height.slice(3)}</span>
+              </>
+            ) : (
+              <span className="font-mono">{height}</span>
+            )}
+          </span>
+        ) : null}
+      </Signal>
     </Link>
   );
 }
@@ -121,7 +173,8 @@ function NodeFooter() {
           {version}
         </span>
       ) : null}
-      <ThemeToggle className="ml-auto shrink-0" />
+      {/* Its glyph on the Docs arrow's line. */}
+      <ThemeToggle className="-mr-1 ml-auto shrink-0" />
     </div>
   );
 }
@@ -143,6 +196,18 @@ function OfflineBanner() {
   );
 }
 
+function NavLink({ item, route }: { item: NavItem; route: Route }) {
+  const { to, label, icon: Icon, pages } = item;
+  return (
+    <SidebarNavItem asChild current={pages.includes(route.page)}>
+      <Link to={to}>
+        <Icon aria-hidden />
+        {label}
+      </Link>
+    </SidebarNavItem>
+  );
+}
+
 export function Shell({
   route,
   children,
@@ -153,11 +218,17 @@ export function Shell({
   return (
     <AppShell
       brand={
-        <Link to="/" className={`w-fit rounded-md ${focusRing}`}>
-          <Logo />
-        </Link>
+        // The caption beside the wordmark, behind a hairline: one line in
+        // the header-high brand row.
+        <div className="flex items-center gap-3">
+          <Link to="/" className={`w-fit shrink-0 rounded-md ${focusRing}`}>
+            <Logo className="text-[20px]" markClassName="size-7" />
+          </Link>
+          <span className="border-l pl-3 font-mono text-[0.625rem] leading-none tracking-wider whitespace-nowrap text-muted-foreground uppercase">
+            Dashboard
+          </span>
+        </div>
       }
-      brandCaption="Node dashboard"
       mobileBrand={
         <Link
           to="/"
@@ -170,29 +241,27 @@ export function Shell({
       navLabel="Dashboard"
       nav={
         <SidebarNav>
-          {NAV.map(({ to, label, icon: Icon, pages }) => (
-            <SidebarNavItem
-              key={to}
-              asChild
-              current={pages.includes(route.page)}
-            >
-              <Link to={to}>
-                <Icon aria-hidden />
-                {label}
-              </Link>
-            </SidebarNavItem>
+          {NAV_GROUPS.map(([group, items]) => (
+            <SidebarNavGroup key={group} label={group}>
+              {items.map(item => (
+                <NavLink key={item.to} item={item} route={route} />
+              ))}
+            </SidebarNavGroup>
           ))}
-          <SidebarNavItem
-            href={DOCS_HOME}
-            target="_blank"
-            rel="noopener noreferrer"
-            data-docs-link
-          >
-            <BookOpen aria-hidden />
-            Docs
-            <ArrowUpRight aria-hidden className="ml-auto size-3.5" />
-            <span className="sr-only"> (opens in a new tab)</span>
-          </SidebarNavItem>
+          <SidebarNavGroup label="Help">
+            <NavLink item={REPORT} route={route} />
+            <SidebarNavItem
+              href={DOCS_HOME}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-docs-link
+            >
+              <BookOpen aria-hidden />
+              Docs
+              <ArrowUpRight aria-hidden className="ml-auto size-3.5" />
+              <span className="sr-only"> (opens in a new tab)</span>
+            </SidebarNavItem>
+          </SidebarNavGroup>
         </SidebarNav>
       }
       sidebarFooter={<NodeFooter />}

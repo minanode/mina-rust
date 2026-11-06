@@ -1,10 +1,11 @@
 import { Layers } from "lucide-react";
 
+import { Card } from "@minanode/design-system/components/card";
 import { EmptyState } from "@minanode/design-system/patterns/empty-state";
-import { MetricCard } from "@minanode/design-system/patterns/metric-card";
 import { PageHeader } from "@minanode/design-system/patterns/page-header";
 import { PageSection } from "@minanode/design-system/patterns/page-section";
 import { Signal } from "@minanode/design-system/patterns/signal";
+import { Stat } from "@minanode/design-system/patterns/stat";
 import { formatCount, plural } from "@minanode/node-client";
 import { useNodeStatus, useTransactionPool } from "@minanode/node-client/react";
 import { PendingTransactionsTable } from "minanode-dashboard/components/pending-transactions";
@@ -25,58 +26,82 @@ export function PoolPage() {
   return (
     <>
       <PageHeader
-        eyebrow="Pools"
+        eyebrow="Chain"
         title="Transaction pool"
-        description="Transactions this node holds for the next blocks, as it heard them from its peers."
         aside={<PolledAge polled={pool} staleAfterMs={POLL_MS * 4} />}
       />
-      <div className="grid gap-4 sm:grid-cols-3">
-        <MetricCard
-          size="sm"
-          value={txs ? formatCount(txs.length) : "–"}
-          label="Pending transactions"
-          detail={
-            txs && zkapps !== null
-              ? `${plural(txs.length - zkapps, "payment or delegation", "payments and delegations")}, ${plural(zkapps, "zkApp transaction")}`
-              : "Waiting for an answer"
-          }
-        />
-        <MetricCard
-          size="sm"
-          value={txs ? formatCount(queuedSenders(txs)) : "–"}
-          label="Senders with several pending"
-          detail="Taken in nonce order"
-        />
-        <MetricCard
-          size="sm"
-          value={formatCount(snark?.jobs ?? null)}
-          label="SNARK jobs"
-          detail={
-            snark?.snarks != null
-              ? `${formatCount(snark.snarks)} with a proof on offer`
-              : "Work the next blocks need proved"
-          }
-        />
-      </div>
-      <PageSection
-        title="Pending transactions"
-        description="Highest fee first."
-      >
+      <Card className="gap-0 overflow-hidden py-0">
+        <dl className="grid divide-y sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+          <Stat
+            variant="labelled"
+            inList
+            className="px-4 py-4 sm:py-5"
+            label="Pending"
+            value={
+              txs ? (
+                <span
+                  className={
+                    txs.length === 0 ? "text-muted-foreground" : undefined
+                  }
+                >
+                  {formatCount(txs.length)}
+                </span>
+              ) : (
+                "–"
+              )
+            }
+            detail={
+              // At zero the count says it all, as Queued senders does.
+              txs && txs.length === 0
+                ? undefined
+                : txs && zkapps !== null
+                  ? `${plural(txs.length - zkapps, "payment or delegation", "payments and delegations")}, ${plural(zkapps, "zkApp")}`
+                  : "–"
+            }
+          />
+          <Stat
+            variant="labelled"
+            inList
+            className="px-4 py-4 sm:py-5"
+            label="Queued senders"
+            detail={
+              txs && queuedSenders(txs) > 0 ? "taken in nonce order" : undefined
+            }
+            value={
+              txs ? (
+                <span
+                  className={
+                    queuedSenders(txs) === 0
+                      ? "text-muted-foreground"
+                      : undefined
+                  }
+                >
+                  {formatCount(queuedSenders(txs))}
+                </span>
+              ) : (
+                "–"
+              )
+            }
+          />
+          <Stat
+            variant="labelled"
+            inList
+            className="px-4 py-4 sm:py-5"
+            label="SNARK jobs"
+            value={formatCount(snark?.jobs ?? null)}
+            detail={
+              snark?.snarks != null
+                ? `${formatCount(snark.snarks)} with a proof on offer`
+                : "–"
+            }
+          />
+        </dl>
+      </Card>
+      <PageSection title="Pending transactions">
         <Loaded polled={pool} what="the transaction pool" rows={6}>
           {list => {
             if (list.length === 0) {
-              return (
-                <EmptyState
-                  icon={<Layers />}
-                  title="The pool is empty"
-                  description={
-                    <p>
-                      Transactions show here when the node hears them, until a
-                      block includes them.
-                    </p>
-                  }
-                />
-              );
+              return <EmptyState icon={<Layers />} title="The pool is empty" />;
             }
             const statuses = poolStatuses(list);
             const index = new Map(list.map((t, i) => [t, i]));
@@ -87,11 +112,11 @@ export function PoolPage() {
                   const s = statuses[index.get(t) ?? -1];
                   if (!s || s.kind === "unknown") return "–";
                   return s.kind === "next" ? (
-                    <Signal tone="ok">Ready</Signal>
-                  ) : (
-                    <Signal tone="neutral">
-                      Waits for nonce {formatCount(s.after)}
+                    <Signal tone="ok" variant="plain">
+                      Ready
                     </Signal>
+                  ) : (
+                    <WaitsForNonce after={s.after} />
                   );
                 }}
               />
@@ -100,5 +125,24 @@ export function PoolPage() {
         </Loaded>
       </PageSection>
     </>
+  );
+}
+
+/** A pending transaction behind another nonce: two lines, as one doesn't
+ * fit the column at desktop widths; the nonce whole and smaller, as it
+ * qualifies the status. */
+export function WaitsForNonce({ after }: { after: number }) {
+  return (
+    <Signal
+      tone="neutral"
+      variant="plain"
+      className="items-start leading-snug [&>[data-slot=signal-dot]]:mt-[0.3rem]"
+    >
+      <span className="flex flex-col">
+        <span>Waits for nonce</span>
+        {/* As the Nonce column shows it. */}
+        <span className="font-mono text-xs">{after}</span>
+      </span>
+    </Signal>
   );
 }

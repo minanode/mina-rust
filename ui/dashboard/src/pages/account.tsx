@@ -21,29 +21,15 @@ export function AccountPage({ publicKey }: { publicKey: string | null }) {
       <PageHeader
         eyebrow="Chain"
         title="Accounts"
-        description="Look up an account in this node's ledger, at its best tip."
         aside={
           valid ? <PolledAge polled={account} staleAfterMs={120_000} /> : null
         }
       />
-      <AccountSearch initial={publicKey ?? ""} />
-      {publicKey === null ? (
-        <EmptyState
-          icon={<Wallet />}
-          title="Enter a public key"
-          description={
-            <p>A Mina public key starts with B62 and has 55 characters.</p>
-          }
-        />
-      ) : !valid ? (
-        <EmptyState
-          tone="caution"
-          title="That isn't a public key"
-          description={
-            <p>A Mina public key starts with B62 and has 55 characters.</p>
-          }
-        />
-      ) : (
+      <AccountSearch
+        initial={publicKey ?? ""}
+        initialInvalid={publicKey !== null && !valid}
+      />
+      {publicKey === null || !valid ? null : (
         <Loaded polled={account} what="this account" rows={5}>
           {a =>
             a === null ? (
@@ -52,8 +38,8 @@ export function AccountPage({ publicKey }: { publicKey: string | null }) {
                 title="No account for this key"
                 description={
                   <p>
-                    The ledger at the best tip has no account for it. An account
-                    is created when it first receives MINA, for a fee of 1 MINA.
+                    The ledger at the best tip has none. An account is created
+                    when it first receives MINA, for a fee of 1 MINA.
                   </p>
                 }
               />
@@ -67,22 +53,36 @@ export function AccountPage({ publicKey }: { publicKey: string | null }) {
   );
 }
 
-function AccountSearch({ initial }: { initial: string }) {
+const KEY_SHAPE = "A public key starts with B62 and has 55 characters.";
+
+function AccountSearch({
+  initial,
+  initialInvalid,
+}: {
+  initial: string;
+  /** The address's key isn't one: the field says so, as on a submit. */
+  initialInvalid: boolean;
+}) {
   const [value, setValue] = React.useState(initial);
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(
+    initialInvalid ? KEY_SHAPE : null,
+  );
   const id = React.useId();
   const errorId = React.useId();
-  React.useEffect(() => setValue(initial), [initial]);
+  React.useEffect(() => {
+    setValue(initial);
+    setError(initialInvalid ? KEY_SHAPE : null);
+  }, [initial, initialInvalid]);
   return (
     <form
       role="search"
       noValidate
-      className="flex flex-col gap-2"
+      className="flex flex-col gap-1.5 rounded-xl border bg-card p-4"
       onSubmit={event => {
         event.preventDefault();
         const key = value.trim();
         if (!PUBLIC_KEY_PATTERN.test(key)) {
-          setError("A public key starts with B62 and has 55 characters.");
+          setError(KEY_SHAPE);
           return;
         }
         setError(null);
@@ -92,7 +92,7 @@ function AccountSearch({ initial }: { initial: string }) {
       <label htmlFor={id} className="text-sm font-medium text-foreground">
         Public key
       </label>
-      <div className="flex max-w-2xl gap-2">
+      <div className="flex gap-2">
         <Input
           id={id}
           value={value}
@@ -104,7 +104,7 @@ function AccountSearch({ initial }: { initial: string }) {
           aria-invalid={error ? true : undefined}
           aria-describedby={error ? errorId : undefined}
         />
-        <Button type="submit" variant="secondary">
+        <Button type="submit">
           <Search aria-hidden />
           Look up
         </Button>

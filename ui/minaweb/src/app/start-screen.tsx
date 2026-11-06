@@ -4,7 +4,7 @@
  * check is told why here, before Start, and Start is off. */
 
 import * as React from "react";
-import { Play, TriangleAlert } from "lucide-react";
+import { CircleStop, Play, TriangleAlert } from "lucide-react";
 
 import {
   Alert,
@@ -16,6 +16,7 @@ import { Button } from "@minanode/design-system/components/button";
 import type { BootFailure } from "../boot/failures";
 import type { Role } from "../roles/role";
 import { BootSteps } from "./boot-steps";
+import { FailureLines } from "./failure-lines";
 import { StartLayout } from "./start-layout";
 
 export function StartScreen({
@@ -36,16 +37,24 @@ export function StartScreen({
   return (
     <StartLayout
       role={role}
+      lead={problem ? null : undefined}
+      noticesFirst={problem !== null}
       start={
+        // A browser that can't run the node: the button says so, as the
+        // boot screen's does once a start fails.
         <Button
           type="button"
           data-action="start-node"
-          aria-describedby={problem ? "start-cost start-problem" : "start-cost"}
+          aria-describedby={problem ? "start-problem" : "start-cost"}
           onClick={onStart}
           disabled={problem !== null}
         >
-          <Play aria-hidden />
-          Start the web node in this tab
+          {problem ? <CircleStop aria-hidden /> : <Play aria-hidden />}
+          {problem
+            ? problem.cause === "page"
+              ? "Can't start on this page"
+              : "Can't start in this browser"
+            : "Start the web node in this tab"}
         </Button>
       }
       notices={
@@ -59,12 +68,13 @@ export function StartScreen({
             <AlertTitle>{problem.title}</AlertTitle>
             <AlertDescription>
               <p className="wrap-anywhere">{problem.detail}</p>
+              <FailureLines lines={problem.lines} />
               {problem.hint ? <p>{problem.hint}</p> : null}
             </AlertDescription>
           </Alert>
         ) : null
       }
-      steps={<BootSteps boot={null} />}
+      steps={<BootSteps boot={null} blocked={problem !== null} />}
     />
   );
 }

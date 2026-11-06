@@ -1,5 +1,5 @@
 // Check the WCAG 2.2 AA colour pairs in src/tokens/contrast-pairs.json against
-// src/styles/tokens.css, for both themes. Exits 1 if any pair fails.
+// src/styles/tokens.css, for both themes and the apps' themes. Exits 1 if any pair fails.
 //
 // The parser covers what tokens.css uses: hex values, var() references and
 // color-mix(in oklab, <colour> N%, transparent), which is the colour at N%
@@ -28,6 +28,17 @@ const primitives = block("@theme static");
 const themes = {
   light: { ...primitives, ...block(":root,\\s*\\.light") },
   dark: { ...primitives, ...block("\\.dark") },
+  // The apps' dark theme: the dark theme with the app overrides on top.
+  "dark (apps)": {
+    ...primitives,
+    ...block("\\.dark"),
+    ...block(":root\\[data-app\\]\\.dark"),
+  },
+  "light (apps)": {
+    ...primitives,
+    ...block(":root,\\s*\\.light"),
+    ...block(":root\\[data-app\\]:not\\(\\.dark\\)"),
+  },
 };
 
 function hexToRgb(hex) {

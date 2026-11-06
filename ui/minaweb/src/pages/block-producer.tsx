@@ -20,17 +20,18 @@ import { Button } from "@minanode/design-system/components/button";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@minanode/design-system/components/card";
 import { Input } from "@minanode/design-system/components/input";
 import { Label } from "@minanode/design-system/components/label";
-import { Amount } from "@minanode/design-system/patterns/amount";
+import { Amount, Measure } from "@minanode/design-system/patterns/amount";
+import { PageSection } from "@minanode/design-system/patterns/page-section";
 import { ExternalLink } from "@minanode/design-system/patterns/external-link";
 import { Hash } from "@minanode/design-system/patterns/hash";
 import { InlineConfirm } from "@minanode/design-system/patterns/inline-confirm";
 import { KeyValueList } from "@minanode/design-system/patterns/key-value-list";
+import { cn } from "@minanode/design-system/lib/utils";
 import { PageHeader } from "@minanode/design-system/patterns/page-header";
 import { Signal } from "@minanode/design-system/patterns/signal";
 import {
@@ -62,7 +63,13 @@ import {
 import { restartWithKey } from "../roles/restart";
 import { VIEWER } from "../roles/role";
 import { RestartConfirm } from "./restart-confirm";
-import { NeedKey, OneRole, RoleCost, RolesGate } from "./roles-common";
+import {
+  FORM_CARD,
+  NeedKey,
+  OneRole,
+  RoleCost,
+  RolesGate,
+} from "./roles-common";
 
 /** The block producer's docs page. */
 export const PRODUCER_DOCS_URL = "https://minanode.org/docs/block-producer/";
@@ -88,22 +95,25 @@ export function BlockProducerPage() {
   const boot = useBoot();
   const { key, saved } = useKeys();
   const running = boot.role.kind === "producer";
+  // With no key the page is one small panel: it keeps to the width of the
+  // key and send forms; set up or running, it takes the full width. The
+  // header runs to the content edge either way.
+  const keyless = !running && !key && !saved;
   return (
-    <>
+    <div className="flex flex-col gap-6 lg:gap-8">
       <PageHeader
-        eyebrow="devnet role"
+        eyebrow="Devnet"
         title="Block producer"
-        description="Produces and proves blocks in this tab for the slots its key wins."
         aside={
           running ? (
-            <Signal tone="ok" pulse className="text-sm">
+            <Signal tone="ok" pulse>
               On in this tab
             </Signal>
           ) : null
         }
       />
       <RolesGate>
-        <div className="flex flex-col gap-6">
+        <div className={cn("flex flex-col gap-6", keyless && "max-w-3xl")}>
           {running ? (
             <Running />
           ) : key || saved ? (
@@ -113,7 +123,7 @@ export function BlockProducerPage() {
           )}
         </div>
       </RolesGate>
-    </>
+    </div>
   );
 }
 
@@ -150,14 +160,12 @@ function VerdictAlert({ verdict }: { verdict: StakeVerdict }) {
   switch (verdict.kind) {
     case "none":
       return (
-        <Alert variant="destructive" data-verdict="none">
+        // A new key's usual state, not a failure: caution, not red.
+        <Alert variant="caution" data-verdict="none">
           <TriangleAlert aria-hidden />
           <AlertTitle>This key will not produce blocks</AlertTitle>
           <AlertDescription>
-            <p>
-              It has no stake in this epoch's staking ledger or the next. You
-              can still start it.
-            </p>
+            <p>No stake this epoch or next.</p>
           </AlertDescription>
         </Alert>
       );
@@ -201,19 +209,31 @@ function VerdictAlert({ verdict }: { verdict: StakeVerdict }) {
   }
 }
 
-function StakeFacts({ publicKey }: { publicKey: string }) {
-  const { stake, clock, verdict } = useStakeView(publicKey);
+/** The key's stake and when delegated stake counts: stacked beside the
+ * setup form, side by side under the running producer. */
+function StakeFacts({
+  view: { stake, clock },
+  layout,
+}: {
+  view: ReturnType<typeof useStakeView>;
+  layout: "stack" | "pair";
+}) {
   const s = stake.data;
   const c = clock.data;
   const amount = (n: bigint | null | undefined) =>
     n === null || n === undefined ? (
-      "Not read yet"
+      <span className="font-sans">Not read yet</span>
     ) : (
       <Amount unit="MINA" value={formatMina(n)} />
     );
   return (
-    <div className="flex flex-col gap-4">
-      <VerdictAlert verdict={verdict} />
+    <div
+      className={
+        layout === "stack"
+          ? "flex flex-col gap-4"
+          : "grid items-start gap-6 lg:grid-cols-2"
+      }
+    >
       <KeyValueList
         title="Stake"
         rows={[
@@ -229,9 +249,19 @@ function StakeFacts({ publicKey }: { publicKey: string }) {
           {
             label: "Delegators now",
             value:
-              s?.staking.delegators != null
-                ? formatCount(s.staking.delegators)
-                : "–",
+              s?.staking.delegators != null ? (
+                <span
+                  className={
+                    s.staking.delegators === 0
+                      ? "text-muted-foreground"
+                      : undefined
+                  }
+                >
+                  {formatCount(s.staking.delegators)}
+                </span>
+              ) : (
+                "–"
+              ),
           },
           {
             label: "At the best tip",
@@ -251,27 +281,45 @@ function StakeFacts({ publicKey }: { publicKey: string }) {
         }
         rows={[
           {
-            label: "Slot",
-            value: c ? `${Math.round(c.consensus.slotMs / 1000)} s` : "–",
+            label: "Slot length",
+            value: (
+              <Measure
+                value={c ? `${Math.round(c.consensus.slotMs / 1000)} s` : null}
+              />
+            ),
           },
           {
-            label: "Slots an epoch",
+            label: "Slots per epoch",
             value: c ? formatCount(c.consensus.slotsPerEpoch) : "–",
           },
           {
             label: "Epoch length",
-            value: c ? days(c.clock.epochMs) : "–",
+            value: <Measure value={c ? days(c.clock.epochMs) : null} />,
           },
           {
-            label: `Epoch ${c ? formatCount(c.clock.epoch) : "–"} ends`,
-            value: c ? `in ${days(c.clock.epochEndMs - Date.now())}` : "–",
+            label: `Epoch ${c ? formatCount(c.clock.epoch) : "–"} ends in`,
+            value: (
+              <Measure
+                value={c ? days(c.clock.epochEndMs - Date.now()) : null}
+              />
+            ),
           },
           {
-            label: "Stake delegated today counts",
-            value: c
-              ? `from epoch ${formatCount(c.clock.delegationEpoch)} at the earliest, in about ${days(c.clock.delegationCountsFromMs - Date.now())}`
-              : "–",
+            label: "Earliest epoch for stake delegated now",
+            value: c ? formatCount(c.clock.delegationEpoch) : "–",
             tone: "brand",
+          },
+          {
+            label: `Epoch ${c ? formatCount(c.clock.delegationEpoch) : "–"} starts in`,
+            value: (
+              <Measure
+                value={
+                  c
+                    ? `~${days(c.clock.delegationCountsFromMs - Date.now())}`
+                    : null
+                }
+              />
+            ),
           },
         ]}
         footer={
@@ -297,6 +345,7 @@ function Setup() {
   // encrypted with a passphrase typed here.
   const [fallback, setFallback] = React.useState(() => !handoffSupported());
   const publicKey = key?.publicKey ?? saved?.publicKey;
+  const view = useStakeView(publicKey ?? null);
   if (!publicKey) return null;
   // Saved in this browser, not held: its passphrase unlocks it first.
   const locked = !key;
@@ -357,18 +406,16 @@ function Setup() {
 
   return (
     <div className="grid items-start gap-6 lg:grid-cols-2">
+      {/* On a phone the verdict comes before the button it qualifies. */}
+      <div className="lg:hidden">
+        <VerdictAlert verdict={view.verdict} />
+      </div>
       <div className="flex flex-col gap-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>Start the block producer</CardTitle>
-            <CardDescription>
-              The node starts again with this key as its producer.
-              {fallback && !locked
-                ? " The key crosses the restart encrypted with a passphrase you type now, in this tab only, and you type it again once the node restarts."
-                : null}
-            </CardDescription>
+        <Card className={FORM_CARD.card}>
+          <CardHeader className={FORM_CARD.header}>
+            <CardTitle>Settings</CardTitle>
           </CardHeader>
-          <CardContent className="flex flex-col gap-4">
+          <CardContent className={FORM_CARD.content}>
             <div className="flex flex-col gap-1.5">
               <span className="text-sm font-medium text-foreground">
                 Producer key
@@ -377,7 +424,10 @@ function Setup() {
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="producer-coinbase-receiver">
-                Coinbase receiver (optional)
+                Coinbase receiver{" "}
+                <span className="font-normal text-muted-foreground">
+                  optional
+                </span>
               </Label>
               <Input
                 id="producer-coinbase-receiver"
@@ -427,12 +477,15 @@ function Setup() {
                   value={passphrase}
                   onChange={e => setPassphrase(e.target.value)}
                 />
+                {/* The confirm says the node restarts with the key. */}
                 <p className="text-sm text-muted-foreground">
-                  At least {MIN_PASSPHRASE} characters.
+                  At least {MIN_PASSPHRASE} characters. Asked again after the
+                  restart.
                 </p>
               </div>
             ) : null}
-            <OneRole />
+            {/* The confirm says what stops: the note goes while it asks. */}
+            {confirming ? null : <OneRole />}
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
             {confirming ? (
               <InlineConfirm
@@ -440,11 +493,14 @@ function Setup() {
                 message={
                   switching
                     ? "This stops the SNARK worker and starts the node again as the block producer for this key."
-                    : "The node starts again as the block producer for this key. Keep the tab open: a closed tab misses its slots."
+                    : "The node restarts as the block producer for this key. Keep this tab open: a closed tab misses its slots."
                 }
                 confirmLabel={
-                  switching ? "Stop the worker and produce" : "Start producing"
+                  switching
+                    ? "Stop the worker and produce"
+                    : "Restart as block producer"
                 }
+                tone={switching ? "destructive" : "caution"}
                 busy={busy}
                 busyLabel={locked ? "Unlocking…" : "Restarting…"}
                 onConfirm={() => void start()}
@@ -466,7 +522,12 @@ function Setup() {
         </Card>
         <RoleCost kind="producer" />
       </div>
-      <StakeFacts publicKey={publicKey} />
+      <div className="flex flex-col gap-4">
+        <div className="hidden lg:block">
+          <VerdictAlert verdict={view.verdict} />
+        </div>
+        <StakeFacts view={view} layout="stack" />
+      </div>
     </div>
   );
 }
@@ -476,6 +537,7 @@ function Running() {
   const stats = useProducerStats(STATS_POLL_MS);
   const [confirming, setConfirming] = React.useState(false);
   const publicKey = boot.role.kind === "producer" ? boot.role.publicKey : null;
+  const view = useStakeView(publicKey);
   return (
     <>
       <div className="flex flex-wrap items-center gap-3">
@@ -485,6 +547,7 @@ function Running() {
             message="The node starts again without the producer. A won slot ahead is then missed."
             confirmLabel="Stop producing"
             role={VIEWER}
+            tone="destructive"
             onCancel={() => setConfirming(false)}
           />
         ) : (
@@ -499,7 +562,8 @@ function Running() {
           </Button>
         )}
       </div>
-      {publicKey ? <StakeFacts publicKey={publicKey} /> : null}
+      {/* Live state first; the stake and its clock under it. */}
+      {publicKey ? <VerdictAlert verdict={view.verdict} /> : null}
       <Loaded polled={stats} what="block production" rows={4}>
         {data =>
           data === null ? (
@@ -511,6 +575,12 @@ function Running() {
           )
         }
       </Loaded>
+      {/* Its own section, so it doesn't read as part of Won slots. */}
+      {publicKey ? (
+        <PageSection title="Delegation">
+          <StakeFacts view={view} layout="pair" />
+        </PageSection>
+      ) : null}
     </>
   );
 }

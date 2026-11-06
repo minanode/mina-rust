@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Blocks, Search } from "lucide-react";
+import { ArrowDown, Blocks, Search } from "lucide-react";
 
 import { Badge } from "@minanode/design-system/components/badge";
 import { Button } from "@minanode/design-system/components/button";
@@ -14,7 +14,7 @@ import {
   TableRow,
 } from "@minanode/design-system/components/table";
 import { EmptyState } from "@minanode/design-system/patterns/empty-state";
-import { Amount } from "@minanode/design-system/patterns/amount";
+import { Measure } from "@minanode/design-system/patterns/amount";
 import { Hash } from "@minanode/design-system/patterns/hash";
 import { ExternalLink } from "@minanode/design-system/patterns/external-link";
 import { PageHeader } from "@minanode/design-system/patterns/page-header";
@@ -26,6 +26,7 @@ import {
   formatCount,
   formatHeight,
   formatMina,
+  plural,
   receiptOutcome,
   type BlockHeader,
   type Check,
@@ -41,7 +42,10 @@ import {
   usePoll,
   useVerificationOf,
 } from "@minanode/node-client/react";
+import { useShowAll } from "minanode-dashboard/components/show-all";
 import { Loaded, PolledAge } from "minanode-dashboard/components/states";
+
+import { cn } from "@minanode/design-system/lib/utils";
 
 import { Link, navigate } from "../app/router";
 import { useStatusCatchUp } from "../lib/tip";
@@ -128,31 +132,70 @@ function proofTime(check: Check): string | null {
     : null;
 }
 
-export function ProofCell({ receipt }: { receipt: Receipt }) {
-  const outcome = OUTCOME[receiptOutcome(receipt)];
-  const time = proofTime(receipt.proof);
+export function ProofCell({
+  receipt,
+  time: showTime = true,
+}: {
+  receipt: Receipt;
+  /** The check's duration beside it, when it passed. */
+  time?: boolean;
+}) {
+  const { tone, label } = OUTCOME[receiptOutcome(receipt)];
+  const time = showTime ? proofTime(receipt.proof) : null;
   return (
     <span className="flex items-center gap-2">
-      <Signal tone={outcome.tone}>{outcome.label}</Signal>
-      {time ? (
-        <span className="font-mono text-xs text-muted-foreground tabular-nums">
-          {time}
-        </span>
-      ) : null}
+      {/* On every row: the dot and the word, without a pill. */}
+      <Signal tone={tone} variant="plain">
+        {label}
+      </Signal>
+      {time ? <Measure className="text-muted-foreground" value={time} /> : null}
     </span>
   );
 }
 
-export const linkClass =
-  "rounded-sm text-brand-text underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring";
-
-/** The fees a header lists, commands' and SNARK work's, in MINA. */
-function Fees({ h }: { h: BlockHeader }) {
+/** A column head the rows are sorted by, highest first. */
+function SortedHead({ children }: { children: React.ReactNode }) {
   return (
-    <Amount
-      unit="MINA"
-      value={h.transactionFees === null ? null : formatMina(h.transactionFees)}
-    />
+    <TableHead aria-sort="descending">
+      <span className="inline-flex items-center gap-1">
+        {children}
+        <ArrowDown aria-hidden className="size-3" />
+      </span>
+    </TableHead>
+  );
+}
+
+/** A count, muted when it is zero so the others stand out. */
+function Count({ n }: { n: number }) {
+  return (
+    <span className={n === 0 ? "text-muted-foreground" : undefined}>
+      {formatCount(n)}
+    </span>
+  );
+}
+
+/** A height or hash that opens its page: in the text colour, as a table
+ * of them would be a column of teal otherwise; teal and underlined on
+ * hover. */
+export const linkClass =
+  "rounded-sm text-foreground underline decoration-border underline-offset-4 hover:text-brand-text hover:decoration-current focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring";
+
+/** The fees a header lists, commands' and SNARK work's, in MINA: the
+ * column's head names the unit. */
+function Fees({ h }: { h: BlockHeader }) {
+  if (h.transactionFees === null) {
+    return <span className="text-muted-foreground">–</span>;
+  }
+  const fees = formatMina(h.transactionFees);
+  return (
+    <span
+      className={cn(
+        "font-mono tabular-nums",
+        h.transactionFees === 0n && "text-muted-foreground",
+      )}
+    >
+      {fees}
+    </span>
   );
 }
 
@@ -164,7 +207,7 @@ function BlockSearch() {
   return (
     <form
       role="search"
-      className="flex max-w-xl flex-col gap-1.5"
+      className="flex max-w-3xl flex-col gap-1.5 rounded-xl border bg-card p-4"
       onSubmit={event => {
         event.preventDefault();
         const trimmed = value.trim();
@@ -175,14 +218,14 @@ function BlockSearch() {
         navigate(`/blocks/${encodeURIComponent(trimmed)}`);
       }}
     >
-      <label htmlFor={id} className="sr-only">
-        Block height or state hash
+      <label htmlFor={id} className="text-sm font-medium text-foreground">
+        Height or state hash
       </label>
       <div className="flex gap-2">
         <Input
           id={id}
           value={value}
-          placeholder="Height or state hash"
+          placeholder="585170 or 3N…"
           aria-invalid={invalid || undefined}
           aria-describedby={invalid ? errorId : undefined}
           onChange={event => {
@@ -193,7 +236,7 @@ function BlockSearch() {
         />
         <Button type="submit" variant="outline">
           <Search aria-hidden />
-          Find
+          Look up
         </Button>
       </div>
       {invalid ? (
@@ -203,6 +246,76 @@ function BlockSearch() {
         </p>
       ) : null}
     </form>
+  );
+}
+
+/** Below 640 px the best chain is a list, where a table shows two of its
+ * columns: height and proof check, then time, transactions and fees. */
+function ChainList({
+  headers,
+  receipts,
+  tip,
+}: {
+  headers: readonly BlockHeader[];
+  receipts: Map<string, Receipt>;
+  tip: string | null;
+}) {
+  return (
+    <ul
+      aria-label="Best chain blocks"
+      className="flex flex-col divide-y rounded-xl border bg-card sm:hidden"
+    >
+      {headers.map(h => {
+        const receipt = receipts.get(h.stateHash);
+        return (
+          <li key={h.stateHash} className="flex flex-col gap-1 px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="flex items-center gap-2 text-sm">
+                <Link
+                  to={`/blocks/${h.stateHash}`}
+                  className={`font-mono tabular-nums ${linkClass}`}
+                >
+                  {formatHeight(h.height)}
+                </Link>
+                {h.stateHash === tip ? (
+                  <Badge font="sans">best tip</Badge>
+                ) : null}
+              </span>
+              {receipt ? (
+                <ProofCell receipt={receipt} time={false} />
+              ) : (
+                <span className="text-xs text-muted-foreground">No record</span>
+              )}
+            </div>
+            {/* Age, transactions and fees in columns, so they line up row
+                to row. */}
+            <p className="grid grid-cols-[7.25rem_minmax(0,1fr)_auto] gap-x-3 text-xs text-muted-foreground">
+              <TimeAgo at={h.timeMs} />
+              {/* Figures that aren't zero in the text colour, as in the
+                  table. */}
+              <span className={h.userCommands ? "text-foreground" : undefined}>
+                {plural(h.userCommands, "transaction")}
+              </span>
+              {h.transactionFees !== null ? (
+                <span className="text-right">
+                  fees{" "}
+                  {/* A fixed figure width keeps "fees" in place row to row. */}
+                  <span
+                    className={cn(
+                      "ml-0.5 inline-block min-w-[4.5ch] text-right font-mono tabular-nums",
+                      h.transactionFees !== 0n && "text-foreground",
+                    )}
+                  >
+                    {formatMina(h.transactionFees)}
+                  </span>{" "}
+                  MINA
+                </span>
+              ) : null}
+            </p>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -240,16 +353,51 @@ export function BestChain() {
   useStatusCatchUp(
     below === null ? (chain.data?.headers[0]?.height ?? null) : null,
   );
+  // Ten rows first, so Blocks received stays in reach; the page's others
+  // on request.
+  const { shown, toggle } = useShowAll(chain.data?.headers ?? [], "newest");
+  // Paging sits with the section's other controls, by its title.
+  const c = chain.data;
+  const oldest = c?.headers[c.headers.length - 1] ?? null;
+  const paging =
+    c && oldest ? (
+      <>
+        {below !== null ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            data-action="newest"
+            onClick={() => setBelow(null)}
+          >
+            Newest
+          </Button>
+        ) : null}
+        {c.rootHeight !== null && oldest.height > c.rootHeight ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            data-action="older"
+            onClick={() => setBelow(oldest.height - 1)}
+          >
+            Older
+          </Button>
+        ) : null}
+      </>
+    ) : null;
 
   return (
     <PageSection
       title="Best chain"
-      description={
-        chain.data?.k != null
-          ? `The blocks this node holds, newest first: the root and up to ${formatCount(chain.data.k)} after it.`
-          : "The blocks this node holds, newest first."
+      stackOnPhone
+      aside={
+        <div className="flex flex-wrap items-center justify-end gap-x-2 gap-y-2 sm:gap-x-3">
+          {paging}
+          {toggle}
+          <PolledAge polled={chain} staleAfterMs={POLL_MS * 4} />
+        </div>
       }
-      aside={<PolledAge polled={chain} staleAfterMs={POLL_MS * 4} />}
     >
       <Loaded polled={chain} what="the best chain" rows={8}>
         {c =>
@@ -287,25 +435,29 @@ export function BestChain() {
             />
           ) : (
             <div className="flex flex-col gap-3">
+              <ChainList headers={shown} receipts={receipts} tip={tip} />
               <Table
+                density="compact"
                 className="[&_td]:align-middle [&_td]:whitespace-nowrap"
-                containerProps={tableRegion("Best chain blocks")}
+                containerProps={{
+                  ...tableRegion("Best chain blocks"),
+                  className: "hidden sm:block",
+                }}
               >
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Height</TableHead>
+                    <SortedHead>Height</SortedHead>
                     <TableHead>When</TableHead>
-                    <TableHead className="text-right">Slot</TableHead>
                     <TableHead>Producer</TableHead>
                     <TableHead className="text-right">Transactions</TableHead>
                     <TableHead className="text-right">zkApp</TableHead>
                     <TableHead className="text-right">SNARK work</TableHead>
-                    <TableHead className="text-right">Fees</TableHead>
-                    <TableHead>Proof check</TableHead>
+                    <TableHead className="text-right">Fees (MINA)</TableHead>
+                    <TableHead>Proof</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {c.headers.map(h => {
+                  {shown.map(h => {
                     const receipt = receipts.get(h.stateHash);
                     return (
                       <TableRow key={h.stateHash} data-height={h.height}>
@@ -317,19 +469,22 @@ export function BestChain() {
                             {formatHeight(h.height)}
                           </Link>
                           {h.stateHash === tip ? (
-                            <Badge className="ml-2">best tip</Badge>
+                            <Badge font="sans" className="ml-2">
+                              best tip
+                            </Badge>
                           ) : null}
                           {h.height === c.rootHeight ? (
-                            <Badge variant="outline" className="ml-2">
+                            <Badge
+                              variant="outline"
+                              font="sans"
+                              className="ml-2"
+                            >
                               root
                             </Badge>
                           ) : null}
                         </TableCell>
                         <TableCell>
                           <TimeAgo at={h.timeMs} />
-                        </TableCell>
-                        <TableCell className="text-right font-mono tabular-nums">
-                          {formatCount(h.slotSinceGenesis)}
                         </TableCell>
                         <TableCell>
                           {h.producer ? (
@@ -339,13 +494,13 @@ export function BestChain() {
                           )}
                         </TableCell>
                         <TableCell className="text-right font-mono tabular-nums">
-                          {formatCount(h.userCommands)}
+                          <Count n={h.userCommands} />
                         </TableCell>
                         <TableCell className="text-right font-mono tabular-nums">
-                          {formatCount(h.zkappCommands)}
+                          <Count n={h.zkappCommands} />
                         </TableCell>
                         <TableCell className="text-right font-mono tabular-nums">
-                          {formatCount(h.snarkJobs)}
+                          <Count n={h.snarkJobs} />
                         </TableCell>
                         <TableCell className="text-right">
                           <Fees h={h} />
@@ -364,33 +519,6 @@ export function BestChain() {
                   })}
                 </TableBody>
               </Table>
-              <div className="flex flex-wrap items-center gap-2">
-                {below !== null ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    data-action="newest"
-                    onClick={() => setBelow(null)}
-                  >
-                    Newest
-                  </Button>
-                ) : null}
-                {c.rootHeight !== null &&
-                c.headers[c.headers.length - 1].height > c.rootHeight ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    data-action="older"
-                    onClick={() =>
-                      setBelow(c.headers[c.headers.length - 1].height - 1)
-                    }
-                  >
-                    Older
-                  </Button>
-                ) : null}
-              </div>
             </div>
           )
         }
@@ -410,12 +538,18 @@ function Received() {
   );
   const { status } = useNodeStatus();
   const tip = status.data?.bestTip?.hash ?? null;
+  const received = checks.data ? shownReceipts(checks.data) : [];
+  const { shown, toggle } = useShowAll(received, "highest");
 
   return (
     <PageSection
       title="Blocks received"
-      description="Highest first, with this tab's checks."
-      aside={<PolledAge polled={checks} staleAfterMs={POLL_MS * 4} />}
+      aside={
+        <div className="flex items-center gap-2 sm:gap-3">
+          {toggle}
+          <PolledAge polled={checks} staleAfterMs={POLL_MS * 4} />
+        </div>
+      }
     >
       <Loaded polled={checks} what="the block checks" rows={8}>
         {v =>
@@ -429,46 +563,58 @@ function Received() {
             />
           ) : (
             <Table
+              density="compact"
               className="[&_td]:align-middle [&_td]:whitespace-nowrap"
               containerProps={tableRegion("Blocks received")}
             >
               <TableHeader>
                 <TableRow>
-                  <TableHead>Height</TableHead>
-                  <TableHead>State hash</TableHead>
-                  <TableHead>Came by</TableHead>
-                  <TableHead>Received</TableHead>
+                  <SortedHead>Height</SortedHead>
+                  <TableHead className="hidden md:table-cell">
+                    State hash
+                  </TableHead>
+                  <TableHead className="hidden sm:table-cell">
+                    Came by
+                  </TableHead>
+                  <TableHead className="hidden sm:table-cell">
+                    Received
+                  </TableHead>
                   <TableHead>Proof</TableHead>
                   <TableHead>Chain</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {shownReceipts(v).map(r => (
+                {shown.map(r => (
                   <TableRow key={r.stateHash}>
                     <TableCell className="font-mono tabular-nums">
-                      {formatHeight(r.height)}
+                      <Link to={`/blocks/${r.stateHash}`} className={linkClass}>
+                        {formatHeight(r.height)}
+                      </Link>
+                      {/* Beside the height, as in the best chain table. */}
+                      {r.stateHash === tip ? (
+                        <Badge font="sans" className="ml-2">
+                          best tip
+                        </Badge>
+                      ) : null}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="hidden md:table-cell">
                       <Hash value={r.stateHash} label="state hash" />
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="hidden text-muted-foreground sm:table-cell">
                       {r.arrival ? (ARRIVAL[r.arrival] ?? r.arrival) : "–"}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="hidden sm:table-cell">
                       <TimeAgo at={r.receivedAtMs} />
                     </TableCell>
                     <TableCell>
                       <ProofCell receipt={r} />
                     </TableCell>
                     <TableCell>
-                      {r.stateHash === tip ? (
-                        <Badge>best tip</Badge>
-                      ) : r.applied ? (
-                        "Applied"
+                      {r.applied ? (
+                        // The normal case is quiet; an exception stands out.
+                        <span className="text-muted-foreground">Applied</span>
                       ) : (
-                        <span className="text-muted-foreground">
-                          Not applied
-                        </span>
+                        <span className="text-foreground">Not applied</span>
                       )}
                     </TableCell>
                   </TableRow>
@@ -488,13 +634,10 @@ export function BlocksPage() {
       <PageHeader
         eyebrow="Chain"
         title="Blocks"
-        description={
-          <>
-            The best chain, and the blocks this node received.{" "}
-            <ExternalLink href={NOT_CHECKED_DOCS_URL}>
-              Web node docs
-            </ExternalLink>
-          </>
+        aside={
+          <ExternalLink href={NOT_CHECKED_DOCS_URL} className="text-sm">
+            Web node docs
+          </ExternalLink>
         }
       />
       <BlockSearch />

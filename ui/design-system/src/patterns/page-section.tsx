@@ -8,12 +8,16 @@ function PageSection({
   title,
   description,
   aside,
+  stackOnPhone = false,
   children,
   className,
 }: {
   title: React.ReactNode;
   description?: React.ReactNode;
   aside?: React.ReactNode;
+  /** Below 640 px the controls take their own row under the title, for a
+   * row of several that would crowd it. */
+  stackOnPhone?: boolean;
   children: React.ReactNode;
   className?: string;
 }) {
@@ -22,12 +26,13 @@ function PageSection({
     <section
       data-slot="page-section"
       aria-labelledby={id}
-      className={cn("flex flex-col gap-4", className)}
+      // Room above a section's head, and its head close to its content.
+      className={cn("flex flex-col gap-3 pt-2", className)}
     >
-      <div className="flex flex-wrap items-end justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         {/* The text takes the row and wraps, keeping the controls beside
             it until the row is too narrow for both. */}
-        <div className="flex min-w-0 flex-[1_1_20rem] flex-col gap-1">
+        <div className="flex min-w-0 flex-[1_1_6rem] flex-col gap-1">
           <h2 id={id} className="text-heading text-foreground">
             {title}
           </h2>
@@ -37,7 +42,17 @@ function PageSection({
             </p>
           ) : null}
         </div>
-        {aside ? <div className="shrink-0">{aside}</div> : null}
+        {/* ml-auto keeps the controls on the right when they wrap. */}
+        {aside ? (
+          <div
+            className={cn(
+              "ml-auto shrink-0",
+              stackOnPhone && "max-sm:basis-full",
+            )}
+          >
+            {aside}
+          </div>
+        ) : null}
       </div>
       {children}
     </section>

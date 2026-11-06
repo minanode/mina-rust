@@ -12,9 +12,11 @@ import { cn } from "@minanode/design-system/lib/utils";
  * a footer from 1024 px, and below that a header with a menu button that
  * opens the same navigation (a disclosure: focus goes to its first link,
  * Escape closes it and returns focus). The header's end holds app status;
- * a banner sits under it; the page goes in `main`.
+ * a banner sits under it; the page goes in `main`. The sidebar's brand row
+ * is as tall as the header, so their rules meet.
  *
- * Routing is the app's: put its links in SidebarNavItem with `asChild`.
+ * Routing is the app's: put its links in SidebarNavItem with `asChild`, in
+ * SidebarNavGroups when the list is long.
  */
 
 type ShellContext = { closeMenu: () => void };
@@ -92,35 +94,37 @@ function AppShell({
         <div className="lg:grid lg:grid-cols-[15.5rem_minmax(0,1fr)]">
           <div className="hidden border-r bg-card/40 lg:block">
             <aside className="sticky top-0 flex h-dvh flex-col">
-              <div className="flex flex-col gap-1 px-5 pt-6 pb-5">
+              {/* 65 px: the header's 64 px row plus its rule, so the two
+                  rules meet. */}
+              <div className="flex h-[4.0625rem] shrink-0 flex-col justify-center gap-1.5 border-b px-6">
                 {brand}
                 {brandCaption ? (
-                  <p className="pl-[2.6rem] font-mono text-label text-muted-foreground uppercase">
+                  <p className="truncate pl-[2.6rem] font-mono text-[0.6875rem] leading-none tracking-wider text-muted-foreground uppercase">
                     {brandCaption}
                   </p>
                 ) : null}
               </div>
               <nav
                 aria-label={navLabel}
-                className="flex-1 overflow-y-auto px-3"
+                className="flex-1 overflow-y-auto px-3 py-4"
               >
                 {nav}
               </nav>
               {sidebarFooter ? (
-                <div className="border-t px-5 py-4">{sidebarFooter}</div>
+                <div className="border-t px-6 py-4">{sidebarFooter}</div>
               ) : null}
             </aside>
           </div>
 
           <div className="flex min-w-0 flex-col">
             <header className="sticky top-0 z-30 border-b bg-background/90 backdrop-blur">
-              <div className="flex h-14 items-center gap-3 px-gutter">
+              <div className="flex h-14 items-center gap-3 px-gutter lg:h-16">
                 <Button
                   ref={menuButton}
                   type="button"
                   variant="ghost"
-                  size="icon-sm"
-                  className="lg:hidden"
+                  size="icon"
+                  className="-ml-3 lg:hidden"
                   aria-expanded={menuOpen}
                   aria-controls={menuId}
                   aria-label={menuOpen ? "Close menu" : "Open menu"}
@@ -134,7 +138,10 @@ function AppShell({
                 <div className="ml-auto flex min-w-0 items-center gap-2">
                   {headerEnd}
                   {mobileHeaderEnd ? (
-                    <div className="flex lg:hidden">{mobileHeaderEnd}</div>
+                    // Its glyph, as the menu's, on the gutter.
+                    <div className="-mr-3 flex lg:hidden">
+                      {mobileHeaderEnd}
+                    </div>
                   ) : null}
                 </div>
               </div>
@@ -156,7 +163,7 @@ function AppShell({
             <main
               id="main"
               tabIndex={-1}
-              className="mx-auto flex w-full max-w-page flex-col gap-10 px-gutter pt-8 pb-16 outline-hidden"
+              className="mx-auto flex w-full max-w-page flex-col gap-6 px-gutter pt-6 pb-16 outline-hidden lg:gap-8 lg:pt-8"
             >
               {children}
             </main>
@@ -172,14 +179,44 @@ function SidebarNav({ className, ...props }: React.ComponentProps<"ul">) {
   return (
     <ul
       data-slot="sidebar-nav"
-      className={cn("flex flex-col gap-1", className)}
+      className={cn("flex flex-col gap-0.5", className)}
       {...props}
     />
   );
 }
 
+/** A labelled run of SidebarNavItems inside a SidebarNav. The label also
+ * names the group for assistive tech. */
+function SidebarNavGroup({
+  label,
+  className,
+  children,
+}: {
+  label: React.ReactNode;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  const id = React.useId();
+  return (
+    <li
+      data-slot="sidebar-nav-group"
+      className={cn("pt-4 first:pt-0", className)}
+    >
+      <p
+        id={id}
+        className="px-3 pb-1.5 text-xs font-medium text-muted-foreground"
+      >
+        {label}
+      </p>
+      <ul aria-labelledby={id} className="flex flex-col gap-0.5">
+        {children}
+      </ul>
+    </li>
+  );
+}
+
 const navItem =
-  "flex h-10 items-center gap-3 rounded-md border border-transparent px-3 text-sm font-medium text-muted-foreground transition-[color,background-color,border-color] duration-150 ease-standard hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring [&_svg]:size-4 [&_svg]:shrink-0";
+  "flex h-10 items-center gap-3 rounded-md border lg:h-9 border-transparent px-3 text-sm font-medium text-muted-foreground transition-[color,background-color,border-color] duration-150 ease-standard hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring [&_svg]:size-4 [&_svg]:shrink-0";
 const navItemCurrent =
   "border-brand-border bg-brand-subtle text-brand-text hover:bg-brand-subtle hover:text-brand-text";
 
@@ -212,4 +249,4 @@ function SidebarNavItem({
   );
 }
 
-export { AppShell, SidebarNav, SidebarNavItem, useAppShell };
+export { AppShell, SidebarNav, SidebarNavGroup, SidebarNavItem, useAppShell };

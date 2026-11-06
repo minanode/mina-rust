@@ -95,7 +95,8 @@ function Node({
   const childrenId = React.useId();
   if (!isBranch(value)) {
     return (
-      <li className="pl-5">
+      // A leaf on the branches' pitch.
+      <li className="min-h-6 py-0.5 pl-5 leading-5">
         <Key name={name} />
         <Primitive value={value} />
       </li>
@@ -120,7 +121,7 @@ function Node({
         aria-controls={open ? childrenId : undefined}
         disabled={entries.length === 0}
         onClick={() => fold.toggle(path, !open)}
-        className="group inline-flex min-h-6 py-0.5 max-w-full items-start gap-1 rounded-sm text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none"
+        className="group flex min-h-6 w-fit py-0.5 max-w-full items-start gap-1 rounded-sm text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring disabled:pointer-events-none"
       >
         <ChevronRight
           aria-hidden
@@ -160,15 +161,17 @@ function Node({
             ))}
             {shown < entries.length ? (
               <li className="py-1 pl-5">
-                <Button
+                {/* A control, not data: in the text face, in teal. */}
+                <button
                   type="button"
-                  variant="ghost"
-                  size="sm"
+                  className="rounded-sm font-sans text-xs font-medium text-brand-text hover:underline focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring"
                   onClick={() => fold.showMore(path, shown + fold.pageSize)}
                 >
-                  Show {Math.min(fold.pageSize, entries.length - shown)} more (
-                  {entries.length - shown} hidden)
-                </Button>
+                  {/* The hidden count only when it differs from the next. */}
+                  {entries.length - shown > fold.pageSize
+                    ? `Show ${fold.pageSize} more of ${entries.length - shown}`
+                    : `Show ${entries.length - shown} more`}
+                </button>
               </li>
             ) : null}
           </ul>

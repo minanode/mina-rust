@@ -109,7 +109,7 @@ test("a browser that can't run the node is told why, and Start is off", () => {
   expect(alert.textContent).toContain("WebRTC is off in this browser");
   expect(alert.textContent).toContain("Turn WebRTC on for this site.");
   const start = screen.getByRole("button", {
-    name: "Start the web node in this tab",
+    name: "Can't start in this browser",
   });
   expect((start as HTMLButtonElement).disabled).toBe(true);
   start.click();

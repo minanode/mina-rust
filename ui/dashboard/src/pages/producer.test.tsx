@@ -128,7 +128,7 @@ test("a slot scheduled the day before shows the date too", async () => {
     name: "Stages of slot 62,736, from the slot's start",
   });
   expect(within(stages).getAllByRole("listitem")[0].textContent).toBe(
-    "Scheduled2026-10-23 22:00 UTC",
+    "Scheduled2026-10-23 22:00:00 UTC",
   );
 });
 
@@ -157,13 +157,14 @@ test("expected wins from a stake past 2^53 nanomina, in whole MINA", async () =>
       },
     },
   });
+  // The table (from 640 px; a phone has a panel an epoch).
   const table = await screen.findByRole("region", {
-    name: "Expected against found",
+    name: "Expected against found table",
   });
   expect(within(table).getAllByText("56,400,000")).toHaveLength(2);
   expect(within(table).getByText("95% range: 81 to 118")).toBeTruthy();
   expect(
-    within(table).getByText("within the range; too few wins expected to judge"),
+    within(table).getByText("within the range; too few to judge"),
   ).toBeTruthy();
   // How the range is worked out is in the docs the header links, not on
   // the page.
@@ -216,11 +217,8 @@ test("a restored slot that elapsed without another attempt explains its missed o
   expect(
     within(outcomes).getByText("Missed").nextElementSibling?.textContent,
   ).toBe("1");
-  expect(
-    screen.getByText(
-      "The slot passed after a restart without another attempt; no block was made.",
-    ),
-  ).toBeTruthy();
+  // The row says it in a few words; its stages give the full reason.
+  expect(screen.getByText("Not made after a restart")).toBeTruthy();
   const slots = screen
     .getByRole("heading", { name: "Won slots" })
     .closest("section")!;

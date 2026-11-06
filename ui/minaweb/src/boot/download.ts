@@ -44,8 +44,7 @@ export function compressedSize(
   url: string,
   bytes: number,
   timing:
-    | Pick<Performance, "getEntriesByName">
-    | undefined = globalThis.performance,
+    Pick<Performance, "getEntriesByName"> | undefined = globalThis.performance,
 ): number | null {
   try {
     const href = new URL(url, globalThis.location?.href).href;
@@ -70,8 +69,10 @@ export async function downloadWasm(
     throw new BootError({
       kind: "download",
       title: "The node's download didn't start",
-      detail: `No answer for ${wasm.url}: ${error instanceof Error ? error.message : String(error)}.`,
-      hint: "Check the connection, then reload the page.",
+      detail: `No answer for its WebAssembly: ${error instanceof Error ? error.message : String(error)}.`,
+      lines: [wasm.url],
+      // The alert's button reloads.
+      hint: "Check the connection.",
     });
   }
   if (!response.ok) {

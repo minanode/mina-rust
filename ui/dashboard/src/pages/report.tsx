@@ -16,9 +16,11 @@ import {
   Card,
   CardContent,
   CardDescription,
+  CardFooter,
   CardHeader,
   CardTitle,
 } from "@minanode/design-system/components/card";
+import { Checkbox } from "@minanode/design-system/components/checkbox";
 import { Label } from "@minanode/design-system/components/label";
 import { Textarea } from "@minanode/design-system/components/textarea";
 import { CopyButton } from "@minanode/design-system/patterns/copy-button";
@@ -48,9 +50,7 @@ export function ReportPage() {
   const [includeNetworkIds, setIncludeNetworkIds] = React.useState(false);
   const [state, setState] = React.useState<State>({ kind: "idle" });
   const descriptionId = React.useId();
-  const hintId = React.useId();
   const idsId = React.useId();
-  const idsHintId = React.useId();
   const controller = React.useRef<AbortController | null>(null);
   React.useEffect(() => () => controller.current?.abort(), []);
 
@@ -86,33 +86,25 @@ export function ReportPage() {
   return (
     <>
       <PageHeader
-        eyebrow="Support"
+        eyebrow="Help"
         title="Report a problem"
-        description={
-          <>
-            A report tells others enough about this node to help: the build, the
-            machine, how the node was started, what it says about itself, and
-            its newest crash, warnings and errors. It never holds keys,
-            passwords, secret environment variables or tokens, and leaves out IP
-            addresses and peer ids unless you ask.{" "}
-            <ExternalLink href={docsUrl("bugReports")}>
-              What a report holds
-            </ExternalLink>
-          </>
+        aside={
+          // The one link to the explanation.
+          <ExternalLink href={docsUrl("bugReports")} className="text-sm">
+            What a report holds
+          </ExternalLink>
         }
       />
 
-      <Card className="gap-5 lg:max-w-3xl">
+      <Card>
         <CardHeader>
           <CardTitle>Prepare a report</CardTitle>
-          <CardDescription>
-            Nothing is collected until you press Prepare report, and nothing
-            leaves the page until you copy, download or open it. Unlike{" "}
-            <Code>mina report</Code>, it skips the check of the saved chain
-            state.
-          </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="flex flex-col gap-4">
+          <CardDescription>
+            No keys, passwords or tokens. Nothing leaves this page until you
+            copy, download or open it.
+          </CardDescription>
           <form
             className="flex flex-col gap-4"
             onSubmit={event => {
@@ -121,41 +113,42 @@ export function ReportPage() {
             }}
           >
             <div className="flex flex-col gap-2">
-              <Label htmlFor={descriptionId}>What happened?</Label>
+              <Label htmlFor={descriptionId}>
+                What happened?{" "}
+                <span className="font-normal text-muted-foreground">
+                  Optional
+                </span>
+              </Label>
               <Textarea
                 id={descriptionId}
+                className="max-w-3xl"
                 value={description}
                 onChange={event => change(setDescription)(event.target.value)}
-                aria-describedby={hintId}
                 maxLength={2000}
                 rows={3}
               />
-              <p id={hintId} className="text-sm text-muted-foreground">
-                A sentence or two; you may leave it empty.
-              </p>
             </div>
             <div className="flex items-start gap-3">
-              <input
+              <Checkbox
                 id={idsId}
-                type="checkbox"
                 checked={includeNetworkIds}
                 onChange={event =>
                   change(setIncludeNetworkIds)(event.target.checked)
                 }
-                aria-describedby={idsHintId}
-                className="mt-0.5 size-4 shrink-0 accent-primary focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring"
               />
-              <div className="flex flex-col gap-1">
-                <Label htmlFor={idsId}>
-                  Keep IP addresses and peer ids in the report
-                </Label>
-                <p id={idsHintId} className="text-sm text-muted-foreground">
-                  Left out by default.
-                </p>
-              </div>
+              <Label htmlFor={idsId} className="leading-5 text-pretty">
+                Keep IP addresses and peer IDs in the report
+              </Label>
             </div>
             <div className="flex flex-wrap items-center gap-3 pt-1">
-              <Button type="submit" disabled={preparing} aria-busy={preparing}>
+              {/* Once a report is ready, opening its issue is the page's
+                  one filled action. */}
+              <Button
+                type="submit"
+                variant={state.kind === "ready" ? "outline" : "default"}
+                disabled={preparing}
+                aria-busy={preparing}
+              >
                 <FileText aria-hidden />
                 {preparing
                   ? "Preparing…"
@@ -171,12 +164,13 @@ export function ReportPage() {
               </p>
             </div>
           </form>
-          <p className="mt-5 text-sm text-muted-foreground">
-            To have an AI agent draft the issue from this same report, run{" "}
-            <Code>mina triage</Code> on the node&apos;s machine: it stays on the
-            command line.
-          </p>
         </CardContent>
+        <CardFooter className="text-sm text-muted-foreground">
+          <p className="text-pretty">
+            For an AI-drafted issue, run <Code>mina triage</Code> on the
+            node&apos;s machine.
+          </p>
+        </CardFooter>
       </Card>
 
       {state.kind === "failed" ? <Failed error={state.error} /> : null}
@@ -188,7 +182,7 @@ export function ReportPage() {
 function Failed({ error }: { error: unknown }) {
   const kind = kindOf(error);
   return (
-    <Alert variant="destructive" className="lg:max-w-3xl">
+    <Alert variant="destructive">
       <TriangleAlert aria-hidden />
       <AlertTitle>No report</AlertTitle>
       <AlertDescription>
@@ -221,17 +215,14 @@ function download(report: Report) {
 function Prepared({ report }: { report: Report }) {
   const regionId = React.useId();
   return (
-    <section
-      aria-labelledby={regionId}
-      className="flex flex-col gap-4 lg:max-w-5xl"
-    >
+    <section aria-labelledby={regionId} className="flex flex-col gap-4">
       <div className="flex flex-col gap-1">
-        <p className="font-mono text-label text-muted-foreground uppercase">
-          Prepared{" "}
+        <p className="font-mono text-label text-muted-foreground">
+          <span className="uppercase">Prepared</span>{" "}
           {report.generatedMs !== null ? (
             <TimeAgo at={report.generatedMs} />
           ) : null}
-          {report.includeNetworkIds ? ", with network ids" : null}
+          {report.includeNetworkIds ? ", with network IDs" : null}
         </p>
         <h2 id={regionId} className="text-heading text-balance text-foreground">
           {report.title}
@@ -243,43 +234,65 @@ function Prepared({ report }: { report: Report }) {
           <AlertTitle>Too long for an issue link</AlertTitle>
           <AlertDescription>
             <p>
-              The issue opens with the report&apos;s summary. Download the
-              report and attach the file to the issue, or paste it, before you
-              submit.
+              The link holds the summary only. Attach the downloaded file, or
+              paste the report, before you submit.
             </p>
           </AlertDescription>
         </Alert>
       ) : null}
-      <div className="flex flex-wrap items-center gap-2">
-        <CopyButton
-          variant="text"
-          text={report.markdown}
-          label="the report"
-          title="Copy the report as Markdown"
-          className="border border-input"
-        >
-          Copy
-        </CopyButton>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => download(report)}
-        >
-          <Download aria-hidden />
-          Download (.md)
-        </Button>
-        <Button asChild size="sm">
-          <a href={report.issue.url} target="_blank" rel="noopener noreferrer">
-            <ExternalIcon aria-hidden />
-            Open GitHub issue
-            <span className="sr-only"> (opens in a new tab)</span>
-          </a>
-        </Button>
-        <span className="text-sm text-muted-foreground">
-          on github.com/{report.issue.repo}: nothing is posted until you submit
-          it there.
-        </span>
+      <div className="flex flex-col gap-2">
+        {/* On a phone the filled action comes first, at full width, the
+            other two side by side under it. The page's outcome: buttons at
+            full size. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <CopyButton
+            variant="text"
+            text={report.markdown}
+            label="the report"
+            title="Copy the report as Markdown"
+            className="h-10 border border-input px-4 text-sm max-sm:flex-1"
+          >
+            Copy
+          </CopyButton>
+          {/* Too long for the issue link, the file is the step that
+              matters: Download is the filled action then. */}
+          <Button
+            type="button"
+            variant={report.issue.complete ? "outline" : "default"}
+            className={
+              report.issue.complete
+                ? "max-sm:flex-1"
+                : "max-sm:order-first max-sm:w-full"
+            }
+            onClick={() => download(report)}
+          >
+            <Download aria-hidden />
+            Download (.md)
+          </Button>
+          <Button
+            asChild
+            variant={report.issue.complete ? "default" : "outline"}
+            className={
+              report.issue.complete
+                ? "max-sm:order-first max-sm:w-full"
+                : "max-sm:flex-1"
+            }
+          >
+            <a
+              href={report.issue.url}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <ExternalIcon aria-hidden />
+              Open GitHub issue
+              <span className="sr-only"> (opens in a new tab)</span>
+            </a>
+          </Button>
+        </div>
+        <p className="text-sm text-pretty text-muted-foreground">
+          The issue opens on github.com/{report.issue.repo}. Nothing is posted
+          until you submit it there.
+        </p>
       </div>
       <pre
         role="region"

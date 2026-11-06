@@ -129,7 +129,7 @@ describe("a sent payment's progress", () => {
       accountNonce: 5,
     });
     expect(next.stage).toBe("failed");
-    expect(next.detail).toContain("Amount_insufficient");
+    expect(next.detail).toBe("Included as failed: amount insufficient.");
   });
 
   test("the nonce moved on without it: dropped", () => {

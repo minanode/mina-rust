@@ -54,7 +54,9 @@ function Stat({
           {value}
         </Desc>
         {detail ? (
-          <Desc className="text-sm text-muted-foreground">{detail}</Desc>
+          <Desc className="text-sm text-balance text-muted-foreground">
+            {detail}
+          </Desc>
         ) : null}
       </div>
     );

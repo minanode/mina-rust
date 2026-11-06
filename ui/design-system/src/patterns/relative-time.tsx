@@ -13,7 +13,7 @@ function TimeAgo({ at, className }: { at: number | null; className?: string }) {
     <time
       dateTime={new Date(at).toISOString()}
       title={new Date(at).toISOString().replace("T", " ").slice(0, 19) + " UTC"}
-      className={cn("whitespace-nowrap tabular-nums", className)}
+      className={cn("font-sans whitespace-nowrap tabular-nums", className)}
     >
       {formatAge(now - at)} ago
     </time>
@@ -33,7 +33,7 @@ function TimeUntil({
   return (
     <time
       dateTime={new Date(at).toISOString()}
-      className={cn("whitespace-nowrap tabular-nums", className)}
+      className={cn("font-sans whitespace-nowrap tabular-nums", className)}
     >
       {at > now ? `in ${formatAge(at - now)}` : "now"}
     </time>
@@ -56,7 +56,7 @@ function RelativeTime({
     <time
       dateTime={new Date(at).toISOString()}
       title={new Date(at).toISOString().replace("T", " ").slice(0, 19) + " UTC"}
-      className={cn("whitespace-nowrap tabular-nums", className)}
+      className={cn("font-sans whitespace-nowrap tabular-nums", className)}
     >
       {at > now ? `in ${formatAge(at - now)}` : `${formatAge(now - at)} ago`}
     </time>

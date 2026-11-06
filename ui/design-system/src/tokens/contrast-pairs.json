@@ -11,6 +11,7 @@
     { "label": "Brand text on page", "fg": "--brand-text", "bg": ["--background"], "min": 4.5 },
     { "label": "Brand text on card", "fg": "--brand-text", "bg": ["--card"], "min": 4.5 },
     { "label": "Brand badge", "fg": "--brand-text", "bg": ["--card", "--brand@0.12"], "min": 4.5 },
+    { "label": "Current nav item", "fg": "--brand-text", "bg": ["--background", "--brand-subtle"], "min": 4.5 },
     { "label": "Muted text on hero glow (peak)", "fg": "--muted-foreground", "bg": ["--background", "--glow"], "min": 4.5 },
     { "label": "Brand badge on hero glow (peak)", "fg": "--brand-text", "bg": ["--background", "--glow", "--brand@0.12"], "min": 4.5 },
     { "label": "Hero gradient start", "fg": "--gradient-from", "bg": ["--background"], "min": 4.5 },

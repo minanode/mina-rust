@@ -104,13 +104,15 @@ export function syncView(input: SyncInput, now: number): SyncView {
     };
   }
   if (input.unreachable) {
+    // The page's banner says the node isn't answering and how old the
+    // figures are: the headline is the state's word, as the pill's.
     return {
       ...base,
       key: "NoAnswer",
       label: "No answer",
       tone: "error",
-      headline: "The node isn't answering",
-      detail: `Its last answer came ${formatAge(sampleAgeMs)} ago, at ${tip}. The figures below are from then.`,
+      headline: "No answer",
+      detail: `Last answer at ${tip}.`,
     };
   }
 

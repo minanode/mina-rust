@@ -14,6 +14,9 @@ import { TriangleAlert } from "lucide-react";
 import { Button } from "@minanode/design-system/components/button";
 import { Input } from "@minanode/design-system/components/input";
 import { Label } from "@minanode/design-system/components/label";
+import { confirmTint } from "@minanode/design-system/patterns/inline-confirm";
+import { borderlessInSurface } from "@minanode/design-system/lib/surface";
+import { cn } from "@minanode/design-system/lib/utils";
 
 import { HandoffError, handoffSupported } from "../roles/handoff";
 import { MIN_PASSPHRASE, passphraseProblem } from "../roles/keys";
@@ -26,12 +29,18 @@ export function RestartConfirm({
   message,
   confirmLabel,
   role,
+  tone = "caution",
+  className,
   onCancel,
   restart = restartWithKey,
 }: {
   label: string;
   message: React.ReactNode;
   confirmLabel: string;
+  /** `caution` for a restart; `destructive` when it stops a running role,
+   * which loses its work. */
+  tone?: "caution" | "destructive";
+  className?: string;
   /** The role the node starts with. */
   role: Role;
   onCancel: () => void;
@@ -62,9 +71,16 @@ export function RestartConfirm({
       role="group"
       aria-label={label}
       data-restart-confirm
-      className="flex flex-col gap-3 rounded-lg border border-destructive/40 bg-destructive/8 p-4"
+      data-tone={tone}
+      className={cn(
+        "flex flex-col gap-3 rounded-lg border p-4",
+        confirmTint[tone],
+        // Inside a card, a tint without a border, as InlineConfirm.
+        borderlessInSurface,
+        className,
+      )}
     >
-      <div className="text-sm text-foreground">{message}</div>
+      <div className="max-w-prose text-sm text-foreground">{message}</div>
       {atRisk ? (
         <div className="flex flex-col gap-3" data-key-at-risk>
           <p className="flex gap-2 text-sm text-foreground">
@@ -81,7 +97,7 @@ export function RestartConfirm({
             <input
               type="radio"
               name="restart-key"
-              className="mt-1"
+              className="mt-0.5 size-4 shrink-0 accent-primary"
               checked={mode === "carry"}
               onChange={() => setMode("carry")}
             />
@@ -98,7 +114,8 @@ export function RestartConfirm({
                 value={passphrase}
                 onChange={e => setPassphrase(e.target.value)}
               />
-              <p className="text-sm text-muted-foreground">
+              {/* On the caution tint: the muted text a step darker, for AA. */}
+              <p className="text-sm text-muted-on-tint">
                 At least {MIN_PASSPHRASE} characters.
               </p>
             </div>
@@ -107,7 +124,7 @@ export function RestartConfirm({
             <input
               type="radio"
               name="restart-key"
-              className="mt-1"
+              className="mt-0.5 size-4 shrink-0 accent-primary"
               checked={mode === "drop"}
               onChange={() => setMode("drop")}
               data-action="drop-key"
@@ -117,9 +134,9 @@ export function RestartConfirm({
           </label>
         </div>
       ) : fallback && key ? (
-        <p className="text-sm text-muted-foreground">
-          This tab's key is saved in this browser: unlock it on the key screen
-          after the restart.
+        <p className="text-sm text-muted-on-tint">
+          This tab's key is saved in this browser: unlock it on Your key after
+          the restart.
         </p>
       ) : null}
       {error ? (
@@ -130,8 +147,7 @@ export function RestartConfirm({
       <div className="flex flex-wrap gap-2">
         <Button
           type="button"
-          variant="destructive"
-          size="sm"
+          variant={tone === "destructive" ? "destructive" : "default"}
           disabled={!ready || busy}
           aria-busy={busy}
           onClick={async () => {
@@ -148,10 +164,11 @@ export function RestartConfirm({
         >
           {busy ? "Restarting…" : confirmLabel}
         </Button>
+        {/* Quieter than the confirm by its weight, not its colour: muted
+            text drops under AA on the caution tint in light. */}
         <Button
           type="button"
           variant="ghost"
-          size="sm"
           disabled={busy}
           onClick={onCancel}
         >

@@ -22,7 +22,7 @@ function RoleCard({
   action?: React.ReactNode;
 }) {
   return (
-    <Card data-slot="role-card" className="gap-4 px-6 py-5">
+    <Card data-slot="role-card" className="gap-4 p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           <span
@@ -38,7 +38,8 @@ function RoleCard({
       <div className="flex flex-col gap-1 text-sm text-muted-foreground">
         {children}
       </div>
-      {action}
+      {/* At the card's foot, so two cards side by side line it up. */}
+      {action ? <div className="mt-auto">{action}</div> : null}
     </Card>
   );
 }

@@ -29,6 +29,7 @@ export default function RequirementsPage() {
     >
       <DocSection id="system" title="System">
         <KeyValueList
+          variant="receipt"
           align="left"
           title="What it runs on"
           rows={claimedRows(requirements.system)}
@@ -58,11 +59,13 @@ export default function RequirementsPage() {
       <DocSection id="memory" title="Memory">
         <div className="grid gap-4">
           <KeyValueList
+            variant="receipt"
             align="left"
             title="Memory it uses"
             rows={claimedRows(requirements.memory)}
           />
           <KeyValueList
+            variant="receipt"
             align="left"
             title="Suggested machine"
             rows={claimedRows(requirements.machine)}

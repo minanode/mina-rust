@@ -102,6 +102,9 @@ export interface AttemptReport {
   tone: Tone;
   /** Why, in plain words; null when the label says it. */
   reason: string | null;
+  /** The reason in a few words, for a row of a list; null when the label
+   * and the row's figures say it. */
+  note: string | null;
   slotStartMs: number | null;
   slotEndMs: number | null;
   stages: Stage[];
@@ -136,39 +139,44 @@ export interface ReportContext {
 
 const DISCARD_REASONS: Record<
   string,
-  { outcome: Outcome; tone: Tone; reason: string }
+  { outcome: Outcome; tone: Tone; reason: string; note: string }
 > = {
   BestTipSuperior: {
     outcome: "lostTie",
     tone: "warn",
-    reason:
-      "Another block for this slot won the tie-break (with the same key, the larger hash wins). Ours was never sent.",
+    reason: "Another block won the tie-break.",
+    note: "Another block won the tie",
   },
   BestTipGlobalSlotHigher: {
     outcome: "missed",
     tone: "warn",
     reason: "Too late: the chain had moved past this slot.",
+    note: "The chain moved past the slot",
   },
   WonSlotExpired: {
     outcome: "missed",
     tone: "warn",
     reason: "The slot ended before the block was ready.",
+    note: "The slot ended first",
   },
   BestTipStakingLedgerDifferent: {
     outcome: "missed",
     tone: "warn",
     reason:
       "The chain switched to a fork with another staking ledger, where this slot isn't ours.",
+    note: "A fork took the slot",
   },
   ProofGenerationFailed: {
     outcome: "missed",
     tone: "error",
     reason: "The block's proof couldn't be made.",
+    note: "The proof failed",
   },
   ProofVerificationFailed: {
     outcome: "missed",
     tone: "error",
     reason: "The block's proof didn't verify.",
+    note: "The proof didn't verify",
   },
 };
 
@@ -233,7 +241,13 @@ function stageDetail(a: Attempt, key: StageKey): string | null {
 }
 
 /** The attempt's stages, with where it got to. */
-function stages(a: Attempt, slotStart: number | null, ended: boolean): Stage[] {
+function stages(
+  a: Attempt,
+  slotStart: number | null,
+  ended: boolean,
+  /** The slot hasn't begun: nothing after Scheduled is under way yet. */
+  waiting = false,
+): Stage[] {
   const times = STAGES.map(s => stageTime(a, s.key));
   // The last stage it reached: the stages before it happened even if their
   // time is missing.
@@ -245,7 +259,8 @@ function stages(a: Attempt, slotStart: number | null, ended: boolean): Stage[] {
     const atMs = times[i];
     let state: StageState;
     if (atMs !== null || i < reached) state = "done";
-    else if (i === reached + 1) state = ended ? "stopped" : "current";
+    else if (i === reached + 1)
+      state = ended ? "stopped" : waiting ? "pending" : "current";
     else state = ended ? "skipped" : "pending";
     return {
       key: s.key,
@@ -283,29 +298,40 @@ export function attemptReport(a: Attempt, ctx: ReportContext): AttemptReport {
   let outcome: Outcome;
   let tone: Tone;
   let reason: string | null = null;
+  let note: string | null = null;
   let interrupted = false;
   switch (a.status) {
     case "Missed":
       outcome = "missed";
       tone = "warn";
       interrupted = true;
-      reason =
-        "The slot passed after a restart without another attempt; no block was made.";
+      reason = "No attempt after the restart.";
+      note = "Not made after a restart";
       break;
     case "Canonical":
       outcome = "canonical";
-      tone = "ok";
+      // Confirmed is done; fewer blocks on top is still in progress.
+      tone =
+        a.confirmations !== null && a.confirmations < CONFIRMATIONS
+          ? "info"
+          : "ok";
+      note =
+        a.confirmations === null
+          ? null
+          : a.confirmations >= CONFIRMATIONS
+            ? `${a.confirmations} blocks on top`
+            : `${a.confirmations} of ${CONFIRMATIONS} blocks on top`;
+      // The row says how many blocks are on top.
       reason =
         a.confirmations === null
           ? "In the best chain."
-          : a.confirmations >= CONFIRMATIONS
-            ? `In the best chain with ${a.confirmations} blocks on top when last seen.`
-            : `In the best chain with ${a.confirmations === 1 ? "1 block" : `${a.confirmations} blocks`} on top when last seen; confirmed at ${CONFIRMATIONS}.`;
+          : "In the best chain when last seen.";
       break;
     case "Orphaned":
       outcome = "orphaned";
       tone = "warn";
-      reason = `Sent, then another block at its height${a.block?.height != null ? ` (#${a.block.height})` : ""} took its place in the chain.`;
+      reason = `Sent, then replaced${a.block?.height != null ? ` at #${a.block.height}` : ""}.`;
+      note = "Sent, then replaced";
       break;
     case "Committed":
       outcome = "broadcast";
@@ -313,6 +339,7 @@ export function attemptReport(a: Attempt, ctx: ReportContext): AttemptReport {
       reason = previousRun
         ? "Sent; the node restarted before it saw what became of it. The explorer shows the block at its height."
         : "Sent and our best tip; no block on top of it yet.";
+      note = previousRun ? "Fate unknown after a restart" : "Our best tip";
       break;
     case "Discarded": {
       const known = a.discardReason ? DISCARD_REASONS[a.discardReason] : null;
@@ -321,6 +348,7 @@ export function attemptReport(a: Attempt, ctx: ReportContext): AttemptReport {
       reason =
         known?.reason ??
         (a.discardReason ? `Dropped: ${a.discardReason}.` : "Dropped.");
+      note = known?.note ?? a.discardReason ?? null;
       break;
     }
     case "Scheduled":
@@ -330,16 +358,20 @@ export function attemptReport(a: Attempt, ctx: ReportContext): AttemptReport {
         interrupted = true;
         reason =
           "The node restarted before the slot came and didn't schedule it again: no block was made.";
+        note = "Not scheduled after a restart";
       } else if (previousRun) {
         outcome = "previousRun";
         tone = "neutral";
         reason = ctx.aheadSlots?.has(a.wonSlot.globalSlot ?? -1)
           ? "Scheduled before the node restarted. This run found the slot too, and schedules it when it's the next."
           : "Scheduled before the node restarted. This run hasn't found the slot among its won slots.";
+        note = ctx.aheadSlots?.has(a.wonSlot.globalSlot ?? -1)
+          ? "Found again by this run"
+          : "Not found by this run";
       } else if (slotStartMs !== null && ctx.nowMs < slotStartMs) {
         outcome = "upcoming";
         tone = "info";
-        reason = "The node waits for the slot, with the attempt ready.";
+        reason = "Waiting for the slot.";
       } else {
         outcome = "producing";
         tone = "info";
@@ -356,6 +388,7 @@ export function attemptReport(a: Attempt, ctx: ReportContext): AttemptReport {
         tone = "neutral";
         reason =
           "Begun before the node restarted, which stopped it. This run makes the block again if the slot is still its own.";
+        note = "Stopped by a restart";
       } else {
         outcome = "missed";
         tone = "warn";
@@ -363,6 +396,7 @@ export function attemptReport(a: Attempt, ctx: ReportContext): AttemptReport {
         reason = previousRun
           ? "The node restarted while making this block: it wasn't sent."
           : `The node reports it as ${a.status}.`;
+        note = previousRun ? "Stopped by a restart" : a.status;
       }
   }
 
@@ -370,7 +404,7 @@ export function attemptReport(a: Attempt, ctx: ReportContext): AttemptReport {
     outcome !== "upcoming" &&
     outcome !== "producing" &&
     outcome !== "previousRun";
-  const list = stages(a, slotStartMs, ended);
+  const list = stages(a, slotStartMs, ended, outcome === "upcoming");
   return {
     attempt: a,
     outcome,
@@ -382,6 +416,7 @@ export function attemptReport(a: Attempt, ctx: ReportContext): AttemptReport {
         : LABELS[outcome],
     tone,
     reason,
+    note,
     slotStartMs,
     slotEndMs,
     stages: list,

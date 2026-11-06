@@ -14,14 +14,17 @@ import {
   LayoutDashboard,
   ListChecks,
   Network,
+  RefreshCw,
   Send,
   Wallet,
 } from "lucide-react";
 
 import { Badge } from "@minanode/design-system/components/badge";
+import { Button } from "@minanode/design-system/components/button";
 import {
   AppShell,
   SidebarNav,
+  SidebarNavGroup,
   SidebarNavItem,
 } from "@minanode/design-system/patterns/app-shell";
 import { Banner } from "@minanode/design-system/patterns/banner";
@@ -37,9 +40,12 @@ import {
 } from "@minanode/node-client";
 import { useNodeStatus, useSyncView } from "@minanode/node-client/react";
 
+import { reloadAndStart } from "../boot/autostart";
 import { CONFIG } from "../config";
 import { VERSION } from "../version";
 import { useStatusOnNavigate } from "../lib/tip";
+import { RestartConfirm } from "../pages/restart-confirm";
+import { useKeys } from "../roles/hooks";
 import { rolesAllowed } from "../roles/role";
 import { useBoot } from "./boot-context";
 import { CarriedKey } from "./carried-key";
@@ -58,8 +64,15 @@ type NavItem = {
   also?: Route["page"][];
 };
 
-export const NAV: NavItem[] = [
+/** The node in this tab. Its group name is its pages' eyebrow. */
+export const NODE_NAV: NavItem[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard, page: "overview" },
+  { to: "/peers", label: "Peers", icon: Network, page: "peers" },
+  { to: "/start", label: "Start-up", icon: ListChecks, page: "boot" },
+];
+
+/** What the node holds of the chain. */
+export const CHAIN_NAV: NavItem[] = [
   {
     to: "/blocks",
     label: "Blocks",
@@ -69,9 +82,9 @@ export const NAV: NavItem[] = [
   },
   { to: "/accounts", label: "Accounts", icon: Wallet, page: "accounts" },
   { to: "/pool", label: "Transaction pool", icon: Layers, page: "pool" },
-  { to: "/peers", label: "Peers", icon: Network, page: "peers" },
-  { to: "/start", label: "Start-up", icon: ListChecks, page: "boot" },
 ];
+
+export const NAV: NavItem[] = [...NODE_NAV, ...CHAIN_NAV];
 
 /** Devnet only: the key, payments and the two roles. */
 export const ROLE_NAV: NavItem[] = [
@@ -85,6 +98,17 @@ export const ROLE_NAV: NavItem[] = [
     page: "producer",
   },
 ];
+
+/** The sidebar's groups, each with its pages. */
+function navGroups(): [string, NavItem[]][] {
+  return [
+    ["Node", NODE_NAV],
+    ["Chain", CHAIN_NAV],
+    ...(rolesAllowed(CONFIG.network)
+      ? [["Devnet", ROLE_NAV] as [string, NavItem[]]]
+      : []),
+  ];
+}
 
 const focusRing =
   "focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring";
@@ -139,17 +163,28 @@ export function StatusChip() {
       title="Node status: go to the overview"
       data-status-chip={view.stale ? "stale" : view.key}
     >
-      <Signal tone={chip.tone} pulse={chip.tone === "info"}>
-        {chip.label}
-        {chip.height ? (
-          <span className="text-foreground/80">{chip.height}</span>
-        ) : null}
-      </Signal>
       {chip.note ? (
-        <span className="hidden font-mono text-xs text-muted-foreground sm:inline">
+        // Before the pill, right-aligned: the pill stays on the content's
+        // right edge as the age's width changes.
+        <span className="hidden text-right font-sans text-xs text-muted-foreground tabular-nums sm:inline">
           {chip.note}
         </span>
       ) : null}
+      <Signal tone={chip.tone} pulse={chip.tone === "info"}>
+        {chip.label}
+        {chip.height ? (
+          // "to" is a word; only the height is a figure.
+          <span className="text-foreground/80">
+            {chip.height.startsWith("to ") ? (
+              <>
+                to <span className="font-mono">{chip.height.slice(3)}</span>
+              </>
+            ) : (
+              <span className="font-mono">{chip.height}</span>
+            )}
+          </span>
+        ) : null}
+      </Signal>
     </Link>
   );
 }
@@ -169,23 +204,74 @@ function NodeFooter() {
           {version}
         </span>
       ) : null}
-      <ThemeToggle className="ml-auto shrink-0" />
+      {/* Its glyph on the Docs arrow's line. */}
+      <ThemeToggle className="-mr-1 ml-auto shrink-0" />
     </div>
   );
 }
 
-function OfflineBanner() {
+export function OfflineBanner() {
   const now = useNow();
   const view = useSyncView(now);
   const { status } = useNodeStatus();
+  const { key } = useKeys();
+  const { role } = useBoot();
+  const [confirming, setConfirming] = React.useState(false);
   if (view.key !== "NoAnswer") return null;
   return (
-    <Banner title="The web node isn't answering.">
-      {status.updatedAt !== null
-        ? `Figures on this page are from ${formatAge(now - status.updatedAt)} ago.`
-        : "Nothing has loaded yet."}{" "}
-      Its thread may be busy, or it stopped. Reloading the page starts it again.
-    </Banner>
+    <>
+      <Banner
+        title="The web node isn't answering."
+        action={
+          confirming ? null : (
+            // Reloading starts the node again. A reload empties the tab's
+            // memory, so with a key held it is a restart: its confirm
+            // keeps the key and the role across it.
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => (key ? setConfirming(true) : reloadAndStart())}
+            >
+              <RefreshCw aria-hidden />
+              Reload the page
+            </Button>
+          )
+        }
+      >
+        {/* The page's header says how old its figures are. */}
+        {status.updatedAt === null ? "Nothing has loaded yet." : null}
+      </Banner>
+      {confirming ? (
+        <div className="border-b px-gutter py-3">
+          <RestartConfirm
+            className="mx-auto max-w-page"
+            label="Confirm reloading the page"
+            message="The page reloads and the node starts again."
+            confirmLabel="Reload the page"
+            role={role}
+            onCancel={() => setConfirming(false)}
+          />
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/** The running role's dot in the nav: grey while the node doesn't answer,
+ * as nothing on the page is live then. */
+function RoleDot() {
+  const now = useNow();
+  const view = useSyncView(now);
+  return (
+    <span
+      className={
+        view.key === "NoAnswer"
+          ? "ml-auto size-2 rounded-full bg-muted-foreground/60"
+          : "ml-auto size-2 rounded-full bg-status-live"
+      }
+      aria-label="on in this tab"
+    />
   );
 }
 
@@ -205,11 +291,17 @@ export function Shell({
   return (
     <AppShell
       brand={
-        <Link to="/" className={`w-fit rounded-md ${focusRing}`}>
-          <Logo />
-        </Link>
+        // The caption beside the wordmark, behind a hairline: one line in
+        // the header-high brand row.
+        <div className="flex items-center gap-3">
+          <Link to="/" className={`w-fit shrink-0 rounded-md ${focusRing}`}>
+            <Logo className="text-[20px]" markClassName="size-7" />
+          </Link>
+          <span className="border-l pl-3 font-mono text-[0.625rem] leading-none tracking-wider whitespace-nowrap text-muted-foreground uppercase">
+            Web node
+          </span>
+        </div>
       }
-      brandCaption="Web node"
       mobileBrand={
         <Link
           to="/"
@@ -222,36 +314,35 @@ export function Shell({
       navLabel="Web node"
       nav={
         <SidebarNav>
-          {[...NAV, ...(rolesAllowed(CONFIG.network) ? ROLE_NAV : [])].map(
-            ({ to, label, icon: Icon, page, also }) => (
-              <SidebarNavItem
-                key={to}
-                asChild
-                current={route.page === page || !!also?.includes(route.page)}
-              >
-                <Link to={to}>
-                  <Icon aria-hidden />
-                  {label}
-                  {roleOf(page) === role ? (
-                    <span
-                      className="ml-auto size-2 rounded-full bg-status-live"
-                      aria-label="on in this tab"
-                    />
-                  ) : null}
-                </Link>
-              </SidebarNavItem>
-            ),
-          )}
-          <SidebarNavItem
-            href={DOCS_HOME}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <BookOpen aria-hidden />
-            Docs
-            <ArrowUpRight aria-hidden className="ml-auto size-3.5" />
-            <span className="sr-only"> (opens in a new tab)</span>
-          </SidebarNavItem>
+          {navGroups().map(([group, items]) => (
+            <SidebarNavGroup key={group} label={group}>
+              {items.map(({ to, label, icon: Icon, page, also }) => (
+                <SidebarNavItem
+                  key={to}
+                  asChild
+                  current={route.page === page || !!also?.includes(route.page)}
+                >
+                  <Link to={to}>
+                    <Icon aria-hidden />
+                    {label}
+                    {roleOf(page) === role ? <RoleDot /> : null}
+                  </Link>
+                </SidebarNavItem>
+              ))}
+            </SidebarNavGroup>
+          ))}
+          <SidebarNavGroup label="Help">
+            <SidebarNavItem
+              href={DOCS_HOME}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              <BookOpen aria-hidden />
+              Docs
+              <ArrowUpRight aria-hidden className="ml-auto size-3.5" />
+              <span className="sr-only"> (opens in a new tab)</span>
+            </SidebarNavItem>
+          </SidebarNavGroup>
         </SidebarNav>
       }
       sidebarFooter={<NodeFooter />}

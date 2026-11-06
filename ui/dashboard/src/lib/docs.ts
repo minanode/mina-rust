@@ -32,10 +32,12 @@ export function docsUrl(page: keyof typeof DOCS_PAGES): string {
 export const EXAMPLE_QUERY =
   "{ syncStatus bestChain(maxLength: 1) { stateHash protocolState { consensusState { blockHeight } } } }";
 
-/** The curl command that sends `query` to `endpoint`. */
+/** The curl command that sends `query` to `endpoint`. The endpoint on a
+ * line of its own, so on a phone it fits its line whole. */
 export function curlCommand(endpoint: string, query: string): string {
   return [
-    `curl -s ${endpoint} \\`,
+    "curl -s \\",
+    `  ${endpoint} \\`,
     "  -H 'content-type: application/json' \\",
     `  -d '${JSON.stringify({ query })}'`,
   ].join("\n");

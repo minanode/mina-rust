@@ -17,7 +17,9 @@ states. That page's source is `src/showcase/`.
    system's files.
 4. Theme: put `class="dark"` on `<html>` (dark is the default) and run
    `themeInitScript` from `lib/theme` in the head, so a stored light choice
-   applies before paint.
+   applies before paint. An app (the dashboard, the web node page) also puts
+   `data-app` on `<html>`: raised dark cards, firmer borders and softer text,
+   firmer light-theme borders, and flat primary buttons.
 5. Import by path: `@minanode/design-system/components/button`,
    `@minanode/design-system/patterns/page-header`,
    `@minanode/design-system/lib/time`.
@@ -32,8 +34,9 @@ shadcn/ui (new-york) components, restyled through the tokens. Their props are
 shadcn's. Add more with `npx shadcn@latest add <name>` in this directory, then
 replace any `dark:` utilities they bring with tokens.
 
-- **Button**: `variant` default, secondary, outline, ghost, link or destructive;
-  `size` sm, default, lg, icon or icon-sm; `asChild` styles a link.
+- **Button**: `variant` default, secondary, outline, ghost, link, destructive or
+  destructive-outline; `size` sm, default, lg, icon or icon-sm; `asChild` styles
+  a link. The default variant glows on the site and is flat in an app.
   `<Button variant="outline" size="sm">Refresh</Button>`
 - **Badge**: `variant` default, solid, secondary, outline or destructive; `font`
   sans or mono. `<Badge variant="default">devnet</Badge>`
@@ -74,7 +77,8 @@ page goes in `main#main`. Props: `brand`, `brandCaption`, `mobileBrand`,
 `navLabel`, `nav`, `sidebarFooter`, `headerEnd`, `mobileHeaderEnd` and `banner`.
 Routing stays the app's. `SidebarNavItem` takes `current` (sets
 `aria-current="page"` and the brand fill) and `asChild` (styles your router's
-link); a click closes the mobile menu.
+link); a click closes the mobile menu. `SidebarNavGroup` takes a `label` and
+items, for a long list.
 
 ```tsx
 <AppShell
@@ -104,8 +108,9 @@ page must know. It is announced once (`role="alert"`). Props: `title`,
 `caution`.
 
 **PageHeader** (`page-header`): the top of a page. Props: `eyebrow`, `title`
-(the page's h1), `description`, `aside` (data age, buttons) and `titleId`
-(default `page-title`; focus it after an in-app navigation).
+(the page's h1, at `text-page`), `description` (one line), `aside` (data age,
+buttons, on the title's row) and `titleId` (default `page-title`; focus it after
+an in-app navigation).
 `<PageHeader eyebrow="Roles" title="SNARK worker" aside={<DataAge … />} />`
 
 **PageSection** (`page-section`): a titled part of a page, named by its h2.
@@ -130,8 +135,9 @@ its way. Props: `rows` (default 3) and `label` (read to screen readers).
 
 **Signal** (`signal`): the live state of something running. `tone` is ok, info,
 warn, error or neutral; `pulse` is only for something in progress. Always give
-it words: `<Signal tone="info" pulse>Catching up</Signal>`. `SignalDot` is the
-dot alone, and `toneFill` maps a tone to its solid fill class, for dots and bars
+it words: `<Signal tone="info" pulse>Catching up</Signal>`. `variant="plain"`
+drops the pill, for a status on every row of a table. `SignalDot` is the dot
+alone, and `toneFill` maps a tone to its solid fill class, for dots and bars
 that carry the tone next to words.
 
 **StatusBadge** (`status-badge`): the site's evidence status. `status` is live,
@@ -180,9 +186,13 @@ step (`{ label, time?, detail?, state, tone? }`) has a dot for its `state`:
 `skipped` or `pending` (hollow). The states that aren't done are also said in
 words.
 
-**KeyValueList** (`key-value-list`): a receipt of label and value rows in mono.
-Props: `title`, `aside`, `rows` (`{ label, value, tone?: "brand" }[]`) and
-`footer`.
+**KeyValueList** (`key-value-list`): a panel of label and value rows. Props:
+`variant`, `title`, `aside`, `rows`
+(`{ label, value, tone?: "brand", prose?, wide? }[]`) and `footer`. The `panel`
+variant (default, the apps) sets labels in Inter and values in mono, with a rule
+between rows and label and value on one row; `prose` sets a value in words in
+Inter, and `wide` puts a long value under its label. The `receipt` variant (the
+site) is all mono and stacks below 640 px.
 
 **RoleCard** (`role-card`): something the app's subject does, as a card. Props:
 `icon`, `title`, `status` (a Signal, or a Skeleton while loading), `children` (a
@@ -242,7 +252,8 @@ Tabs instead for panels of different content. Props: `label`, `options`
 
 **EmptyState** (`empty-state`): what a panel says when it has nothing to show.
 Props: `icon`, `title`, `description`, `action`, and `tone` default, caution or
-destructive. On its own it is a dashed box; inside a Card it is flat.
+destructive. On its own it is a bordered panel with the icon beside the text;
+inside a Card it is flat.
 
 ### Links and brand
 
@@ -272,8 +283,8 @@ and remembers the choice (`lib/theme`).
 
 ## Checks
 
-From `ui/`: `npm run check:contrast` (AA pairs in both themes, from
-`tokens.css`), `npm run typecheck`, and `npm test`. This package's Vitest tests
-(jsdom, Testing Library) cover JsonTree, TextLink, InlineConfirm, CopyButton,
-SegmentedControl, DataAge, RelativeTime, Stat, the surface rule and the AppShell
-menu.
+From `ui/`: `npm run check:contrast` (AA pairs in both themes and the apps' dark
+theme, from `tokens.css`), `npm run typecheck`, and `npm test`. This package's
+Vitest tests (jsdom, Testing Library) cover JsonTree, TextLink, InlineConfirm,
+CopyButton, SegmentedControl, DataAge, RelativeTime, Stat, the surface rule and
+the AppShell menu.

@@ -17,17 +17,14 @@ export const RAW_SOURCES = [
   {
     path: "/status",
     label: "Node status",
-    about: "Sync, best tip and root, peers, pools, roles and resources.",
   },
   {
     path: "/build_env",
     label: "Build",
-    about: "Version, commit, cargo features and the compiler.",
   },
 ] as const satisfies readonly {
   path: RawRoute;
   label: string;
-  about: string;
 }[];
 
 export function NodeStatusPage() {
@@ -42,13 +39,6 @@ export function NodeStatusPage() {
       <PageHeader
         eyebrow="Node"
         title="Status"
-        description={
-          <>
-            The node&apos;s own answer to{" "}
-            <code className="font-mono text-foreground">GET {source.path}</code>
-            , as it sends it. {source.about}
-          </>
-        }
         aside={
           <>
             <PolledAge
@@ -74,7 +64,7 @@ export function NodeStatusPage() {
           label="Which answer"
           options={RAW_SOURCES.map(item => ({
             value: item.path,
-            label: item.path,
+            label: <span className="font-mono">{item.path}</span>,
           }))}
           value={source.path}
           onValueChange={setPath}
@@ -85,7 +75,13 @@ export function NodeStatusPage() {
       </div>
       <Loaded polled={raw} what={source.path} rows={8}>
         {value => (
-          <JsonTree key={source.path} value={value} label={source.label} />
+          <JsonTree
+            key={source.path}
+            value={value}
+            label={source.label}
+            openDepth={1}
+            pageSize={10}
+          />
         )}
       </Loaded>
     </>

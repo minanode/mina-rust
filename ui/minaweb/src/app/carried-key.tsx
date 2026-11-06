@@ -33,7 +33,7 @@ export function CarriedKey() {
   const [confirmForget, setConfirmForget] = React.useState(false);
   if (!record || key?.publicKey === record.publicKey) return null;
   return (
-    <Card className="mb-6 gap-4 p-6" data-carried-key>
+    <Card className="mb-6 gap-4 p-4" data-carried-key>
       <div className="flex items-center gap-2">
         <KeyRound aria-hidden className="size-4 text-brand-text" />
         <h2 className="text-base font-semibold text-foreground">

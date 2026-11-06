@@ -23,10 +23,11 @@ export function ProducerUnlock({
   onSkip: () => void;
 }) {
   const [passphrase, setPassphrase] = React.useState("");
+  const [missing, setMissing] = React.useState(false);
   const unlock = boot.unlock;
   if (!unlock) return null;
   return (
-    <Card className="gap-4 p-6" data-unlock>
+    <Card className="gap-4 p-4" data-unlock>
       <div className="flex items-center gap-2">
         <KeyRound aria-hidden className="size-4 text-brand-text" />
         <h2 className="text-base font-semibold text-foreground">
@@ -34,15 +35,20 @@ export function ProducerUnlock({
         </h2>
       </div>
       <p className="text-sm text-pretty text-muted-foreground">
-        The node starts again as the block producer for this key. Its private
-        key crossed the restart encrypted with your passphrase, in this tab
-        only. Type the passphrase to start producing.
+        Type the passphrase you set before the restart.
       </p>
       <Hash value={unlock.publicKey} label="producer public key" />
       <form
         className="flex flex-col gap-3"
         onSubmit={event => {
           event.preventDefault();
+          // The button stays the page's teal action while the field is
+          // empty: an empty submit says what is missing instead.
+          if (!passphrase) {
+            setMissing(true);
+            return;
+          }
+          setMissing(false);
           onUnlock(passphrase);
           setPassphrase("");
         }}
@@ -54,22 +60,38 @@ export function ProducerUnlock({
             type="password"
             autoComplete="current-password"
             value={passphrase}
-            onChange={event => setPassphrase(event.target.value)}
-            aria-invalid={unlock.error ? true : undefined}
-            aria-describedby={unlock.error ? "unlock-error" : undefined}
+            onChange={event => {
+              setPassphrase(event.target.value);
+              setMissing(false);
+            }}
+            aria-invalid={unlock.error || missing ? true : undefined}
+            aria-describedby={
+              unlock.error || missing ? "unlock-error" : undefined
+            }
             autoFocus
           />
-          {unlock.error ? (
+          {unlock.error || missing ? (
             <p id="unlock-error" className="text-sm text-destructive">
-              {unlock.error}
+              {missing ? "Type the passphrase." : unlock.error}
             </p>
           ) : null}
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button type="submit" disabled={unlock.busy || !passphrase}>
+        {/* On a phone both at the full width, as the page's buttons below
+            the card are. */}
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button
+            type="submit"
+            disabled={unlock.busy}
+            className="max-sm:w-full"
+          >
             {unlock.busy ? "Unlocking…" : "Unlock and produce"}
           </Button>
-          <Button type="button" variant="outline" onClick={onSkip}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onSkip}
+            className="max-sm:w-full"
+          >
             Start without producing
           </Button>
         </div>

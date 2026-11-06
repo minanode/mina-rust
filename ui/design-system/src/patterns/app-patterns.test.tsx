@@ -143,7 +143,10 @@ test("DataAge: loading, fresh, stale, paused", () => {
       onRefresh={() => {}}
     />,
   );
-  expect(screen.getByText(/^Updated \d+ s ago$/)).toBeTruthy();
+  // "Updated" is its own span: phones show the age alone.
+  expect(document.querySelector("[data-slot=data-age] p")?.textContent).toMatch(
+    /^Updated \d+ s ago$/,
+  );
   expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
   rerender(<DataAge updatedAt={now - 125_000} staleAfterMs={20_000} />);
   expect(screen.getByText(/^Data from 2 min \d+ s ago$/)).toBeTruthy();

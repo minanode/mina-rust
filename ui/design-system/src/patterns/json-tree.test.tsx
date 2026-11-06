@@ -121,16 +121,14 @@ test("a large array shows a page at a time", () => {
       name: /^\d+:\s*\{1 key\}\s*object, 1 key/,
     }),
   ).toHaveLength(50);
-  fireEvent.click(
-    screen.getByRole("button", { name: /Show 50 more \(950 hidden\)/ }),
-  );
+  fireEvent.click(screen.getByRole("button", { name: /Show 50 more of 950/ }));
   expect(
     screen.getAllByRole("button", {
       name: /^\d+:\s*\{1 key\}\s*object, 1 key/,
     }),
   ).toHaveLength(100);
   expect(
-    screen.getByRole("button", { name: /Show 50 more \(900 hidden\)/ }),
+    screen.getByRole("button", { name: /Show 50 more of 900/ }),
   ).toBeTruthy();
 });
 

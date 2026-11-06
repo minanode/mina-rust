@@ -6,9 +6,9 @@ import { cn } from "@minanode/design-system/lib/utils";
 /**
  * What a panel says when it has nothing to show: no data yet, a feature
  * that's off, or a source that doesn't answer. An icon, a title, a sentence
- * on what to do, and an optional action. On its own it is a dashed box;
- * inside a Card or a KeyValueList it is flat, with no box of its own
- * (`lib/surface`).
+ * on what to do, and an optional action, beside the icon. On its own it is
+ * a bordered panel; inside a Card or a KeyValueList it is flat, with no box
+ * of its own (`lib/surface`).
  */
 function EmptyState({
   icon,
@@ -25,12 +25,16 @@ function EmptyState({
   action?: React.ReactNode;
   tone?: "default" | "caution" | "destructive";
 }) {
+  // With an icon: the icon beside the title. From 640 px the text and the
+  // action keep to the title's column; on a phone they take the full width.
+  const below = icon ? "col-span-2 sm:col-span-1 sm:col-start-2" : undefined;
   return (
     <div
       data-slot="empty-state"
       className={cn(
-        "flex flex-col items-start gap-3 rounded-xl border border-dashed px-6 py-8",
-        tone === "default" && "bg-card/50",
+        "grid items-start gap-x-4 gap-y-1 rounded-xl border p-4",
+        icon ? "grid-cols-[auto_minmax(0,1fr)]" : "grid-cols-1",
+        tone === "default" && "bg-card",
         tone === "caution" && "border-status-pending/40 bg-status-pending/5",
         tone === "destructive" && "border-destructive/40 bg-destructive/5",
         flatInSurface,
@@ -42,7 +46,7 @@ function EmptyState({
         <span
           aria-hidden
           className={cn(
-            "inline-flex size-10 items-center justify-center rounded-lg border bg-background [&_svg]:size-5",
+            "inline-flex size-9 items-center justify-center rounded-lg border bg-background sm:row-span-2 [&_svg]:size-[1.125rem]",
             tone === "default" && "text-brand-text",
             tone === "caution" && "text-status-pending",
             tone === "destructive" && "text-destructive",
@@ -51,15 +55,28 @@ function EmptyState({
           {icon}
         </span>
       ) : null}
-      <div className="flex max-w-prose flex-col gap-1.5">
-        <p className="font-semibold text-foreground">{title}</p>
-        {description ? (
-          <div className="text-sm leading-relaxed text-muted-foreground">
-            {description}
-          </div>
-        ) : null}
-      </div>
-      {action ? <div className="pt-1">{action}</div> : null}
+      <p
+        className={cn(
+          "min-w-0 font-semibold text-balance text-foreground",
+          icon && "self-center sm:self-start sm:pt-1.5",
+        )}
+      >
+        {title}
+      </p>
+      {description ? (
+        <div
+          className={cn(
+            "max-w-prose text-sm leading-relaxed text-pretty text-muted-foreground",
+            icon && "pt-2 sm:pt-0",
+            below,
+          )}
+        >
+          {description}
+        </div>
+      ) : null}
+      {action ? (
+        <div className={cn("flex flex-wrap gap-2 pt-3", below)}>{action}</div>
+      ) : null}
     </div>
   );
 }

@@ -8,13 +8,14 @@ import {
 } from "@minanode/design-system/components/alert";
 import { Card } from "@minanode/design-system/components/card";
 import { Skeleton } from "@minanode/design-system/components/skeleton";
+import { Measure } from "@minanode/design-system/patterns/amount";
 import { ExternalLink } from "@minanode/design-system/patterns/external-link";
 import { Hash } from "@minanode/design-system/patterns/hash";
 import { KeyValueList } from "@minanode/design-system/patterns/key-value-list";
 import { PageHeader } from "@minanode/design-system/patterns/page-header";
 import { PageSection } from "@minanode/design-system/patterns/page-section";
 import { RoleCard } from "@minanode/design-system/patterns/role-card";
-import { Signal } from "@minanode/design-system/patterns/signal";
+import { Signal, SignalDot } from "@minanode/design-system/patterns/signal";
 import { Stat } from "@minanode/design-system/patterns/stat";
 import { RelativeTime } from "@minanode/design-system/patterns/relative-time";
 import { TextLink } from "@minanode/design-system/patterns/text-link";
@@ -45,6 +46,7 @@ import {
 } from "@minanode/node-client/react";
 
 import { Link } from "../app/router";
+import { Count } from "../components/cells";
 import { PolledAge } from "../components/states";
 import { docsUrl } from "../lib/docs";
 
@@ -58,62 +60,61 @@ export function OverviewPage() {
   return (
     <>
       <PageHeader
-        eyebrow={s?.network ? `${s.network} node` : "Node"}
+        eyebrow="Node"
         title="Overview"
-        description={
+        aside={
           <>
-            How this node follows the chain, who it talks to, and what it does
-            for the network.{" "}
-            <ExternalLink href={docsUrl("overview")}>
+            <PolledAge polled={status} staleAfterMs={STATUS_POLL_MS * 4} />
+            {/* The one link to the explanation. */}
+            <ExternalLink href={docsUrl("overview")} className="text-sm">
               Dashboard docs
             </ExternalLink>
           </>
         }
-        aside={<PolledAge polled={status} staleAfterMs={STATUS_POLL_MS * 4} />}
       />
 
       <CrashNotice />
 
-      <Card className="gap-0 overflow-hidden py-0">
-        <div className="flex flex-col gap-4 p-6 md:flex-row md:items-start md:justify-between">
-          <div className="flex min-w-0 flex-col gap-2">
-            <p className="font-mono text-label text-brand-text uppercase">
-              Sync
-            </p>
-            {status.loading ? (
-              <div role="status" className="flex flex-col gap-2">
-                <span className="sr-only">Loading the node's status…</span>
-                <Skeleton className="h-9 w-72" />
-                <Skeleton className="h-5 w-96 max-w-full" />
-              </div>
-            ) : (
-              <>
-                <h2
-                  id="sync-heading"
-                  className="text-title text-balance text-foreground"
-                >
-                  {view.headline}
-                </h2>
-                <p className="text-pretty text-muted-foreground">
+      <Card className="overflow-hidden">
+        <div className="flex min-w-0 flex-col gap-1.5 px-4 py-4">
+          {status.loading ? (
+            <div role="status" className="flex flex-col gap-2">
+              <span className="sr-only">Loading the node's status…</span>
+              <Skeleton className="h-6 w-56" />
+              <Skeleton className="h-5 w-96 max-w-full" />
+            </div>
+          ) : (
+            <>
+              <h2
+                id="sync-heading"
+                className="flex items-center gap-2.5 text-heading text-balance text-foreground"
+                data-sync={view.key}
+              >
+                <SignalDot
+                  tone={view.tone}
+                  pulse={view.tone === "info"}
+                  className="size-2.5 [&>span]:size-2.5"
+                />
+                {/* The best tip has the height; the header's word. */}
+                {view.key === "Synced" ? view.label : view.headline}
+              </h2>
+              {/* In sync, the figures below say what the sentence would. */}
+              {view.key === "Synced" && view.tone === "ok" ? null : (
+                <p className="text-sm text-pretty text-muted-foreground">
                   {view.detail}
                 </p>
-              </>
-            )}
-            {restore.data ? <RestoreLine restore={restore.data} /> : null}
-          </div>
-          <Signal
-            tone={view.tone}
-            pulse={view.tone === "info"}
-            className="text-sm"
-          >
-            {view.label}
-          </Signal>
+              )}
+            </>
+          )}
+          {restore.data && restoreIsNews(restore.data, now) ? (
+            <RestoreLine restore={restore.data} />
+          ) : null}
         </div>
-        <dl className="grid grid-cols-2 border-t xl:grid-cols-4 [&>div:nth-child(-n+2)]:border-b [&>div:nth-child(odd)]:border-r xl:[&>div]:border-b-0 xl:[&>div:not(:last-child)]:border-r">
+        <dl className="grid grid-cols-2 border-t xl:grid-cols-4 max-xl:[&>div:nth-child(-n+2)]:border-b max-xl:[&>div:nth-child(odd)]:border-r xl:[&>div:not(:last-child)]:border-r">
           <Stat
             variant="labelled"
             inList
-            className="px-4 py-5 sm:px-6"
+            className="px-4 py-4 sm:py-5"
             label="Best tip"
             value={s?.bestTip ? formatHeight(s.bestTip.height) : "–"}
             detail={
@@ -131,7 +132,7 @@ export function OverviewPage() {
           <Stat
             variant="labelled"
             inList
-            className="px-4 py-5 sm:px-6"
+            className="px-4 py-4 sm:py-5"
             label="Highest peer tip"
             value={formatHeight(peers?.highestTip ?? null)}
             detail={s ? peerNote(view.peerDelta) : "–"}
@@ -139,24 +140,26 @@ export function OverviewPage() {
           <Stat
             variant="labelled"
             inList
-            className="px-4 py-5 sm:px-6"
+            className="px-4 py-4 sm:py-5"
             label="Peers"
             value={peers ? formatCount(peers.connected) : "–"}
             detail={
               peers
-                ? `connected${peers.connecting ? `, ${formatCount(peers.connecting)} connecting` : ""}; ${formatCount(peers.disconnected)} more known`
+                ? `connected${peers.connecting ? `, ${formatCount(peers.connecting)} connecting` : ""}, ${formatCount(peers.disconnected)}\u00a0more\u00a0known`
                 : "–"
             }
           />
           <Stat
             variant="labelled"
             inList
-            className="px-4 py-5 sm:px-6"
+            className="px-4 py-4 sm:py-5"
             label="Root"
             value={s?.root ? formatHeight(s.root.height) : "–"}
             detail={
               s?.root && s.bestTip
-                ? `${plural(s.bestTip.height - s.root.height, "block")} below the tip`
+                ? s.bestTip.height > s.root.height
+                  ? `${plural(s.bestTip.height - s.root.height, "block")} below the tip`
+                  : undefined
                 : s
                   ? "the oldest block it keeps"
                   : "–"
@@ -165,17 +168,14 @@ export function OverviewPage() {
         </dl>
       </Card>
 
-      <PageSection
-        title="Roles"
-        description="What this node does besides following the chain."
-      >
-        <div className="grid gap-4 md:grid-cols-2">
+      <PageSection title="Roles">
+        <div className="grid gap-6 lg:grid-cols-2">
           <ProducerRole />
           <WorkerRole />
         </div>
       </PageSection>
 
-      <div className="grid gap-6 lg:grid-cols-2">
+      <div className="grid items-start gap-6 lg:grid-cols-2">
         <KeyValueList
           title="This node"
           rows={[
@@ -209,16 +209,43 @@ export function OverviewPage() {
             },
             {
               label: "Built",
-              value: build.data?.buildTime
-                ? utcDateTime(Date.parse(build.data.buildTime))
-                : "–",
+              value: (
+                <Measure
+                  value={
+                    build.data?.buildTime
+                      ? utcDateTime(Date.parse(build.data.buildTime))
+                      : null
+                  }
+                />
+              ),
             },
+            ...(restore.data && !restoreIsNews(restore.data, now)
+              ? [
+                  {
+                    label: "Started from",
+                    value: (
+                      <span>
+                        Saved state at{" "}
+                        <span className="font-mono text-[0.8125rem] tabular-nums">
+                          {formatHeight(restore.data.tipHeight)}
+                        </span>
+                      </span>
+                    ),
+                    prose: true,
+                  },
+                ]
+              : []),
             {
               label: "Uptime",
-              value:
-                s?.uptimeSecs !== null && s?.uptimeSecs !== undefined
-                  ? formatAge(s.uptimeSecs * 1000)
-                  : "–",
+              value: (
+                <Measure
+                  value={
+                    s?.uptimeSecs !== null && s?.uptimeSecs !== undefined
+                      ? formatAge(s.uptimeSecs * 1000)
+                      : null
+                  }
+                />
+              ),
             },
           ]}
         />
@@ -232,19 +259,18 @@ export function OverviewPage() {
           rows={[
             {
               label: "Pending transactions",
-              value: formatCount(s?.transactionPool.transactions ?? null),
+              value: <Count n={s?.transactionPool.transactions ?? null} />,
               tone: "brand",
             },
             {
               label: "SNARK jobs",
-              value: formatCount(s?.snarkPool.jobs ?? null),
+              value: <Count n={s?.snarkPool.jobs ?? null} />,
             },
             {
               label: "SNARK jobs with a proof",
-              value: formatCount(s?.snarkPool.snarks ?? null),
+              value: <Count n={s?.snarkPool.snarks ?? null} />,
             },
           ]}
-          footer="Transactions wait here for a block producer; SNARK work waits for a block to buy it."
         />
       </div>
     </>
@@ -261,7 +287,11 @@ export function CrashNotice() {
     <Alert variant="destructive">
       <TriangleAlert aria-hidden />
       <AlertTitle>
-        The node crashed at {utcDateTime(crash.crashedMs)}
+        The node crashed at{" "}
+        {/* A time as every absolute time is set, kept whole. */}
+        <span className="whitespace-nowrap">
+          <Measure value={utcDateTime(crash.crashedMs)} />
+        </span>
       </AlertTitle>
       <AlertDescription>
         <p>
@@ -284,6 +314,16 @@ export function CrashNotice() {
       </AlertDescription>
     </Alert>
   );
+}
+
+/** How long a finished restore stays in the sync card: the start's news.
+ * After that, This node says where it started from. */
+const RESTORE_NEWS_MS = 10 * 60_000;
+
+function restoreIsNews(r: RestoreSummary, now: number): boolean {
+  return r.failed || !r.done || r.endedAt === null
+    ? true
+    : now - r.endedAt < RESTORE_NEWS_MS;
 }
 
 function RestoreLine({ restore }: { restore: RestoreSummary }) {
@@ -356,7 +396,11 @@ function ProducerRole() {
             {s?.nextWonSlot?.startTimeMs ? (
               <>
                 Next won slot <RelativeTime at={s.nextWonSlot.startTimeMs} />,
-                at {utcTime(s.nextWonSlot.startTimeMs).slice(0, 5)} UTC.
+                at {/* As every absolute time: mono, UTC muted. */}
+                <Measure
+                  value={`${utcTime(s.nextWonSlot.startTimeMs).slice(0, 5)} UTC`}
+                />
+                .
               </>
             ) : s?.nextWonSlot ? (
               `Next won slot: epoch ${s.nextWonSlot.epoch}, slot ${s.nextWonSlot.slot}.`

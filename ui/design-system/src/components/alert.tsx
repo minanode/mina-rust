@@ -10,12 +10,15 @@ const alertVariants = cva(
     variants: {
       variant: {
         default: "bg-card text-card-foreground",
+        // In the apps, the description's muted text a step darker on the
+        // tint, for AA in light.
         brand:
-          "border-brand-border bg-brand-subtle text-foreground [&>svg]:text-brand-text",
+          "border-brand-border bg-brand-wash text-foreground in-data-app:[&_[data-slot=alert-description]]:text-muted-on-tint [&>svg]:text-brand-text",
+        // Inside a card, a stronger tint: the 8% one reads grey there.
         caution:
-          "border-status-pending/40 bg-status-pending/8 text-foreground [&>svg]:text-status-pending",
+          "border-status-pending/40 bg-caution-wash text-foreground in-data-[slot=card]:bg-caution-wash-strong in-data-app:[&_[data-slot=alert-description]]:text-muted-on-tint [&>svg]:text-status-pending",
         destructive:
-          "border-destructive/40 bg-destructive/8 text-foreground [&>svg]:text-destructive",
+          "border-destructive/40 bg-destructive/8 text-foreground in-data-[slot=card]:bg-destructive/12 in-data-app:[&_[data-slot=alert-description]]:text-muted-on-tint [&>svg]:text-destructive",
       },
     },
     defaultVariants: {
@@ -44,7 +47,8 @@ function AlertTitle({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="alert-title"
       className={cn(
-        "col-start-2 min-h-4 font-medium tracking-tight",
+        // The apps set it at normal tracking; the site keeps its own.
+        "col-start-2 min-h-4 font-medium tracking-tight in-data-app:tracking-normal",
         className,
       )}
       {...props}
@@ -60,7 +64,7 @@ function AlertDescription({
     <div
       data-slot="alert-description"
       className={cn(
-        "col-start-2 grid justify-items-start gap-1 text-sm leading-relaxed text-muted-foreground [&_p]:leading-relaxed",
+        "col-start-2 grid justify-items-start gap-1 text-sm leading-relaxed text-pretty text-muted-foreground [&_p]:leading-relaxed",
         className,
       )}
       {...props}

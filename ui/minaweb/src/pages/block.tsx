@@ -1,11 +1,13 @@
 import { ArrowLeft } from "lucide-react";
 
-import { Amount } from "@minanode/design-system/patterns/amount";
+import { Amount, Measure } from "@minanode/design-system/patterns/amount";
 import { EmptyState } from "@minanode/design-system/patterns/empty-state";
+import { CopyButton } from "@minanode/design-system/patterns/copy-button";
 import { ExternalLink } from "@minanode/design-system/patterns/external-link";
 import { Hash } from "@minanode/design-system/patterns/hash";
 import { KeyValueList } from "@minanode/design-system/patterns/key-value-list";
 import { PageHeader } from "@minanode/design-system/patterns/page-header";
+import { StatRow } from "@minanode/design-system/patterns/stat-row";
 import { TimeAgo } from "@minanode/design-system/patterns/relative-time";
 import { Signal } from "@minanode/design-system/patterns/signal";
 import {
@@ -15,10 +17,11 @@ import {
   formatHeight,
   formatMina,
   receiptOutcome,
-  utcDateTime,
+  shortHash,
   type BlockDetail,
   type Check,
   type Receipt,
+  utcDateTime,
 } from "@minanode/node-client";
 import {
   useChainBlock,
@@ -29,7 +32,7 @@ import { BlockContents } from "minanode-dashboard/components/block-contents";
 import { Loaded } from "minanode-dashboard/components/states";
 
 import { Link } from "../app/router";
-import { ARRIVAL, linkClass, NOT_CHECKED_DOCS_URL, OUTCOME } from "./blocks";
+import { ARRIVAL, linkClass, NOT_CHECKED_DOCS_URL } from "./blocks";
 
 const CHECK: Record<Check["status"], string> = {
   passed: "Passed",
@@ -48,13 +51,19 @@ function checkValue(check: Check) {
         : check.status === "pending"
           ? "info"
           : "neutral";
+  // One run, flush right like every other value: the state, then its time.
   return (
-    <span className="inline-flex items-center gap-2">
-      <Signal tone={tone}>{CHECK[check.status]}</Signal>
+    <span className="inline-flex items-center justify-end gap-2">
+      <Signal tone={tone} variant="plain">
+        {CHECK[check.status]}
+      </Signal>
       {check.status === "passed" && check.elapsedMs !== null ? (
-        <span className="font-mono text-xs text-muted-foreground tabular-nums">
-          {Math.round(check.elapsedMs)} ms
-        </span>
+        <Measure
+          className="text-muted-foreground"
+          value={
+            check.elapsedMs < 1 ? "<1 ms" : `${Math.round(check.elapsedMs)} ms`
+          }
+        />
       ) : null}
     </span>
   );
@@ -70,26 +79,22 @@ function NodeCheck({ hash }: { hash: string }) {
       {() =>
         receipt === null ? (
           <KeyValueList
+            className="h-full"
             title="This node's check"
             footer="The node keeps a record of the blocks it received lately. It has none for this one: it came in a bootstrap before the records start, or the record has aged out."
             rows={[{ label: "Proof", value: "No record" }]}
           />
         ) : (
           <KeyValueList
+            className="h-full"
             title="This node's check"
-            aside={
-              <Signal tone={OUTCOME[receiptOutcome(receipt)].tone}>
-                {OUTCOME[receiptOutcome(receipt)].label}
-              </Signal>
-            }
+            data-outcome={receiptOutcome(receipt)}
             footer={
               receipt.proof.status === "notRun" ? (
                 <ExternalLink href={NOT_CHECKED_DOCS_URL}>
                   Web node docs
                 </ExternalLink>
-              ) : (
-                "Checked in this tab, by the node's own verifier."
-              )
+              ) : undefined
             }
             rows={[
               { label: "Block proof", value: checkValue(receipt.proof) },
@@ -100,6 +105,7 @@ function NodeCheck({ hash }: { hash: string }) {
                 value: receipt.arrival
                   ? (ARRIVAL[receipt.arrival] ?? receipt.arrival)
                   : "–",
+                prose: true,
               },
               {
                 label: "Received",
@@ -108,6 +114,7 @@ function NodeCheck({ hash }: { hash: string }) {
               {
                 label: "Applied",
                 value: receipt.applied ? "Yes" : "No",
+                prose: true,
               },
             ]}
           />
@@ -115,6 +122,14 @@ function NodeCheck({ hash }: { hash: string }) {
       }
     </Loaded>
   );
+}
+
+/** A large figure's unit: smaller and lighter, as the overview's. */
+const FIGURE_UNIT = "font-sans text-sm font-normal";
+
+/** A zero amount, muted so the others stand out. */
+function zero(nanomina: bigint | null): string | undefined {
+  return nanomina === 0n ? "text-muted-foreground" : undefined;
 }
 
 function Detail({ block: b }: { block: BlockDetail }) {
@@ -129,6 +144,7 @@ function Detail({ block: b }: { block: BlockDetail }) {
         data-block-hash={b.stateHash}
       >
         <KeyValueList
+          className="h-full"
           title="Block"
           aside={
             url ? (
@@ -151,12 +167,20 @@ function Detail({ block: b }: { block: BlockDetail }) {
             {
               label: "Previous",
               value: b.previousStateHash ? (
-                <Link
-                  to={`/blocks/${b.previousStateHash}`}
-                  className={`font-mono ${linkClass}`}
-                >
-                  {`${b.previousStateHash.slice(0, 8)}…${b.previousStateHash.slice(-6)}`}
-                </Link>
+                // A link to its page, and copied as the other hashes are.
+                <span className="inline-flex items-center gap-1 sm:justify-end">
+                  <Link
+                    to={`/blocks/${b.previousStateHash}`}
+                    className={`font-mono ${linkClass}`}
+                  >
+                    {shortHash(b.previousStateHash)}
+                  </Link>
+                  <CopyButton
+                    text={b.previousStateHash}
+                    label="previous state hash"
+                    className="-me-1"
+                  />
+                </span>
               ) : (
                 "–"
               ),
@@ -166,13 +190,21 @@ function Detail({ block: b }: { block: BlockDetail }) {
               label: "Time",
               value: (
                 <span>
-                  {utcDateTime(b.timeMs)} (<TimeAgo at={b.timeMs} />)
+                  <Measure value={utcDateTime(b.timeMs)} />{" "}
+                  <TimeAgo at={b.timeMs} className="text-muted-foreground" />
                 </span>
               ),
             },
             {
               label: "Slot",
-              value: `${formatCount(b.slotSinceGenesis)} (epoch ${formatCount(b.epoch)})`,
+              value: (
+                <span>
+                  {formatCount(b.slotSinceGenesis)}{" "}
+                  <span className="font-sans text-muted-foreground">
+                    epoch {formatCount(b.epoch)}
+                  </span>
+                </span>
+              ),
             },
             {
               label: "Producer",
@@ -186,40 +218,62 @@ function Detail({ block: b }: { block: BlockDetail }) {
                 "–"
               ),
             },
-            {
-              label: "Coinbase",
-              value: <Amount unit="MINA" value={formatMina(b.coinbase)} />,
-            },
-            {
-              label: "Transaction fees",
-              value: (
-                <Amount
-                  unit="MINA"
-                  value={
-                    h.transactionFees === null
-                      ? null
-                      : formatMina(h.transactionFees)
-                  }
-                />
-              ),
-            },
-            {
-              label: "SNARK fees",
-              value: (
-                <Amount
-                  unit="MINA"
-                  value={h.snarkFees === null ? null : formatMina(h.snarkFees)}
-                />
-              ),
-            },
-            {
-              label: "Ledger proof",
-              value: h.proofEmitted ? "Emitted" : "None",
-            },
           ]}
         />
         <NodeCheck hash={b.stateHash} />
       </div>
+      {/* What the block paid, in one strip like the overview's, so the two
+          lists above are of a length. */}
+      <StatRow
+        data-block-economics
+        label="What the block paid"
+        items={[
+          {
+            label: "Coinbase",
+            value: (
+              <Amount
+                unit="MINA"
+                unitClassName={FIGURE_UNIT}
+                value={formatMina(b.coinbase)}
+              />
+            ),
+          },
+          {
+            label: "Transaction fees",
+            value: (
+              <Amount
+                unit="MINA"
+                unitClassName={FIGURE_UNIT}
+                className={zero(h.transactionFees)}
+                value={
+                  h.transactionFees === null
+                    ? null
+                    : formatMina(h.transactionFees)
+                }
+              />
+            ),
+          },
+          {
+            label: "SNARK fees",
+            value: (
+              <Amount
+                unit="MINA"
+                unitClassName={FIGURE_UNIT}
+                className={zero(h.snarkFees)}
+                value={h.snarkFees === null ? null : formatMina(h.snarkFees)}
+              />
+            ),
+          },
+          {
+            label: "Ledger proof",
+            value: h.proofEmitted ? (
+              <span className="font-sans">Emitted</span>
+            ) : (
+              <span className="font-sans text-muted-foreground">None</span>
+            ),
+          },
+        ]}
+      />
       <BlockContents block={b} />
     </>
   );
@@ -232,17 +286,18 @@ export function BlockPage({ id }: { id: string }) {
 
   return (
     <>
-      <div>
-        <Link
-          to="/blocks"
-          className={`inline-flex items-center gap-1.5 text-sm ${linkClass}`}
-        >
-          <ArrowLeft aria-hidden className="size-4" />
-          Blocks
-        </Link>
-      </div>
       <PageHeader
-        eyebrow="Chain"
+        eyebrow={
+          // The way back sits where the other pages' eyebrow does, so the
+          // title lines up with theirs.
+          <Link
+            to="/blocks"
+            className="inline-flex items-center gap-1 rounded-sm leading-none underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring"
+          >
+            <ArrowLeft aria-hidden className="size-3" />
+            Blocks
+          </Link>
+        }
         title={
           block.data?.height
             ? `Block ${formatHeight(block.data.height)}`

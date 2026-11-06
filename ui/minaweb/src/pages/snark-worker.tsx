@@ -8,13 +8,12 @@
  */
 
 import * as React from "react";
-import { Cpu, Play, Power } from "lucide-react";
+import { Play, Power } from "lucide-react";
 
 import { Button } from "@minanode/design-system/components/button";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@minanode/design-system/components/card";
@@ -44,7 +43,7 @@ import { looksLikePublicKey, type KeyGlue } from "../roles/keys";
 import { VIEWER } from "../roles/role";
 import { RestartConfirm } from "./restart-confirm";
 import { ACCOUNT_CREATION_FEE } from "../roles/payment";
-import { OneRole, RoleCost, RolesGate } from "./roles-common";
+import { FORM_CARD, OneRole, RoleCost, RolesGate } from "./roles-common";
 
 const POLL_MS = 5_000;
 /** The fee a key with an account starts with. */
@@ -60,12 +59,11 @@ export function SnarkWorkerPage() {
   return (
     <>
       <PageHeader
-        eyebrow="devnet role"
+        eyebrow="Devnet"
         title="SNARK worker"
-        description="Proves the transaction SNARKs blocks need, in this tab, for a fee paid to your key when a block buys the work."
         aside={
           running ? (
-            <Signal tone="ok" pulse className="text-sm">
+            <Signal tone="ok" pulse>
               On in this tab
             </Signal>
           ) : null
@@ -146,9 +144,8 @@ function Setup() {
           : null;
   const status =
     recipient === null
-      ? own
-        ? null
-        : "Or make a key on the key screen first."
+      ? // An empty field: the line above Start says what it needs.
+        null
       : account.loading
         ? "Looking up its account…"
         : !known
@@ -159,20 +156,37 @@ function Setup() {
   const hint = text.trim() && recipientProblem ? recipientProblem : status;
 
   const switching = boot.role.kind === "producer";
+  // Why Start is off, under the field it is about. The button points to it;
+  // when the field's own hint already says it, it is for screen readers.
+  const problemLine = problem ? (
+    <p
+      id="worker-problem"
+      className={
+        // Said already: by the field's own hint, or, for an empty field,
+        // by its label. The button points here for screen readers.
+        recipientProblem ? "sr-only" : "text-sm text-muted-foreground"
+      }
+      data-worker-problem
+    >
+      {problem}
+      {feeRule && !account.loading ? (
+        <>
+          {" "}
+          <ExternalLink href={WORKER_FEE_DOCS_URL}>
+            SNARK worker docs
+          </ExternalLink>
+        </>
+      ) : null}
+    </p>
+  ) : null;
 
   return (
     <div className="grid items-start gap-6 lg:grid-cols-2">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Cpu aria-hidden className="size-4 text-brand-text" />
-            Start the SNARK worker
-          </CardTitle>
-          <CardDescription>
-            The node starts again with the worker.
-          </CardDescription>
+      <Card className={FORM_CARD.card}>
+        <CardHeader className={FORM_CARD.header}>
+          <CardTitle>Settings</CardTitle>
         </CardHeader>
-        <CardContent className="flex flex-col gap-4">
+        <CardContent className={FORM_CARD.content}>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="worker-key">Fee recipient (public key)</Label>
             <Input
@@ -190,8 +204,8 @@ function Setup() {
               id="worker-key-hint"
               className={
                 text.trim() && recipientProblem
-                  ? "text-sm text-destructive"
-                  : "text-sm text-muted-foreground"
+                  ? "text-sm text-destructive empty:hidden"
+                  : "text-sm text-muted-foreground empty:hidden"
               }
               data-fee-rule
               data-recipient-account={
@@ -204,6 +218,7 @@ function Setup() {
             >
               {[whose, hint].filter(Boolean).join(". ")}
             </p>
+            {recipientProblem ? problemLine : null}
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="worker-fee">Fee per job (MINA)</Label>
@@ -211,38 +226,28 @@ function Setup() {
               id="worker-fee"
               value={shownFee}
               inputMode="decimal"
+              className="font-mono tabular-nums"
               onChange={e => setFee(e.target.value)}
             />
+            {recipientProblem ? null : problemLine}
           </div>
-          <OneRole />
-          {problem ? (
-            <p
-              id="worker-problem"
-              className="text-sm text-foreground"
-              data-worker-problem
-            >
-              {problem}
-              {feeRule && !account.loading ? (
-                <>
-                  {" "}
-                  <ExternalLink href={WORKER_FEE_DOCS_URL}>
-                    SNARK worker docs
-                  </ExternalLink>
-                </>
-              ) : null}
-            </p>
-          ) : null}
+          {/* Above Start, as on the producer page; the confirm says what
+              stops, so the note goes while it asks. */}
+          {confirming ? null : <OneRole />}
           {confirming && problem === null && recipient ? (
             <RestartConfirm
               label="Confirm starting the SNARK worker"
               message={
                 switching
                   ? "This stops the block producer and starts the node again as a SNARK worker."
-                  : "The node starts again, as a SNARK worker. Keep the tab open while it works."
+                  : "The node restarts as a SNARK worker. Keep this tab open."
               }
               confirmLabel={
-                switching ? "Stop producing and start the worker" : "Start it"
+                switching
+                  ? "Stop producing and start the worker"
+                  : "Restart as SNARK worker"
               }
+              tone={switching ? "destructive" : "caution"}
               role={{
                 kind: "worker",
                 publicKey: recipient,
@@ -277,7 +282,6 @@ function Running() {
   const synced = useSyncView(useNow()).key === "Synced";
   const [confirming, setConfirming] = React.useState(false);
   const c = control.data;
-  const view = c ? workerView(c) : null;
   const tip =
     included.data?.bestTipHeight ??
     c?.bestTipHeight ??
@@ -286,21 +290,13 @@ function Running() {
   return (
     <>
       <div className="flex flex-wrap items-center gap-3">
-        {view ? (
-          <Signal
-            tone={view.tone}
-            pulse={view.label === "Working"}
-            data-worker-state={view.label}
-          >
-            {view.label}
-          </Signal>
-        ) : null}
         {confirming ? (
           <RestartConfirm
             label="Confirm stopping the SNARK worker"
             message="The node starts again without the worker. A job in progress is dropped."
             confirmLabel="Stop the worker"
             role={VIEWER}
+            tone="destructive"
             onCancel={() => setConfirming(false)}
           />
         ) : (
@@ -318,15 +314,27 @@ function Running() {
       <Loaded polled={control} what="the worker's state" rows={5}>
         {c => (
           <div className="grid items-start gap-6 lg:grid-cols-2">
-            <WorkerStatus control={c} jobs={status.data?.snarkPool.jobs} />
+            {/* The state in the Worker card's head, as the Peers cards show
+                theirs: beside Stop it read as the stop's progress. */}
+            <WorkerStatus
+              control={c}
+              jobs={status.data?.snarkPool.jobs}
+              aside={
+                <Signal
+                  tone={workerView(c).tone}
+                  pulse={workerView(c).label === "Working"}
+                  data-worker-state={workerView(c).label}
+                >
+                  {workerView(c).label}
+                </Signal>
+              }
+            />
             <RoleCost kind="worker" />
           </div>
         )}
       </Loaded>
       {c && c.recent.length > 0 ? <RecentJobs control={c} /> : null}
-      {c ? (
-        <IncludedSection included={included} tip={tip} market={false} />
-      ) : null}
+      {c ? <IncludedSection included={included} tip={tip} /> : null}
       {!synced ? (
         <p className="text-sm text-muted-foreground">
           The worker takes jobs once the node is synced.

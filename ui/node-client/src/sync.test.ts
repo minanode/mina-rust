@@ -156,9 +156,7 @@ describe("no answer and stale data", () => {
       now,
     );
     expect(v).toMatchObject({ key: "NoAnswer", stale: true });
-    expect(v.detail).toBe(
-      "Its last answer came 1 min 5 s ago, at #578883. The figures below are from then.",
-    );
+    expect(v.detail).toBe("Last answer at #578883.");
   });
 
   test("an old sample is stale even before a request fails", () => {

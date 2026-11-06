@@ -25,9 +25,8 @@ vi.mock("@minanode/node-client/react", () => ({
 
 const { FrontierStoreCard } = await import("./boot");
 const { SecondTabBanner } = await import("../app/second-tab-banner");
-const { savedChainLabel, storeLabel, storeState } = await import(
-  "../lib/store"
-);
+const { savedChainLabel, storeLabel, storeState } =
+  await import("../lib/store");
 
 const open: FrontierStore = {
   open: true,
@@ -98,7 +97,7 @@ test("the card: the saved chain's height, or why a reload syncs again", () => {
   cleanup();
   state.store = withChain({ state: "saved", height: 583765 });
   render(<FrontierStoreCard />);
-  expect(screen.getByText("Saved at #583765")).toBeTruthy();
+  expect(screen.getByText("#583765")).toBeTruthy();
   expect(screen.queryByText("Why")).toBeNull();
   cleanup();
   const reason = "the stored tip is at slot 9, 1200 slots behind the clock";
@@ -106,7 +105,7 @@ test("the card: the saved chain's height, or why a reload syncs again", () => {
   render(<FrontierStoreCard />);
   expect(screen.getByText("Saved, but a reload syncs again")).toBeTruthy();
   expect(screen.getByText(reason)).toBeTruthy();
-  expect(screen.queryByText(/Saved at/)).toBeNull();
+  expect(screen.queryByText(/583765/)).toBeNull();
   // One docs link, whatever the state.
   expect(screen.getAllByRole("link")).toHaveLength(1);
 });

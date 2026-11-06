@@ -23,7 +23,11 @@ import {
   shortHash,
   type LedgerAccount,
 } from "@minanode/node-client";
-import { useLedgerAccounts, useNodeStatus } from "@minanode/node-client/react";
+import {
+  useLedgerAccounts,
+  useNodeStatus,
+  type Polled,
+} from "@minanode/node-client/react";
 import { AccountDetail } from "minanode-dashboard/components/account-detail";
 import { Loaded, PolledAge } from "minanode-dashboard/components/states";
 
@@ -31,16 +35,26 @@ import { navigate } from "../app/router";
 
 const POLL_MS = 30_000;
 
-function AccountSearch({ initial }: { initial: string }) {
+function AccountSearch({
+  initial,
+  initialInvalid,
+}: {
+  initial: string;
+  /** The address's key isn't one: the field says so, as on a submit. */
+  initialInvalid: boolean;
+}) {
   const [value, setValue] = React.useState(initial);
-  const [invalid, setInvalid] = React.useState(false);
+  const [invalid, setInvalid] = React.useState(initialInvalid);
   const id = React.useId();
   const errorId = React.useId();
-  React.useEffect(() => setValue(initial), [initial]);
+  React.useEffect(() => {
+    setValue(initial);
+    setInvalid(initialInvalid);
+  }, [initial, initialInvalid]);
   return (
     <form
       role="search"
-      className="flex max-w-xl flex-col gap-1.5"
+      className="flex flex-col gap-1.5 rounded-xl border bg-card p-4"
       onSubmit={event => {
         event.preventDefault();
         const key = value.trim();
@@ -51,14 +65,14 @@ function AccountSearch({ initial }: { initial: string }) {
         navigate(`/accounts/${key}`);
       }}
     >
-      <label htmlFor={id} className="sr-only">
+      <label htmlFor={id} className="text-sm font-medium text-foreground">
         Public key
       </label>
       <div className="flex gap-2">
         <Input
           id={id}
           value={value}
-          placeholder="B62q…"
+          placeholder="B62…"
           spellCheck={false}
           autoComplete="off"
           aria-invalid={invalid || undefined}
@@ -69,7 +83,7 @@ function AccountSearch({ initial }: { initial: string }) {
           }}
           className="font-mono"
         />
-        <Button type="submit" variant="outline">
+        <Button type="submit">
           <Search aria-hidden />
           Look up
         </Button>
@@ -150,11 +164,13 @@ function Tokens({ accounts }: { accounts: LedgerAccount[] }) {
   );
 }
 
-function Lookup({ publicKey }: { publicKey: string }) {
-  const { status } = useNodeStatus();
-  const tip = status.data?.bestTip ?? null;
-  // The ledger read waits for a best tip: without one, don't ask.
-  const accounts = useLedgerAccounts(tip ? publicKey : null, POLL_MS);
+function Lookup({
+  accounts,
+  tip,
+}: {
+  accounts: Polled<LedgerAccount[] | null>;
+  tip: { height: number } | null;
+}) {
   if (!tip) {
     return (
       <EmptyState
@@ -169,95 +185,85 @@ function Lookup({ publicKey }: { publicKey: string }) {
     );
   }
   return (
-    <>
-      <div className="flex justify-end">
-        <PolledAge polled={accounts} staleAfterMs={POLL_MS * 4} />
-      </div>
-      <Loaded polled={accounts} what="this account" rows={5}>
-        {list => {
-          if (list === null) {
-            return (
+    <Loaded polled={accounts} what="this account" rows={5}>
+      {list => {
+        if (list === null) {
+          return (
+            <EmptyState
+              icon={<Wallet />}
+              title="No answer from the ledger"
+              description={<p>The node gave no ledger to read from.</p>}
+            />
+          );
+        }
+        const mina = list.find(a => a.tokenId === MINA_TOKEN_ID) ?? null;
+        if (list.length === 0) {
+          return (
+            <EmptyState
+              icon={<Wallet />}
+              title="Not in this node's ledger"
+              description={
+                <p>
+                  The ledger at the best tip ({formatHeight(tip.height)}) has no
+                  account for this key. An account is created when it first
+                  receives MINA, for a fee of 1 MINA.
+                </p>
+              }
+            />
+          );
+        }
+        return (
+          <>
+            {mina ? (
+              <div
+                data-account={mina.publicKey}
+                data-balance={mina.balance ?? ""}
+              >
+                <AccountDetail
+                  account={{ ...mina, balanceHeight: tip.height }}
+                />
+              </div>
+            ) : (
               <EmptyState
                 icon={<Wallet />}
-                title="No answer from the ledger"
-                description={<p>The node gave no ledger to read from.</p>}
-              />
-            );
-          }
-          const mina = list.find(a => a.tokenId === MINA_TOKEN_ID) ?? null;
-          if (list.length === 0) {
-            return (
-              <EmptyState
-                icon={<Wallet />}
-                title="Not in this node's ledger"
+                title="No MINA account"
                 description={
-                  <p>
-                    The ledger at the best tip ({formatHeight(tip.height)}) has
-                    no account for this key. An account is created when it first
-                    receives MINA, for a fee of 1 MINA.
-                  </p>
+                  <p>The key holds only other tokens, listed below.</p>
                 }
               />
-            );
-          }
-          return (
-            <>
-              {mina ? (
-                <div
-                  data-account={mina.publicKey}
-                  data-balance={mina.balance ?? ""}
-                >
-                  <AccountDetail
-                    account={{ ...mina, balanceHeight: tip.height }}
-                  />
-                </div>
-              ) : (
-                <EmptyState
-                  icon={<Wallet />}
-                  title="No MINA account"
-                  description={
-                    <p>The key holds only other tokens, listed below.</p>
-                  }
-                />
-              )}
-              {mina ? <Zkapp account={mina} /> : null}
-              <Tokens accounts={list} />
-            </>
-          );
-        }}
-      </Loaded>
-    </>
+            )}
+            {mina ? <Zkapp account={mina} /> : null}
+            <Tokens accounts={list} />
+          </>
+        );
+      }}
+    </Loaded>
   );
 }
 
 export function AccountsPage({ publicKey }: { publicKey: string | null }) {
   const valid = publicKey !== null && PUBLIC_KEY_PATTERN.test(publicKey);
+  const { status } = useNodeStatus();
+  const tip = status.data?.bestTip ?? null;
+  // The ledger read waits for a best tip: without one, don't ask.
+  const accounts = useLedgerAccounts(valid && tip ? publicKey : null, POLL_MS);
   return (
     <>
       <PageHeader
         eyebrow="Chain"
         title="Accounts"
-        description="Look up an account in the ledger this node keeps in this tab, at its best tip."
+        aside={
+          valid && tip ? (
+            <PolledAge polled={accounts} staleAfterMs={POLL_MS * 4} />
+          ) : null
+        }
       />
-      <AccountSearch initial={publicKey ?? ""} />
-      {publicKey === null ? (
-        <EmptyState
-          icon={<Wallet />}
-          title="Enter a public key"
-          description={
-            <p>A Mina public key starts with B62 and has 55 characters.</p>
-          }
-        />
-      ) : !valid ? (
-        <EmptyState
-          tone="caution"
-          title="That isn't a public key"
-          description={
-            <p>A Mina public key starts with B62 and has 55 characters.</p>
-          }
-        />
-      ) : (
-        <Lookup publicKey={publicKey} />
+      <AccountSearch
+        initial={publicKey ?? ""}
+        initialInvalid={publicKey !== null && !valid}
+      />
+      {publicKey === null || !valid ? null : (
+        <Lookup accounts={accounts} tip={tip} />
       )}
     </>
   );

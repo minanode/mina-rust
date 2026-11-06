@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- **Web node and dashboard**: a design pass over the web node page and the node
+  dashboard. Navigation is grouped, labels are short and values are in mono.
+  Every wide table has a phone layout. Start-up says when it is paused, failed
+  or blocked by the page, and offline figures say they are from the last
+  answer, with Reload in the banner. The dashboard's won slots sit on one axis
+  with a Stages panel. minanode.org keeps its look.
+  ([#43](https://github.com/minanode/mina-rust/pull/43))
+
 ## [0.22.0] - 2026-11-04
 
 0.22.0 speeds up web node sync from distant relays, the web node's start and

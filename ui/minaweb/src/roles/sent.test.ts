@@ -216,7 +216,7 @@ test("one poll reads each sender once and never applies another sender's nonce",
   );
   expect(asked.sort()).toEqual(["fresh", "old"]);
   expect(store.getSnapshot().find(s => s.hash === "old-4")?.detail).toMatch(
-    /nonce moved/,
+    /nonce is used/,
   );
   expect(
     store

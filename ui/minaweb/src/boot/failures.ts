@@ -19,8 +19,14 @@ export interface BootFailure {
   kind: FailureKind;
   title: string;
   detail: string;
+  /** Lines an operator sets as they are (headers): in mono, one a line,
+   * under the detail. */
+  lines?: string[];
   /** What to do about it, when there is something. */
   hint?: string;
+  /** Before Start, what can't run it: the page (how it's served) or, by
+   * default, the browser. */
+  cause?: "page";
 }
 
 export interface PageFacts {
@@ -52,6 +58,7 @@ export function checkPage(page: PageFacts): BootFailure | null {
   if (!page.isSecureContext) {
     return {
       kind: "isolation",
+      cause: "page",
       title: "This page needs HTTPS",
       detail: `The page is open at ${page.origin}. Browsers give the node's threads shared memory only on HTTPS pages, or on localhost.`,
       hint: "Open it over HTTPS, or from localhost.",
@@ -69,10 +76,15 @@ export function checkPage(page: PageFacts): BootFailure | null {
   if (!page.crossOriginIsolated) {
     return {
       kind: "isolation",
+      cause: "page",
       title: "The server didn't isolate this page",
       detail:
-        "The node's threads share memory, which browsers allow only on a page sent with the headers Cross-Origin-Opener-Policy: same-origin and Cross-Origin-Embedder-Policy: require-corp. This server didn't send them.",
-      hint: "Serve the page with both headers, as serve.json in the build sets them.",
+        "The node's threads share memory, which needs both headers. This server didn't send them.",
+      lines: [
+        "Cross-Origin-Opener-Policy: same-origin",
+        "Cross-Origin-Embedder-Policy: require-corp",
+      ],
+      hint: "Set both, as serve.json in the build does.",
     };
   }
   if (!page.hasSharedMemory) {
@@ -150,12 +162,10 @@ export function noPeerFailure(
   relays: string[],
   pageOrigin: string,
   peers: { address: string | null; status: string }[],
-  waitedMs: number,
 ): BootFailure {
   const blocked = relays
     .map(relay => blockedRelay(relay, pageOrigin))
     .filter((reason): reason is string => reason !== null);
-  const seconds = Math.round(waitedMs / 1000);
   if (blocked.length > 0 && blocked.length === relays.length) {
     return {
       kind: "peers",
@@ -176,14 +186,23 @@ export function noPeerFailure(
     ? relays.map(relay => {
         const host = relayEndpoint(relay)?.host ?? relay;
         const seen = peers.find(p => p.address === relay);
-        return seen ? `${host} (${seen.status.toLowerCase()})` : host;
+        // Disconnected goes without saying; another state is news.
+        return seen && seen.status !== "Disconnected"
+          ? `${host} (${seen.status.toLowerCase()})`
+          : host;
       })
     : peers.map(p => `${p.address ?? "a peer"} (${p.status.toLowerCase()})`);
+  const several = tried.length > 1;
   return {
     kind: "peers",
     title: "No peer reachable",
-    detail: `No connection in ${seconds} s. Tried ${tried.join(", ")}.`,
-    hint: "The relay may be down, or this network may block WebRTC. The node keeps trying.",
+    // The step beside it keeps its own clock: no second one here.
+    detail: `No connection to ${
+      several
+        ? `${tried.slice(0, -1).join(", ")} or ${tried[tried.length - 1]}`
+        : tried[0]
+    }.`,
+    hint: `The ${several ? "relays" : "relay"} may be down, or this network blocks WebRTC. Still trying.`,
   };
 }
 
