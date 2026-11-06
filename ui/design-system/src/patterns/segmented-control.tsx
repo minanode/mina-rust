@@ -34,7 +34,7 @@ function SegmentedControl<T extends string>({
           variant="ghost"
           aria-pressed={value === option.value}
           onClick={() => onValueChange(option.value)}
-          className="font-mono text-muted-foreground aria-pressed:border aria-pressed:border-brand-border aria-pressed:bg-brand-subtle aria-pressed:text-brand-text"
+          className="text-muted-foreground aria-pressed:border aria-pressed:border-brand-border aria-pressed:bg-brand-subtle aria-pressed:text-brand-text"
         >
           {option.label}
         </Button>

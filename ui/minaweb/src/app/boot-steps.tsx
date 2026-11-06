@@ -1,19 +1,15 @@
 /** The boot's steps as a timeline, with each running step's progress: the
  * start screen, the boot screen and the Start-up page show the same list. */
 
+import { Measure } from "@minanode/design-system/patterns/amount";
 import { Timeline } from "@minanode/design-system/patterns/timeline";
 import { useNow } from "@minanode/design-system/lib/time";
 
-import {
-  PEER_WAIT_MS,
-  START_PARTS,
-  type BootSnapshot,
-  type Step,
-} from "../boot/boot";
+import { START_PARTS, type BootSnapshot, type Step } from "../boot/boot";
 import { formatBytes } from "../boot/failures";
 import { pendingSteps, stepFigures } from "../boot/steps";
 import { CONFIG } from "../config";
-import { FrontierStrip, LedgerBars, Parts } from "./sync-graphic";
+import { Figures, FrontierStrip, LedgerBars, Parts } from "./sync-graphic";
 
 function duration(step: Step, now: number): string | undefined {
   if (step.startedAt === null) return undefined;
@@ -27,13 +23,19 @@ function duration(step: Step, now: number): string | undefined {
       : `${Math.floor(ms / 60_000)} min ${Math.round((ms % 60_000) / 1000)} s`;
 }
 
+/** A step's time, figures in mono with muted units. */
+function stepTime(step: Step, now: number) {
+  const d = duration(step, now);
+  return d ? <Measure value={d} /> : undefined;
+}
+
 function DownloadBar({ boot }: { boot: BootSnapshot }) {
   const d = boot.download;
   if (!d) return null;
   if (d.total === null) {
     return (
-      <p className="font-mono text-xs text-muted-foreground tabular-nums">
-        {formatBytes(d.received)} so far
+      <p className="text-xs text-muted-foreground tabular-nums">
+        <Figures text={`${formatBytes(d.received)} so far`} />
       </p>
     );
   }
@@ -53,8 +55,10 @@ function DownloadBar({ boot }: { boot: BootSnapshot }) {
           style={{ width: `${pct}%` }}
         />
       </div>
-      <p className="font-mono text-xs text-muted-foreground tabular-nums">
-        {formatBytes(d.received)} of {formatBytes(d.total)}, {pct}%
+      <p className="text-xs text-muted-foreground tabular-nums">
+        <Figures
+          text={`${formatBytes(d.received)} of ${formatBytes(d.total)}, ${pct}%`}
+        />
       </p>
     </div>
   );
@@ -62,46 +66,24 @@ function DownloadBar({ boot }: { boot: BootSnapshot }) {
 
 const CONNECT_PARTS = ["Dial the relay", "Handshake", "Connected"] as const;
 
-function ConnectProgress({ boot, now }: { boot: BootSnapshot; now: number }) {
+function ConnectProgress({ boot }: { boot: BootSnapshot }) {
   const c = boot.connect;
   if (!c) return null;
   const part = c.connected > 0 ? 3 : c.connecting > 0 ? 1 : 0;
-  const waited = Math.max(0, now - c.since);
-  const pct = Math.min(100, Math.round((waited / PEER_WAIT_MS) * 100));
   return (
     <div className="flex flex-col gap-3">
       <Parts parts={CONNECT_PARTS} current={part} label="Connecting" />
-      <p className="font-mono text-xs text-muted-foreground tabular-nums">
-        {c.relays === 1 ? "1 relay" : `${c.relays} relays`}, {c.connecting}{" "}
-        handshaking, {c.connected} connected, {Math.round(waited / 1000)} s
+      <p className="text-xs text-muted-foreground tabular-nums">
+        <Figures
+          text={`${c.relays === 1 ? "1 relay" : `${c.relays} relays`}, ${c.connecting} handshaking, ${c.connected} connected`}
+        />
       </p>
-      {part < 3 ? (
-        <div className="flex flex-col gap-1">
-          <div
-            role="progressbar"
-            aria-label="Time waited for a peer"
-            aria-valuemin={0}
-            aria-valuemax={PEER_WAIT_MS / 1000}
-            aria-valuenow={Math.round(waited / 1000)}
-            className="h-1 overflow-hidden rounded-full bg-muted"
-          >
-            <div
-              className="h-full rounded-full bg-muted-foreground/40 transition-[width] duration-500"
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-          <p className="text-xs text-muted-foreground">
-            A peer usually answers in a few seconds. At {PEER_WAIT_MS / 1000} s
-            the page says what is in the way.
-          </p>
-        </div>
-      ) : null}
     </div>
   );
 }
 
 /** What a step shows under its detail while it runs: its progress. */
-function stepBody(step: Step, boot: BootSnapshot, now: number) {
+function stepBody(step: Step, boot: BootSnapshot) {
   const current = step.state === "current";
   switch (step.id) {
     case "download":
@@ -115,7 +97,7 @@ function stepBody(step: Step, boot: BootSnapshot, now: number) {
         />
       ) : null;
     case "connect":
-      return current ? <ConnectProgress boot={boot} now={now} /> : null;
+      return current ? <ConnectProgress boot={boot} /> : null;
     case "ledgers":
       return current ? <LedgerBars boot={boot} /> : null;
     case "blocks": {
@@ -130,24 +112,70 @@ function stepBody(step: Step, boot: BootSnapshot, now: number) {
   }
 }
 
-/** The boot's steps, the same list before Start (no boot: every step
- * waiting) and while it runs. A waiting step shows its figure. */
-export function BootSteps({ boot }: { boot: BootSnapshot | null }) {
+/** The steps before Start: every one waiting, or, when the browser check
+ * failed, that step stopped and the rest not reached. */
+function beforeStart(blocked: boolean): Step[] {
+  return pendingSteps().map(step =>
+    !blocked
+      ? step
+      : { ...step, state: step.id === "check" ? "stopped" : "skipped" },
+  );
+}
+
+/** Once a step stopped, the ones waiting after it will not come: not
+ * reached, with no figure of what they would do. */
+function afterStop(steps: Step[]): Step[] {
+  const stop = steps.findIndex(s => s.state === "stopped");
+  if (stop < 0) return steps;
+  return steps.map((step, i) =>
+    i > stop && step.state === "pending"
+      ? { ...step, state: "skipped", detail: null }
+      : step,
+  );
+}
+
+/** The boot's steps, the same list before Start (no boot) and while it
+ * runs. A waiting step shows its figure. While the start waits for the
+ * producer key's passphrase it is paused: no time, no progress. */
+export function BootSteps({
+  boot,
+  blocked = false,
+}: {
+  boot: BootSnapshot | null;
+  /** Before Start: the browser check failed. */
+  blocked?: boolean;
+}) {
   const now = useNow(boot && !boot.synced ? 500 : 60_000);
   const figures = stepFigures(CONFIG);
   return (
     <Timeline
       label="Starting the web node"
-      steps={(boot?.steps ?? pendingSteps()).map(step => ({
-        label: step.label,
-        state: step.state,
-        time: duration(step, now),
-        detail:
-          step.detail ??
-          (step.state === "pending" ? figures[step.id] : undefined),
-        body: boot && !boot.synced ? stepBody(step, boot, now) : undefined,
-        tone: step.state === "done" ? "ok" : undefined,
-      }))}
+      steps={afterStop(boot?.steps ?? beforeStart(blocked)).map(step => {
+        const paused =
+          boot?.unlock != null &&
+          step.id === "start" &&
+          step.state === "current";
+        return {
+          label: step.label,
+          state: paused ? "paused" : step.state,
+          time: paused ? undefined : stepTime(step, now),
+          // Details are fragments, as the waiting figures are: no full stop.
+          detail:
+            step.detail?.replace(/\.$/, "") ??
+            (step.state === "pending" || step.id === "check"
+              ? figures[step.id]
+              : undefined),
+          body:
+            boot && !boot.synced && !paused ? stepBody(step, boot) : undefined,
+          // The boot stops a step only on a failure.
+          tone:
+            step.state === "done"
+              ? "ok"
+              : step.state === "stopped"
+                ? "error"
+                : undefined,
+        };
+      })}
     />
   );
 }

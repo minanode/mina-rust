@@ -1,10 +1,11 @@
 import { ArrowLeft } from "lucide-react";
 
 import { EmptyState } from "@minanode/design-system/patterns/empty-state";
+import { CopyButton } from "@minanode/design-system/patterns/copy-button";
 import { ExternalLink } from "@minanode/design-system/patterns/external-link";
 import { Hash } from "@minanode/design-system/patterns/hash";
 import { KeyValueList } from "@minanode/design-system/patterns/key-value-list";
-import { Amount } from "@minanode/design-system/patterns/amount";
+import { Amount, Measure } from "@minanode/design-system/patterns/amount";
 import { PageHeader } from "@minanode/design-system/patterns/page-header";
 import { TimeAgo } from "@minanode/design-system/patterns/relative-time";
 import {
@@ -19,12 +20,10 @@ import {
 } from "@minanode/node-client";
 import { useBlock, useNodeStatus } from "@minanode/node-client/react";
 import { BlockContents } from "../components/block-contents";
+import { TABLE_LINK } from "../components/cells";
 import { Loaded } from "../components/states";
 
 import { Link } from "../app/router";
-
-const linkClass =
-  "rounded-sm text-brand-text underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring";
 
 export function BlockPage({ id }: { id: string }) {
   const query = blockQuery(id);
@@ -33,17 +32,18 @@ export function BlockPage({ id }: { id: string }) {
 
   return (
     <>
-      <div>
-        <Link
-          to="/blocks"
-          className={`inline-flex items-center gap-1.5 text-sm ${linkClass}`}
-        >
-          <ArrowLeft aria-hidden className="size-4" />
-          Blocks
-        </Link>
-      </div>
       <PageHeader
-        eyebrow="Chain"
+        eyebrow={
+          // The way back sits where the other pages' eyebrow does, so the
+          // title lines up with theirs.
+          <Link
+            to="/blocks"
+            className="inline-flex items-center gap-1 rounded-sm leading-none underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-ring"
+          >
+            <ArrowLeft aria-hidden className="size-3" />
+            Blocks
+          </Link>
+        }
         title={
           block.data?.height
             ? `Block ${formatHeight(block.data.height)}`
@@ -108,12 +108,20 @@ function BlockDetail({ block: b }: { block: Block }) {
             {
               label: "Previous",
               value: b.previousStateHash ? (
-                <Link
-                  to={`/blocks/${b.previousStateHash}`}
-                  className={`font-mono ${linkClass}`}
-                >
-                  {`${b.previousStateHash.slice(0, 8)}…${b.previousStateHash.slice(-6)}`}
-                </Link>
+                // A link to its page, cut and copied as the other hashes.
+                <span className="inline-flex items-center gap-1">
+                  <Link
+                    to={`/blocks/${b.previousStateHash}`}
+                    className={TABLE_LINK}
+                  >
+                    {`${b.previousStateHash.slice(0, 6)}…${b.previousStateHash.slice(-6)}`}
+                  </Link>
+                  <CopyButton
+                    text={b.previousStateHash}
+                    label="previous state hash"
+                    className="-me-1"
+                  />
+                </span>
               ) : (
                 "–"
               ),
@@ -123,13 +131,21 @@ function BlockDetail({ block: b }: { block: Block }) {
               label: "Time",
               value: (
                 <span>
-                  {utcDateTime(b.timeMs)} (<TimeAgo at={b.timeMs} />)
+                  <Measure value={utcDateTime(b.timeMs)} />{" "}
+                  <TimeAgo at={b.timeMs} className="text-muted-foreground" />
                 </span>
               ),
             },
             {
               label: "Slot",
-              value: `${formatCount(b.slot)} (epoch ${formatCount(b.epoch)})`,
+              value: (
+                <span>
+                  {formatCount(b.slot)}{" "}
+                  <span className="font-sans text-muted-foreground">
+                    epoch {formatCount(b.epoch)}
+                  </span>
+                </span>
+              ),
             },
             {
               label: "Slot since genesis",

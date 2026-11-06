@@ -65,7 +65,7 @@ test("nothing is collected before Prepare report", async () => {
   ).toBeTruthy();
   expect(screen.getByText(/mina triage/)).toBeTruthy();
   const ids = screen.getByRole("checkbox", {
-    name: "Keep IP addresses and peer ids in the report",
+    name: "Keep IP addresses and peer IDs in the report",
   }) as HTMLInputElement;
   expect(ids.checked).toBe(false);
   await new Promise(resolve => setTimeout(resolve, 20));
@@ -74,7 +74,7 @@ test("nothing is collected before Prepare report", async () => {
 
 test("a prepared report: copy, download and the issue link", async () => {
   const calls = renderWith(<ReportPage />, () => json(answer()));
-  fireEvent.change(screen.getByRole("textbox", { name: "What happened?" }), {
+  fireEvent.change(screen.getByRole("textbox", { name: /^What happened\?/ }), {
     target: { value: "stops after an hour" },
   });
   fireEvent.click(screen.getByRole("button", { name: /Prepare report/ }));
@@ -119,7 +119,7 @@ test("a prepared report: copy, download and the issue link", async () => {
   // Changing an option drops the report, which no longer matches it.
   fireEvent.click(
     screen.getByRole("checkbox", {
-      name: "Keep IP addresses and peer ids in the report",
+      name: "Keep IP addresses and peer IDs in the report",
     }),
   );
   expect(screen.queryByRole("region", { name: "The report" })).toBeNull();
@@ -133,7 +133,7 @@ test("a report too long for a link says to attach the download", async () => {
   fireEvent.click(screen.getByRole("button", { name: /Prepare report/ }));
   await screen.findByText("Too long for an issue link");
   expect(
-    screen.getByText(/attach the file to the issue, or paste it/),
+    screen.getByText(/Attach the downloaded file, or paste the report/),
   ).toBeTruthy();
 });
 
@@ -166,7 +166,12 @@ test("the overview's crash notice: shown for a crash, quiet otherwise", async ()
       },
     }),
   );
-  await screen.findByText("The node crashed at 2026-10-23 20:05 UTC");
+  // The time is a figure with its unit in a span of its own.
+  await screen.findByText(
+    (_, el) =>
+      el?.getAttribute("data-slot") === "alert-title" &&
+      el.textContent === "The node crashed at 2026-10-23 20:05 UTC",
+  );
   expect(screen.getByText(/It restarted after the panic/)).toBeTruthy();
   expect(screen.getByText("frontier root missing at <ip>")).toBeTruthy();
   expect(

@@ -182,7 +182,9 @@ export function nextStage(
     if (l.found.failure) {
       return {
         stage: "failed",
-        detail: `Included as failed: ${l.found.failure}`,
+        // The ledger's failure name in words: "Amount_insufficient_to_
+        // create_account" reads "amount insufficient to create account".
+        detail: `Included as failed: ${l.found.failure.replace(/_/g, " ").toLowerCase()}.`,
         inclusion: l.found,
       };
     }
@@ -223,7 +225,7 @@ export function nextStage(
   if (look.accountNonce !== null && look.accountNonce > sent.nonce) {
     return {
       stage: "dropped",
-      detail: `${left}The account's nonce moved past it, but the page didn't see it in a block: another transaction with the same nonce may have taken its place.`,
+      detail: `${left}Its nonce is used; the page didn't see it in a block.`,
       inclusion: null,
     };
   }

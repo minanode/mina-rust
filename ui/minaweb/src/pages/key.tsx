@@ -21,11 +21,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@minanode/design-system/components/card";
+import { Checkbox } from "@minanode/design-system/components/checkbox";
 import { Input } from "@minanode/design-system/components/input";
 import { Label } from "@minanode/design-system/components/label";
 import { Textarea } from "@minanode/design-system/components/textarea";
 import { Amount } from "@minanode/design-system/patterns/amount";
 import { CopyButton } from "@minanode/design-system/patterns/copy-button";
+import { EmptyState } from "@minanode/design-system/patterns/empty-state";
 import { ExternalLink } from "@minanode/design-system/patterns/external-link";
 import { Hash } from "@minanode/design-system/patterns/hash";
 import { InlineConfirm } from "@minanode/design-system/patterns/inline-confirm";
@@ -64,16 +66,17 @@ export const KEY_DOCS_URL =
 export function KeyPage() {
   const glue = useKeyGlue();
   const { key, saved } = useKeys();
+  // A form page: the forms keep to a measure; the header runs to the
+  // content edge, as on every page.
   return (
-    <>
+    <div className="flex flex-col gap-6 lg:gap-8">
       <PageHeader
-        eyebrow="devnet"
+        eyebrow="Devnet"
         title="Your key"
-        description={
-          <>
-            A devnet account key for this tab.{" "}
-            <ExternalLink href={KEY_DOCS_URL}>Web node docs</ExternalLink>
-          </>
+        aside={
+          <ExternalLink href={KEY_DOCS_URL} className="text-sm">
+            Web node docs
+          </ExternalLink>
         }
       />
       <RolesGate>
@@ -95,46 +98,58 @@ export function KeyPage() {
           )}
         </div>
       </RolesGate>
-    </>
+    </div>
   );
 }
 
 function NoKey({ glue, hasSaved }: { glue: KeyGlue; hasSaved: boolean }) {
   const [error, setError] = React.useState<string | null>(null);
+  const [importing, setImporting] = React.useState(false);
   return (
     <>
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Sparkles aria-hidden className="size-4 text-brand-text" />
-            Generate a new key
-          </CardTitle>
-          <CardDescription>
-            Back it up before you close the tab, or it is gone.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <Button
-            type="button"
-            className="w-fit"
-            data-action="generate-key"
-            onClick={() => {
-              try {
-                keyStore.hold(generateKey(glue));
-                setError(null);
-              } catch (e) {
-                setError(e instanceof Error ? e.message : String(e));
-              }
-            }}
-          >
-            <KeyRound aria-hidden />
-            Generate a new key
-          </Button>
-          {error ? <p className="text-sm text-destructive">{error}</p> : null}
-        </CardContent>
-      </Card>
+      {/* A saved key is the likely task: its unlock comes first, and the
+          other ways to a key are outline under it. */}
       {hasSaved ? <UnlockSaved glue={glue} /> : null}
-      <ImportKey glue={glue} />
+      {/* The same panel Send and the roles show without a key. */}
+      <EmptyState
+        icon={<KeyRound />}
+        title={hasSaved ? "Use another key" : "No key in this tab"}
+        description="Back up a new key before you close the tab, or it is gone."
+        action={
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:flex-wrap">
+            {/* Outline while the import or the saved key is the task. */}
+            <Button
+              type="button"
+              variant={importing || hasSaved ? "outline" : "default"}
+              data-action="generate-key"
+              onClick={() => {
+                try {
+                  keyStore.hold(generateKey(glue));
+                  setError(null);
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : String(e));
+                }
+              }}
+            >
+              <Sparkles aria-hidden />
+              Generate a new key
+            </Button>
+            {!importing ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setImporting(true)}
+              >
+                Import a devnet key instead
+              </Button>
+            ) : null}
+          </div>
+        }
+      />
+      {error ? <p className="text-sm text-destructive">{error}</p> : null}
+      {importing ? (
+        <ImportKey glue={glue} onClose={() => setImporting(false)} />
+      ) : null}
     </>
   );
 }
@@ -150,16 +165,22 @@ function UnlockSaved({ glue }: { glue: KeyGlue }) {
     <Card>
       <CardHeader>
         <CardTitle>Unlock the key saved in this browser</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
         <CardDescription>
           Saved encrypted with your passphrase. Public key:{" "}
           <Hash value={saved.publicKey} label="saved public key" />
         </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
         <form
           className="flex flex-col gap-3"
           onSubmit={async event => {
             event.preventDefault();
+            // Unlock stays the teal action while the field is empty: an
+            // empty submit says what is missing.
+            if (!passphrase) {
+              setError("Type the passphrase.");
+              return;
+            }
             setBusy(true);
             try {
               await keyStore.unlockSaved(passphrase, glue);
@@ -178,19 +199,32 @@ function UnlockSaved({ glue }: { glue: KeyGlue }) {
               id="saved-passphrase"
               type="password"
               autoComplete="current-password"
+              // The page's task when a key is saved, as the producer's
+              // unlock focuses its field.
+              autoFocus
               value={passphrase}
-              onChange={e => setPassphrase(e.target.value)}
+              onChange={e => {
+                setPassphrase(e.target.value);
+                setError(null);
+              }}
               aria-invalid={error ? true : undefined}
             />
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button type="submit" disabled={busy || !passphrase}>
+            {/* On a phone the full width: the page's action outweighs the
+                Delete under it. */}
+            <Button type="submit" disabled={busy} className="max-sm:w-full">
               {busy ? "Unlocking…" : "Unlock"}
             </Button>
+            {/* A key loss, marked as Forget is, and kept apart from
+                Unlock: at the card's right edge, on a phone a line of its
+                own at its own width, never wider than Unlock's row. */}
+            <span aria-hidden className="basis-full sm:hidden" />
             <Button
               type="button"
-              variant="ghost"
+              variant="destructive-outline"
+              className="sm:ml-auto"
               onClick={() => setConfirmDelete(true)}
             >
               Delete the saved key
@@ -214,21 +248,11 @@ function UnlockSaved({ glue }: { glue: KeyGlue }) {
   );
 }
 
-function ImportKey({ glue }: { glue: KeyGlue }) {
+function ImportKey({ glue, onClose }: { glue: KeyGlue; onClose: () => void }) {
   const fileGlue = useKeyFileGlue();
-  const [open, setOpen] = React.useState(false);
   const [understood, setUnderstood] = React.useState(false);
   const [kind, setKind] = React.useState<"raw" | "file">("raw");
-  if (!open) {
-    return (
-      <div>
-        <Button type="button" variant="outline" onClick={() => setOpen(true)}>
-          Import a devnet key instead
-        </Button>
-      </div>
-    );
-  }
-  const close = () => setOpen(false);
+  const close = onClose;
   return (
     <Card>
       <CardHeader>
@@ -240,17 +264,13 @@ function ImportKey({ glue }: { glue: KeyGlue }) {
           <AlertTitle>Never paste a key that holds real MINA</AlertTitle>
           <AlertDescription>
             <p>
-              A Mina key is the same on every network: this key controls the
-              same account on mainnet. Never paste a key that holds real MINA
-              into any web page, this one included. Import only a key you made
-              for devnet.
+              A key controls the same account on every network, mainnet
+              included. Import only a key made for devnet.
             </p>
           </AlertDescription>
         </Alert>
-        <label className="flex items-start gap-2 text-sm text-foreground">
-          <input
-            type="checkbox"
-            className="mt-1"
+        <label className="flex items-start gap-2 text-sm leading-5 text-foreground">
+          <Checkbox
             checked={understood}
             onChange={e => setUnderstood(e.target.checked)}
           />
@@ -329,6 +349,7 @@ function ImportRawKey({
         <Button
           type="button"
           variant="ghost"
+          className="text-muted-foreground hover:text-foreground"
           onClick={() => {
             setText("");
             onCancel();
@@ -441,6 +462,7 @@ function ImportKeyFile({
         <Button
           type="button"
           variant="ghost"
+          className="text-muted-foreground hover:text-foreground"
           disabled={busy}
           onClick={() => {
             setText("");
@@ -471,14 +493,12 @@ function HeldKeyView({ glue }: { glue: KeyGlue }) {
       <Card data-key-public={key.publicKey}>
         <CardHeader>
           <CardTitle>Public key</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
           <CardDescription>
-            {key.origin === "generated"
-              ? "Made in this tab."
-              : "Imported into this tab."}{" "}
+            {key.origin === "generated" ? null : "Imported into this tab. "}
             Share it to receive devnet MINA.
           </CardDescription>
-        </CardHeader>
-        <CardContent>
           <Hash
             value={key.publicKey}
             truncate={false}
@@ -492,7 +512,7 @@ function HeldKeyView({ glue }: { glue: KeyGlue }) {
         title="Account on devnet"
         rows={
           account.loading
-            ? [{ label: "Balance", value: "Looking it up…" }]
+            ? [{ label: "Balance", value: "Looking it up…", prose: true }]
             : a
               ? [
                   {
@@ -503,6 +523,7 @@ function HeldKeyView({ glue }: { glue: KeyGlue }) {
                   { label: "Nonce", value: formatCount(a.nonce) },
                   {
                     label: "Delegates to",
+                    prose: a.delegate === a.publicKey,
                     value: a.delegate ? (
                       a.delegate === a.publicKey ? (
                         "Itself"
@@ -518,6 +539,7 @@ function HeldKeyView({ glue }: { glue: KeyGlue }) {
                   {
                     label: "Balance",
                     value: "No account yet",
+                    prose: true,
                   },
                 ]
         }
@@ -527,10 +549,10 @@ function HeldKeyView({ glue }: { glue: KeyGlue }) {
           ) : (
             <>
               The account exists once it receives MINA.{" "}
+              {/* The link ends the line, as on Send. */}
               <ExternalLink href={FAUCET_URL}>
                 Get devnet MINA from the faucet
-              </ExternalLink>{" "}
-              for this public key.
+              </ExternalLink>
             </>
           )
         }
@@ -539,20 +561,25 @@ function HeldKeyView({ glue }: { glue: KeyGlue }) {
       <Backup
         privateKey={key.privateKey}
         generated={key.origin === "generated"}
+        savedHere={saved?.publicKey === key.publicKey}
       />
       <SaveEncrypted savedHere={saved?.publicKey === key.publicKey} />
       {fileGlue ? <ExportKeyFile glue={fileGlue} heldKey={key} /> : null}
 
       <div className="flex flex-col gap-3">
-        <div>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setConfirmForget(true)}
-          >
-            Forget the key in this tab
-          </Button>
-        </div>
+        {/* The confirm takes the button's place: one destructive control
+            on screen, as on the producer page. */}
+        {!confirmForget ? (
+          <div>
+            <Button
+              type="button"
+              variant="destructive-outline"
+              onClick={() => setConfirmForget(true)}
+            >
+              Forget the key in this tab
+            </Button>
+          </div>
+        ) : null}
         {confirmForget ? (
           <InlineConfirm
             label="Confirm forgetting the key"
@@ -583,44 +610,59 @@ function HeldKeyView({ glue }: { glue: KeyGlue }) {
 function Backup({
   privateKey,
   generated,
+  savedHere,
 }: {
   privateKey: string;
   generated: boolean;
+  savedHere: boolean;
 }) {
   const [shown, setShown] = React.useState(false);
   return (
     <Card>
       <CardHeader>
         <CardTitle>Private key</CardTitle>
-        <CardDescription>
-          {generated
-            ? "Only this tab has it. Write it down or copy it somewhere safe, or save it encrypted below: closing the tab loses it otherwise."
-            : "Anyone with it controls the account, on devnet and on mainnet."}
-        </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
+        <CardDescription>
+          {!generated
+            ? "Anyone with it controls the account, on devnet and on mainnet."
+            : savedHere
+              ? "This tab's copy goes when the tab closes; the encrypted copy stays in this browser."
+              : "Lost when this tab closes, unless copied or saved below."}
+        </CardDescription>
+        {/* The copy follows its value, as on the public key's line; the
+            row below holds only Show or Hide. */}
         {shown ? (
-          <code
-            className="block rounded-md border bg-muted px-3 py-2 font-mono text-sm wrap-anywhere"
-            data-private-key-shown
-          >
-            {privateKey}
-          </code>
+          <div className="relative">
+            <code
+              className="block rounded-md border bg-muted py-2 pr-12 pl-3 font-mono text-sm wrap-anywhere"
+              data-private-key-shown
+            >
+              {privateKey}
+            </code>
+            <CopyButton
+              text={privateKey}
+              label="private key"
+              size="md"
+              className="absolute top-1 right-1"
+            />
+          </div>
         ) : (
-          <p className="font-mono text-sm text-muted-foreground">EK••••••••</p>
+          <p className="flex items-center gap-1 font-mono text-sm text-muted-foreground">
+            EK••••••••
+            <CopyButton text={privateKey} label="private key" />
+          </p>
         )}
-        <div className="flex flex-wrap items-center gap-2">
+        <div>
           <Button
             type="button"
             variant="outline"
-            size="sm"
             onClick={() => setShown(s => !s)}
             data-action="reveal-key"
           >
             {shown ? <EyeOff aria-hidden /> : <Eye aria-hidden />}
             {shown ? "Hide it" : "Show it"}
           </Button>
-          <CopyButton text={privateKey} label="private key" />
         </div>
       </CardContent>
     </Card>
@@ -639,10 +681,8 @@ function SaveEncrypted({ savedHere }: { savedHere: boolean }) {
         <KeyRound aria-hidden />
         <AlertTitle>Saved in this browser, encrypted</AlertTitle>
         <AlertDescription>
-          <p>
-            Its encrypted copy stays here until you delete it. The passphrase
-            unlocks it in a new tab.
-          </p>
+          {/* The private key's line says the copy stays. */}
+          <p>The passphrase unlocks it in a new tab.</p>
           {confirmDelete ? (
             <InlineConfirm
               label="Confirm deleting the saved copy"
@@ -657,12 +697,14 @@ function SaveEncrypted({ savedHere }: { savedHere: boolean }) {
           ) : (
             <Button
               type="button"
-              variant="outline"
-              size="sm"
-              className="mt-2 w-fit"
+              variant="destructive-outline"
+              // On the brand tint the red text drops under AA in light: the
+              // button keeps the page's colour behind it, and shows hover
+              // by its border, not a translucent fill over the tint.
+              className="mt-2 w-fit bg-background hover:border-destructive hover:bg-background active:bg-background"
               onClick={() => setConfirmDelete(true)}
             >
-              Delete the saved copy
+              Delete the saved key
             </Button>
           )}
         </AlertDescription>
@@ -673,12 +715,15 @@ function SaveEncrypted({ savedHere }: { savedHere: boolean }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Save it in this browser (optional)</CardTitle>
+        <CardTitle>
+          Save it in this browser{" "}
+          <span className="font-normal text-muted-foreground">optional</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
         <CardDescription>
           Anyone with this device and the passphrase can use it.
         </CardDescription>
-      </CardHeader>
-      <CardContent>
         <form
           className="flex flex-col gap-3"
           onSubmit={async event => {
@@ -700,7 +745,7 @@ function SaveEncrypted({ savedHere }: { savedHere: boolean }) {
             }
           }}
         >
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="save-passphrase">Passphrase</Label>
               <Input
@@ -712,7 +757,7 @@ function SaveEncrypted({ savedHere }: { savedHere: boolean }) {
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="save-again">The same again</Label>
+              <Label htmlFor="save-again">Confirm passphrase</Label>
               <Input
                 id="save-again"
                 type="password"
@@ -758,13 +803,13 @@ function ExportKeyFile({
   return (
     <Card data-export-key-file>
       <CardHeader>
-        <CardTitle>Export a key file (optional)</CardTitle>
-        <CardDescription>
-          A Mina encrypted key file, the format a native node reads, under a
-          password you choose.
-        </CardDescription>
+        <CardTitle>
+          Export a key file{" "}
+          <span className="font-normal text-muted-foreground">optional</span>
+        </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex flex-col gap-4">
+        <CardDescription>Encrypted key file for a native node.</CardDescription>
         <form
           className="flex flex-col gap-3"
           onSubmit={async event => {
@@ -789,7 +834,7 @@ function ExportKeyFile({
             }
           }}
         >
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="export-password">Password</Label>
               <Input
@@ -801,7 +846,7 @@ function ExportKeyFile({
               />
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="export-again">The same again</Label>
+              <Label htmlFor="export-again">Confirm password</Label>
               <Input
                 id="export-again"
                 type="password"

@@ -45,9 +45,10 @@ test("the docs site is minanode.org's own address", () => {
 
 test("the curl command sends the query as JSON", () => {
   const command = curlCommand("http://192.0.2.44:3700/graphql", EXAMPLE_QUERY);
-  expect(command.split("\n")[0]).toBe(
-    "curl -s http://192.0.2.44:3700/graphql \\",
-  );
+  expect(command.split("\n").slice(0, 2)).toEqual([
+    "curl -s \\",
+    "  http://192.0.2.44:3700/graphql \\",
+  ]);
   const body = /-d '(.*)'$/.exec(command)?.[1];
   expect(JSON.parse(body!)).toEqual({ query: EXAMPLE_QUERY });
   expect(EXAMPLE_QUERY).not.toContain("'");

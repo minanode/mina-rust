@@ -12,12 +12,13 @@ import { cn } from "@minanode/design-system/lib/utils";
  * - neutral: off, or not known yet
  *
  * StatusBadge is for evidence status on the site; Signal is for live state.
- * Always pair the colour with words.
+ * Always pair the colour with words. `variant="plain"` drops the pill (the
+ * dot and the word only), for a status repeated on every row of a table.
  */
 type Tone = "ok" | "info" | "warn" | "error" | "neutral";
 
 const signalVariants = cva(
-  "inline-flex w-fit shrink-0 items-center gap-2 rounded-full border px-2.5 py-1 font-mono text-[0.75rem] leading-none font-medium whitespace-nowrap",
+  "inline-flex w-fit shrink-0 items-center gap-2 rounded-full border px-2.5 py-1 font-sans text-xs leading-none font-medium whitespace-nowrap",
   {
     variants: {
       tone: {
@@ -31,6 +32,14 @@ const signalVariants = cva(
     defaultVariants: { tone: "neutral" },
   },
 );
+
+const plainText: Record<Tone, string> = {
+  ok: "text-status-live",
+  info: "text-status-devnet",
+  warn: "text-status-pending",
+  error: "text-destructive",
+  neutral: "text-muted-foreground",
+};
 
 /** A tone's solid fill, for dots and bars that carry the tone (pair them
  * with words). */
@@ -78,15 +87,29 @@ function SignalDot({
 function Signal({
   tone = "neutral",
   pulse,
+  variant = "pill",
   children,
   className,
   ...props
-}: React.ComponentProps<"span"> & { tone?: Tone; pulse?: boolean }) {
+}: React.ComponentProps<"span"> & {
+  tone?: Tone;
+  pulse?: boolean;
+  variant?: "pill" | "plain";
+}) {
   return (
     <span
       data-slot="signal"
       data-tone={tone}
-      className={cn(signalVariants({ tone }), className)}
+      className={cn(
+        variant === "plain"
+          ? cn(
+              // The text's 20 px line, so it shares a row's baseline.
+              "inline-flex w-fit shrink-0 items-center gap-2 font-sans text-sm leading-5 whitespace-nowrap",
+              plainText[tone],
+            )
+          : signalVariants({ tone }),
+        className,
+      )}
       {...props}
     >
       <SignalDot tone={tone} pulse={pulse} />

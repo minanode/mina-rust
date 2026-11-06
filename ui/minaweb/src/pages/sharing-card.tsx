@@ -54,7 +54,9 @@ function Switch({
       data-state={checked ? "on" : "off"}
       className={cn(
         "relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border transition-colors duration-150 outline-hidden focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-solid focus-visible:outline-ring disabled:cursor-default disabled:opacity-50",
-        checked ? "border-primary bg-primary" : "border-field bg-muted",
+        checked
+          ? "border-primary bg-primary"
+          : "border-field bg-input dark:bg-muted",
         className,
       )}
       {...props}
@@ -64,8 +66,8 @@ function Switch({
         className={cn(
           "inline-block size-4.5 rounded-full shadow-sm transition-transform duration-150",
           checked
-            ? "translate-x-5.5 bg-primary-foreground"
-            : "translate-x-0.5 bg-muted-foreground",
+            ? "translate-x-5.5 bg-background"
+            : "translate-x-0.5 bg-background ring-1 ring-field dark:bg-muted-foreground dark:ring-0",
         )}
       />
     </button>
@@ -74,7 +76,7 @@ function Switch({
 
 const TURN_ON = (
   <>
-    <span className="block">The node starts again, sharing. Then:</span>
+    <span className="block">Sharing restarts the node. Then:</span>
     <ul className="mt-2 flex list-disc flex-col gap-1 pl-5">
       <li>
         Other visitors, and anyone running a modified page, get your public IP
@@ -112,7 +114,7 @@ export function SharingCard({
   return (
     <Card
       data-sharing={on ? "on" : "off"}
-      className="gap-4 px-5 py-5 sm:px-6"
+      className="gap-4 px-4 py-4"
       aria-labelledby={titleId}
       role="region"
     >
@@ -121,7 +123,7 @@ export function SharingCard({
           <span
             aria-hidden
             className={cn(
-              "inline-flex size-9 shrink-0 items-center justify-center rounded-lg border bg-background [&_svg]:size-4.5",
+              "hidden size-9 shrink-0 items-center justify-center rounded-lg border bg-background sm:inline-flex [&_svg]:size-4.5",
               on ? "text-brand-text" : "text-muted-foreground",
             )}
           >
@@ -145,12 +147,17 @@ export function SharingCard({
           checked={on}
           aria-labelledby={titleId}
           disabled={asking}
+          // Held where it is while the confirm asks, not faded to a
+          // half state.
+          className={asking ? "disabled:opacity-100" : undefined}
           data-action="sharing-switch"
           onClick={() => setAsking(true)}
         />
       </div>
       {asking ? (
         <RestartConfirm
+          // No wider than its text.
+          className="max-w-2xl"
           label={
             on ? "Confirm turning sharing off" : "Confirm turning sharing on"
           }

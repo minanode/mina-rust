@@ -209,7 +209,10 @@ test("the sent list comes back after the restart, with no secret in storage", as
   await waitFor(() =>
     expect(document.querySelectorAll("[data-sent]").length).toBe(sent),
   );
-  expect(screen.getByText("5JuKept", { exact: false })).toBeTruthy();
+  // Shown twice: as a phone receipt and as a table row.
+  expect(
+    screen.getAllByText("5JuKept", { exact: false }).length,
+  ).toBeGreaterThan(0);
   // The next payment follows the kept one's nonce.
   sendPayment.mockResolvedValueOnce({
     hash: "5JuNext",

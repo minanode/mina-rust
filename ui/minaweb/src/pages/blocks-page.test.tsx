@@ -79,7 +79,9 @@ afterEach(cleanup);
 test("an older page the root has passed says so and keeps Newest", async () => {
   root = 100;
   const { rerender } = render(<BestChain />);
-  // The newest page: 30 blocks, 160 down to 131.
+  // The newest page: 30 blocks, 160 down to 131, the first 10 shown.
+  expect(document.querySelectorAll("tr[data-height]")).toHaveLength(10);
+  fireEvent.click(screen.getByRole("button", { name: "Show all 30" }));
   expect(document.querySelectorAll("tr[data-height]")).toHaveLength(30);
   await act(async () =>
     fireEvent.click(screen.getByRole("button", { name: "Older" })),

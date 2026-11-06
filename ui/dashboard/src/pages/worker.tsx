@@ -17,7 +17,6 @@ import { Button } from "@minanode/design-system/components/button";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@minanode/design-system/components/card";
@@ -36,13 +35,13 @@ import { EmptyState } from "@minanode/design-system/patterns/empty-state";
 import { ExternalLink } from "@minanode/design-system/patterns/external-link";
 import { Hash } from "@minanode/design-system/patterns/hash";
 import { KeyValueList } from "@minanode/design-system/patterns/key-value-list";
-import { MetricCard } from "@minanode/design-system/patterns/metric-card";
 import { Signal } from "@minanode/design-system/patterns/signal";
 
-import { Amount } from "@minanode/design-system/patterns/amount";
+import { Amount, Measure } from "@minanode/design-system/patterns/amount";
 import { InlineConfirm } from "@minanode/design-system/patterns/inline-confirm";
 import { PageHeader } from "@minanode/design-system/patterns/page-header";
 import { PageSection } from "@minanode/design-system/patterns/page-section";
+import { StatRow } from "@minanode/design-system/patterns/stat-row";
 import { TimeAgo } from "@minanode/design-system/patterns/relative-time";
 
 import {
@@ -51,7 +50,6 @@ import {
   explorerBlockUrl,
   feeInput,
   formatCount,
-  formatDuration,
   formatHeight,
   formatMina,
   confirmation,
@@ -83,8 +81,11 @@ import {
   type Polled,
 } from "@minanode/node-client/react";
 import { useNow } from "@minanode/design-system/lib/time";
+import { cn } from "@minanode/design-system/lib/utils";
 
-import { Code } from "../components/code";
+import { QUIET_EXTERNAL_LINK } from "../components/cells";
+import { Code, Flags } from "../components/code";
+import { CountOf, PHONE_HIDDEN, PhoneList } from "../components/phone-list";
 import { useShowAll } from "../components/show-all";
 import { Loaded, PolledAge } from "../components/states";
 import { docsUrl } from "../lib/docs";
@@ -132,15 +133,6 @@ export function WorkerPage() {
       <PageHeader
         eyebrow="Roles"
         title="SNARK worker"
-        description={
-          <>
-            Proves the transaction SNARKs that blocks need, for a fee paid to
-            your key when a block buys the work.{" "}
-            <ExternalLink href={docsUrl("worker")}>
-              SNARK worker docs
-            </ExternalLink>
-          </>
-        }
         aside={
           <>
             {view ? (
@@ -156,6 +148,10 @@ export function WorkerPage() {
               polled={together(control, included)}
               staleAfterMs={POLL_MS * 4}
             />
+            {/* The one link to the explanation. */}
+            <ExternalLink href={docsUrl("worker")} className="text-sm">
+              SNARK worker docs
+            </ExternalLink>
           </>
         }
       />
@@ -184,7 +180,7 @@ export function WorkerPage() {
       {c && c.recent.length > 0 ? <RecentJobs control={c} /> : null}
 
       {c && (!off || ran) ? (
-        <IncludedSection included={included} tip={tip} market={synced} />
+        <IncludedSection included={included} tip={tip} />
       ) : null}
 
       {work?.market && synced ? (
@@ -212,50 +208,43 @@ function WorkerOff({
   onChanged: () => void;
 }) {
   if (c.allowed) {
-    return (
-      <div className="lg:max-w-2xl">
-        <ControlCard control={c} market={market} onChanged={onChanged} />
-      </div>
-    );
+    return <ControlCard control={c} market={market} onChanged={onChanged} />;
   }
   return (
     <EmptyState
       icon={<Cpu />}
-      title="The SNARK worker is off on this node"
+      title="The SNARK worker is off"
       description={
         <>
-          <p>
-            A worker proves the SNARK work that blocks buy, and the fees go to a
-            key you choose. To run it, restart the node with{" "}
-            <Code>--run-snarker &lt;public key&gt;</Code> and{" "}
-            <Code>--snarker-fee &lt;MINA&gt;</Code>.
-            {c.strategy ? (
-              <>
-                {" "}
-                It would pick jobs{" "}
-                {c.strategy === "Random" ? "at random" : "in order"} (
-                <Code>
-                  --snarker-strategy {c.strategy === "Random" ? "rand" : "seq"}
-                </Code>
-                ).
-              </>
-            ) : null}
-          </p>
-          <p className="mt-2">
-            To start, stop and re-price it from this page instead, restart the
-            node with <Code>--allow-worker-control</Code>. It changes where fees
-            go, so keep the node&apos;s HTTP port reachable only by you.
-          </p>
+          <p>Restart the node with these.</p>
+          <Flags
+            rows={[
+              {
+                label: "Worker key",
+                flag: <>--run-snarker &lt;public key&gt;</>,
+              },
+              { label: "Fee", flag: <>--snarker-fee &lt;MINA&gt;</> },
+              {
+                label: "Dashboard control",
+                flag: "--allow-worker-control",
+              },
+            ]}
+          />
+          <p className="mt-3">{CONTROL_WARNING}</p>
         </>
       }
     />
   );
 }
 
+/** Control changes the fee receiver: say so wherever it is offered. */
+const CONTROL_WARNING =
+  "Control changes where fees go: keep the node's HTTP port reachable only by you.";
+
 /** The worker runs, but this page may not change it. */
 function ControlOff() {
   return (
-    <Card className="gap-3">
+    <Card>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Lock aria-hidden className="size-4 text-brand-text" />
@@ -264,14 +253,10 @@ function ControlOff() {
       </CardHeader>
       <CardContent className="flex flex-col gap-2 text-sm leading-relaxed text-muted-foreground">
         <p>
-          To stop or re-price the worker from this page, restart the node with{" "}
-          <Code>--allow-worker-control</Code>. It changes where fees go, so keep
-          the node&apos;s HTTP port reachable only by you.
+          To stop or re-price it from this page, restart the node with{" "}
+          <Code>--allow-worker-control</Code>.
         </p>
-        <p>
-          Without it, the worker runs as set at startup by{" "}
-          <Code>--run-snarker</Code> and <Code>--snarker-fee</Code>.
-        </p>
+        <p>{CONTROL_WARNING}</p>
       </CardContent>
     </Card>
   );
@@ -280,28 +265,40 @@ function ControlOff() {
 export function WorkerStatus({
   control: c,
   jobs,
+  aside,
 }: {
   control: WorkerControl;
   /** Jobs at the tip, from the node's status. */
   jobs?: number | null;
+  /** In the card's head: the worker's state, where a page shows it there. */
+  aside?: React.ReactNode;
 }) {
   const view = workerView(c);
-  const rows: { label: string; value: React.ReactNode; tone?: "brand" }[] = [
+  const rows: {
+    label: string;
+    value: React.ReactNode;
+    tone?: "brand";
+    prose?: boolean;
+    note?: React.ReactNode;
+  }[] = [
     {
       label: "State",
+      prose: true,
+      // When the proof started is the row's note: the value stays one line.
+      note:
+        view.label === "Working" && c.job?.submittedMs ? (
+          <>
+            started <TimeAgo at={c.job.submittedMs} />
+          </>
+        ) : undefined,
       value:
         view.label === "Working" && c.job ? (
           <span>
             Proving: {describeJob(c.job.summary, c.job.zkapp).toLowerCase()}
-            {c.job.submittedMs ? (
-              <>
-                {", started "}
-                <TimeAgo at={c.job.submittedMs} />
-              </>
-            ) : null}
           </span>
         ) : (
-          view.detail
+          // A value, not a sentence: no full stop.
+          view.detail.replace(/\.$/, "")
         ),
     },
   ];
@@ -318,46 +315,54 @@ export function WorkerStatus({
     });
     rows.push({
       label: "Its account",
+      prose: true,
       value:
         c.accountExists === null
           ? "Not known yet"
           : c.accountExists
             ? "In the ledger"
-            : "Not in the ledger yet",
+            : "No account yet",
     });
   }
   if (c.fee !== null) {
     rows.push({
       label: "Fee per job",
-      value: `${formatMina(c.fee)} MINA`,
+      value: <Amount unit="MINA" value={formatMina(c.fee)} />,
       tone: "brand",
     });
   }
   if (c.strategy) {
-    rows.push({ label: "Picks jobs", value: strategyLabel(c.strategy) });
+    rows.push({
+      label: "Picks jobs",
+      value: strategyLabel(c.strategy),
+      prose: true,
+    });
   }
   if (c.proofsMade !== null) {
     rows.push({
-      label: "Proofs made",
-      value: `${formatCount(c.proofsMade)} since the node started`,
+      label: "Proofs since the node started",
+      value: formatCount(c.proofsMade),
     });
   }
-  if (c.zkappJobs !== null) {
+  if (jobs !== null && jobs !== undefined) {
     rows.push({
       label: "Jobs the chain needs",
-      value:
-        jobs !== null && jobs !== undefined
-          ? `${formatCount(jobs)}, ${formatCount(c.zkappJobs)} of them for zkApp transactions`
-          : `${formatCount(c.zkappJobs)} for zkApp transactions`,
+      value: formatCount(jobs),
+      // The zkApp share is a part of them, not a count of its own.
+      note:
+        c.zkappJobs !== null
+          ? `${formatCount(c.zkappJobs)} for zkApp transactions`
+          : undefined,
+    });
+  } else if (c.zkappJobs !== null) {
+    rows.push({
+      label: "Jobs for zkApp transactions",
+      value: formatCount(c.zkappJobs),
     });
   }
   return (
     <div className="flex flex-col gap-4">
-      <KeyValueList
-        title="Worker"
-        rows={rows}
-        footer="A job is one or two proofs that a block buys together, for one fee."
-      />
+      <KeyValueList title="Worker" rows={rows} aside={aside} />
       {c.feeProblem ? (
         <Alert variant="caution">
           <TriangleAlert aria-hidden />
@@ -482,29 +487,17 @@ function ControlCard({
   const sending = outcome.kind === "sending";
 
   return (
-    <Card className="gap-5">
+    <Card>
       <CardHeader>
         <CardTitle>
-          {running ? "Change the worker" : "The SNARK worker is off"}
+          {running ? "Change the worker" : "Start the worker"}
         </CardTitle>
-        <CardDescription>
-          {running
-            ? "The node keeps this setting in its work directory, so a restart brings it back."
-            : "Start it here: it proves the SNARK work that blocks buy, for the fee you set, paid to the key you give. The node keeps the setting, so a restart brings it back."}
-          {c.accountCreationFee !== null ? (
-            <>
-              {" "}
-              A key that has no account yet needs a fee of at least{" "}
-              {formatMina(c.accountCreationFee)} MINA.
-            </>
-          ) : null}
-        </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex flex-col gap-4">
         <form
           noValidate
           onSubmit={submit}
-          className="flex flex-col gap-4"
+          className="flex max-w-3xl flex-col gap-4"
           aria-describedby={fieldError ? errorId : undefined}
         >
           <div className="flex flex-col gap-2">
@@ -541,27 +534,17 @@ function ControlCard({
                   : feeHintId
               }
             />
-            <p id={feeHintId} className="text-sm text-muted-foreground">
-              {!running && lowestOffer !== null ? (
-                <>
-                  Lowest offer in the pool now: {formatMina(lowestOffer)}{" "}
-                  MINA.{" "}
-                </>
-              ) : null}
-              What a block pays for each job it buys from this worker: one or
-              two proofs.
-              {!running && c.strategy ? (
-                <>
-                  {" "}
-                  It picks jobs{" "}
-                  {c.strategy === "Random" ? "at random" : "in order"} (
-                  <Code>
-                    --snarker-strategy{" "}
-                    {c.strategy === "Random" ? "rand" : "seq"}
-                  </Code>
-                  , set when the node starts).
-                </>
-              ) : null}
+            {/* What bounds the fee, under it. */}
+            <p
+              id={feeHintId}
+              className="text-sm text-pretty text-muted-foreground empty:hidden"
+            >
+              {!running && lowestOffer !== null
+                ? `Lowest offer in the pool now: ${formatMina(lowestOffer)} MINA. `
+                : null}
+              {c.accountCreationFee !== null
+                ? `A key that has no account yet needs a fee of at least ${formatMina(c.accountCreationFee)} MINA.`
+                : null}
             </p>
           </div>
           {fieldError ? (
@@ -613,7 +596,7 @@ function ControlCard({
             />
           ) : null}
         </form>
-        <div aria-live="polite" className="mt-4 empty:hidden">
+        <div aria-live="polite" className="empty:hidden">
           {outcome.kind === "done" ? (
             <Alert variant="brand">
               <CircleCheck aria-hidden />
@@ -648,22 +631,62 @@ function ControlCard({
 export function RecentJobs({ control: c }: { control: WorkerControl }) {
   const { shown, toggle } = useShowAll(c.recent, "newest");
   return (
-    <PageSection
-      title="Recent jobs"
-      description="The worker's latest outcomes, newest first."
-      aside={toggle}
-    >
+    <PageSection title="Recent jobs" aside={toggle}>
+      {/* On a phone a job a row: the job and its result, then when, how
+          long and the fee. */}
+      <ul
+        aria-label="Recent jobs"
+        className="flex flex-col divide-y rounded-xl border bg-card sm:hidden"
+      >
+        {shown.map((o, i) => (
+          <li
+            key={`${o.jobId}-${o.timeMs}-${i}`}
+            className="flex flex-col gap-1 px-4 py-3"
+          >
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <span>{describeJob(o.summary, o.zkapp)}</span>
+              <JobResult job={o} />
+            </div>
+            <p className="flex flex-wrap gap-x-3 text-xs text-muted-foreground tabular-nums">
+              <TimeAgo at={o.timeMs} />
+              {o.durationMs !== null ? (
+                <span>
+                  took{" "}
+                  <Measure
+                    value={`${(o.durationMs / 1000).toFixed(1)} s`}
+                    className="text-foreground"
+                  />
+                </span>
+              ) : null}
+              {o.fee !== null ? (
+                <span>
+                  fee{" "}
+                  <Amount
+                    unit="MINA"
+                    value={formatMina(o.fee)}
+                    className="text-foreground"
+                  />
+                </span>
+              ) : null}
+            </p>
+          </li>
+        ))}
+      </ul>
       <Table
-        className="[&_td]:align-middle [&_td]:whitespace-nowrap"
-        containerProps={tableRegion("Recent jobs")}
+        className="table-fixed [&_td]:align-middle [&_td]:whitespace-nowrap"
+        containerProps={{
+          ...tableRegion("Recent jobs"),
+          className: "hidden sm:block",
+        }}
       >
         <TableHeader>
           <TableRow>
-            <TableHead>When</TableHead>
+            {/* Fixed columns, so they don't move as "When" grows. */}
+            <TableHead className="w-40">When</TableHead>
             <TableHead>Job</TableHead>
-            <TableHead className="text-right">Took</TableHead>
-            <TableHead className="text-right">Fee</TableHead>
-            <TableHead>Result</TableHead>
+            <TableHead className="w-24 text-right">Took (s)</TableHead>
+            <TableHead className="w-28 text-right">Fee (MINA)</TableHead>
+            <TableHead className="w-36">Result</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -674,26 +697,13 @@ export function RecentJobs({ control: c }: { control: WorkerControl }) {
               </TableCell>
               <TableCell>{describeJob(o.summary, o.zkapp)}</TableCell>
               <TableCell className="text-right font-mono tabular-nums">
-                {o.durationMs !== null ? formatDuration(o.durationMs) : "–"}
+                {o.durationMs !== null ? (o.durationMs / 1000).toFixed(1) : "–"}
               </TableCell>
-              <TableCell className="text-right">
-                <Amount unit="MINA" value={formatMina(o.fee)} />
+              <TableCell className="text-right font-mono tabular-nums">
+                {formatMina(o.fee) ?? "–"}
               </TableCell>
               <TableCell>
-                {o.error ? (
-                  <Signal tone="warn" title={o.error}>
-                    Failed
-                  </Signal>
-                ) : o.offered ? (
-                  <Signal tone="ok">Offered</Signal>
-                ) : (
-                  <Signal
-                    tone="neutral"
-                    title="Proved for a key or fee the worker no longer has"
-                  >
-                    Not offered
-                  </Signal>
-                )}
+                <JobResult job={o} />
               </TableCell>
             </TableRow>
           ))}
@@ -703,36 +713,47 @@ export function RecentJobs({ control: c }: { control: WorkerControl }) {
   );
 }
 
+/** What became of a job: offered to the pool, not offered, or failed. */
+function JobResult({ job: o }: { job: WorkerControl["recent"][number] }) {
+  if (o.error) {
+    return (
+      <Signal variant="plain" tone="warn" title={o.error}>
+        Failed
+      </Signal>
+    );
+  }
+  return o.offered ? (
+    <Signal variant="plain" tone="ok">
+      Offered
+    </Signal>
+  ) : (
+    <Signal
+      variant="plain"
+      tone="neutral"
+      title="Proved for a key or fee the worker no longer has"
+    >
+      Not offered
+    </Signal>
+  );
+}
+
 export function IncludedSection({
   included,
   tip,
-  market,
 }: {
   included: Polled<IncludedWork>;
   /** The best tip's height, to count confirmations. */
   tip: number | null;
-  /** The market section follows. */
-  market: boolean;
 }) {
   const { shown, hidden, toggle } = useShowAll(
     included.data?.entries ?? [],
     "newest",
   );
   return (
-    <PageSection
-      title="Included in blocks"
-      description={`Best-chain blocks that bought this worker's work, newest first. It is confirmed once ${CONFIRMATIONS} blocks are on top of its block, Mina's recommended wait for a payment; until then a reorg could still drop it.`}
-      aside={toggle}
-    >
+    <PageSection title="Included in blocks" aside={toggle}>
       <Loaded polled={included} what="the included-work log" rows={4}>
         {work => (
-          <IncludedLog
-            work={work}
-            entries={shown}
-            hidden={hidden}
-            tip={tip}
-            market={market && work.market !== null}
-          />
+          <IncludedLog work={work} entries={shown} hidden={hidden} tip={tip} />
         )}
       </Loaded>
     </PageSection>
@@ -744,28 +765,18 @@ function IncludedLog({
   entries,
   hidden,
   tip,
-  market,
 }: {
   work: IncludedWork;
   /** The rows to show, and how many more there are. */
   entries: readonly IncludedWork["entries"][number][];
   hidden: number;
   tip: number | null;
-  market: boolean;
 }) {
   if (work.entries.length === 0 && work.finalTotals.blocks === 0) {
     return (
       <EmptyState
         title="No block has bought this worker's work yet"
-        description={
-          <p>
-            Blocks buy work only when the chain needs proofs, often many jobs at
-            once and then none for hours, so a new worker can wait a while.
-            {market
-              ? " The market below shows when blocks last bought and at what fees."
-              : null}
-          </p>
-        }
+        description={<p>Blocks buy work in bursts, often hours apart.</p>}
       />
     );
   }
@@ -774,23 +785,90 @@ function IncludedLog({
     `${plural(t.bundles, "job")} in ${plural(t.blocks, "block")}`;
   return (
     <div className="flex flex-col gap-4">
-      <div className="grid gap-4 sm:grid-cols-2">
-        <MetricCard
-          size="sm"
-          value={`${formatMina(confirmed.fees)} MINA`}
-          label="Confirmed"
-          detail={`${jobs(confirmed)}, each with ${CONFIRMATIONS} or more blocks on top, since the log began.`}
-        />
-        <MetricCard
-          size="sm"
-          value={`${formatMina(pending.fees)} MINA`}
-          label="Pending"
-          detail={`${jobs(pending)} with fewer than ${CONFIRMATIONS} blocks on top.`}
-        />
-      </div>
+      <StatRow
+        label="Fees earned"
+        // Side by side on a desktop; on a phone stacked, as Confirmed's
+        // caption is too long for half the width.
+        minItemWidth="12rem"
+        items={[
+          {
+            label: "Confirmed",
+            value: (
+              <Amount
+                unit="MINA"
+                value={formatMina(confirmed.fees)}
+                unitClassName="font-sans text-sm font-normal"
+              />
+            ),
+            detail: `${jobs(confirmed)}, ${CONFIRMATIONS}+ blocks deep`,
+          },
+          {
+            label: "Pending",
+            value: (
+              <Amount
+                unit="MINA"
+                value={formatMina(pending.fees)}
+                unitClassName="font-sans text-sm font-normal"
+              />
+            ),
+            detail:
+              pending.bundles > 0
+                ? `${jobs(pending)}, under ${CONFIRMATIONS} deep`
+                : undefined,
+          },
+        ]}
+      />
+      {/* On a phone a block a row: the block and its state, then when,
+          how deep, the jobs and the fees. */}
+      <PhoneList
+        label="Blocks that bought this worker's work"
+        rows={entries.map(e => {
+          const n = confirmations(e, tip);
+          const state = confirmation(e, tip);
+          return {
+            key: `${e.height}-${e.stateHash}`,
+            lead: (
+              <BlockHeight
+                height={e.height}
+                url={explorerBlockUrl(work.network, e.height)}
+              />
+            ),
+            end: <IncludedStatus entry={e} state={state} />,
+            meta: [
+              <TimeAgo key="t" at={e.timeMs} />,
+              n === null ? null : state === "pending" ? (
+                <>
+                  <Fig n={n} /> of {CONFIRMATIONS} deep
+                </>
+              ) : (
+                <>
+                  <Fig n={n} /> deep
+                </>
+              ),
+            ],
+            // Jobs and fees on a line of their own: every row two lines.
+            more: [
+              <>
+                <CountOf n={e.bundles} one="job" />
+                {e.zkappBundles ? `, ${e.zkappBundles} zkApp` : null}
+              </>,
+              e.fees !== null ? (
+                <Amount
+                  unit="MINA"
+                  value={formatMina(e.fees)}
+                  className="text-foreground"
+                />
+              ) : null,
+            ],
+          };
+        })}
+      />
       <Table
         className="[&_td]:align-middle [&_td]:whitespace-nowrap"
-        containerProps={tableRegion("Blocks that bought this worker's work")}
+        containerProps={{
+          ...tableRegion("Blocks that bought this worker's work"),
+          className: PHONE_HIDDEN,
+        }}
       >
         <TableHeader>
           <TableRow>
@@ -798,7 +876,7 @@ function IncludedLog({
             <TableHead>When</TableHead>
             <TableHead className="text-right">Confirmations</TableHead>
             <TableHead className="text-right">Jobs</TableHead>
-            <TableHead className="text-right">Fees</TableHead>
+            <TableHead className="text-right">Fees (MINA)</TableHead>
             <TableHead>Status</TableHead>
           </TableRow>
         </TableHeader>
@@ -809,9 +887,9 @@ function IncludedLog({
             const state = confirmation(e, tip);
             return (
               <TableRow key={`${e.height}-${e.stateHash}`}>
-                <TableCell className="font-mono">
+                <TableCell className="font-mono tabular-nums">
                   {url ? (
-                    <ExternalLink href={url}>
+                    <ExternalLink href={url} className={QUIET_EXTERNAL_LINK}>
                       {formatHeight(e.height)}
                     </ExternalLink>
                   ) : (
@@ -822,37 +900,34 @@ function IncludedLog({
                   <TimeAgo at={e.timeMs} />
                 </TableCell>
                 <TableCell className="text-right font-mono tabular-nums">
-                  {n === null
-                    ? "–"
-                    : state === "pending"
-                      ? `${formatCount(n)} of ${CONFIRMATIONS}`
-                      : formatCount(n)}
+                  {n === null ? (
+                    "–"
+                  ) : state === "pending" ? (
+                    <>
+                      <Fig n={n} />
+                      <span className="font-sans text-muted-foreground">
+                        {" "}
+                        of {CONFIRMATIONS}
+                      </span>
+                    </>
+                  ) : (
+                    formatCount(n)
+                  )}
                 </TableCell>
                 <TableCell className="text-right font-mono tabular-nums">
                   {formatCount(e.bundles)}
                   {e.zkappBundles ? (
-                    <span className="text-muted-foreground">
-                      {" "}
-                      ({e.zkappBundles} zkApp)
+                    // The figure in mono, the word in the text face.
+                    <span className="ml-1.5 font-sans text-xs text-muted-foreground">
+                      {e.zkappBundles} zkApp
                     </span>
                   ) : null}
                 </TableCell>
-                <TableCell className="text-right">
-                  <Amount unit="MINA" value={formatMina(e.fees)} />
+                <TableCell className="text-right font-mono tabular-nums">
+                  {formatMina(e.fees) ?? "–"}
                 </TableCell>
                 <TableCell>
-                  <Signal
-                    tone={confirmationTone[state]}
-                    title={
-                      e.status === "final"
-                        ? "Final: at or behind the node's root, 290 blocks deep"
-                        : e.status === "dropped"
-                          ? "Another block took its place in the best chain"
-                          : undefined
-                    }
-                  >
-                    {confirmationLabel[state]}
-                  </Signal>
+                  <IncludedStatus entry={e} state={state} />
                 </TableCell>
               </TableRow>
             );
@@ -862,7 +937,7 @@ function IncludedLog({
       {hidden > 0 ? (
         <p className="text-sm text-muted-foreground">
           The newest {entries.length} of {formatCount(work.entries.length)}{" "}
-          blocks; the totals above count them all.
+          blocks; totals count all {formatCount(work.entries.length)}.
         </p>
       ) : null}
     </div>
@@ -885,10 +960,6 @@ function Market({
   /** The keys the node counts as its own (the included-work log's). */
   ownKeys: readonly string[];
 }) {
-  const fees = (lo: number, hi: number) =>
-    lo === hi
-      ? `${formatMina(lo)} MINA`
-      : `${formatMina(lo)} to ${formatMina(hi)} MINA`;
   const comparison = feeComparison(market, ourKey, ourFee, ownKeys);
   // The cheapest ten, and this worker's offer wherever it falls; the node
   // caps the list, and says how many provers there are in all.
@@ -902,61 +973,100 @@ function Market({
     marketProvers(market, ourKey === null ? ownKeys : [...ownKeys, ourKey])
       .total - shownOffers.length;
   return (
-    <PageSection
-      title="The SNARK market"
-      description="What this node's best chain bought from every prover, and the proofs waiting in its pool, to compare fees with."
-    >
+    <PageSection title="The SNARK market">
       <div className="grid items-start gap-6 lg:grid-cols-2">
-        <KeyValueList
+        <MarketTable
           title="Bought by blocks"
-          rows={
-            market.purchases.length
-              ? market.purchases.map(p => {
-                  const url = explorerBlockUrl(network, p.height);
-                  return {
-                    label: (
-                      <span className="inline-flex flex-wrap gap-x-2">
-                        {url ? (
-                          <ExternalLink href={url}>
-                            {formatHeight(p.height)}
-                          </ExternalLink>
-                        ) : (
-                          formatHeight(p.height)
-                        )}
-                        <TimeAgo at={p.timeMs} />
+          phone={
+            market.purchases.length ? (
+              <PhoneList
+                label="Bought by blocks"
+                rows={market.purchases.map(p => ({
+                  key: `${p.height}-${p.timeMs}`,
+                  lead: (
+                    <BlockHeight
+                      height={p.height}
+                      url={explorerBlockUrl(network, p.height)}
+                    />
+                  ),
+                  end: (
+                    <>
+                      <FeeRange lo={p.minFee} hi={p.maxFee} />
+                      {/* The unit as every figure's: mono, muted. */}
+                      <span className="font-mono text-muted-foreground">
+                        {" "}
+                        MINA
                       </span>
-                    ),
-                    value: `${plural(p.bundles, "job")} from ${plural(p.provers, "prover")}, ${fees(p.minFee, p.maxFee)}`,
-                  };
-                })
-              : [{ label: "Latest purchases", value: "None" }]
+                    </>
+                  ),
+                  meta: [
+                    <TimeAgo key="t" at={p.timeMs} />,
+                    <CountOf key="j" n={p.bundles} one="job" />,
+                    <CountOf key="p" n={p.provers} one="prover" />,
+                  ],
+                }))}
+              />
+            ) : undefined
           }
           footer={
             market.buyingBlocks
               ? `${formatCount(market.buyingBlocks)} of the last ${plural(market.blocks, "best-chain block")} bought work: ${plural(market.bundles, "job")} in all.`
               : `None of the last ${plural(market.blocks, "best-chain block")} bought work.`
           }
-        />
-        <KeyValueList
+        >
+          <TableHeader>
+            <TableRow>
+              <TableHead>Block</TableHead>
+              <TableHead>When</TableHead>
+              <TableHead className="text-right">Jobs</TableHead>
+              <TableHead className="text-right">Provers</TableHead>
+              <TableHead className="text-right">Fee (MINA)</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {market.purchases.length ? (
+              market.purchases.map(p => {
+                const url = explorerBlockUrl(network, p.height);
+                return (
+                  <TableRow key={`${p.height}-${p.timeMs}`}>
+                    <TableCell className="font-mono tabular-nums">
+                      {url ? (
+                        <ExternalLink
+                          href={url}
+                          className={QUIET_EXTERNAL_LINK}
+                        >
+                          {formatHeight(p.height)}
+                        </ExternalLink>
+                      ) : (
+                        formatHeight(p.height)
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <TimeAgo at={p.timeMs} />
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">
+                      {formatCount(p.bundles)}
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">
+                      {formatCount(p.provers)}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <FeeRange lo={p.minFee} hi={p.maxFee} />
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            ) : (
+              <TableRow>
+                <TableCell colSpan={5} className="text-muted-foreground">
+                  No purchases yet
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </MarketTable>
+        <MarketTable
           title="Offers in the pool"
-          rows={
-            shownOffers.length
-              ? shownOffers.map(o => ({
-                  label: (
-                    <span className="inline-flex flex-wrap items-center gap-x-2">
-                      <Hash value={o.prover} label="prover key" />
-                      {o.prover === ourKey ? (
-                        <span className="font-sans text-xs text-brand-text">
-                          this worker
-                        </span>
-                      ) : null}
-                    </span>
-                  ),
-                  value: `${plural(o.bundles, "job")} at ${fees(o.minFee, o.maxFee)}`,
-                  tone: o.prover === ourKey ? ("brand" as const) : undefined,
-                }))
-              : [{ label: "Offers", value: "None in the pool" }]
-          }
           footer={
             <>
               {comparison ?? "Blocks buy the cheapest proof of each job."}
@@ -965,8 +1075,154 @@ function Market({
                 : null}
             </>
           }
-        />
+        >
+          <TableHeader>
+            <TableRow>
+              <TableHead>Prover</TableHead>
+              <TableHead className="text-right">Jobs</TableHead>
+              <TableHead className="text-right">Fee (MINA)</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {shownOffers.length ? (
+              shownOffers.map(o => (
+                <TableRow key={o.prover}>
+                  <TableCell>
+                    <span className="inline-flex flex-wrap items-center gap-x-2">
+                      <Hash value={o.prover} label="prover key" />
+                      {o.prover === ourKey ? (
+                        <span className="font-sans text-xs text-muted-foreground">
+                          this worker
+                        </span>
+                      ) : null}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-right font-mono tabular-nums">
+                    {formatCount(o.bundles)}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <FeeRange lo={o.minFee} hi={o.maxFee} />
+                  </TableCell>
+                </TableRow>
+              ))
+            ) : (
+              <TableRow>
+                <TableCell colSpan={3} className="text-muted-foreground">
+                  None in the pool
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </MarketTable>
       </div>
     </PageSection>
+  );
+}
+
+/** A block's height in a role table: to the explorer when the network has
+ * one. */
+function BlockHeight({ height, url }: { height: number; url: string | null }) {
+  return (
+    <span className="font-mono tabular-nums">
+      {url ? (
+        <ExternalLink href={url} className={QUIET_EXTERNAL_LINK}>
+          {formatHeight(height)}
+        </ExternalLink>
+      ) : (
+        formatHeight(height)
+      )}
+    </span>
+  );
+}
+
+/** Where a block that bought this worker's work stands. */
+function IncludedStatus({
+  entry: e,
+  state,
+}: {
+  entry: IncludedWork["entries"][number];
+  state: ReturnType<typeof confirmation>;
+}) {
+  return (
+    <Signal
+      variant="plain"
+      tone={confirmationTone[state]}
+      title={
+        e.status === "final"
+          ? "Final: at or behind the node's root, 290 blocks deep"
+          : e.status === "dropped"
+            ? "Another block took its place in the best chain"
+            : undefined
+      }
+    >
+      {confirmationLabel[state]}
+    </Signal>
+  );
+}
+
+/** A count, muted at zero, in the figure's own colour otherwise. */
+function Fig({ n }: { n: number }) {
+  return (
+    <span
+      className={cn(
+        "font-mono",
+        n === 0 ? "text-muted-foreground" : "text-foreground",
+      )}
+    >
+      {formatCount(n)}
+    </span>
+  );
+}
+
+/** One side of the market: a titled table with a line under it. */
+function MarketTable({
+  title,
+  footer,
+  phone,
+  children,
+}: {
+  title: string;
+  footer: React.ReactNode;
+  /** Its rows on a phone, where the table would scroll its fee away. */
+  phone?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-2">
+      <h3 className="text-[0.9375rem] font-semibold text-foreground">
+        {title}
+      </h3>
+      {phone}
+      <Table
+        className="[&_td]:align-middle [&_td]:whitespace-nowrap"
+        containerProps={{
+          ...tableRegion(title),
+          className: phone ? PHONE_HIDDEN : undefined,
+        }}
+      >
+        {children}
+      </Table>
+      {/* Balanced, so a half-column note never leaves a figure alone on
+          its last line. */}
+      <p className="text-sm text-muted-foreground max-sm:text-pretty sm:text-balance">
+        {footer}
+      </p>
+    </div>
+  );
+}
+
+/** A fee, or the range of fees, in MINA: figures in mono, the word between
+ * them in the text face. */
+function FeeRange({ lo, hi }: { lo: number; hi: number }) {
+  return (
+    <span className="font-mono tabular-nums">
+      {formatMina(lo)}
+      {lo === hi ? null : (
+        <>
+          <span className="mx-1 font-sans text-muted-foreground">to</span>
+          {formatMina(hi)}
+        </>
+      )}
+    </span>
   );
 }

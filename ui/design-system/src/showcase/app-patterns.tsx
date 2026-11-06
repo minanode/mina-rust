@@ -373,7 +373,7 @@ export function AppPatterns() {
 
       <Subsection
         title="One level of boxes"
-        description="A bordered surface (a Card, a KeyValueList) is the box. An empty state, an alert or an inline confirmation inside it has no border of its own (lib/surface): the empty state goes flat, the others keep only their tint. On its own, an empty state is a dashed box."
+        description="A bordered surface (a Card, a KeyValueList) is the box. An empty state, an alert or an inline confirmation inside it has no border of its own (lib/surface): the empty state goes flat, the others keep only their tint. On its own, an empty state is a bordered panel."
       >
         <ThemePair>
           <Card className="gap-4">
@@ -405,7 +405,7 @@ export function AppPatterns() {
           <EmptyState
             icon={<Lock />}
             title="An empty state on its own"
-            description={<p>A dashed box: the page has no other around it.</p>}
+            description={<p>A bordered panel: the page has no other around it.</p>}
           />
         </ThemePair>
       </Subsection>

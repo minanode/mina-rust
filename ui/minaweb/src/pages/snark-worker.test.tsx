@@ -123,7 +123,9 @@ const startButton = () =>
 async function start() {
   fireEvent.click(startButton());
   await act(async () =>
-    fireEvent.click(screen.getByRole("button", { name: "Start it" })),
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restart as SNARK worker" }),
+    ),
   );
 }
 
@@ -217,7 +219,9 @@ test("a recipient that isn't a public key: no restart", async () => {
   type("worker-fee", "0.004");
   fireEvent.click(startButton());
   type("worker-key", BAD_CHECKSUM);
-  expect(screen.queryByRole("button", { name: "Start it" })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Restart as SNARK worker" }),
+  ).toBeNull();
   expect(state.restart).not.toHaveBeenCalled();
 });
 

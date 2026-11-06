@@ -70,6 +70,15 @@ export function savedChainLabel(
   }
 }
 
+/** The saved chain's height, when there is one to restore: a panel shows
+ * the figure alone, its label says what it is. */
+export function savedChainHeight(
+  state: StoreState,
+  chain: SavedChain | null | undefined,
+): number | null {
+  return state.kind === "on" && chain?.state === "saved" ? chain.height : null;
+}
+
 /** Why the saved chain doesn't restore, or isn't known. */
 export function savedChainReason(
   chain: SavedChain | null | undefined,

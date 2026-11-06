@@ -9,6 +9,7 @@ import {
   createNodeClient,
   createWebNodeTransport,
   formatCount,
+  formatHeight,
   ledgerTotal,
   type LedgerSync,
   type NodeClient,
@@ -552,7 +553,6 @@ export class Boot {
             ? "Building the verifier keys and the node, with its block producer."
             : "Building the verifier keys and the node.",
     });
-    const startedAt = Date.now();
     let rpc: WebNodeRpc;
     try {
       rpc = await glue.run(
@@ -582,7 +582,8 @@ export class Boot {
     this.set({ startPart: START_PARTS.length });
     this.step("start", {
       state: "done",
-      detail: `Running, in ${seconds(Date.now() - startedAt)}.`,
+      // The step's time is on its right: one duration a step.
+      detail: "Running.",
     });
     (globalThis as { webnode?: unknown }).webnode = rpc;
     await this.follow(client);
@@ -760,7 +761,6 @@ export class Boot {
                 this.config.relays,
                 location.origin,
                 status.peers,
-                waited,
               ),
             });
           }
@@ -779,7 +779,7 @@ export class Boot {
           }
         }
         this.step("blocks", {
-          detail: `At ${status.bestTip ? `#${formatCount(status.bestTip.height)}` : "the tip"}.`,
+          detail: `At ${status.bestTip ? formatHeight(status.bestTip.height) : "the tip"}.`,
         });
         this.set({ synced: true, progress: null });
         return;

@@ -48,7 +48,7 @@ test("ledger rows: done, syncing with counts, waiting", () => {
     ["Root snarked ledger", "waiting", 0, "Waiting"],
     ["Root staged ledger", "waiting", 0, "Waiting"],
   ]);
-  expect(ledgerStepSentence(syncing)).toBe("Next epoch ledger, 2 of 4.");
+  expect(ledgerStepSentence(syncing)).toBe("Ledger 2 of 4.");
   // The next epoch ledger's counts are kept for when it is done.
   expect(memory.nextEpoch?.accountsTotal).toBe(5100);
 });

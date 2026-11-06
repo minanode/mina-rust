@@ -47,15 +47,12 @@ test("each recorded attempt has its outcome in words", () => {
   ]);
   // Confirmed from 15 blocks on top, as included SNARK work is.
   expect(bySlot(62736).label).toBe("Confirmed");
-  expect(bySlot(62736).reason).toBe(
-    "In the best chain with 19 blocks on top when last seen.",
-  );
+  expect(bySlot(62736).reason).toBe("In the best chain when last seen.");
+  expect(bySlot(62736).note).toBe("19 blocks on top");
   expect(bySlot(62750).label).toBe("Pending");
-  expect(bySlot(62750).reason).toBe(
-    "In the best chain with 12 blocks on top when last seen; confirmed at 15.",
-  );
+  expect(bySlot(62750).note).toBe("12 of 15 blocks on top");
   expect(bySlot(62773).label).toBe("Lost the tie");
-  expect(bySlot(62773).reason).toMatch(/same key, the larger hash wins/);
+  expect(bySlot(62773).reason).toBe("Another block won the tie-break.");
   expect(bySlot(62777).reason).toMatch(/#579109/);
 });
 
@@ -101,9 +98,11 @@ test("a lost tie stops at the proof and is never sent", () => {
 test("the scheduled slot is upcoming, its stages to come", () => {
   const r = bySlot(62780);
   expect(r.label).toBe("Scheduled");
+  // Before the slot begins nothing is under way: every stage after
+  // Scheduled waits.
   expect(r.stages.map(s => s.state)).toEqual([
     "done",
-    "current",
+    "pending",
     "pending",
     "pending",
     "pending",

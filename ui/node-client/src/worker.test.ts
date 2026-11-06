@@ -129,8 +129,8 @@ test("the job strategy, and an unknown one", () => {
   expect(
     parseWorkerControl({ ...working, strategy: "RandomOffset" }).strategy,
   ).toBeNull();
-  expect(strategyLabel("Random")).toBe("At random (rand, the default)");
-  expect(strategyLabel("Sequential")).toBe("In order (seq)");
+  expect(strategyLabel("Random")).toBe("At random");
+  expect(strategyLabel("Sequential")).toBe("In order");
 });
 
 describe("every worker state reads in words", () => {
@@ -144,7 +144,7 @@ describe("every worker state reads in words", () => {
     [{ kind: "Idle" }, "Idle", "ok"],
     [{ kind: "WorkReady", job_id: "j" }, "Proof ready", "ok"],
     [{ kind: "WorkError", job_id: "j", error: "x" }, "Job failed", "warn"],
-    [{ kind: "Cancelling", job_id: "j" }, "Cancelling", "info"],
+    [{ kind: "Cancelling", job_id: "j" }, "Cancelling job", "info"],
     [{ kind: "Killing" }, "Stopping", "info"],
   ])("%o", (worker, label, tone) => {
     expect(view(worker)).toMatchObject({ label, tone });

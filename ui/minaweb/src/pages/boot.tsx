@@ -2,12 +2,20 @@ import * as React from "react";
 import { DatabaseZap } from "lucide-react";
 
 import { Button } from "@minanode/design-system/components/button";
-import { Card } from "@minanode/design-system/components/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@minanode/design-system/components/card";
 import { InlineConfirm } from "@minanode/design-system/patterns/inline-confirm";
 import { ExternalLink } from "@minanode/design-system/patterns/external-link";
-import { KeyValueList } from "@minanode/design-system/patterns/key-value-list";
+import {
+  KeyValueList,
+  type KeyValueRow,
+} from "@minanode/design-system/patterns/key-value-list";
 import { PageHeader } from "@minanode/design-system/patterns/page-header";
-import { restoreHeadline } from "@minanode/node-client";
+import { formatHeight, restoreHeadline } from "@minanode/node-client";
 import { useNodeStatus, useSyncRestore } from "@minanode/node-client/react";
 
 import { BootFailureAlert } from "../app/boot-screen";
@@ -16,6 +24,7 @@ import { useBoot } from "../app/boot-context";
 import { resetFrontierStore } from "../boot/boot";
 import {
   SAVED_CHAIN_DOCS_URL,
+  savedChainHeight,
   savedChainLabel,
   savedChainReason,
   storeLabel,
@@ -36,20 +45,25 @@ export function FrontierStoreCard() {
   // The reset only once the node says the store is open in this tab.
   const usable = state.kind === "on";
   const saved = savedChainLabel(state, store?.savedChain);
+  const savedHeight = savedChainHeight(state, store?.savedChain);
   const savedReason = savedChainReason(store?.savedChain);
 
-  const rows = [
-    { label: "Status", value: storeLabel(state), tone: "brand" as const },
+  const rows: KeyValueRow[] = [
+    { label: "Status", value: storeLabel(state), prose: true },
   ];
   if (state.kind === "other-tab") {
-    rows.push({ label: "Held by", value: "Another tab", tone: "brand" });
+    rows.push({ label: "Held by", value: "Another tab", prose: true });
   } else if (state.kind === "unavailable") {
-    rows.push({ label: "Reason", value: state.reason, tone: "brand" });
+    rows.push({ label: "Reason", value: state.reason, prose: true });
   }
   if (saved) {
-    rows.push({ label: "Saved chain", value: saved, tone: "brand" });
+    rows.push(
+      savedHeight !== null
+        ? { label: "Saved chain", value: formatHeight(savedHeight) }
+        : { label: "Saved chain", value: saved, prose: true },
+    );
     if (savedReason) {
-      rows.push({ label: "Why", value: savedReason, tone: "brand" });
+      rows.push({ label: "Why", value: savedReason, prose: true });
     }
   }
   if (usable) {
@@ -60,13 +74,12 @@ export function FrontierStoreCard() {
         : restore.data
           ? restoreHeadline(restore.data)
           : "Synced from the network",
-      tone: "brand",
+      prose: true,
     });
   }
 
   return (
     <KeyValueList
-      className="max-w-xl"
       data-frontier-store={state.kind}
       title="Frontier store"
       aside={
@@ -97,7 +110,7 @@ export function FrontierStoreCard() {
             ) : (
               <Button
                 type="button"
-                variant="outline"
+                variant="destructive-outline"
                 className="w-fit"
                 data-action="reset-store"
                 onClick={() => setConfirming(true)}
@@ -124,16 +137,21 @@ export function BootPage() {
   const boot = useBoot();
   return (
     <>
-      <PageHeader
-        eyebrow="This tab"
-        title="Start-up"
-        description="How the node started in this tab."
-      />
+      <PageHeader eyebrow="Node" title="Start-up" />
       <BootFailureAlert boot={boot} />
-      <Card className="max-w-xl gap-5 p-6">
-        <BootSteps boot={boot} />
-      </Card>
-      <FrontierStoreCard />
+      <div className="grid items-start gap-6 lg:grid-cols-2">
+        {/* A title bar like the Frontier store's, so the two first rows
+            line up. */}
+        <Card className="gap-0 py-0">
+          <CardHeader className="flex min-h-12 items-center border-b px-4 py-2.5">
+            <CardTitle>Steps</CardTitle>
+          </CardHeader>
+          <CardContent className="p-4">
+            <BootSteps boot={boot} />
+          </CardContent>
+        </Card>
+        <FrontierStoreCard />
+      </div>
     </>
   );
 }

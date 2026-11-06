@@ -11,7 +11,8 @@
     "./components/states": "./src/components/states.tsx",
     "./components/block-contents": "./src/components/block-contents.tsx",
     "./components/account-detail": "./src/components/account-detail.tsx",
-    "./components/pending-transactions": "./src/components/pending-transactions.tsx"
+    "./components/pending-transactions": "./src/components/pending-transactions.tsx",
+    "./components/show-all": "./src/components/show-all.tsx"
   },
   "scripts": {
     "dev": "vite --port 4282 --strictPort",

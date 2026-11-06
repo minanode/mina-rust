@@ -5,6 +5,7 @@
 import * as React from "react";
 import {
   ArrowRight,
+  CirclePause,
   CircleStop,
   LoaderCircle,
   RefreshCw,
@@ -23,6 +24,7 @@ import { reloadAndStart } from "../boot/autostart";
 import { ROLE_LABELS, writeRole, VIEWER } from "../roles/role";
 import { bootActions } from "./boot-context";
 import { BootSteps } from "./boot-steps";
+import { FailureLines } from "./failure-lines";
 import { ProducerUnlock } from "./producer-unlock";
 import { StartLayout } from "./start-layout";
 
@@ -40,6 +42,7 @@ export function BootFailureAlert({ boot }: { boot: BootSnapshot }) {
       <AlertTitle>{failure.title}</AlertTitle>
       <AlertDescription>
         <p className="wrap-anywhere">{failure.detail}</p>
+        <FailureLines lines={failure.lines} />
         {failure.hint ? <p>{failure.hint}</p> : null}
         {!waiting ? (
           <div className="mt-2 flex flex-wrap gap-2">
@@ -89,19 +92,35 @@ export function BootScreen({
   const stopped = boot.failure !== null && boot.failure.kind !== "peers";
   return (
     <StartLayout
+      running
+      // A stopped start leads with why at every width, as a failed check
+      // does before Start.
+      noticesFirst={stopped}
       role={boot.role}
+      // The unlock card and the paused step say the start waits for the
+      // passphrase; a failure's alert is the fact once it stopped: the line
+      // goes in both.
+      lead={boot.unlock || stopped ? null : undefined}
       start={
         <Button
           type="button"
           disabled
           data-started={stopped ? "stopped" : "starting"}
         >
+          {/* No motion while the start waits for the passphrase, as the
+              step it waits on is paused. */}
           {stopped ? (
             <CircleStop aria-hidden />
+          ) : boot.unlock ? (
+            <CirclePause aria-hidden />
           ) : (
             <LoaderCircle aria-hidden className="motion-safe:animate-spin" />
           )}
-          {stopped ? "Stopped" : "Starting in this tab"}
+          {stopped
+            ? "Stopped"
+            : boot.unlock
+              ? "Waiting for the passphrase"
+              : "Starting in this tab"}
         </Button>
       }
       notices={
@@ -121,7 +140,7 @@ export function BootScreen({
             <Button
               type="button"
               variant="outline"
-              className="w-fit"
+              className="w-full sm:w-fit sm:min-w-64"
               onClick={onOpen}
             >
               Open the node's pages now

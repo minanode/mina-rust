@@ -530,9 +530,24 @@ export function ComponentGallery() {
           </ThemePair>
         </Subsection>
 
-        <Subsection title="Key-value receipt" description="A description list in mono for receipts and node details.">
+        <Subsection title="Key-value panel" description="A description list for an app's details: labels in the text face, values in mono, a rule between rows.">
           <ThemePair>
             <KeyValueList
+              title="Panel title"
+              rows={[
+                { label: "Field", value: "value" },
+                { label: "Words", value: "a value in words", prose: true },
+                { label: "Long value", value: "3NKiFwqrZkMm4EUR9Ud1VJzWDoDL1uRgEYVADVigKm6adyhNW7SR", wide: true },
+              ]}
+              footer="A footnote with the caveat for these values."
+            />
+          </ThemePair>
+        </Subsection>
+
+        <Subsection title="Key-value receipt" description="A description list in mono for receipts on the site.">
+          <ThemePair>
+            <KeyValueList
+              variant="receipt"
               title="Receipt title"
               aside={
                 <span className="inline-flex items-center gap-2 text-xs text-brand-text">

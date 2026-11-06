@@ -353,7 +353,7 @@ describe("the saved copy of a held key", () => {
     await keyStore.remember("correct horse battery");
     render(<KeyPage />);
     const del = () =>
-      screen.getByRole("button", { name: "Delete the saved copy" });
+      screen.getByRole("button", { name: "Delete the saved key" });
 
     fireEvent.click(del());
     expect(

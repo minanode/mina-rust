@@ -80,7 +80,9 @@ const passwordFields = () =>
 async function startProducing() {
   fireEvent.click(document.querySelector("[data-action=start-producer]")!);
   await act(async () =>
-    fireEvent.click(screen.getByRole("button", { name: "Start producing" })),
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restart as block producer" }),
+    ),
   );
 }
 
@@ -206,7 +208,9 @@ test("a receiver that isn't a public key: no restart", async () => {
   fireEvent.click(startButton()!);
   fireEvent.change(receiverField(), { target: { value: BAD_CHECKSUM } });
   await act(async () =>
-    fireEvent.click(screen.getByRole("button", { name: "Start producing" })),
+    fireEvent.click(
+      screen.getByRole("button", { name: "Restart as block producer" }),
+    ),
   );
   expect(state.restart).not.toHaveBeenCalled();
 });

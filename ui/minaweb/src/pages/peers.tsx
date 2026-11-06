@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { Measure } from "@minanode/design-system/patterns/amount";
 import { ExternalLink } from "@minanode/design-system/patterns/external-link";
 import { Hash } from "@minanode/design-system/patterns/hash";
 import { KeyValueList } from "@minanode/design-system/patterns/key-value-list";
@@ -8,7 +9,7 @@ import { PageSection } from "@minanode/design-system/patterns/page-section";
 import { TimeAgo } from "@minanode/design-system/patterns/relative-time";
 import { Signal } from "@minanode/design-system/patterns/signal";
 import { formatHeight, type Peer } from "@minanode/node-client";
-import { useNodeStatus, usePeers, usePoll } from "@minanode/node-client/react";
+import { usePeers, usePoll } from "@minanode/node-client/react";
 import { PolledAge } from "minanode-dashboard/components/states";
 
 import { useBoot } from "../app/boot-context";
@@ -51,16 +52,27 @@ function route(stats: RouteStats | null): string {
 
 function trafficRows(stats: RouteStats | null) {
   return [
-    { label: "Route", value: route(stats), tone: "brand" as const },
+    { label: "Route", value: route(stats), prose: true },
     {
       label: "Round trip",
-      value: stats?.rttMs != null ? `${Math.round(stats.rttMs)} ms` : "–",
+      value:
+        stats?.rttMs != null ? (
+          <Measure value={`${Math.round(stats.rttMs)} ms`} />
+        ) : (
+          "–"
+        ),
     },
     {
       label: "Data in, out",
-      value: stats
-        ? `${formatBytes(stats.bytesReceived)}, ${formatBytes(stats.bytesSent)}`
-        : "–",
+      value: stats ? (
+        <>
+          <Measure value={formatBytes(stats.bytesReceived)} />
+          <span className="mr-1.5 font-sans text-muted-foreground">,</span>
+          <Measure value={formatBytes(stats.bytesSent)} />
+        </>
+      ) : (
+        "–"
+      ),
     },
   ];
 }
@@ -84,7 +96,7 @@ function RelayCard({ row }: { row: RelayRow }) {
                 value: formatHeight(row.peer?.bestTipHeight ?? null),
               },
               {
-                label: "Connected",
+                label: "Since",
                 value: row.sinceMs ? <TimeAgo at={row.sinceMs} /> : "–",
               },
             ]
@@ -114,7 +126,7 @@ function OtherPeerCard({
         ...trafficRows(stats),
         { label: "Best tip", value: formatHeight(peer.bestTipHeight) },
         {
-          label: "Connected",
+          label: "Since",
           value: peer.sinceMs ? <TimeAgo at={peer.sinceMs} /> : "–",
         },
       ]}
@@ -122,18 +134,8 @@ function OtherPeerCard({
   );
 }
 
-/** The one link to the explanation. */
-function Footer() {
-  return (
-    <div className="flex flex-wrap items-center justify-end gap-x-6 gap-y-2 text-sm">
-      <ExternalLink href={CONNECTIONS_DOCS_URL}>Web node docs</ExternalLink>
-    </div>
-  );
-}
-
 export function PeersPage() {
   const boot = useBoot();
-  const { status } = useNodeStatus();
   const peers = usePeers(POLL_MS);
   const glue = boot.glue;
   const stats = usePoll(
@@ -153,17 +155,20 @@ export function PeersPage() {
   return (
     <>
       <PageHeader
-        eyebrow={`${status.data?.network ?? CONFIG.network} web node`}
+        eyebrow="Node"
         title="Peers"
-        description={
-          boot.sharing
-            ? "The relays and browsers this tab connects to."
-            : "The relays this tab connects to."
+        aside={
+          <>
+            <PolledAge polled={peers} staleAfterMs={POLL_MS * 4} />
+            {/* The one link to the explanation. */}
+            <ExternalLink href={CONNECTIONS_DOCS_URL} className="text-sm">
+              Web node docs
+            </ExternalLink>
+          </>
         }
-        aside={<PolledAge polled={peers} staleAfterMs={POLL_MS * 4} />}
       />
       {relays.length ? (
-        <div className="grid items-start gap-4 md:grid-cols-2">
+        <div className="grid items-start gap-6 md:grid-cols-2">
           {rows.map(row => (
             <RelayCard key={row.name} row={row} />
           ))}
@@ -176,7 +181,7 @@ export function PeersPage() {
       />
       {others.length ? (
         <PageSection title={relays.length ? "Other browsers" : "Peers"}>
-          <div className="grid items-start gap-4 md:grid-cols-2">
+          <div className="grid items-start gap-6 md:grid-cols-2">
             {others.map(peer => (
               <OtherPeerCard
                 key={peer.peerId}
@@ -187,7 +192,6 @@ export function PeersPage() {
           </div>
         </PageSection>
       ) : null}
-      <Footer />
     </>
   );
 }

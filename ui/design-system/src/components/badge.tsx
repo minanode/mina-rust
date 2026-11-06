@@ -21,7 +21,7 @@ const badgeVariants = cva(
           "border-transparent bg-destructive text-destructive-foreground [a&]:hover:bg-destructive/90",
       },
       font: {
-        sans: "",
+        sans: "font-sans",
         mono: "font-mono tracking-tight",
       },
     },

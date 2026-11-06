@@ -193,7 +193,8 @@ export function stripSentence(strip: BlockStrip): string {
   return `${formatCount(strip.toGo)} of ${formatCount(strip.total)} to go: ${formatCount(strip.fetched)} fetched, ${formatCount(strip.applied)} applied${strip.failed ? `, ${formatCount(strip.failed)} failed` : ""}.`;
 }
 
-/** The ledger step's detail line: which ledger, and how many are done. */
+/** The ledger step's detail line: how far through the ledgers it is. The
+ * rows under it name each ledger. */
 export function ledgerStepSentence(progress: SyncProgress): string {
   const rows = LEDGERS.map(({ key, label }) => ({
     label,
@@ -202,6 +203,6 @@ export function ledgerStepSentence(progress: SyncProgress): string {
   const done = rows.filter(r => r.status === "done").length;
   const current = rows.find(r => r.status === "syncing");
   return current
-    ? `${current.label}, ${done + 1} of ${rows.length}.`
+    ? `Ledger ${done + 1} of ${rows.length}.`
     : `${done} of ${rows.length} ledgers done.`;
 }

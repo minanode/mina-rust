@@ -51,7 +51,10 @@ function Hash({
           value
         )}
       </span>
-      {copy ? <CopyButton text={value} label={label ?? "value"} /> : null}
+      {copy ? (
+        // Its glyph, not its box, ends the value.
+        <CopyButton text={value} label={label ?? "value"} className="-me-1" />
+      ) : null}
     </span>
   );
 }

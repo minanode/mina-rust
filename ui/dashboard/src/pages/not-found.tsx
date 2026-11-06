@@ -1,4 +1,4 @@
-import { Compass } from "lucide-react";
+import { ArrowRight, FileQuestion } from "lucide-react";
 
 import { Button } from "@minanode/design-system/components/button";
 import { EmptyState } from "@minanode/design-system/patterns/empty-state";
@@ -9,16 +9,24 @@ import { Link } from "../app/router";
 export function NotFoundPage({ path }: { path: string }) {
   return (
     <>
-      <PageHeader title="No page here" />
+      {/* An eyebrow as on every page, so the title sits on the same line. */}
+      <PageHeader eyebrow="Not found" title="No such page" />
       <EmptyState
-        icon={<Compass />}
-        title={`The dashboard has no page at ${path}`}
-        description={
-          <p>Pick a page from the menu, or go back to the overview.</p>
+        icon={<FileQuestion />}
+        title={
+          <>
+            Nothing at{" "}
+            <span className="font-mono text-[0.9375rem] font-normal">
+              {path}
+            </span>
+          </>
         }
         action={
-          <Button asChild variant="outline" size="sm">
-            <Link to="/">Overview</Link>
+          <Button asChild variant="outline">
+            <Link to="/">
+              Go to Overview
+              <ArrowRight aria-hidden />
+            </Link>
           </Button>
         }
       />

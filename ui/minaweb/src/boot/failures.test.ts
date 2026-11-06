@@ -113,20 +113,15 @@ describe("relays", () => {
     ).toBeNull();
   });
   test("no peer: what was tried and how it went", () => {
-    const failure = noPeerFailure(
-      [RELAY],
-      "http://localhost:4213",
-      [{ address: RELAY, status: "Disconnected" }],
-      45_000,
-    );
+    const failure = noPeerFailure([RELAY], "http://localhost:4213", [
+      { address: RELAY, status: "Disconnected" },
+    ]);
     expect(failure.title).toBe("No peer reachable");
-    expect(failure.detail).toBe(
-      "No connection in 45 s. Tried 192.0.2.10:3540 (disconnected).",
-    );
+    expect(failure.detail).toBe("No connection to 192.0.2.10:3540.");
     expect(
-      noPeerFailure([RELAY], "https://minaweb.example.org", [], 45_000).detail,
+      noPeerFailure([RELAY], "https://minaweb.example.org", []).detail,
     ).toContain("blocks on an HTTPS page");
-    expect(noPeerFailure([], "https://x.example", [], 1).title).toBe(
+    expect(noPeerFailure([], "https://x.example", []).title).toBe(
       "No peer to connect to",
     );
   });

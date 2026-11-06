@@ -71,9 +71,7 @@ export type SnarkerStrategy = "Sequential" | "Random";
 
 /** How the worker picks jobs, in words, with the flag value that sets it. */
 export function strategyLabel(strategy: SnarkerStrategy): string {
-  return strategy === "Random"
-    ? "At random (rand, the default)"
-    : "In order (seq)";
+  return strategy === "Random" ? "At random" : "In order";
 }
 
 function strategyOf(value: unknown): SnarkerStrategy | null {
@@ -201,9 +199,12 @@ export function workerView(c: WorkerControl): WorkerView {
     case "Cancelling":
     case "Cancelled":
       return {
-        label: "Cancelling",
+        // The job, not the worker: beside Stop, "Cancelling" alone read
+        // as the worker stopping.
+        label: "Cancelling job",
         tone: "info",
-        detail: "Dropping a job that's no longer needed.",
+        // The state says what happens; the row says why.
+        detail: "The chain no longer needs it.",
       };
     case "Error":
       return {

@@ -9,8 +9,11 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
+        // The glow is the site's; in the apps (data-app) a primary button
+        // is flat. Disabled, it turns muted rather than faint, so a busy
+        // label stays legible.
         default:
-          "bg-primary text-primary-foreground shadow-glow hover:bg-teal-400 active:bg-teal-600",
+          "bg-primary text-primary-foreground hover:bg-teal-400 active:bg-teal-600 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100 disabled:ring-1 disabled:ring-input disabled:ring-inset [:root:not([data-app])_&]:shadow-glow disabled:shadow-none",
         secondary:
           "bg-secondary text-secondary-foreground hover:bg-accent active:bg-accent/70",
         outline:
@@ -20,6 +23,8 @@ const buttonVariants = cva(
         link: "h-auto px-0 text-brand-text underline-offset-4 hover:underline active:underline",
         destructive:
           "bg-destructive text-destructive-foreground hover:bg-destructive/90 active:bg-destructive/90",
+        "destructive-outline":
+          "border border-destructive/50 bg-transparent text-destructive hover:bg-destructive/10 active:bg-destructive/15",
       },
       size: {
         sm: "h-8 gap-1.5 px-3 text-[0.8125rem]",

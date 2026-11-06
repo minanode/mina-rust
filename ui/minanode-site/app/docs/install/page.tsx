@@ -52,7 +52,11 @@ export default function InstallPage() {
             find yours, run <C>uname -m</C>:
           </p>
         </Prose>
-        <KeyValueList title="Archives" rows={claimedRows(install.archives)} />
+        <KeyValueList
+          variant="receipt"
+          title="Archives"
+          rows={claimedRows(install.archives)}
+        />
         <Prose>
           <p>
             Download your archive, the checksum list, its signature, and the

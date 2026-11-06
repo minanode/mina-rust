@@ -320,7 +320,11 @@ mina --version`}
       </DocSection>
 
       <DocSection id="ports" title="Ports">
-        <KeyValueList title="Default ports" rows={claimedRows(run.ports)} />
+        <KeyValueList
+          variant="receipt"
+          title="Default ports"
+          rows={claimedRows(run.ports)}
+        />
         <Prose>
           <p>
             By default, the HTTP port listens on <C>127.0.0.1</C> only.{" "}
