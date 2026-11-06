@@ -3,7 +3,7 @@
 # Keep this file beside sync-run.py. Requires Python 3; no Python packages.
 #
 #   ./fresh-sync.sh --network devnet --binary ~/.local/bin/mina --keep
-#   ./fresh-sync.sh --docker ghcr.io/minanode/mina-rust:0.22.0 --keep
+#   ./fresh-sync.sh --docker ghcr.io/minanode/mina-rust:0.22.1 --keep
 #   ./fresh-sync.sh --port 4060 --libp2p-port 9260 --output demo-runs/run-1
 #
 # --keep waits for Ctrl-C after syncing. Every exit stops only this node and
