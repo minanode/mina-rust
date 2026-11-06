@@ -44,6 +44,8 @@ import { reloadAndStart } from "../boot/autostart";
 import { CONFIG } from "../config";
 import { VERSION } from "../version";
 import { useStatusOnNavigate } from "../lib/tip";
+import { RestartConfirm } from "../pages/restart-confirm";
+import { useKeys } from "../roles/hooks";
 import { rolesAllowed } from "../roles/role";
 import { useBoot } from "./boot-context";
 import { CarriedKey } from "./carried-key";
@@ -208,30 +210,51 @@ function NodeFooter() {
   );
 }
 
-function OfflineBanner() {
+export function OfflineBanner() {
   const now = useNow();
   const view = useSyncView(now);
   const { status } = useNodeStatus();
+  const { key } = useKeys();
+  const { role } = useBoot();
+  const [confirming, setConfirming] = React.useState(false);
   if (view.key !== "NoAnswer") return null;
   return (
-    <Banner
-      title="The web node isn't answering."
-      action={
-        // Reloading starts the node again.
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => reloadAndStart()}
-        >
-          <RefreshCw aria-hidden />
-          Reload the page
-        </Button>
-      }
-    >
-      {/* The page's header says how old its figures are. */}
-      {status.updatedAt === null ? "Nothing has loaded yet." : null}
-    </Banner>
+    <>
+      <Banner
+        title="The web node isn't answering."
+        action={
+          confirming ? null : (
+            // Reloading starts the node again. A reload empties the tab's
+            // memory, so with a key held it is a restart: its confirm
+            // keeps the key and the role across it.
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => (key ? setConfirming(true) : reloadAndStart())}
+            >
+              <RefreshCw aria-hidden />
+              Reload the page
+            </Button>
+          )
+        }
+      >
+        {/* The page's header says how old its figures are. */}
+        {status.updatedAt === null ? "Nothing has loaded yet." : null}
+      </Banner>
+      {confirming ? (
+        <div className="border-b px-gutter py-3">
+          <RestartConfirm
+            className="mx-auto max-w-page"
+            label="Confirm reloading the page"
+            message="The page reloads and the node starts again."
+            confirmLabel="Reload the page"
+            role={role}
+            onCancel={() => setConfirming(false)}
+          />
+        </div>
+      ) : null}
+    </>
   );
 }
 
