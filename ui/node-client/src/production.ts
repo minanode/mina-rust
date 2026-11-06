@@ -48,8 +48,8 @@ export function slotDurationMs(stats: ProducerStats): number {
  * - `canonical`: in the best chain; labelled Confirmed from
  *   `CONFIRMATIONS` blocks on top, Pending below, as included SNARK work is
  * - `orphaned`: sent, then another block at its height took its place
- * - `lostTie`: another block for the same slot won the tie-break before
- *   ours was sent
+ * - `lostTie`: before ours was sent, the best tip beat it in fork choice (a
+ *   longer chain, or at equal length a greater VRF output, then state hash)
  * - `missed`: the slot passed without our block (too late, a fork, a failed
  *   proof, or a restart)
  * - `previousRun`: scheduled, or begun, by the run before the node's latest
@@ -144,8 +144,8 @@ const DISCARD_REASONS: Record<
   BestTipSuperior: {
     outcome: "lostTie",
     tone: "warn",
-    reason: "Another block won the tie-break.",
-    note: "Another block won the tie",
+    reason: "Another block won. Ours was never sent.",
+    note: "Another block won",
   },
   BestTipGlobalSlotHigher: {
     outcome: "missed",

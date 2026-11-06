@@ -14,7 +14,7 @@ import {
 } from "./production";
 
 // Recorded from a devnet producer (port 3610), the slots ahead cut to 24:
-// three canonical blocks, three that lost the tie-break, one orphaned, and
+// three canonical blocks, three that lost to another block, one orphaned, and
 // the next won slot scheduled. Its uptime then was long enough to include
 // them all.
 const stats = parseProducerStats(recorded)!;
@@ -52,7 +52,8 @@ test("each recorded attempt has its outcome in words", () => {
   expect(bySlot(62750).label).toBe("Pending");
   expect(bySlot(62750).note).toBe("12 of 15 blocks on top");
   expect(bySlot(62773).label).toBe("Lost the tie");
-  expect(bySlot(62773).reason).toBe("Another block won the tie-break.");
+  expect(bySlot(62773).reason).toBe("Another block won. Ours was never sent.");
+  expect(bySlot(62773).note).toBe("Another block won");
   expect(bySlot(62777).reason).toMatch(/#579109/);
 });
 

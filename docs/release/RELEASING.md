@@ -199,24 +199,24 @@ Signature formats and configuration:
 
 ## Published site switch
 
-The workspace and archive candidate version is 0.22.0. The site's `release`
-object in `ui/minanode-site/content/release.ts` advertises the published 0.21.0
-archives and their matching Docker digest until 0.22.0 is published.
+The workspace and archive candidate version is 0.22.1. The site's `release`
+object in `ui/minanode-site/content/release.ts` advertises the published 0.22.0
+archives and their matching Docker digest until 0.22.1 is published.
 `candidateVersion` records the prepared version; it does not select downloads.
 `RELEASE_FINAL=1` validates the signer and content, and does not switch
 versions.
 
-After the owner publishes and verifies the signed 0.22.0 archives and Docker
+After the owner publishes and verifies the signed 0.22.1 archives and Docker
 image, update these together before deploying the site:
 
 1. Set `release.version` to `candidateVersion`, change both `downloadUrl` and
-   `notesUrl` to `v0.22.0`, and replace `release.dockerDigest` with the verified
-   0.22.0 image index digest. Never reuse the 0.21.0 digest for 0.22.0.
-2. Set `webRelease.version` to 0.22.0 and its `downloadUrl` to `v0.22.0`. The
-   web archive `mina-web-0.22.0.tar.gz` is an asset of the same release.
+   `notesUrl` to `v0.22.1`, and replace `release.dockerDigest` with the verified
+   0.22.1 image index digest. Never reuse the 0.22.0 digest for 0.22.1.
+2. Set `webRelease.version` to 0.22.1 and its `downloadUrl` to `v0.22.1`. The
+   web archive `mina-web-0.22.1.tar.gz` is an asset of the same release.
 3. Change the fallback image in `docker-compose.yml` to
-   `ghcr.io/minanode/mina-rust:0.22.0`. The site serves this file through its
-   `public/docker/` symlink, so the default switches to 0.22.0 only after
+   `ghcr.io/minanode/mina-rust:0.22.1`. The site serves this file through its
+   `public/docker/` symlink, so the default switches to 0.22.1 only after
    publication.
 4. Replace the "Before publication" section of the release notes with the
    published `SHA256SUMS` lines and the image digest.
@@ -228,7 +228,7 @@ image, update these together before deploying the site:
    The archive names and Docker examples derive from the `release` object.
 
 The Docker workflow requires an explicit version and verified commit as inputs;
-its example now uses 0.22.0. A packaging dry run does not publish an image or
+its example now uses 0.22.1. A packaging dry run does not publish an image or
 change the running site's downloads. Unsigned dry-run archive hashes must not
 replace the public release-note checksum placeholder.
 
@@ -237,9 +237,9 @@ The site switch does not deploy minaweb.org or the relays. Do the
 
 ## Published web and relay switch
 
-After a release that ships the web node archive, as 0.21.0 and 0.22.0 did,
-minaweb.org and both relays run the tagged commit. A native-only release skips
-this step, as it skips the
+After a release that ships the web node archive, as every release since 0.21.0
+does, minaweb.org and both relays run the tagged commit. A native-only release
+skips this step, as it skips the
 [web build and public relay](#web-build-and-public-relay) gates. A build from a
 commit before the release's version change reports the previous version, even
 when its code matches the release. A build deployed before publication therefore
@@ -253,7 +253,7 @@ still needs replacing.
 3. Check that the page and both relays report the tagged commit:
 
 ```sh
-git rev-parse "v0.22.0^{commit}"
+git rev-parse "v0.22.1^{commit}"
 curl -fsS https://minaweb.org/build-info.json |
   python3 -c 'import json, sys; print(json.load(sys.stdin)["commit"])'
 readlink -f /opt/mina-relay/current # on each relay

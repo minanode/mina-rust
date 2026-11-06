@@ -65,7 +65,7 @@ edition = "2021"
 homepage = "https://o1-labs.github.io/mina-rust/"
 license = "Apache-2.0"
 repository = "https://github.com/o1-labs/mina-rust"
-version = "0.22.0"
+version = "0.22.1"
 
 [workspace.lints.clippy]
 #unwrap_used = "warn"

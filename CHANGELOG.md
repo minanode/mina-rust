@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.22.1] - 2026-11-06
+
+0.22.1 is a UI release. It has a design pass over the node dashboard and the
+web node page, and one dashboard wording fix. The node, consensus and prover
+code are unchanged from 0.22.0, so upgrading is optional. See
+[the release notes](docs/release/0.22.1.md).
+
 ### Changed
 
 - **Web node and dashboard**: a design pass over the web node page and the node
@@ -16,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer, with Reload in the banner. The dashboard's won slots sit on one axis
   with a Stages panel. minanode.org keeps its look.
   ([#43](https://github.com/minanode/mina-rust/pull/43))
+
+### Fixed
+
+- **Dashboard**: a won slot dropped as `BestTipSuperior` says "Another block
+  won. Ours was never sent." 0.22.0 called it a tie-break for the slot, but the
+  best tip also wins with a longer chain. At equal length, fork choice compares
+  the VRF output before the state hash.
 
 ## [0.22.0] - 2026-11-04
 
