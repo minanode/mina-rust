@@ -1281,7 +1281,7 @@
     },
     {
       "name": "mina-core",
-      "version": "0.22.0",
+      "version": "0.22.1",
       "source": null,
       "features": [
         ""
@@ -1305,7 +1305,7 @@
     },
     {
       "name": "mina-macros",
-      "version": "0.22.0",
+      "version": "0.22.1",
       "source": null,
       "features": [
         ""
@@ -1313,7 +1313,7 @@
     },
     {
       "name": "mina-node",
-      "version": "0.22.0",
+      "version": "0.22.1",
       "source": null,
       "features": [
         "default,p2p-webrtc,replay"
@@ -1321,7 +1321,7 @@
     },
     {
       "name": "mina-node-account",
-      "version": "0.22.0",
+      "version": "0.22.1",
       "source": null,
       "features": [
         ""
@@ -1329,7 +1329,7 @@
     },
     {
       "name": "mina-node-common",
-      "version": "0.22.0",
+      "version": "0.22.1",
       "source": null,
       "features": [
         "default,p2p-webrtc"
@@ -1337,7 +1337,7 @@
     },
     {
       "name": "mina-node-web",
-      "version": "0.22.0",
+      "version": "0.22.1",
       "source": null,
       "features": [
         "default,p2p-webrtc"
@@ -1345,7 +1345,7 @@
     },
     {
       "name": "mina-p2p",
-      "version": "0.22.0",
+      "version": "0.22.1",
       "source": null,
       "features": [
         "p2p-webrtc,p2p-webrtc-ready-events,p2p-webrtc-rustrtc-lib"
@@ -1353,7 +1353,7 @@
     },
     {
       "name": "mina-p2p-messages",
-      "version": "0.22.0",
+      "version": "0.22.1",
       "source": null,
       "features": [
         ""
@@ -1377,7 +1377,7 @@
     },
     {
       "name": "mina-snark",
-      "version": "0.22.0",
+      "version": "0.22.1",
       "source": null,
       "features": [
         ""
@@ -1385,7 +1385,7 @@
     },
     {
       "name": "mina-tree",
-      "version": "0.22.0",
+      "version": "0.22.1",
       "source": null,
       "features": [
         ""
@@ -1393,7 +1393,7 @@
     },
     {
       "name": "mina-vrf",
-      "version": "0.22.0",
+      "version": "0.22.1",
       "source": null,
       "features": [
         ""
@@ -1717,7 +1717,7 @@
     },
     {
       "name": "poseidon",
-      "version": "0.22.0",
+      "version": "0.22.1",
       "source": null,
       "features": [
         ""
@@ -1989,7 +1989,7 @@
     },
     {
       "name": "salsa-simple",
-      "version": "0.22.0",
+      "version": "0.22.1",
       "source": null,
       "features": [
         "default,hex,serde"
