@@ -146,7 +146,8 @@ def handler(root, manifest, relays, port):
     policy = page_policy(manifest, relays)
     types = {".html": "text/html; charset=utf-8", ".js": "text/javascript",
              ".css": "text/css", ".json": "application/json", ".wasm": "application/wasm",
-             ".svg": "image/svg+xml", ".woff2": "font/woff2", ".txt": "text/plain"}
+             ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2",
+             ".txt": "text/plain"}
 
     class Handler(BaseHTTPRequestHandler):
         def do_HEAD(self):
