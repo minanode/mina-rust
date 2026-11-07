@@ -938,100 +938,103 @@ and
 [subscriptions](https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/graphql/mina_graphql/mina_graphql.ml#L143).
 Deprecated OCaml fields are left out.
 
-Client coverage matters more than the field count. Every operation that o1js,
-the Auro wallet and OCaml's Rosetta server send validates against this schema.
-So do 18 of the 22 `mina-sdk-spec` operations; the other four are `ForkConfig`,
-`UnlockAccount`, `SetSnarkWorker` and `SetSnarkWorkFee`. The tests in
+Client coverage matters more than the field count. Every operation that o1js and
+the Auro wallet send validates against this schema, and so does every query that
+OCaml's Rosetta server sends. Of Rosetta's two send mutations, delegation
+validates. Payment fails here and on OCaml alike, because Rosetta's source still
+passes a `token` argument and a `UInt64` `validUntil`. Of the 22 `mina-sdk-spec`
+operations, 18 validate; the other four are `ForkConfig`, `UnlockAccount`,
+`SetSnarkWorker` and `SetSnarkWorkFee`. The tests in
 `crates/node/native/src/graphql/tests.rs` check this, and compare the responses
 with those of an OCaml 4.0.2 mainnet daemon for the same blocks.
 
 ### Query Endpoints Status
 
-| Endpoint                                                                               | Description                                               | Priority | Rust Status        | Notes                                       |
-| -------------------------------------------------------------------------------------- | --------------------------------------------------------- | -------- | ------------------ | ------------------------------------------- |
-| **Core Queries**                                                                       |                                                           |          |                    |                                             |
-| [`daemonStatus`](#daemonstatus)                                                        | Get running daemon status                                 | HIGH     | ✅ Implemented     | Full daemon status with network info        |
-| [`account`](#accountpublickey-string-token-string)                                     | Find account via public key and token                     | HIGH     | ✅ Implemented     | Account balance, nonce, delegate            |
-| [`block`](#blockheight-int-statehash-string)                                           | Retrieve block by hash or height                          | HIGH     | ✅ Implemented     | Full block with transactions                |
-| [`pooledUserCommands`](#pooledusercommandspublickey-string-hashes-string-ids-string)   | User commands in transaction pool                         | HIGH     | ✅ Implemented     | Payments and delegations                    |
-| [`pooledZkappCommands`](#pooledzkappcommandspublickey-string-hashes-string-ids-string) | zkApp commands in transaction pool                        | HIGH     | ✅ Implemented     | Smart contract transactions                 |
-| [`transactionStatus`](#transactionstatuspayment-string-zkapptransaction-string)        | Get transaction status                                    | HIGH     | ✅ Implemented     | PENDING, INCLUDED, or UNKNOWN               |
-| [`networkID`](#networkid)                                                              | Chain-agnostic network identifier                         | HIGH     | ✅ Implemented     | Returns `mina:<network_name>`               |
-| **Blockchain Info**                                                                    |                                                           |          |                    |                                             |
-| [`syncStatus`](#syncstatus)                                                            | Network sync status                                       | -        | ✅ Implemented     | Sync state tracking                         |
-| [`version`](#version)                                                                  | Node version (git commit hash)                            | -        | ✅ Implemented     | Build information                           |
-| [`bestChain`](#bestchainmaxlength-int)                                                 | Blocks from root to best tip                              | -        | ✅ Implemented     | Ordered chain of blocks                     |
-| [`genesisBlock`](#genesisblock)                                                        | Get the genesis block                                     | -        | ✅ Implemented     | Initial block data                          |
-| [`genesisConstants`](#genesisconstants)                                                | Genesis configuration                                     | -        | ✅ Implemented     | Network parameters                          |
-| **SNARK Pool**                                                                         |                                                           |          |                    |                                             |
-| [`snarkPool`](#snarkpool)                                                              | Completed SNARK works                                     | -        | ✅ Implemented     | Proofs with fees                            |
-| [`pendingSnarkWork`](#pendingsnarkwork)                                                | SNARK work to be done                                     | -        | ✅ Implemented     | Available work items                        |
-| [`currentSnarkWorker`](#currentsnarkworker)                                            | Current SNARK worker info                                 | -        | ✅ Implemented     | Worker configuration                        |
-| **Accounts and Peers**                                                                 |                                                           |          |                    |                                             |
-| `accounts`                                                                             | All accounts of a public key, one per token               | -        | ✅ Implemented     |                                             |
-| `tokenOwner`                                                                           | Account that owns a token                                 | -        | ✅ Implemented     |                                             |
-| `trackedAccounts`                                                                      | Accounts with tracked private keys                        | -        | ✅ Implemented     | Always empty: the node keeps no wallet keys |
-| `encodedSnarkedLedgerAccountMembership`                                                | Snarked ledger membership proof, Base64                   | -        | ✅ Implemented     |                                             |
-| `getPeers`                                                                             | Connected peers                                           | -        | ✅ Implemented     |                                             |
-| `initialPeers`                                                                         | Initial connection peers                                  | -        | ⚠️ Partial         | Always an empty list                        |
-| **Rust Node Only**                                                                     |                                                           |          |                    |                                             |
-| `bootstrapStatus`                                                                      | Initialization, bootstrap and ledger sync progress        | -        | ✅ Rust only       | Not in the OCaml schema                     |
-| `scanState`                                                                            | Free space and outstanding SNARK work per scan state tree | -        | ✅ Rust only       | Not in the OCaml schema                     |
-| `transactionPoolStatus`                                                                | Pool occupancy and the fee to beat when it is full        | -        | ✅ Rust only       | Not in the OCaml schema                     |
-| `verification`                                                                         | This process's verification receipts                      | -        | ✅ Rust only       | Not in the OCaml schema                     |
-| `verificationReceipts`                                                                 | Verification receipts of up to 20 blocks                  | -        | ✅ Rust only       | Not in the OCaml schema                     |
-| **Not Yet Implemented**                                                                |                                                           |          |                    |                                             |
-| `tokenAccounts`                                                                        | All accounts for a token ID                               | -        | ❌ Not Implemented | Token-specific queries                      |
-| `accountActions`                                                                       | Actions of an account from the best tip                   | -        | ❌ Not Implemented | zkApp actions                               |
-| `protocolState`                                                                        | Protocol state of a block                                 | -        | ❌ Not Implemented |                                             |
-| `snarkedLedgerAccountMembership`                                                       | Snarked ledger membership proof                           | -        | ❌ Not Implemented | The Base64 form is implemented              |
-| `snarkWorkRange`                                                                       | SNARK work between two indexes                            | -        | ❌ Not Implemented |                                             |
-| `validatePayment`                                                                      | Validate payment format                                   | -        | ❌ Not Implemented | Transaction validation                      |
-| `runtimeConfig`                                                                        | Runtime configuration                                     | -        | ❌ Not Implemented | Node configuration                          |
-| `fork_config`                                                                          | Blockchain fork config                                    | -        | ❌ Not Implemented | Fork parameters                             |
-| `evaluateVrf`                                                                          | Evaluate VRF for public key                               | -        | ❌ Not Implemented | VRF operations                              |
-| `checkVrf`                                                                             | Check VRF evaluation                                      | -        | ❌ Not Implemented | VRF verification                            |
-| `blockchainVerificationKey`                                                            | Protocol state proof key                                  | -        | ❌ Not Implemented | Verification keys                           |
-| `signatureKind`                                                                        | Signature type in use                                     | -        | ❌ Not Implemented | Cryptography info                           |
-| `timeOffset`                                                                           | Blockchain time offset                                    | -        | ❌ Not Implemented | Time synchronization                        |
-| `trustStatus`                                                                          | Trust status for IP                                       | -        | ❌ Not Implemented | Peer trust management                       |
-| `trustStatusAll`                                                                       | All peers trust status                                    | -        | ❌ Not Implemented | Network trust state                         |
-| `connectionGatingConfig`                                                               | Connection rules                                          | -        | ❌ Not Implemented | Network policies                            |
-| `threadGraph`                                                                          | Internal thread graph                                     | -        | ❌ Not Implemented | Debugging tool                              |
-| `getFilteredLogEntries`                                                                | Structured log events                                     | -        | ❌ Not Implemented | Testing/debugging                           |
+| Endpoint                                                                              | Description                                               | Priority | Rust Status        | Notes                                       |
+| ------------------------------------------------------------------------------------- | --------------------------------------------------------- | -------- | ------------------ | ------------------------------------------- |
+| **Core Queries**                                                                      |                                                           |          |                    |                                             |
+| [`daemonStatus`](#daemonstatus)                                                       | Get running daemon status                                 | HIGH     | ✅ Implemented     | Full daemon status with network info        |
+| [`account`](#accountpublickey-publickey-token-tokenid)                                | Find account via public key and token                     | HIGH     | ✅ Implemented     | Account balance, nonce, delegate            |
+| [`block`](#blockheight-int-statehash-string)                                          | Retrieve block by hash or height                          | HIGH     | ✅ Implemented     | Full block with transactions                |
+| [`pooledUserCommands`](#pooledusercommandspublickey-publickey-hashes-string-ids-id)   | User commands in transaction pool                         | HIGH     | ✅ Implemented     | Payments and delegations                    |
+| [`pooledZkappCommands`](#pooledzkappcommandspublickey-publickey-hashes-string-ids-id) | zkApp commands in transaction pool                        | HIGH     | ✅ Implemented     | Smart contract transactions                 |
+| [`transactionStatus`](#transactionstatuspayment-id-zkapptransaction-id)               | Get transaction status                                    | HIGH     | ✅ Implemented     | PENDING, INCLUDED, or UNKNOWN               |
+| [`networkID`](#networkid)                                                             | Chain-agnostic network identifier                         | HIGH     | ✅ Implemented     | Returns `mina:<network_name>`               |
+| **Blockchain Info**                                                                   |                                                           |          |                    |                                             |
+| [`syncStatus`](#syncstatus)                                                           | Network sync status                                       | -        | ✅ Implemented     | Sync state tracking                         |
+| [`version`](#version)                                                                 | Node version (git commit hash)                            | -        | ✅ Implemented     | Build information                           |
+| [`bestChain`](#bestchainmaxlength-int)                                                | Blocks from root to best tip                              | -        | ✅ Implemented     | Ordered chain of blocks                     |
+| [`genesisBlock`](#genesisblock)                                                       | Get the genesis block                                     | -        | ✅ Implemented     | Initial block data                          |
+| [`genesisConstants`](#genesisconstants)                                               | Genesis configuration                                     | -        | ✅ Implemented     | Network parameters                          |
+| **SNARK Pool**                                                                        |                                                           |          |                    |                                             |
+| [`snarkPool`](#snarkpool)                                                             | Completed SNARK works                                     | -        | ✅ Implemented     | Proofs with fees                            |
+| [`pendingSnarkWork`](#pendingsnarkwork)                                               | SNARK work to be done                                     | -        | ✅ Implemented     | Available work items                        |
+| [`currentSnarkWorker`](#currentsnarkworker)                                           | Current SNARK worker info                                 | -        | ✅ Implemented     | Worker configuration                        |
+| **Accounts and Peers**                                                                |                                                           |          |                    |                                             |
+| `accounts`                                                                            | All accounts of a public key, one per token               | -        | ✅ Implemented     |                                             |
+| `tokenOwner`                                                                          | Account that owns a token                                 | -        | ✅ Implemented     |                                             |
+| `trackedAccounts`                                                                     | Accounts with tracked private keys                        | -        | ✅ Implemented     | Always empty: the node keeps no wallet keys |
+| `encodedSnarkedLedgerAccountMembership`                                               | Snarked ledger membership proof, Base64                   | -        | ✅ Implemented     |                                             |
+| `getPeers`                                                                            | Connected peers                                           | -        | ✅ Implemented     |                                             |
+| `initialPeers`                                                                        | Initial connection peers                                  | -        | ⚠️ Partial         | Always an empty list                        |
+| **Rust Node Only**                                                                    |                                                           |          |                    |                                             |
+| `bootstrapStatus`                                                                     | Initialization, bootstrap and ledger sync progress        | -        | ✅ Rust only       | Not in the OCaml schema                     |
+| `scanState`                                                                           | Free space and outstanding SNARK work per scan state tree | -        | ✅ Rust only       | Not in the OCaml schema                     |
+| `transactionPoolStatus`                                                               | Pool occupancy and the fee to beat when it is full        | -        | ✅ Rust only       | Not in the OCaml schema                     |
+| `verification`                                                                        | This process's verification receipts                      | -        | ✅ Rust only       | Not in the OCaml schema                     |
+| `verificationReceipts`                                                                | Verification receipts of up to 20 blocks                  | -        | ✅ Rust only       | Not in the OCaml schema                     |
+| **Not Yet Implemented**                                                               |                                                           |          |                    |                                             |
+| `tokenAccounts`                                                                       | All accounts for a token ID                               | -        | ❌ Not Implemented | Token-specific queries                      |
+| `accountActions`                                                                      | Actions of an account from the best tip                   | -        | ❌ Not Implemented | zkApp actions                               |
+| `protocolState`                                                                       | Protocol state of a block                                 | -        | ❌ Not Implemented |                                             |
+| `snarkedLedgerAccountMembership`                                                      | Snarked ledger membership proof                           | -        | ❌ Not Implemented | The Base64 form is implemented              |
+| `snarkWorkRange`                                                                      | SNARK work between two indexes                            | -        | ❌ Not Implemented |                                             |
+| `validatePayment`                                                                     | Validate payment format                                   | -        | ❌ Not Implemented | Transaction validation                      |
+| `runtimeConfig`                                                                       | Runtime configuration                                     | -        | ❌ Not Implemented | Node configuration                          |
+| `fork_config`                                                                         | Blockchain fork config                                    | -        | ❌ Not Implemented | Fork parameters                             |
+| `evaluateVrf`                                                                         | Evaluate VRF for public key                               | -        | ❌ Not Implemented | VRF operations                              |
+| `checkVrf`                                                                            | Check VRF evaluation                                      | -        | ❌ Not Implemented | VRF verification                            |
+| `blockchainVerificationKey`                                                           | Protocol state proof key                                  | -        | ❌ Not Implemented | Verification keys                           |
+| `signatureKind`                                                                       | Signature type in use                                     | -        | ❌ Not Implemented | Cryptography info                           |
+| `timeOffset`                                                                          | Blockchain time offset                                    | -        | ❌ Not Implemented | Time synchronization                        |
+| `trustStatus`                                                                         | Trust status for IP                                       | -        | ❌ Not Implemented | Peer trust management                       |
+| `trustStatusAll`                                                                      | All peers trust status                                    | -        | ❌ Not Implemented | Network trust state                         |
+| `connectionGatingConfig`                                                              | Connection rules                                          | -        | ❌ Not Implemented | Network policies                            |
+| `threadGraph`                                                                         | Internal thread graph                                     | -        | ❌ Not Implemented | Debugging tool                              |
+| `getFilteredLogEntries`                                                               | Structured log events                                     | -        | ❌ Not Implemented | Testing/debugging                           |
 
 ### Mutation Endpoints Status
 
-| Endpoint                            | Description                                            | Priority | Rust Status        | Notes                                                   |
-| ----------------------------------- | ------------------------------------------------------ | -------- | ------------------ | ------------------------------------------------------- |
-| **Core Mutations**                  |                                                        |          |                    |                                                         |
-| [`sendPayment`](#sendpayment)       | Send a payment                                         | HIGH     | ✅ Implemented     | Full payment submission                                 |
-| [`sendDelegation`](#senddelegation) | Change delegation                                      | HIGH     | ✅ Implemented     | Stake delegation                                        |
-| [`sendZkapp`](#sendzkapp)           | Send zkApp transaction                                 | HIGH     | ✅ Implemented     | Smart contracts                                         |
-| **Rust Node Only**                  |                                                        |          |                    |                                                         |
-| `archiveVersionedPrecomputedBlock`  | Send a precomputed block of any version to the archive | -        | ✅ Rust only       | Not in the OCaml schema                                 |
-| **Not Yet Implemented**             |                                                        |          |                    |                                                         |
-| `createAccount`                     | Create new account                                     | -        | ❌ Not Implemented | The node keeps no wallet keys                           |
-| `createHDAccount`                   | Create HD account                                      | -        | ❌ Not Implemented | The node keeps no wallet keys                           |
-| `importAccount`                     | Import from file                                       | -        | ❌ Not Implemented | The node keeps no wallet keys                           |
-| `unlockAccount`                     | Unlock account                                         | -        | ❌ Not Implemented | The node keeps no wallet keys                           |
-| `lockAccount`                       | Lock account                                           | -        | ❌ Not Implemented | The node keeps no wallet keys                           |
-| `deleteAccount`                     | Delete private key                                     | -        | ❌ Not Implemented | The node keeps no wallet keys                           |
-| `reloadAccounts`                    | Reload account info                                    | -        | ❌ Not Implemented | The node keeps no wallet keys                           |
-| `setCoinbaseReceiver`               | Set coinbase key                                       | -        | ❌ Not Implemented | Block production                                        |
-| `setSnarkWorker`                    | Configure SNARK worker                                 | -        | ❌ Not Implemented | SNARK configuration                                     |
-| `setSnarkWorkFee`                   | Set SNARK work fee                                     | -        | ❌ Not Implemented | Fee configuration                                       |
-| `setConnectionGatingConfig`         | Set connection rules                                   | -        | ❌ Not Implemented | Network policies                                        |
-| `addPeers`                          | Connect to peers                                       | -        | ❌ Not Implemented | Peer management                                         |
-| `exportLogs`                        | Export daemon logs                                     | -        | ❌ Not Implemented | Log management                                          |
-| `startFilteredLog`                  | Start recording structured events                      | -        | ❌ Not Implemented | Testing/debugging                                       |
-| `sendRosettaTransaction`            | Rosetta format tx                                      | -        | ❌ Not Implemented | Rosetta itself sends `sendPayment` and `sendDelegation` |
-| `sendProofBundle`                   | Transaction SNARKs for a spec                          | -        | ❌ Not Implemented |                                                         |
-| `archivePrecomputedBlock`           | Archive precomputed                                    | -        | ❌ Not Implemented | Use `archiveVersionedPrecomputedBlock`                  |
-| `archiveExtensionalBlock`           | Archive extensional                                    | -        | ❌ Not Implemented | Archive operations                                      |
-| `mockZkapp`                         | Mock zkApp (testing)                                   | -        | ❌ Not Implemented | Testing tool                                            |
-| `sendTestPayments`                  | Test payment series                                    | -        | ❌ Not Implemented | Testing tool                                            |
-| `internalSendZkapp`                 | Send zkApp (internal testing)                          | -        | ❌ Not Implemented | Testing tool                                            |
+| Endpoint                            | Description                                            | Priority | Rust Status        | Notes                                                                  |
+| ----------------------------------- | ------------------------------------------------------ | -------- | ------------------ | ---------------------------------------------------------------------- |
+| **Core Mutations**                  |                                                        |          |                    |                                                                        |
+| [`sendPayment`](#sendpayment)       | Send a payment                                         | HIGH     | ✅ Implemented     | Full payment submission                                                |
+| [`sendDelegation`](#senddelegation) | Change delegation                                      | HIGH     | ✅ Implemented     | Stake delegation                                                       |
+| [`sendZkapp`](#sendzkapp)           | Send zkApp transaction                                 | HIGH     | ✅ Implemented     | Smart contracts                                                        |
+| **Rust Node Only**                  |                                                        |          |                    |                                                                        |
+| `archiveVersionedPrecomputedBlock`  | Send a precomputed block of any version to the archive | -        | ⚠️ Rust only, stub | Always returns an error: the node has no archive process to forward to |
+| **Not Yet Implemented**             |                                                        |          |                    |                                                                        |
+| `createAccount`                     | Create new account                                     | -        | ❌ Not Implemented | The node keeps no wallet keys                                          |
+| `createHDAccount`                   | Create HD account                                      | -        | ❌ Not Implemented | The node keeps no wallet keys                                          |
+| `importAccount`                     | Import from file                                       | -        | ❌ Not Implemented | The node keeps no wallet keys                                          |
+| `unlockAccount`                     | Unlock account                                         | -        | ❌ Not Implemented | The node keeps no wallet keys                                          |
+| `lockAccount`                       | Lock account                                           | -        | ❌ Not Implemented | The node keeps no wallet keys                                          |
+| `deleteAccount`                     | Delete private key                                     | -        | ❌ Not Implemented | The node keeps no wallet keys                                          |
+| `reloadAccounts`                    | Reload account info                                    | -        | ❌ Not Implemented | The node keeps no wallet keys                                          |
+| `setCoinbaseReceiver`               | Set coinbase key                                       | -        | ❌ Not Implemented | Block production                                                       |
+| `setSnarkWorker`                    | Configure SNARK worker                                 | -        | ❌ Not Implemented | SNARK configuration                                                    |
+| `setSnarkWorkFee`                   | Set SNARK work fee                                     | -        | ❌ Not Implemented | Fee configuration                                                      |
+| `setConnectionGatingConfig`         | Set connection rules                                   | -        | ❌ Not Implemented | Network policies                                                       |
+| `addPeers`                          | Connect to peers                                       | -        | ❌ Not Implemented | Peer management                                                        |
+| `exportLogs`                        | Export daemon logs                                     | -        | ❌ Not Implemented | Log management                                                         |
+| `startFilteredLog`                  | Start recording structured events                      | -        | ❌ Not Implemented | Testing/debugging                                                      |
+| `sendRosettaTransaction`            | Rosetta format tx                                      | -        | ❌ Not Implemented | Rosetta itself sends `sendPayment` and `sendDelegation`                |
+| `sendProofBundle`                   | Transaction SNARKs for a spec                          | -        | ❌ Not Implemented |                                                                        |
+| `archivePrecomputedBlock`           | Archive precomputed                                    | -        | ❌ Not Implemented | Archive operations                                                     |
+| `archiveExtensionalBlock`           | Archive extensional                                    | -        | ❌ Not Implemented | Archive operations                                                     |
+| `mockZkapp`                         | Mock zkApp (testing)                                   | -        | ❌ Not Implemented | Testing tool                                                           |
+| `sendTestPayments`                  | Test payment series                                    | -        | ❌ Not Implemented | Testing tool                                                           |
+| `internalSendZkapp`                 | Send zkApp (internal testing)                          | -        | ❌ Not Implemented | Testing tool                                                           |
 
 ### Subscription Endpoints Status
 
@@ -1048,7 +1051,7 @@ with those of an OCaml 4.0.2 mainnet daemon for the same blocks.
 - **Implemented in Rust**: 21 of the queries, one of them partly, and 3 of the
   mutations
 - **Not implemented**: 18 queries, 21 mutations and all 3 subscriptions
-- **Rust only**: 5 queries and 1 mutation
+- **Rust only**: 5 queries and 1 mutation, which is a stub
 
 All HIGH priority endpoints required for basic node operation are fully
 implemented. The Rust implementation focuses on core functionality needed for:
