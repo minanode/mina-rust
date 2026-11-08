@@ -17,8 +17,7 @@ description:
   an error.
 
 All three are **off by default**: a reporter runs only when you give its URL,
-and each URL is independent. They are separate from the Prometheus metrics and
-from `POST /make_heartbeat`, which keeps its own format.
+and each URL is independent. They are separate from the Prometheus metrics.
 
 The reports follow OCaml's formats, signatures and timing, and were checked
 against requests captured from the OCaml daemon. Sending reports does not

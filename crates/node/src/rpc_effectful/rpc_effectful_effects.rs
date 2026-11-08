@@ -14,17 +14,16 @@ use crate::{
     p2p_ready,
     rpc::{
         AccountQuery, AccountSlim, ActionStatsQuery, ActionStatsResponse, CurrentMessageProgress,
-        MessagesStats, NodeHeartbeat, ProducedBlockInfo, RootLedgerSyncProgress,
-        RootStagedLedgerSyncProgress, RpcAction, RpcBlockProducerStats, RpcMessageProgressResponse,
-        RpcNextBlockProduction, RpcNodeStatus, RpcNodeStatusFrontierStore, RpcNodeStatusLedger,
-        RpcNodeStatusNetworkInfo, RpcNodeStatusResources, RpcNodeStatusTransactionPool,
-        RpcNodeStatusTransitionFrontier, RpcNodeStatusTransitionFrontierBlockSummary,
-        RpcNodeStatusTransitionFrontierSync, RpcRequestExtraData, RpcScanStateSummary,
-        RpcScanStateSummaryBlock, RpcScanStateSummaryBlockTransaction,
-        RpcScanStateSummaryBlockTransactionKind, RpcScanStateSummaryScanStateJob,
-        RpcSnarkPoolJobFull, RpcSnarkPoolJobSnarkWork, RpcSnarkPoolJobSummary,
-        RpcSnarkerJobCommitResponse, RpcSnarkerJobSpecResponse, RpcTransactionInjectResponse,
-        TransactionStatus,
+        MessagesStats, RootLedgerSyncProgress, RootStagedLedgerSyncProgress, RpcAction,
+        RpcBlockProducerStats, RpcMessageProgressResponse, RpcNextBlockProduction, RpcNodeStatus,
+        RpcNodeStatusFrontierStore, RpcNodeStatusLedger, RpcNodeStatusNetworkInfo,
+        RpcNodeStatusResources, RpcNodeStatusTransactionPool, RpcNodeStatusTransitionFrontier,
+        RpcNodeStatusTransitionFrontierBlockSummary, RpcNodeStatusTransitionFrontierSync,
+        RpcRequestExtraData, RpcScanStateSummary, RpcScanStateSummaryBlock,
+        RpcScanStateSummaryBlockTransaction, RpcScanStateSummaryBlockTransactionKind,
+        RpcScanStateSummaryScanStateJob, RpcSnarkPoolJobFull, RpcSnarkPoolJobSnarkWork,
+        RpcSnarkPoolJobSummary, RpcSnarkerJobCommitResponse, RpcSnarkerJobSpecResponse,
+        RpcTransactionInjectResponse, TransactionStatus,
     },
     snark_pool::SnarkPoolAction,
     transition_frontier::sync::{
@@ -272,35 +271,6 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
                     .map_or(0, |p2p| p2p.sharing_relay.refused_total),
             };
             let _ = store.service.respond_metrics_get(rpc_id, response);
-        }
-        RpcEffectfulAction::HeartbeatGet { rpc_id } => {
-            let status = compute_node_status(store);
-            let last_produced_block = store
-                .service
-                .stats()
-                .and_then(|stats| stats.block_producer().last_produced_block.take());
-
-            let last_produced_block_info = match make_produced_block_info(last_produced_block) {
-                Ok(data) => data,
-                Err(error) => {
-                    bug_condition!(
-                        "HeartbeatGet: Failed to encode block header, returning None: {error}"
-                    );
-                    None
-                }
-            };
-
-            let heartbeat = NodeHeartbeat {
-                status: status.into(),
-                node_timestamp: meta.time(),
-                peer_id: store.state().p2p.my_id(),
-                last_produced_block_info,
-            };
-            let response = store
-                .service()
-                .with_producer_keypair(move |sk| heartbeat.sign(sk));
-
-            let _ = store.service.respond_heartbeat_get(rpc_id, response);
         }
         RpcEffectfulAction::ReportingSnapshotGet { rpc_id } => {
             let snapshot = reporting_snapshot(store.state(), meta.time());
@@ -1580,28 +1550,4 @@ fn failed_restore(
 /// Reading status must not recompute either from a newer best tip.
 fn next_block_production(state: &crate::State) -> Option<RpcNextBlockProduction> {
     state.block_producer.next_block_production()
-}
-
-fn make_produced_block_info(
-    block: Option<ArcBlockWithHash>,
-) -> std::io::Result<Option<ProducedBlockInfo>> {
-    use base64::{engine::general_purpose::URL_SAFE, Engine as _};
-    use mina_p2p_messages::binprot::BinProtWrite;
-
-    let Some(block) = block else { return Ok(None) };
-
-    let height = block.height();
-    let global_slot = block.global_slot();
-    let hash = block.hash().to_string();
-    let mut buf = Vec::with_capacity(5 * 1024 * 1024);
-    v2::MinaBlockHeaderStableV2::binprot_write(block.header(), &mut buf)?;
-
-    let base64_encoded_header = URL_SAFE.encode(&buf);
-
-    Ok(Some(ProducedBlockInfo {
-        height,
-        global_slot,
-        hash,
-        base64_encoded_header,
-    }))
 }

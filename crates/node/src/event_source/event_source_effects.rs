@@ -426,9 +426,6 @@ pub fn event_source_effects<S: Service>(store: &mut Store<S>, action: EventSourc
                 RpcRequest::MetricsGet => {
                     store.dispatch(RpcAction::MetricsGet { rpc_id });
                 }
-                RpcRequest::HeartbeatGet => {
-                    store.dispatch(RpcAction::HeartbeatGet { rpc_id });
-                }
                 RpcRequest::ReportingSnapshotGet {
                     produced_block_watch,
                 } => {

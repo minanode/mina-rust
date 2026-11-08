@@ -76,15 +76,14 @@ use mina_node::rpc::{
     RpcBestChainResponse, RpcBlockProducerStatsGetResponse, RpcConsensusConstantsGetResponse,
     RpcConsensusTimeGetResponse, RpcDiscoveryBoostrapStatsResponse,
     RpcDiscoveryRoutingTableResponse, RpcGenesisBlockResponse, RpcGetBlockResponse,
-    RpcHardForkExportResponse, RpcHealthCheckResponse, RpcHeartbeatGetResponse,
-    RpcLedgerAccountDelegatorsGetResponse, RpcLedgerAccountsResponse, RpcLedgerExportResponse,
-    RpcLedgerSlimAccountsResponse, RpcLedgerStatusGetResponse, RpcLightAccountResponse,
-    RpcLightBestTipResponse, RpcMessageProgressResponse, RpcPeersGetResponse,
-    RpcPooledUserCommandsResponse, RpcPooledZkappCommandsResponse, RpcReadinessCheckResponse,
-    RpcRequest, RpcSnarkPoolCompletedJobsResponse, RpcSnarkPoolPendingJobsGetResponse,
-    RpcStatusGetResponse, RpcTransactionInjectResponse, RpcTransactionPoolResponse,
-    RpcTransactionStatusGetResponse, RpcTransitionFrontierUserCommandsResponse,
-    RpcVerificationStatsGetResponse,
+    RpcHardForkExportResponse, RpcHealthCheckResponse, RpcLedgerAccountDelegatorsGetResponse,
+    RpcLedgerAccountsResponse, RpcLedgerExportResponse, RpcLedgerSlimAccountsResponse,
+    RpcLedgerStatusGetResponse, RpcLightAccountResponse, RpcLightBestTipResponse,
+    RpcMessageProgressResponse, RpcPeersGetResponse, RpcPooledUserCommandsResponse,
+    RpcPooledZkappCommandsResponse, RpcReadinessCheckResponse, RpcRequest,
+    RpcSnarkPoolCompletedJobsResponse, RpcSnarkPoolPendingJobsGetResponse, RpcStatusGetResponse,
+    RpcTransactionInjectResponse, RpcTransactionPoolResponse, RpcTransactionStatusGetResponse,
+    RpcTransitionFrontierUserCommandsResponse, RpcVerificationStatsGetResponse,
 };
 use serde::{Deserialize, Serialize};
 
@@ -350,7 +349,6 @@ impl mina_node::rpc_effectful::RpcService for NodeService {
         mina_node::snark_pool::WorkCoverageStatus
     );
 
-    rpc_service_impl!(respond_heartbeat_get, RpcHeartbeatGetResponse);
     rpc_service_impl!(
         respond_proof_memory_get,
         mina_node::rpc::RpcProofMemoryGetResponse

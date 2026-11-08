@@ -1,8 +1,7 @@
 //! Opt-in uptime, node status and node error reporting, compatible with
 //! OCaml Mina 4.0.4's services (R43e.2).
 //!
-//! Each reporter runs only with its URL. None shares code with the metrics
-//! or with `/make_heartbeat`, which keeps its own envelope and consumers.
+//! Each reporter runs only with its URL. None shares code with the metrics.
 //! Uptime submissions follow OCaml's choice of SNARK work for the best tip
 //! ([`uptime_work`]) and prove it on a dedicated worker.
 //!

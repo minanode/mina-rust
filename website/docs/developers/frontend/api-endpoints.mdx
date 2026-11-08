@@ -1576,30 +1576,6 @@ query Peers {
 
 **Used by:** External peer queries, zkApp updates
 
-## External services
-
-### Firebase Cloud Function
-
-#### POST `https://us-central1-webnode-gtm-test.cloudfunctions.net/handleValidationAndStore`
-
-Store web node heartbeat data for analytics.
-
-**Request body:**
-
-```json
-{
-  "data": {
-    "timestamp": "number",
-    "nodeId": "string",
-    "metrics": {}
-  }
-}
-```
-
-**Response:** Success/error status
-
-**Used by:** Web Node Heartbeat Service
-
 ## Static asset endpoints
 
 ### GET `/assets/reports/index.json`
@@ -1666,7 +1642,6 @@ instead of making HTTP requests. These are method calls on the WASM instance:
 - **Memory profiler**: 1 endpoint
 - **Network debugger**: 9 endpoints
 - **GraphQL**: 1 endpoint
-- **Firebase**: 1 endpoint
 - **Static assets**: 4 endpoints
 - **Web Node WASM**: 10+ methods
 

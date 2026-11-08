@@ -61,7 +61,7 @@ fn effects(store: &mut TestStore, action: crate::ActionWithMeta) {
         Action::BlockProducerEffectful(BlockProducerEffectfulAction::BlockProveSuccess) => {
             store.dispatch(BlockProducerAction::BlockProduced);
         }
-        Action::BlockProducerEffectful(BlockProducerEffectfulAction::BlockProduced { .. }) => {
+        Action::BlockProducer(BlockProducerAction::BlockProduced) => {
             store.service.produced += 1;
         }
         Action::BlockProducerEffectful(BlockProducerEffectfulAction::WonSlotDiscard { reason }) => {

@@ -108,12 +108,4 @@ impl RpcSender {
             .flatten();
         JsValue::from_serde(&res).unwrap_or_default()
     }
-
-    pub async fn make_heartbeat(&self) -> JsValue {
-        let res = self
-            .oneshot_request::<RpcHeartbeatGetResponse>(RpcRequest::HeartbeatGet)
-            .await
-            .flatten();
-        JsValue::from_serde(&res).unwrap_or_default()
-    }
 }

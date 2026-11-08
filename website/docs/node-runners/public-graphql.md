@@ -216,10 +216,10 @@ Caddy or shared service configuration is changed by this task.
   refused.
 
 Every other HTTP route returns 404 without an RPC, including `/state` and all
-`/state/*`, `/accounts`, `/send-payment`, `/make_heartbeat`, operator
-statistics, SNARK pool/worker routes, scan state, discovery routing table,
-GraphiQL and all API documentation UIs. Unsupported methods on admitted routes
-return 405; CORS preflight does not execute a handler.
+`/state/*`, `/accounts`, `/send-payment`, operator statistics, SNARK pool/worker
+routes, scan state, discovery routing table, GraphiQL and all API documentation
+UIs. Unsupported methods on admitted routes return 405; CORS preflight does not
+execute a handler.
 
 A GraphQL policy refusal gets HTTP 400 before any resolver or RPC runs:
 

@@ -61,10 +61,6 @@ impl RpcState {
                     .into_dispatcher()
                     .push(RpcEffectfulAction::MetricsGet { rpc_id: *rpc_id });
             }
-            RpcAction::HeartbeatGet { rpc_id } => {
-                let dispatcher = state_context.into_dispatcher();
-                dispatcher.push(RpcEffectfulAction::HeartbeatGet { rpc_id: *rpc_id });
-            }
             RpcAction::ReportingSnapshotGet {
                 rpc_id,
                 produced_block_watch,

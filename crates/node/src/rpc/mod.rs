@@ -53,11 +53,6 @@ mod chain_view_tests;
 #[cfg(test)]
 mod light_tests;
 
-mod heartbeat;
-pub use heartbeat::{
-    NodeHeartbeat, NodeStatus as HeartbeatNodeStatus, ProducedBlockInfo, SignedNodeHeartbeat,
-};
-
 pub use mina_core::requests::{RpcId, RpcIdType};
 
 /// The answer to a transaction submission while the node has no usable
@@ -104,7 +99,6 @@ pub enum RpcRequest {
     GraphqlStatusGet,
     MemoryDebugGet,
     MetricsGet,
-    HeartbeatGet,
     ActionStatsGet(ActionStatsQuery),
     SyncStatsGet(SyncStatsQuery),
     BlockProducerStatsGet,
@@ -581,7 +575,6 @@ pub struct RpcMetricsGetResponse {
     #[serde(default)]
     pub sharing_introductions_refused: u64,
 }
-pub type RpcHeartbeatGetResponse = Option<SignedNodeHeartbeat>;
 pub type RpcReportingSnapshotGetResponse = RpcReportingSnapshot;
 
 /// One consistent sample of the node for the opt-in reporters (R43e.2).

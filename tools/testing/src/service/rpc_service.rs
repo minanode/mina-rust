@@ -21,10 +21,6 @@ impl RpcService for super::NodeTestingService {
     to_real!(respond_status_get, mina_node::rpc::RpcStatusGetResponse);
     to_real!(respond_metrics_get, mina_node::rpc::RpcMetricsGetResponse);
     to_real!(
-        respond_heartbeat_get,
-        mina_node::rpc::RpcHeartbeatGetResponse
-    );
-    to_real!(
         respond_proof_memory_get,
         mina_node::rpc::RpcProofMemoryGetResponse
     );

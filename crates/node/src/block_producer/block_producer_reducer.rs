@@ -500,18 +500,7 @@ impl BlockProducerEnabled {
                     bug_condition!("Invalid state for `BlockProducerAction::BlockProduced` expected: `BlockProducerCurrentState::BlockProveSuccess`, found: {:?}", current_state);
                 }
 
-                let (dispatcher, global_state) = state_context.into_dispatcher_and_state();
-
-                // Store the produced block in stats, used by heartbeats
-                let block = global_state
-                    .block_producer
-                    .as_ref()
-                    .and_then(|bp| bp.current.produced_block())
-                    .cloned();
-                if let Some(block) = block {
-                    dispatcher.push(BlockProducerEffectfulAction::BlockProduced { block });
-                }
-
+                let dispatcher = state_context.into_dispatcher();
                 dispatcher.push(BlockProducerAction::BlockInject);
             }
             BlockProducerAction::BlockInject => {
