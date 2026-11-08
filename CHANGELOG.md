@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Removed
+
+- **Node**: remove the `POST /make_heartbeat` route and the signed heartbeat
+  behind it, left over from the web node leaderboard, and the external SNARK
+  worker module, which was never compiled
+  ([#47](https://github.com/minanode/mina-rust/pull/47))
+
 ## [0.22.1] - 2026-11-06
 
 0.22.1 is a UI release. It has a design pass over the node dashboard and the
