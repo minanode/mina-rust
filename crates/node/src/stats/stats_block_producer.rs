@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use ledger::AccountIndex;
-use mina_core::block::{AppliedBlock, ArcBlockWithHash};
+use mina_core::block::AppliedBlock;
 use mina_p2p_messages::v2;
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +21,6 @@ pub const MAX_SAVED_EPOCHS: usize = 16;
 pub struct BlockProducerStats {
     pub(super) attempts: VecDeque<BlockProductionAttempt>,
     pub vrf_evaluator: BTreeMap<u32, VrfEvaluatorStats>,
-    pub last_produced_block: Option<ArcBlockWithHash>,
     pub blocks_produced: u64,
     pub blocks_failed: u64,
     /// Changes whenever an attempt's status does (not its confirmations), or

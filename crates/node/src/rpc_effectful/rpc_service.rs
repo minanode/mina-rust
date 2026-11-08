@@ -4,7 +4,7 @@ use crate::{
         RpcActionStatsGetResponse, RpcBestChainResponse, RpcBlockProducerStatsGetResponse,
         RpcConsensusTimeGetResponse, RpcDiscoveryBoostrapStatsResponse,
         RpcDiscoveryRoutingTableResponse, RpcGenesisBlockResponse, RpcGetBlockResponse,
-        RpcHardForkExportResponse, RpcHealthCheckResponse, RpcHeartbeatGetResponse, RpcId,
+        RpcHardForkExportResponse, RpcHealthCheckResponse, RpcId,
         RpcLedgerAccountDelegatorsGetResponse, RpcLedgerAccountsResponse, RpcLedgerExportResponse,
         RpcLedgerSlimAccountsResponse, RpcLedgerStatusGetResponse, RpcLightAccountResponse,
         RpcLightBestTipResponse, RpcMessageProgressResponse, RpcP2pConnectionOutgoingResponse,
@@ -88,11 +88,6 @@ pub trait RpcService {
         &mut self,
         rpc_id: RpcId,
         response: crate::rpc::RpcMetricsGetResponse,
-    ) -> Result<(), RespondError>;
-    fn respond_heartbeat_get(
-        &mut self,
-        rpc_id: RpcId,
-        response: RpcHeartbeatGetResponse,
     ) -> Result<(), RespondError>;
     fn respond_reporting_snapshot_get(
         &mut self,

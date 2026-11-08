@@ -3,9 +3,7 @@
 //! The request is `{"version":1,"data":{...},"signature":"…","submitter":"B62…"}`.
 //! The signature is legacy Schnorr over the BLAKE2b-256 digest of the
 //! compact `data` JSON, the 32 raw digest bytes taken least significant bit
-//! first, in the profile's signature domain. The node's `/make_heartbeat`
-//! envelope, which signs a hex digest in the testnet domain, is a different
-//! protocol and is not accepted here.
+//! first, in the profile's signature domain.
 //!
 //! OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/uptime_service/payload.ml#L5-L49>
 
@@ -82,8 +80,8 @@ pub fn encode_block_base64(block: &v2::MinaBlockBlockStableV2) -> std::io::Resul
     Ok(STANDARD.encode(encode_block(block)?))
 }
 
-/// Decodes a submitted block, refusing trailing bytes, so a header alone
-/// (the heartbeat's `base64_encoded_header`) is not taken for a block.
+/// Decodes a submitted block, refusing trailing bytes, so a header alone is
+/// not taken for a block.
 pub fn decode_block(bytes: &[u8]) -> Result<v2::MinaBlockBlockStableV2, String> {
     let mut rest = bytes;
     let block = v2::MinaBlockBlockStableV2::binprot_read(&mut rest).map_err(|e| e.to_string())?;
@@ -102,7 +100,7 @@ pub fn short_commit(commit: &str) -> String {
 
 /// BLAKE2b-256 of the compact data JSON, signed as raw bytes, each byte's
 /// bits least significant first (`Blake2.string_to_bits`). Not the hex
-/// digits, which `String_sign` (and the heartbeat) would sign.
+/// digits, which `String_sign` would sign.
 ///
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/uptime_service/payload.ml#L25-L36>
 /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/crypto/blake2/blake2.ml#L116-L122>
@@ -265,7 +263,7 @@ pub enum UptimeVerifyError {
 
 /// Checks a request as the receiver does: rebuilds the signed data from the
 /// fields in OCaml's order and verifies the signature in `network`'s
-/// domain, then decodes the whole block. A heartbeat envelope, a hex-digest
+/// domain, then decodes the whole block. Another envelope, a hex-digest
 /// signature, another domain or a changed field fail.
 ///
 /// The public receiving service rebuilds the data the same way

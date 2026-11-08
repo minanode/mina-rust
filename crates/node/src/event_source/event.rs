@@ -91,7 +91,6 @@ impl std::fmt::Display for Event {
                     RpcRequest::StatusGet => write!(f, "StatusGet"),
                     RpcRequest::MemoryDebugGet => write!(f, "MemoryDebugGet"),
                     RpcRequest::MetricsGet => write!(f, "MetricsGet"),
-                    RpcRequest::HeartbeatGet => write!(f, "HeartbeatGet"),
                     RpcRequest::ReportingSnapshotGet { .. } => write!(f, "ReportingSnapshotGet"),
                     RpcRequest::ActionStatsGet(query) => write!(f, "ActionStatsGet, {query:?}"),
                     RpcRequest::SyncStatsGet(query) => write!(f, "SyncStatsGet, {query:?}"),

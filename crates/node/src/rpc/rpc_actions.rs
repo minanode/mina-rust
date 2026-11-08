@@ -40,9 +40,6 @@ pub enum RpcAction {
     MetricsGet {
         rpc_id: RpcId,
     },
-    HeartbeatGet {
-        rpc_id: RpcId,
-    },
     ReportingSnapshotGet {
         rpc_id: RpcId,
         produced_block_watch: Option<super::RpcReportingProducedBlockWatch>,
@@ -390,7 +387,6 @@ impl redux::EnablingCondition<crate::State> for RpcAction {
             RpcAction::StatusGet { .. } => true,
             RpcAction::MemoryDebugGet { .. } => true,
             RpcAction::MetricsGet { .. } => true,
-            RpcAction::HeartbeatGet { .. } => true,
             RpcAction::ReportingSnapshotGet { .. } => true,
             RpcAction::ActionStatsGet { .. } => true,
             RpcAction::SyncStatsGet { .. } => true,

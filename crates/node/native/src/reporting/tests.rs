@@ -257,8 +257,7 @@ fn changed_bodies_are_rejected() {
     }
 }
 
-/// The digest's 64 hex digits as the signed bytes, as the heartbeat and
-/// `String_sign` sign.
+/// The digest's 64 hex digits as the signed bytes, as `String_sign` signs.
 #[derive(Clone)]
 struct HexDigest(Vec<u8>);
 
@@ -304,54 +303,26 @@ fn hex_digest_signatures_are_rejected() {
     }
 }
 
-/// A heartbeat as `/make_heartbeat` builds it (R24g's test values).
-fn test_heartbeat() -> mina_node::rpc::NodeHeartbeat {
-    use mina_node::rpc::{
-        HeartbeatNodeStatus, RpcNodeStatusSnarkPool, RpcNodeStatusTransactionPool,
-        RpcNodeStatusTransitionFrontier, RpcNodeStatusTransitionFrontierSync,
-    };
-    mina_node::rpc::NodeHeartbeat {
-        status: HeartbeatNodeStatus {
-            chain_id: None,
-            transition_frontier: RpcNodeStatusTransitionFrontier {
-                ledger_recovery: None,
-                root: None,
-                best_tip: None,
-                sync: RpcNodeStatusTransitionFrontierSync {
-                    time: None,
-                    status: "Synced".to_string(),
-                    phase: "Running".to_string(),
-                    target: None,
-                },
-            },
-            peers_count: 10,
-            snark_pool: RpcNodeStatusSnarkPool::default(),
-            transaction_pool: RpcNodeStatusTransactionPool::default(),
-            current_block_production_attempt: None,
-        },
-        node_timestamp: redux::Timestamp::ZERO,
-        peer_id: "2bEgBrPTzL8wov2D4Kz34WVLCxR4uCarsBmHYXWKQA5wvBQzd9H"
-            .parse()
-            .unwrap(),
-        last_produced_block_info: None,
-    }
-}
-
 #[test]
-fn heartbeat_envelopes_are_rejected() {
+fn foreign_envelopes_are_rejected() {
     for name in FIXTURES {
         let fixture = Fixture::load(name);
-        let heartbeat = test_heartbeat().sign(&fixture.key);
-        let body = serde_json::to_vec(&heartbeat).unwrap();
+        let request = fixture.request_json();
+        // A signed envelope without a `data` object.
+        let body = serde_json::json!({
+            "version": 1,
+            "payload": "e30=",
+            "submitter": request["submitter"],
+            "signature": { "field": "1", "scalar": "1" },
+        });
         assert_eq!(
-            uptime::verify_request(&body, fixture.network.clone()),
+            uptime::verify_request(&serde_json::to_vec(&body).unwrap(), fixture.network.clone()),
             Err(UptimeVerifyError::Shape("no data object")),
             "{name}"
         );
-        // The heartbeat's signature (hex digest, testnet) over our data in
-        // an uptime envelope doesn't verify either.
-        let mut forged: serde_json::Value = fixture.request_json();
-        forged["signature"] = serde_json::to_value(&heartbeat.signature).unwrap();
+        // A field/scalar signature object in an uptime envelope.
+        let mut forged = request;
+        forged["signature"] = serde_json::json!({ "field": "1", "scalar": "1" });
         assert_eq!(
             uptime::verify_request(
                 &serde_json::to_vec(&forged).unwrap(),

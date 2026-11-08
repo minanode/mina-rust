@@ -153,7 +153,6 @@ pub enum ActionKind {
     BlockProducerWonSlotTransactionsGet,
     BlockProducerWonSlotTransactionsSuccess,
     BlockProducerWonSlotWait,
-    BlockProducerEffectfulBlockProduced,
     BlockProducerEffectfulBlockProveInit,
     BlockProducerEffectfulBlockProveSuccess,
     BlockProducerEffectfulBlockUnprovenBuild,
@@ -525,7 +524,6 @@ pub enum ActionKind {
     RpcHardForkConfigPending,
     RpcHardForkConfigSuccess,
     RpcHealthCheck,
-    RpcHeartbeatGet,
     RpcLedgerAccountDelegatorsGetInit,
     RpcLedgerAccountDelegatorsGetPending,
     RpcLedgerAccountDelegatorsGetSuccess,
@@ -605,7 +603,6 @@ pub enum ActionKind {
     RpcEffectfulGlobalStateGet,
     RpcEffectfulHardForkConfigSuccess,
     RpcEffectfulHealthCheck,
-    RpcEffectfulHeartbeatGet,
     RpcEffectfulLedgerAccountDelegatorsGetSuccess,
     RpcEffectfulLedgerAccountsGetSuccess,
     RpcEffectfulLedgerExportSuccess,
@@ -876,7 +873,7 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    pub const COUNT: u16 = 745;
+    pub const COUNT: u16 = 742;
 }
 
 impl std::fmt::Display for ActionKind {
@@ -1213,7 +1210,6 @@ impl ActionKindGet for BlockProducerEffectfulAction {
             Self::BlockUnprovenBuild => ActionKind::BlockProducerEffectfulBlockUnprovenBuild,
             Self::BlockProveInit => ActionKind::BlockProducerEffectfulBlockProveInit,
             Self::BlockProveSuccess => ActionKind::BlockProducerEffectfulBlockProveSuccess,
-            Self::BlockProduced { .. } => ActionKind::BlockProducerEffectfulBlockProduced,
         }
     }
 }
@@ -1225,7 +1221,6 @@ impl ActionKindGet for RpcAction {
             Self::StatusGet { .. } => ActionKind::RpcStatusGet,
             Self::MemoryDebugGet { .. } => ActionKind::RpcMemoryDebugGet,
             Self::MetricsGet { .. } => ActionKind::RpcMetricsGet,
-            Self::HeartbeatGet { .. } => ActionKind::RpcHeartbeatGet,
             Self::ReportingSnapshotGet { .. } => ActionKind::RpcReportingSnapshotGet,
             Self::ActionStatsGet { .. } => ActionKind::RpcActionStatsGet,
             Self::SyncStatsGet { .. } => ActionKind::RpcSyncStatsGet,
@@ -1337,7 +1332,6 @@ impl ActionKindGet for RpcEffectfulAction {
             Self::StatusGet { .. } => ActionKind::RpcEffectfulStatusGet,
             Self::MemoryDebugGet { .. } => ActionKind::RpcEffectfulMemoryDebugGet,
             Self::MetricsGet { .. } => ActionKind::RpcEffectfulMetricsGet,
-            Self::HeartbeatGet { .. } => ActionKind::RpcEffectfulHeartbeatGet,
             Self::ReportingSnapshotGet { .. } => ActionKind::RpcEffectfulReportingSnapshotGet,
             Self::ActionStatsGet { .. } => ActionKind::RpcEffectfulActionStatsGet,
             Self::SyncStatsGet { .. } => ActionKind::RpcEffectfulSyncStatsGet,

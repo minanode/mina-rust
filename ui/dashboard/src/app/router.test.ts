@@ -50,7 +50,6 @@ test("routes.json names no API route", () => {
     "build_env",
     "healthz",
     "readyz",
-    "make_heartbeat",
     "state",
     "stats",
     "scan-state",

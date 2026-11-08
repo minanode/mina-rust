@@ -35,9 +35,6 @@ pub enum RpcEffectfulAction {
     MetricsGet {
         rpc_id: RpcId,
     },
-    HeartbeatGet {
-        rpc_id: RpcId,
-    },
     ReportingSnapshotGet {
         rpc_id: RpcId,
     },

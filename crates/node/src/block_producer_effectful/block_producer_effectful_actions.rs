@@ -1,6 +1,6 @@
 use super::vrf_evaluator_effectful::BlockProducerVrfEvaluatorEffectfulAction;
 use crate::block_producer::{BlockProducerWonSlot, BlockProducerWonSlotDiscardReason};
-use mina_core::{block::ArcBlockWithHash, ActionEvent};
+use mina_core::ActionEvent;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, Clone, ActionEvent)]
@@ -17,9 +17,6 @@ pub enum BlockProducerEffectfulAction {
     BlockUnprovenBuild,
     BlockProveInit,
     BlockProveSuccess,
-    BlockProduced {
-        block: ArcBlockWithHash,
-    },
 }
 
 impl redux::EnablingCondition<crate::State> for BlockProducerEffectfulAction {

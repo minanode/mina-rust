@@ -4,7 +4,6 @@
 //! - `GET /status` - Node status
 //! - `GET /healthz` - Liveness: the node answers, whatever its peers and sync
 //! - `GET /readyz` - Readiness: recently synced, with a ready peer
-//! - `POST /make_heartbeat` - Trigger a heartbeat
 //! - `GET /reporting/status` - The opt-in uptime, node status and node error
 //!   reporters' last attempts and outcomes
 
@@ -13,8 +12,8 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 use mina_node::{
     rpc::{
-        RpcHealthCheckResponse, RpcHeartbeatGetResponse, RpcNodeStatus, RpcReadinessCheckResponse,
-        RpcRequest, RpcStatusGetResponse,
+        RpcHealthCheckResponse, RpcNodeStatus, RpcReadinessCheckResponse, RpcRequest,
+        RpcStatusGetResponse,
     },
     BuildEnv,
 };
@@ -28,7 +27,6 @@ pub fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(status))
         .routes(routes!(healthz))
         .routes(routes!(readyz))
-        .routes(routes!(make_heartbeat))
         .routes(routes!(reporting_status))
 }
 
@@ -219,20 +217,6 @@ async fn healthz(State(state): State<AppState>) -> AppResult<()> {
 async fn readyz(State(state): State<AppState>) -> AppResult<()> {
     let reply: RpcReadinessCheckResponse = rpc_request!(state, RpcRequest::ReadinessCheck)?;
     reply.map_err(AppError::ServiceUnavailable)
-}
-
-/// Trigger heartbeat
-#[utoipa::path(
-    post,
-    path = "/make_heartbeat",
-    tag = "status",
-    responses(
-        // inline: type alias for Option<T> would register as "Option"
-        (status = 200, description = "Heartbeat triggered successfully", body = inline(RpcHeartbeatGetResponse))
-    )
-)]
-async fn make_heartbeat(State(state): State<AppState>) -> AppResult<Json<RpcHeartbeatGetResponse>> {
-    jsonify_rpc!(state, RpcRequest::HeartbeatGet)
 }
 
 /// The opt-in reporters (`--uptime-url`, `--node-status-url`,
