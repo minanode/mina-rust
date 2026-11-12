@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use ledger::{
     scan_state::transaction_logic::WithStatus,
@@ -40,6 +43,57 @@ fn catch_verifier_panic<T>(what: &str, f: impl FnOnce() -> T) -> Option<T> {
             );
             None
         }
+    }
+}
+
+type VerifyJob = Box<dyn FnOnce() + Send>;
+
+/// Runs one service's verification jobs on the global rayon pool, one at a
+/// time and in order.
+///
+/// A rayon thread that waits inside a job, in `join` or `par_iter`, runs other
+/// queued pool tasks on its own stack meanwhile. With a pool task per request,
+/// a burst of requests nests jobs inside each other as deep as the queue, until
+/// the stack overflows; a 3-thread pool replaying the SNARK work of a mainnet
+/// transaction burst this way reached 15 MiB of stack per thread. One task per
+/// service in the pool bounds that nesting by the number of services.
+#[derive(Clone, Default)]
+pub struct VerifyQueue(Arc<Mutex<VerifyQueueState>>);
+
+#[derive(Default)]
+struct VerifyQueueState {
+    running: bool,
+    pending: VecDeque<VerifyJob>,
+}
+
+impl VerifyQueue {
+    pub fn push(&self, job: impl FnOnce() + Send + 'static) {
+        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.running {
+            state.pending.push_back(Box::new(job));
+            return;
+        }
+        state.running = true;
+        drop(state);
+        self.spawn(Box::new(job));
+    }
+
+    /// Runs `job` as a pool task, then hands the next pending job to a new
+    /// task, so a long queue never nests on one stack.
+    fn spawn(&self, job: VerifyJob) {
+        let queue = self.clone();
+        rayon::spawn_fifo(move || {
+            job();
+            let next = {
+                let mut state = queue.0.lock().unwrap_or_else(PoisonError::into_inner);
+                let next = state.pending.pop_front();
+                state.running = next.is_some();
+                next
+            };
+            if let Some(next) = next {
+                queue.spawn(next);
+            }
+        });
     }
 }
 
@@ -144,7 +198,7 @@ impl mina_node::service::SnarkWorkVerifyService for NodeService {
             return;
         }
         let tx = self.event_sender().clone();
-        rayon::spawn_fifo(move || {
+        self.snark_work_verify_queue.push(move || {
             // Keep SOK binding checks inside P6's panic containment.
             let result = catch_verifier_panic("snark work", || {
                 // The sok digests are checked before any proof is verified: a
@@ -185,7 +239,7 @@ impl mina_node::service::SnarkUserCommandVerifyService for NodeService {
         }
 
         let tx = self.event_sender().clone();
-        rayon::spawn_fifo(move || {
+        self.user_command_verify_queue.push(move || {
             // Commands come from peers and RPC callers; a panic while checking
             // a malformed one (a key or proof point off the curve, say) must
             // not abort the node, which rayon does on a panic in a task.
@@ -231,5 +285,45 @@ impl mina_node::service::SnarkPoolService for NodeService {
             .into_iter()
             .cloned()
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod verify_queue_tests {
+    use super::VerifyQueue;
+    use std::{
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc, Arc, Mutex,
+        },
+        time::Duration,
+    };
+
+    #[test]
+    fn runs_jobs_one_at_a_time_in_order() {
+        const JOBS: usize = 64;
+        let queue = VerifyQueue::default();
+        let running = Arc::new(AtomicUsize::new(0));
+        let most = Arc::new(AtomicUsize::new(0));
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = mpsc::channel();
+        for i in 0..JOBS {
+            let (running, most, order, tx) =
+                (running.clone(), most.clone(), order.clone(), tx.clone());
+            queue.push(move || {
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                most.fetch_max(now, Ordering::SeqCst);
+                // Wait inside the pool, as verification does in `join`.
+                rayon::join(|| std::thread::sleep(Duration::from_millis(2)), || ());
+                order.lock().unwrap().push(i);
+                running.fetch_sub(1, Ordering::SeqCst);
+                tx.send(()).unwrap();
+            });
+        }
+        for _ in 0..JOBS {
+            rx.recv_timeout(Duration::from_secs(60)).unwrap();
+        }
+        assert_eq!(most.load(Ordering::SeqCst), 1);
+        assert_eq!(*order.lock().unwrap(), (0..JOBS).collect::<Vec<_>>());
     }
 }
