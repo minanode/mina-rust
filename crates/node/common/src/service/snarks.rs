@@ -55,8 +55,9 @@ type VerifyJob = Box<dyn FnOnce() + Send>;
 /// queued pool tasks on its own stack meanwhile. With a pool task per request,
 /// a burst of requests nests jobs inside each other as deep as the queue, until
 /// the stack overflows; a 3-thread pool replaying the SNARK work of a mainnet
-/// transaction burst this way reached 15 MiB of stack per thread. One task per
-/// service in the pool bounds that nesting by the number of services.
+/// transaction burst this way reached 15 MiB of stack per thread. With one task
+/// per service in the pool, the length of a service's queue no longer adds to
+/// that nesting.
 #[derive(Clone, Default)]
 pub struct VerifyQueue(Arc<Mutex<VerifyQueueState>>);
 
@@ -325,5 +326,43 @@ mod verify_queue_tests {
         }
         assert_eq!(most.load(Ordering::SeqCst), 1);
         assert_eq!(*order.lock().unwrap(), (0..JOBS).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn concurrent_pushes_and_idle_restart() {
+        const THREADS: usize = 8;
+        const PER_THREAD: usize = 50;
+        let queue = VerifyQueue::default();
+        let running = Arc::new(AtomicUsize::new(0));
+        let most = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = mpsc::channel();
+        let job = |running: Arc<AtomicUsize>, most: Arc<AtomicUsize>, tx: mpsc::Sender<()>| {
+            move || {
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                most.fetch_max(now, Ordering::SeqCst);
+                rayon::join(|| (), || ());
+                running.fetch_sub(1, Ordering::SeqCst);
+                tx.send(()).unwrap();
+            }
+        };
+        // Pushes from several threads at once, racing with completions.
+        std::thread::scope(|scope| {
+            for _ in 0..THREADS {
+                scope.spawn(|| {
+                    for _ in 0..PER_THREAD {
+                        queue.push(job(running.clone(), most.clone(), tx.clone()));
+                    }
+                });
+            }
+        });
+        for _ in 0..THREADS * PER_THREAD {
+            rx.recv_timeout(Duration::from_secs(60)).unwrap();
+        }
+        // An idle queue starts again on the next push.
+        std::thread::sleep(Duration::from_millis(20));
+        queue.push(job(running.clone(), most.clone(), tx.clone()));
+        rx.recv_timeout(Duration::from_secs(60)).unwrap();
+        assert_eq!(most.load(Ordering::SeqCst), 1);
+        assert!(rx.try_recv().is_err());
     }
 }
