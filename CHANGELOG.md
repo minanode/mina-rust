@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- **Web node**: a link preview card. A minaweb.org link shared in a chat app or
+  on a social site now shows an image, title and description, in the style of
+  the minanode.org card ([#48](https://github.com/minanode/mina-rust/pull/48))
+
 ### Removed
 
 - **Node**: remove the `POST /make_heartbeat` route and the signed heartbeat

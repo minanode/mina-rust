@@ -33,7 +33,8 @@ class BundleTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         payload = {"browser/index.html": b"<html>node</html>",
-                   "browser/node.wasm": b"\0asm\x01\0\0\0", "README.md": b"read me"}
+                   "browser/node.wasm": b"\0asm\x01\0\0\0", "browser/og.png": b"\x89PNG\r\n\x1a\n",
+                   "README.md": b"read me"}
         files = []
         for name, data in payload.items():
             path = self.root / name
@@ -112,6 +113,7 @@ class BundleTest(unittest.TestCase):
                 self.assertEqual(page["X-Frame-Options"], csp.X_FRAME_OPTIONS)
                 self.assertEqual(page["Permissions-Policy"], csp.PERMISSIONS_POLICY)
             self.assertEqual(get("/node.wasm")[1]["Content-Type"], "application/wasm")
+            self.assertEqual(get("/og.png")[1]["Content-Type"], "image/png")
             for route in ("/blocks/test", "/accounts/test", "/key", "/send",
                           "/snark-worker", "/block-producer"):
                 self.assertEqual(get(route)[2], b"<html>node</html>")
