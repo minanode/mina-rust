@@ -11,9 +11,9 @@ use crate::{
         accumulator_check,
         step::{expand_deferred, StatementProofState},
         unfinalized::AllEvals,
-        verifiers::make_zkapp_verifier_index,
+        verifiers::zkapp_verifier_index,
         wrap::Domain,
-        BACKEND_TICK_ROUNDS_N,
+        BACKEND_TICK_ROUNDS_N, BACKEND_TOCK_ROUNDS_N,
     },
     scan_state::{
         protocol_state::MinaHash,
@@ -991,34 +991,105 @@ pub fn verify_zkapp(
     sideloaded_proof: &PicklesProofProofsVerified2ReprStableV2,
     srs: &SRS<Vesta>,
 ) -> bool {
-    verified_or_false("zkApp proof", || {
-        verify_zkapp_contained(verification_key, zkapp_statement, sideloaded_proof, srs)
-    })
+    verify_zkapps(
+        &[(verification_key, zkapp_statement, sideloaded_proof)],
+        srs,
+    )
 }
 
-fn verify_zkapp_contained(
-    verification_key: &VerificationKey,
-    zkapp_statement: &ZkappStatement,
-    sideloaded_proof: &PicklesProofProofsVerified2ReprStableV2,
-    srs: &SRS<Vesta>,
-) -> bool {
-    let verifier_index = make_zkapp_verifier_index(verification_key);
+/// A zkApp proof to verify: the verification key whose hash its account
+/// update names, its statement, and the proof.
+pub type ZkappProofToVerify<'a> = (
+    &'a VerificationKey,
+    &'a ZkappStatement,
+    &'a PicklesProofProofsVerified2ReprStableV2,
+);
+
+/// zkApp proofs verified per kimchi batch in [`verify_zkapps`]; the batches
+/// run in parallel, as [`verify_transaction`]'s do.
+const ZKAPPS_PER_BATCH: usize = 32;
+
+/// Verifies zkApp (side-loaded) proofs together, as OCaml's
+/// `Pickles.Side_loaded.verify` does for a batch of commands: one
+/// accumulator check over all of them and kimchi's batch verification, by
+/// batches in parallel, each key's verifier index from a cache
+/// ([`zkapp_verifier_index`]). `true` only if every proof verifies; a
+/// failure fails them all, and doesn't say which proof failed, as in OCaml.
+/// A panic fails them all too ([`verified_or_false`]).
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/pickles.ml#L267-L305>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/verify.ml#L20-L253>
+pub fn verify_zkapps(proofs: &[ZkappProofToVerify], srs: &SRS<Vesta>) -> bool {
+    if proofs.is_empty() {
+        return true;
+    }
+    verified_or_false("zkApp proof", || verify_zkapps_contained(proofs, srs))
+}
+
+fn verify_zkapps_contained(proofs: &[ZkappProofToVerify], srs: &SRS<Vesta>) -> bool {
+    use rayon::prelude::*;
+
+    // OCaml refuses the whole batch before anything else if a bulletproof
+    // has another number of rounds than the wrap circuit's.
+    // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/verify.ml#L40-L48>
+    if !proofs
+        .iter()
+        .all(|(_, _, proof)| proof.proof.bulletproof.lr.len() == BACKEND_TOCK_ROUNDS_N)
+    {
+        mina_core::debug!(message = "verify_zkapps: a bulletproof has the wrong number of rounds");
+        return false;
+    }
+
+    // Each distinct key once: a block's proofs share a few keys.
+    let mut keys: Vec<&VerificationKey> = Vec::new();
+    let key_of_proof = proofs
+        .iter()
+        .map(|(key, _, _)| match keys.iter().position(|k| k == key) {
+            Some(i) => i,
+            None => {
+                keys.push(key);
+                keys.len() - 1
+            }
+        })
+        .collect::<Vec<_>>();
+    let indexes = keys
+        .par_iter()
+        .map(|key| zkapp_verifier_index(key))
+        .collect::<Vec<_>>();
     // <https://github.com/MinaProtocol/mina/blob/4e0b324912017c3ff576704ee397ade3d9bda412/src/lib/pickles/pickles.ml#LL260C1-L274C18>
-    let vk = VK {
-        commitments: *verification_key.wrap_index.clone(),
-        index: &verifier_index,
-        data: (),
-    };
+    let vks = keys
+        .iter()
+        .zip(&indexes)
+        .map(|(key, index)| VK {
+            commitments: *key.wrap_index.clone(),
+            index,
+            data: (),
+        })
+        .collect::<Vec<_>>();
+    let inputs = proofs
+        .iter()
+        .zip(&key_of_proof)
+        .map(|((_, statement, proof), &key)| (*statement, *proof, &vks[key]))
+        .collect::<Vec<_>>();
+    let accumulated = proofs
+        .iter()
+        .map(|(_, _, proof)| *proof)
+        .collect::<Vec<_>>();
 
-    let accum_check =
-        accumulator_check::accumulator_check(srs, &[sideloaded_proof]).unwrap_or(false);
-    let verified = verify_impl(&zkapp_statement, sideloaded_proof, &vk).unwrap_or(false);
-
+    let (accum_check, verified) = rayon::join(
+        || accumulator_check::accumulator_check(srs, &accumulated).unwrap_or(false),
+        || {
+            inputs
+                .par_chunks(ZKAPPS_PER_BATCH)
+                .all(|batch| batch_verify_impl(batch).unwrap_or(false))
+        },
+    );
     let ok = accum_check && verified;
 
-    mina_core::debug!(message = format!("verify_zkapp OK={ok:?}"));
+    mina_core::debug!(message = format!("verify_zkapps {} proofs OK={ok:?}", proofs.len()));
 
-    if !ok {
+    // A batch doesn't say which proof failed: only a lone proof is dumped.
+    if let (false, [(verification_key, zkapp_statement, sideloaded_proof)]) = (ok, proofs) {
         on_fail::dump_zkapp_verification(verification_key, zkapp_statement, sideloaded_proof);
     }
 
@@ -1153,6 +1224,215 @@ where
     let result = batch_verify(&proofs);
 
     Ok(result.is_ok() && checks)
+}
+
+#[cfg(test)]
+mod zkapp_batch_tests {
+    use super::*;
+    use crate::{verifier::get_srs, ProofVerified};
+    use mina_p2p_messages::binprot::BinProtRead;
+
+    /// Five zkApp proofs with their keys and statements: four made with
+    /// o1js 3.1.0 for mainnet, by a benchmark contract that sets 32 state
+    /// fields, on four accounts, then one from public devnet whose step
+    /// circuit uses custom gates and lookups (`DEVNET_PROVED_FEATURES` in
+    /// `mesa_tests`), with another key. Both keys have the 2^13 wrap domain.
+    /// The statements were computed with each network's hash parameters, so
+    /// no network config is needed here.
+    const FIXTURE: &[u8] = include_bytes!("data/zkapp_proofs_batch.bin");
+
+    type Item = (
+        VerificationKey,
+        ZkappStatement,
+        PicklesProofProofsVerified2ReprStableV2,
+    );
+
+    fn fixture() -> Vec<Item> {
+        Vec::<(
+            v2::MinaBaseVerificationKeyWireStableV1,
+            v2::MinaBaseZkappStatementStableV2,
+            v2::PicklesProofProofsVerified2ReprStableV2,
+        )>::binprot_read(&mut &*FIXTURE)
+        .unwrap()
+        .iter()
+        .map(|(key, statement, proof)| {
+            (
+                key.try_into().unwrap(),
+                statement.try_into().unwrap(),
+                proof.clone(),
+            )
+        })
+        .collect()
+    }
+
+    /// `copies` of the fixture, in order: past `ZKAPPS_PER_BATCH` from 7.
+    fn many(copies: usize) -> Vec<Item> {
+        let one = fixture();
+        (0..copies).flat_map(|_| one.clone()).collect()
+    }
+
+    fn verify(items: &[Item]) -> bool {
+        let batch = items
+            .iter()
+            .map(|(key, statement, proof)| (key, statement, proof))
+            .collect::<Vec<_>>();
+        verify_zkapps(&batch, &get_srs::<Fp>())
+    }
+
+    fn contained_panics() -> usize {
+        CONTAINED_PANICS.with(|n| n.get())
+    }
+
+    fn plus_one<F: FieldWitness>(value: &BigInt) -> BigInt {
+        (value.to_field::<F>().unwrap() + F::one()).into()
+    }
+
+    #[test]
+    fn each_proof_verifies_alone_and_with_the_others() {
+        let panics = contained_panics();
+        let items = fixture();
+        assert_eq!(items.len(), 5);
+        assert_ne!(items[0].0, items[4].0, "the fixture has two keys");
+        for (key, statement, proof) in &items {
+            assert!(verify_zkapp(key, statement, proof, &get_srs::<Fp>()));
+        }
+        assert!(verify(&items));
+        // 40 proofs: two kimchi batches, both keys in each.
+        let items = many(8);
+        assert!(items.len() > ZKAPPS_PER_BATCH);
+        assert!(verify(&items));
+        assert!(verify(&[]));
+        assert_eq!(contained_panics(), panics);
+    }
+
+    /// One bad proof fails the whole batch, wherever it is: the first, the
+    /// last, and one in the second kimchi batch.
+    fn each_position_fails(tamper: impl Fn(&mut Item)) {
+        let items = many(8);
+        for at in [0, 4, ZKAPPS_PER_BATCH + 5, items.len() - 1] {
+            let mut items = items.clone();
+            tamper(&mut items[at]);
+            assert!(!verify(&items), "bad proof at {at} accepted in a batch");
+            assert!(!verify(&items[at..=at]), "bad proof at {at} accepted alone");
+        }
+    }
+
+    #[test]
+    fn a_tampered_statement_fails_the_batch() {
+        each_position_fails(|(_, statement, _)| statement.account_update.0 += Fp::from(1u64));
+        each_position_fails(|(_, statement, _)| statement.calls.0 += Fp::from(1u64));
+        // Statements swapped between two valid proofs of the same key.
+        let mut items = fixture();
+        let statement = items[0].1.clone();
+        items[0].1 = items[1].1.clone();
+        items[1].1 = statement;
+        assert!(!verify(&items));
+    }
+
+    #[test]
+    fn a_tampered_proof_fails_the_batch() {
+        // The wrap proof's evaluation, its opening, and the step proof's
+        // evaluation carried in the statement.
+        each_position_fails(|(_, _, proof)| {
+            proof.proof.ft_eval1 = plus_one::<Fq>(&proof.proof.ft_eval1)
+        });
+        each_position_fails(|(_, _, proof)| {
+            proof.proof.bulletproof.z_1 = plus_one::<Fq>(&proof.proof.bulletproof.z_1)
+        });
+        each_position_fails(|(_, _, proof)| {
+            proof.prev_evals.ft_eval1 = plus_one::<Fp>(&proof.prev_evals.ft_eval1)
+        });
+        // The accumulator: another valid proof's challenge polynomial
+        // commitment.
+        let items = fixture();
+        let other = items[1]
+            .2
+            .statement
+            .proof_state
+            .messages_for_next_wrap_proof
+            .challenge_polynomial_commitment
+            .clone();
+        each_position_fails(|(_, _, proof)| {
+            proof
+                .statement
+                .proof_state
+                .messages_for_next_wrap_proof
+                .challenge_polynomial_commitment = other.clone();
+        });
+    }
+
+    #[test]
+    fn the_wrong_key_fails_the_batch() {
+        let devnet_key = fixture()[4].0.clone();
+        let mainnet_key = fixture()[0].0.clone();
+        // A proof with the other proof's key, valid itself.
+        each_position_fails(|(key, _, _)| {
+            *key = if *key == mainnet_key {
+                devnet_key.clone()
+            } else {
+                mainnet_key.clone()
+            }
+        });
+        // The key with another commitment, or another wrap domain.
+        each_position_fails(|(key, _, _)| {
+            key.wrap_index.generic = key.wrap_index.psm.clone();
+        });
+        each_position_fails(|(key, _, _)| key.actual_wrap_domain_size = ProofVerified::N1);
+    }
+
+    #[test]
+    fn a_malformed_proof_fails_the_batch_without_a_panic() {
+        let panics = contained_panics();
+        // OCaml checks the rounds first; 16 would index past the SRS.
+        each_position_fails(|(_, _, proof)| {
+            proof.proof.bulletproof.lr.inner_mut().pop();
+        });
+        each_position_fails(|(_, _, proof)| {
+            let last = proof.proof.bulletproof.lr.last().unwrap().clone();
+            proof.proof.bulletproof.lr.inner_mut().push(last);
+        });
+        assert_eq!(contained_panics(), panics);
+        // A point off the curve, and a coordinate past the field.
+        each_position_fails(|(_, _, proof)| {
+            let (x, _) = &mut proof.proof.commitments.w_comm.0[0];
+            *x = plus_one::<Fp>(x);
+        });
+        each_position_fails(|(_, _, proof)| {
+            proof.proof.bulletproof.z_2 = BigInt::from_bytes([0xff; 32]);
+        });
+    }
+
+    /// A panic in a batch fails it, and leaves the verifier working.
+    #[test]
+    fn a_panic_fails_the_batch_and_breaks_nothing() {
+        let items = many(2);
+        let panics = contained_panics();
+        // A new key, so that its index is made in this call.
+        let mut batch = items.clone();
+        batch[3].0.wrap_index.mul = batch[3].0.wrap_index.emul.clone();
+        crate::proofs::verifiers::panic_making_next_zkapp_index(&batch[3].0);
+        assert!(!verify(&batch));
+        assert_eq!(contained_panics(), panics + 1);
+        assert!(verify(&items));
+    }
+
+    /// Many batches at once, from rayon's pool as the node verifies them,
+    /// each with its own result.
+    #[test]
+    fn concurrent_batches_each_get_their_own_result() {
+        use rayon::prelude::*;
+
+        let items = many(4);
+        let mut bad = items.clone();
+        bad[9].1.calls.0 += Fp::from(1u64);
+        let results = (0..16)
+            .into_par_iter()
+            .map(|i| verify(if i % 4 == 3 { &bad } else { &items }))
+            .collect::<Vec<_>>();
+        for (i, verified) in results.into_iter().enumerate() {
+            assert_eq!(verified, i % 4 != 3, "batch {i}");
+        }
+    }
 }
 
 /// Dump data when it fails, to reproduce and compare in OCaml
