@@ -597,6 +597,96 @@ mod tests {
         );
     }
 
+    /// `proof` with its bulletproof cut, or padded with copies of its last
+    /// round, to `rounds` rounds.
+    fn with_rounds(
+        proof: &TransactionSnarkProofStableV2,
+        rounds: usize,
+    ) -> TransactionSnarkProofStableV2 {
+        let mut proof = proof.clone();
+        let lr = proof.0.proof.bulletproof.lr.inner_mut();
+        assert_eq!(lr.len(), crate::proofs::BACKEND_TOCK_ROUNDS_N);
+        let last = lr.last().unwrap().clone();
+        lr.resize(rounds, last);
+        proof
+    }
+
+    /// A transaction proof whose bulletproof has another number of rounds
+    /// than the wrap circuit's 15 fails the whole batch, wherever it is, as
+    /// in OCaml: in a direct batch, in the snark pool's batch of works, and
+    /// among a block's completed works. It is refused before kimchi sees
+    /// it: with 16 rounds kimchi would index past the SRS and panic, and no
+    /// panic is contained here.
+    #[test]
+    fn proofs_with_other_rounds_fail_without_a_panic() {
+        // The index the staged ledger path uses: the network's key.
+        crate::proofs::verifiers::TransactionVerifier::make();
+        let srs = get_srs::<Fp>();
+        let contained = crate::proofs::verification::CONTAINED_PANICS.with(|n| n.get());
+        let valid = statements_and_proofs();
+        let n = valid.len();
+        // Past one kimchi batch of 32.
+        let pairs = (0..34)
+            .map(|i| (&valid[i % n].0, &valid[i % n].1))
+            .collect::<Vec<_>>();
+        assert!(verify_transaction(pairs.iter().copied(), &INDEX, &srs));
+        assert_eq!(verify(&works()), Ok(()));
+
+        for rounds in [0, 14, 16] {
+            let bad = valid
+                .iter()
+                .map(|(_, proof)| with_rounds(proof, rounds))
+                .collect::<Vec<_>>();
+            for (i, proof) in bad.iter().enumerate() {
+                assert!(!verifies(&valid[i].0, proof), "{rounds} rounds, proof {i}");
+            }
+            for at in [0, 31, 32, pairs.len() - 1] {
+                let mut pairs = pairs.clone();
+                pairs[at].1 = &bad[at % n];
+                assert!(
+                    !verify_transaction(pairs.iter().copied(), &INDEX, &srs),
+                    "{rounds} rounds at {at}"
+                );
+            }
+
+            // The snark pool, and a block's completed works.
+            for index in 0..FIXTURES.len() {
+                let mut works = works();
+                let ledger_proof = first_proof(&mut works[index]);
+                let proof = with_rounds(&ledger_proof.0.proof.get().unwrap(), rounds);
+                ledger_proof.0.proof = proof.into();
+                assert_eq!(
+                    verify(&works),
+                    Err(SnarkWorkError::VerificationFailed),
+                    "{rounds} rounds, work {index}"
+                );
+
+                let completed = works
+                    .iter()
+                    .flat_map(|work| {
+                        let fee = Fee::from(&work.fee);
+                        let prover: CompressedPubKey = (&work.prover).try_into().unwrap();
+                        ledger_proofs(&work.proofs).into_iter().map(move |proof| {
+                            (
+                                LedgerProof::try_from(proof).unwrap(),
+                                SokMessage::create(fee, prover.clone()),
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    super::super::verify(completed),
+                    Err("Transaction_snark.verify: verification failed".to_string()),
+                    "{rounds} rounds, work {index}, staged ledger"
+                );
+            }
+        }
+        assert_eq!(
+            crate::proofs::verification::CONTAINED_PANICS.with(|n| n.get()),
+            contained
+        );
+    }
+
     /// The staged ledger verify path rejects a proof with a commitment at
     /// infinity as invalid, without a panic.
     #[test]
