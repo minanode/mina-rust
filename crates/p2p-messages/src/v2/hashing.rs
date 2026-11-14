@@ -646,14 +646,46 @@ impl FailableToInputs for ConsensusBodyReferenceStableV1 {
     }
 }
 
+/// Bits of a truncated VRF output that the protocol state hash reads:
+/// `min 256 (Field.size_in_bits - 2)`.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/vrf/consensus_vrf.ml#L208-L208>
+pub const VRF_OUTPUT_HASH_BITS: usize = 253;
+
+/// Hashes the first [`VRF_OUTPUT_HASH_BITS`] bits of the output, least
+/// significant bit of each byte first, or all of its bits when it is shorter.
+///
+/// On the wire the output is a byte string of any length up to the string
+/// bound. A block producer writes 32 bytes with the top 3 bits of the last
+/// byte clear. OCaml decodes any length, hashes it with `to_bits`, and checks
+/// the blockchain proof against that state hash. The consensus tie-break
+/// hashes every byte with Blake2b (`blake2b` here, `compare_blake2` in OCaml).
+/// For each length, OCaml and this code do the same:
+///
+/// | output | bits hashed | proof check | tie-break |
+/// | --- | --- | --- | --- |
+/// | shorter than 32 bytes | all 8 * len | fails (1) | every byte |
+/// | 32 bytes, top 3 bits clear | 253 | passes | every byte |
+/// | 32 bytes, top 3 bits set | first 253 | passes, same state hash | every byte |
+/// | longer than 32 bytes | first 253 | passes, same state hash | every byte |
+///
+/// (1) The circuit hashes 253 bits. With the 11 sub-window densities a block
+/// carries, a short output packs into 48 field elements instead of 49, so the
+/// hash differs. Hashing it as OCaml does keeps the outcome OCaml's in every
+/// case.
+///
+/// No length is an error here. A peer can send any of them, and OCaml accepts
+/// the last three with the producer's state hash.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/vrf/consensus_vrf.ml#L224-L238>
 impl FailableToInputs for ConsensusVrfOutputTruncatedStableV1 {
     fn to_input(&self, inputs: &mut Inputs) -> Result<(), InvalidBigInt> {
         let vrf: &[u8] = self.as_ref();
-        inputs.append_bytes(&vrf[..31]);
-        // Ignore the last 3 bits
-        let last_byte = vrf[31];
-        for bit in [1, 2, 4, 8, 16] {
-            inputs.append_bool(last_byte & bit != 0);
+        let bits = vrf
+            .iter()
+            .flat_map(|byte| (0..8).map(move |i| (byte >> i) & 1 == 1));
+        for bit in bits.take(VRF_OUTPUT_HASH_BITS) {
+            inputs.append_bool(bit);
         }
         Ok(())
     }
@@ -861,10 +893,145 @@ impl FailableToInputs for MinaNumbersGlobalSlotSpanStableV1 {
 #[cfg(test)]
 mod hash_tests {
     use binprot::BinProtRead;
+    use poseidon::hash::Inputs;
 
-    use crate::v2::{
-        MinaBaseZkappCommandTStableV1WireStableV1, MinaStateProtocolStateValueStableV2,
+    use crate::{
+        hash_input::FailableToInputs,
+        rpc::GetBestTipV2Response,
+        rpc_kernel::ResponsePayload,
+        v2::{
+            ConsensusVrfOutputTruncatedStableV1, MinaBaseZkappCommandTStableV1WireStableV1,
+            MinaBlockBlockStableV2, MinaStateProtocolStateValueStableV2,
+        },
     };
+
+    /// Mesa mainnet block 564003, as an OCaml node served it.
+    fn mesa_best_tip() -> MinaBlockBlockStableV2 {
+        let bytes = include_bytes!("../../tests/files/mesa/get_best_tip_v3.bin");
+        let payload =
+            ResponsePayload::<GetBestTipV2Response>::binprot_read(&mut &bytes[..]).unwrap();
+        payload.0.unwrap().0.unwrap().data
+    }
+
+    fn vrf_output(bytes: &[u8]) -> ConsensusVrfOutputTruncatedStableV1 {
+        ConsensusVrfOutputTruncatedStableV1(bytes.into())
+    }
+
+    fn with_vrf_output(
+        block: &MinaBlockBlockStableV2,
+        bytes: &[u8],
+    ) -> MinaStateProtocolStateValueStableV2 {
+        let mut state = block.header.protocol_state.clone();
+        state.body.consensus_state.last_vrf_output = vrf_output(bytes);
+        state
+    }
+
+    /// The hash input items, one per bit (`1_bool`, `0_bool`).
+    fn hash_input(output: &ConsensusVrfOutputTruncatedStableV1) -> String {
+        let mut inputs = Inputs::new();
+        output.to_input(&mut inputs).unwrap();
+        format!("{inputs:?}")
+    }
+
+    fn bits_input(bits: impl IntoIterator<Item = bool>) -> String {
+        let mut inputs = Inputs::new();
+        for bit in bits {
+            inputs.append_bool(bit);
+        }
+        format!("{inputs:?}")
+    }
+
+    /// OCaml's `Truncated.to_bits`: `Fold.string_bits` gives bit `i` of each
+    /// character as `(c lsr i) land 1` for `i` from 0 to 7, and `List.take`
+    /// keeps the first 253 of them, or all of a shorter list.
+    fn ocaml_to_bits(output: &[u8]) -> Vec<bool> {
+        let mut bits = Vec::new();
+        for c in output {
+            for i in 0..8 {
+                bits.push((c >> i) & 1 == 1);
+            }
+        }
+        bits.truncate(253);
+        bits
+    }
+
+    #[test]
+    fn vrf_output_bits_are_hashed_as_ocaml_reads_them() {
+        // Bit 0 of each byte first.
+        let mut bits = vec![true];
+        bits.extend([false; 14]);
+        bits.push(true);
+        assert_eq!(hash_input(&vrf_output(&[0x01, 0x80])), bits_input(bits));
+        assert_eq!(hash_input(&vrf_output(&[])), bits_input([false; 0]));
+        // Of 32 bytes, the top 3 bits of the last are left out.
+        assert_eq!(
+            hash_input(&vrf_output(&[0xFF; 32])),
+            bits_input([true; 253])
+        );
+        for len in [0, 1, 2, 30, 31, 32, 33, 64, 1000] {
+            let bytes = (0..len).map(|i| (i * 37 + 11) as u8).collect::<Vec<_>>();
+            assert_eq!(
+                hash_input(&vrf_output(&bytes)),
+                bits_input(ocaml_to_bits(&bytes)),
+                "{len} bytes"
+            );
+        }
+    }
+
+    /// A VRF output shorter than 32 bytes is hashed, not indexed past its
+    /// end, and gives another state hash: the circuit hashes 253 bits.
+    #[test]
+    fn a_short_vrf_output_is_hashed() {
+        let block = mesa_best_tip();
+        let hash = block.try_hash().unwrap();
+        let output = block
+            .header
+            .protocol_state
+            .body
+            .consensus_state
+            .last_vrf_output
+            .to_vec();
+        for len in [0, 1, 16, 31] {
+            let state = with_vrf_output(&block, &output[..len]);
+            assert_ne!(state.try_hash().unwrap(), hash, "{len} bytes");
+            assert!(state.body.try_hash().is_ok(), "{len} bytes");
+        }
+    }
+
+    /// The bits past the first 253 are not hashed: the top 3 bits of byte 31
+    /// and any further bytes leave the block's state hash as it is, as in
+    /// OCaml. The consensus tie-break reads them.
+    #[test]
+    fn vrf_output_bits_past_253_leave_the_state_hash() {
+        let block = mesa_best_tip();
+        let hash = block.try_hash().unwrap();
+        let consensus_state = &block.header.protocol_state.body.consensus_state;
+        let output = consensus_state.last_vrf_output.to_vec();
+        // The producer's output: 32 bytes, top 3 bits of the last clear.
+        assert_eq!(output.len(), 32);
+        assert_eq!(output[31] >> 5, 0);
+        let mut top_bits = output.clone();
+        top_bits[31] |= 0xE0;
+        fn extended(bytes: &[u8], tail: &[u8]) -> Vec<u8> {
+            [bytes, tail].concat()
+        }
+        let variants = [
+            top_bits.clone(),
+            extended(&output, &[0]),
+            extended(&output, &[0xAA]),
+            extended(&output, &[0xFF; 32]),
+            extended(&top_bits, &[0xFF; 1000]),
+        ];
+        for bytes in variants {
+            let state = with_vrf_output(&block, &bytes);
+            assert_eq!(state.try_hash().unwrap(), hash, "{bytes:?}");
+            assert_ne!(
+                vrf_output(&bytes).blake2b(),
+                consensus_state.last_vrf_output.blake2b(),
+                "{bytes:?}"
+            );
+        }
+    }
 
     #[test]
     #[ignore = "fix expected hash/hasing"]
