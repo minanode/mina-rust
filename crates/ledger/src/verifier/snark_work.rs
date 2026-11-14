@@ -122,7 +122,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        proofs::verifiers::mainnet_transaction_verifier_index,
+        proofs::{
+            verification::{step_message_shape, with_step_messages, STEP_MESSAGE_SHAPES},
+            verifiers::mainnet_transaction_verifier_index,
+        },
         scan_state::{currency::Fee, scan_state::transaction_snark::LedgerProof},
         verifier::get_srs,
     };
@@ -597,6 +600,24 @@ mod tests {
         );
     }
 
+    /// `works` as a block's completed works, which the staged ledger
+    /// verifies.
+    fn completed(works: &[TransactionSnarkWorkTStableV2]) -> Vec<(LedgerProof, SokMessage)> {
+        works
+            .iter()
+            .flat_map(|work| {
+                let fee = Fee::from(&work.fee);
+                let prover: CompressedPubKey = (&work.prover).try_into().unwrap();
+                ledger_proofs(&work.proofs).into_iter().map(move |proof| {
+                    (
+                        LedgerProof::try_from(proof).unwrap(),
+                        SokMessage::create(fee, prover.clone()),
+                    )
+                })
+            })
+            .collect()
+    }
+
     /// `proof` with its bulletproof cut, or padded with copies of its last
     /// round, to `rounds` rounds.
     fn with_rounds(
@@ -661,21 +682,8 @@ mod tests {
                     "{rounds} rounds, work {index}"
                 );
 
-                let completed = works
-                    .iter()
-                    .flat_map(|work| {
-                        let fee = Fee::from(&work.fee);
-                        let prover: CompressedPubKey = (&work.prover).try_into().unwrap();
-                        ledger_proofs(&work.proofs).into_iter().map(move |proof| {
-                            (
-                                LedgerProof::try_from(proof).unwrap(),
-                                SokMessage::create(fee, prover.clone()),
-                            )
-                        })
-                    })
-                    .collect::<Vec<_>>();
                 assert_eq!(
-                    super::super::verify(completed),
+                    super::super::verify(completed(&works)),
                     Err("Transaction_snark.verify: verification failed".to_string()),
                     "{rounds} rounds, work {index}, staged ledger"
                 );
@@ -685,6 +693,97 @@ mod tests {
             crate::proofs::verification::CONTAINED_PANICS.with(|n| n.get()),
             contained
         );
+    }
+
+    /// `proof` with its step messages in `shape` ([`with_step_messages`]).
+    fn with_step_shape(
+        proof: &TransactionSnarkProofStableV2,
+        (commitments, challenges): (usize, usize),
+    ) -> TransactionSnarkProofStableV2 {
+        let mut proof = proof.clone();
+        proof.0 = with_step_messages(&proof.0, commitments, challenges);
+        proof
+    }
+
+    /// A transaction proof whose step messages have another shape than it
+    /// was made with fails the whole batch, wherever it is: in a direct
+    /// batch, in the snark pool's batch of works, and among a block's
+    /// completed works. That covers the shapes OCaml refuses as it decodes
+    /// the proof, where a third commitment no longer reaches the padding to
+    /// two, which panicked, and the shapes it decodes. No panic is
+    /// contained. The base proofs have no commitments, the merge proofs two.
+    #[test]
+    fn proofs_with_other_step_messages_fail_without_a_panic() {
+        // The index the staged ledger path uses: the network's key.
+        crate::proofs::verifiers::TransactionVerifier::make();
+        let srs = get_srs::<Fp>();
+        let contained = crate::proofs::verification::CONTAINED_PANICS.with(|n| n.get());
+        let valid = statements_and_proofs();
+        let n = valid.len();
+        let shapes = valid
+            .iter()
+            .map(|(_, proof)| step_message_shape(&proof.0))
+            .collect::<Vec<_>>();
+        assert!(
+            shapes.contains(&(0, 0)) && shapes.contains(&(2, 2)),
+            "{shapes:?}"
+        );
+        // Past one kimchi batch of 32.
+        let pairs = (0..34)
+            .map(|i| (&valid[i % n].0, &valid[i % n].1))
+            .collect::<Vec<_>>();
+
+        for shape in STEP_MESSAGE_SHAPES {
+            // Each proof in `shape`, unless it is made with it.
+            let bad = valid
+                .iter()
+                .zip(&shapes)
+                .map(|((_, proof), &own)| (own != shape).then(|| with_step_shape(proof, shape)))
+                .collect::<Vec<_>>();
+            for (i, proof) in bad.iter().enumerate() {
+                if let Some(proof) = proof {
+                    assert!(!verifies(&valid[i].0, proof), "{shape:?}, proof {i}");
+                }
+            }
+            for at in [0, 31, 32, pairs.len() - 1] {
+                let Some(proof) = &bad[at % n] else {
+                    continue;
+                };
+                let mut pairs = pairs.clone();
+                pairs[at].1 = proof;
+                assert!(
+                    !verify_transaction(pairs.iter().copied(), &INDEX, &srs),
+                    "{shape:?} at {at}"
+                );
+            }
+
+            // The snark pool, and a block's completed works.
+            for index in 0..FIXTURES.len() {
+                let mut works = works();
+                let ledger_proof = first_proof(&mut works[index]);
+                let proof = ledger_proof.0.proof.get().unwrap();
+                if step_message_shape(&proof.0) == shape {
+                    continue;
+                }
+                ledger_proof.0.proof = with_step_shape(&proof, shape).into();
+                assert_eq!(
+                    verify(&works),
+                    Err(SnarkWorkError::VerificationFailed),
+                    "{shape:?}, work {index}"
+                );
+                assert_eq!(
+                    super::super::verify(completed(&works)),
+                    Err("Transaction_snark.verify: verification failed".to_string()),
+                    "{shape:?}, work {index}, staged ledger"
+                );
+            }
+        }
+        assert_eq!(
+            crate::proofs::verification::CONTAINED_PANICS.with(|n| n.get()),
+            contained
+        );
+        assert!(verify_transaction(pairs.iter().copied(), &INDEX, &srs));
+        assert_eq!(verify(&works()), Ok(()));
     }
 
     /// The staged ledger verify path rejects a proof with a commitment at
