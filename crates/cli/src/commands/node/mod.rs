@@ -1122,8 +1122,15 @@ impl Node {
             });
         }
 
+        // The global pool verifies SNARK work and pool transactions, and runs
+        // any parallel step started outside a Rayon pool. Rust's 2 MiB default
+        // stack overflowed here on an ARM64 mainnet node, and a stack overflow
+        // aborts the process, past the verifiers' panic guard. 64 MiB is what
+        // the uptime prover's pool uses. It is reserved address space: only
+        // the pages a thread touches use memory.
         rayon::ThreadPoolBuilder::new()
             .num_threads(num_cpus::get().max(2) - 1)
+            .stack_size(64 * 1024 * 1024)
             .thread_name(|i| format!("mina_rayon_{i}"))
             .build_global()
             .context("failed to initialize threadpool")?;

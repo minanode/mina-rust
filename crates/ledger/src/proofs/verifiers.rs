@@ -1,7 +1,7 @@
 use std::{
     io::Read,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 use anyhow::Context;
@@ -482,26 +482,79 @@ pub fn wrap_domains(proofs_verified: usize) -> Domains {
     }
 }
 
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The SRS of zkApp verifier indexes, with the Lagrange basis of `domain`
+/// in its cache: the process's SRS on the wrap curve
+/// ([`get_srs::<Fq>`](crate::verifier::get_srs)), shared by every zkApp
+/// verifier index, as OCaml shares its one SRS between side-loaded keys.
+/// It used to be made again, with its basis, for every proof: about 1 s of
+/// an 8-vCPU machine.
+///
+/// The SRS's cache computes a missing basis while it holds its lock. A panic
+/// there would poison the lock and fail every later zkApp proof, and a rayon
+/// thread of the computation that took a job needing the same basis would
+/// wait for itself. So the basis is computed on a copy of the SRS that no
+/// other thread sees, then stored in the shared one, and the verifier only
+/// ever reads a stored basis. Threads that need a new basis at the same
+/// time may each compute it; the first one stored is kept.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/side_loaded_verification_key.ml#L179-L183>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/pickles.ml#L307-L311>
+pub fn zkapp_verifier_srs(domain: Radix2EvaluationDomain<Fq>) -> Arc<SRS<Pallas>> {
+    let srs = crate::verifier::get_srs::<Fq>();
+    debug_assert_eq!(srs.g.len(), 1 << BACKEND_TOCK_ROUNDS_N);
+    store_lagrange_basis(&srs, domain);
+    srs
+}
+
+/// Stores the Lagrange basis of `domain` in `srs`'s cache if it isn't there,
+/// computed on a private copy of `srs` ([`zkapp_verifier_srs`]).
+fn store_lagrange_basis(srs: &SRS<Pallas>, domain: Radix2EvaluationDomain<Fq>) {
+    if srs.lagrange_bases().contains_key(&domain.size()) {
+        return;
+    }
+    let basis = {
+        let private = SRS::<Pallas>::new(srs.g.clone(), srs.h);
+        #[cfg(test)]
+        test_hooks::computing_basis(domain.size());
+        let basis = private.get_lagrange_basis(domain).clone();
+        basis
+    };
+    srs.lagrange_bases().set_once(domain.size(), basis);
+}
+
+/// What every zkApp verifier index of a wrap domain holds besides its key's
+/// commitments, by domain (2^13, 2^14, 2^15): the shared SRS with the
+/// domain's Lagrange basis, the linearization of the wrap circuit and the
+/// domain's constants. Made once per domain, without the lock held, for the
+/// reasons [`zkapp_verifier_srs`] gives; the first one stored is kept.
+static ZKAPP_INDEX_TEMPLATES: Mutex<[Option<Arc<VerifierIndex<Fq>>>; 3]> =
+    Mutex::new([None, None, None]);
+
+fn zkapp_index_template(log2_size: u64) -> Arc<VerifierIndex<Fq>> {
+    // `wrap_domains` gives 2^13 to 2^15.
+    let slot = log2_size as usize - 13;
+    if let Some(template) = lock(&ZKAPP_INDEX_TEMPLATES)[slot].clone() {
+        return template;
+    }
+    let template = Arc::new(make_zkapp_index_template(log2_size));
+    lock(&ZKAPP_INDEX_TEMPLATES)[slot]
+        .get_or_insert(template)
+        .clone()
+}
+
 /// <https://github.com/MinaProtocol/mina/blob/bfd1009abdbee78979ff0343cc73a3480e862f58/src/lib/pickles/side_loaded_verification_key.ml#L206>
-pub fn make_zkapp_verifier_index(vk: &VerificationKey) -> VerifierIndex<Fq> {
-    let d = wrap_domains(vk.actual_wrap_domain_size.to_int());
-    let log2_size = d.h.log2_size();
+fn make_zkapp_index_template(log2_size: u64) -> VerifierIndex<Fq> {
+    use ark_ec::AffineRepr as _;
 
     let public = 40; // Is that constant ?
 
-    let domain: Radix2EvaluationDomain<Fq> =
-        Radix2EvaluationDomain::new(1 << log2_size as u64).unwrap();
+    let domain: Radix2EvaluationDomain<Fq> = Radix2EvaluationDomain::new(1 << log2_size).unwrap();
 
-    let srs = {
-        let degree = 1 << BACKEND_TOCK_ROUNDS_N;
-        let srs = SRS::<Pallas>::create(degree);
-        srs.get_lagrange_basis(domain);
-        srs
-    };
-
-    let make_poly = |poly: &InnerCurve<Fp>| poly_commitment::PolyComm {
-        chunks: vec![poly.to_affine()],
-    };
+    let srs = zkapp_verifier_srs(domain);
 
     let feature_flags = FeatureFlags {
         range_check0: false,
@@ -530,23 +583,28 @@ pub fn make_zkapp_verifier_index(vk: &VerificationKey) -> VerifierIndex<Fq> {
     // <https://github.com/MinaProtocol/mina/blob/047375688f93546d4bdd58c75674394e3faae1f4/src/lib/pickles/side_loaded_verification_key.ml#L232>
     let zk_rows = 3;
 
+    // Each key's commitments replace these ([`make_zkapp_verifier_index`]).
+    let placeholder = poly_commitment::PolyComm {
+        chunks: vec![Pallas::generator()],
+    };
+
     // Note: Verifier index is converted from OCaml here:
     // <https://github.com/MinaProtocol/mina/blob/bfd1009abdbee78979ff0343cc73a3480e862f58/src/lib/crypto/kimchi_bindings/stubs/src/pasta_fq_plonk_verifier_index.rs#L58>
 
     VerifierIndex::<Fq> {
         domain,
         max_poly_size: 1 << BACKEND_TOCK_ROUNDS_N,
-        srs: Arc::new(srs),
+        srs,
         public,
         prev_challenges: 2,
-        sigma_comm: vk.wrap_index.sigma.each_ref().map(make_poly),
-        coefficients_comm: vk.wrap_index.coefficients.each_ref().map(make_poly),
-        generic_comm: make_poly(&vk.wrap_index.generic),
-        psm_comm: make_poly(&vk.wrap_index.psm),
-        complete_add_comm: make_poly(&vk.wrap_index.complete_add),
-        mul_comm: make_poly(&vk.wrap_index.mul),
-        emul_comm: make_poly(&vk.wrap_index.emul),
-        endomul_scalar_comm: make_poly(&vk.wrap_index.endomul_scalar),
+        sigma_comm: std::array::from_fn(|_| placeholder.clone()),
+        coefficients_comm: std::array::from_fn(|_| placeholder.clone()),
+        generic_comm: placeholder.clone(),
+        psm_comm: placeholder.clone(),
+        complete_add_comm: placeholder.clone(),
+        mul_comm: placeholder.clone(),
+        emul_comm: placeholder.clone(),
+        endomul_scalar_comm: placeholder,
         range_check0_comm: None,
         range_check1_comm: None,
         foreign_field_add_comm: None,
@@ -563,6 +621,221 @@ pub fn make_zkapp_verifier_index(vk: &VerificationKey) -> VerifierIndex<Fq> {
         linearization,
         powers_of_alpha,
         zk_rows,
+    }
+}
+
+/// The verifier index of a zkApp verification key: its wrap domain's
+/// template ([`zkapp_index_template`]) with the key's commitments. Making it
+/// costs a copy of the template's linearization; the SRS, its Lagrange basis
+/// and the linearization are made once per domain, not per key or proof.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/side_loaded_verification_key.ml#L160-L225>
+pub fn make_zkapp_verifier_index(vk: &VerificationKey) -> VerifierIndex<Fq> {
+    #[cfg(test)]
+    test_hooks::making_index(vk);
+    let d = wrap_domains(vk.actual_wrap_domain_size.to_int());
+    let template = zkapp_index_template(d.h.log2_size());
+
+    let make_poly = |poly: &InnerCurve<Fp>| poly_commitment::PolyComm {
+        chunks: vec![poly.to_affine()],
+    };
+
+    VerifierIndex::<Fq> {
+        sigma_comm: vk.wrap_index.sigma.each_ref().map(make_poly),
+        coefficients_comm: vk.wrap_index.coefficients.each_ref().map(make_poly),
+        generic_comm: make_poly(&vk.wrap_index.generic),
+        psm_comm: make_poly(&vk.wrap_index.psm),
+        complete_add_comm: make_poly(&vk.wrap_index.complete_add),
+        mul_comm: make_poly(&vk.wrap_index.mul),
+        emul_comm: make_poly(&vk.wrap_index.emul),
+        endomul_scalar_comm: make_poly(&vk.wrap_index.endomul_scalar),
+        ..(*template).clone()
+    }
+}
+
+/// zkApp verifier indexes kept, the most recently used. A block's proofs
+/// use a few keys, and an index costs about the size of the linearization,
+/// so the bound is on memory, smaller in a browser.
+const ZKAPP_VERIFIER_INDEXES: usize = if cfg!(target_family = "wasm") { 16 } else { 64 };
+
+struct ZkappVerifierIndexes {
+    /// Each key, its index, and when it was last used.
+    entries: Vec<(VerificationKey, Arc<VerifierIndex<Fq>>, u64)>,
+    uses: u64,
+}
+
+static ZKAPP_VERIFIER_INDEX_CACHE: Mutex<ZkappVerifierIndexes> = Mutex::new(ZkappVerifierIndexes {
+    entries: Vec::new(),
+    uses: 0,
+});
+
+impl ZkappVerifierIndexes {
+    fn get(&mut self, vk: &VerificationKey) -> Option<Arc<VerifierIndex<Fq>>> {
+        self.uses += 1;
+        let now = self.uses;
+        let (_, index, used) = self.entries.iter_mut().find(|(key, _, _)| key == vk)?;
+        *used = now;
+        Some(index.clone())
+    }
+}
+
+/// The verifier index of a zkApp verification key, from a bounded cache of
+/// the most recently used ([`ZKAPP_VERIFIER_INDEXES`]).
+///
+/// An account update names its key by hash, and `verifier::common::check`
+/// checks that the key it verifies with has that hash. The cache compares
+/// whole keys, not hashes: an index is only ever used for the key it was
+/// made from, and comparing costs less than hashing. The lock is not held
+/// while an index is made; two threads that miss at the same time may each
+/// make it, and the first one stored is kept.
+pub fn zkapp_verifier_index(vk: &VerificationKey) -> Arc<VerifierIndex<Fq>> {
+    if let Some(index) = lock(&ZKAPP_VERIFIER_INDEX_CACHE).get(vk) {
+        return index;
+    }
+    let index = Arc::new(make_zkapp_verifier_index(vk));
+    let mut cache = lock(&ZKAPP_VERIFIER_INDEX_CACHE);
+    if let Some(first) = cache.get(vk) {
+        return first;
+    }
+    if cache.entries.len() >= ZKAPP_VERIFIER_INDEXES {
+        let oldest = (0..cache.entries.len()).min_by_key(|&i| cache.entries[i].2);
+        if let Some(oldest) = oldest {
+            cache.entries.swap_remove(oldest);
+        }
+    }
+    let now = cache.uses;
+    cache.entries.push((vk.clone(), index.clone(), now));
+    index
+}
+
+/// Panics on demand where the zkApp verifier's caches make what they keep,
+/// to show that a panic there poisons nothing.
+#[cfg(test)]
+mod test_hooks {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    };
+
+    use crate::VerificationKey;
+
+    /// The domain size whose next Lagrange basis computation panics.
+    pub static PANIC_COMPUTING_BASIS: AtomicUsize = AtomicUsize::new(0);
+
+    /// Keys whose next verifier index, on any thread, panics while it is made.
+    pub static PANIC_MAKING_INDEX: Mutex<Vec<VerificationKey>> = Mutex::new(Vec::new());
+
+    pub fn computing_basis(size: usize) {
+        if PANIC_COMPUTING_BASIS
+            .compare_exchange(size, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            panic!("test hook: a panic while a Lagrange basis is computed");
+        }
+    }
+
+    pub fn making_index(vk: &VerificationKey) {
+        let panic = {
+            let mut keys = super::lock(&PANIC_MAKING_INDEX);
+            let at = keys.iter().position(|key| key == vk);
+            at.map(|at| keys.swap_remove(at)).is_some()
+        };
+        if panic {
+            panic!("test hook: a panic while a zkApp verifier index is made");
+        }
+    }
+}
+
+/// The next verifier index made for `vk`, on any thread, panics.
+#[cfg(test)]
+pub(crate) fn panic_making_next_zkapp_index(vk: &VerificationKey) {
+    lock(&test_hooks::PANIC_MAKING_INDEX).push(vk.clone());
+}
+
+#[cfg(test)]
+mod zkapp_index_tests {
+    use super::*;
+    use ark_ec::AffineRepr as _;
+    use std::sync::atomic::Ordering;
+
+    fn key(n: u64) -> VerificationKey {
+        let mut key = (*VerificationKey::dummy()).clone();
+        key.actual_wrap_domain_size = crate::ProofVerified::N0;
+        key.wrap_index.generic =
+            InnerCurve::of_affine((Pallas::generator() * Fq::from(n + 2)).into());
+        key
+    }
+
+    /// One index per key: the same `Arc` for an equal key, another for a key
+    /// that differs in a commitment, each with its key's commitments, and
+    /// the SRS, basis and linearization of their domain shared.
+    #[test]
+    fn a_key_gets_its_own_index_and_shares_the_rest() {
+        let (a, b) = (key(1), key(2));
+        let index_a = zkapp_verifier_index(&a);
+        assert!(Arc::ptr_eq(&index_a, &zkapp_verifier_index(&a.clone())));
+        let index_b = zkapp_verifier_index(&b);
+        assert!(!Arc::ptr_eq(&index_a, &index_b));
+        assert_eq!(
+            index_a.generic_comm.chunks,
+            vec![a.wrap_index.generic.to_affine()]
+        );
+        assert_eq!(
+            index_b.generic_comm.chunks,
+            vec![b.wrap_index.generic.to_affine()]
+        );
+        assert!(Arc::ptr_eq(&index_a.srs, &index_b.srs));
+        assert!(Arc::ptr_eq(&index_a.srs, &crate::verifier::get_srs::<Fq>()));
+        assert!(index_a.srs.lagrange_bases().contains_key(&(1 << 13)));
+        assert_eq!(index_a.domain.size(), 1 << 13);
+    }
+
+    /// The cache keeps at most `ZKAPP_VERIFIER_INDEXES` keys, dropping the
+    /// least recently used.
+    #[test]
+    fn the_index_cache_is_bounded() {
+        let kept = key(1000);
+        let first = zkapp_verifier_index(&kept);
+        for n in 0..2 * ZKAPP_VERIFIER_INDEXES as u64 {
+            zkapp_verifier_index(&key(2000 + n));
+            // Used again, so it is never the least recently used.
+            assert!(Arc::ptr_eq(&first, &zkapp_verifier_index(&kept)));
+        }
+        assert!(lock(&ZKAPP_VERIFIER_INDEX_CACHE).entries.len() <= ZKAPP_VERIFIER_INDEXES);
+    }
+
+    /// A panic while an index is made leaves the cache usable, with no
+    /// index for that key: the lock isn't held while an index is made.
+    #[test]
+    fn a_panic_making_an_index_poisons_nothing() {
+        let key = key(3000);
+        panic_making_next_zkapp_index(&key);
+        assert!(std::panic::catch_unwind(|| zkapp_verifier_index(&key)).is_err());
+        assert!(!ZKAPP_VERIFIER_INDEX_CACHE.is_poisoned());
+        assert!(lock(&ZKAPP_VERIFIER_INDEX_CACHE).get(&key).is_none());
+        let index = zkapp_verifier_index(&key);
+        assert!(Arc::ptr_eq(&index, &zkapp_verifier_index(&key)));
+    }
+
+    /// A panic while a Lagrange basis is computed leaves the SRS's cache
+    /// unpoisoned and without that basis, and the next use computes it: the
+    /// SRS's lock is held only to store a computed basis. The SRS here is
+    /// small and private to the test.
+    #[test]
+    fn a_panic_computing_a_lagrange_basis_poisons_nothing() {
+        const SIZE: usize = 1 << 7;
+        let srs = SRS::<Pallas>::create(SIZE);
+        let domain = Radix2EvaluationDomain::<Fq>::new(SIZE).unwrap();
+        test_hooks::PANIC_COMPUTING_BASIS.store(SIZE, Ordering::SeqCst);
+        assert!(std::panic::catch_unwind(|| store_lagrange_basis(&srs, domain)).is_err());
+        assert!(!srs.lagrange_bases().contains_key(&SIZE));
+        store_lagrange_basis(&srs, domain);
+        assert!(srs.lagrange_bases().contains_key(&SIZE));
+        let fresh = SRS::<Pallas>::create(SIZE);
+        assert_eq!(
+            *srs.get_lagrange_basis(domain),
+            *fresh.get_lagrange_basis(domain)
+        );
     }
 }
 
