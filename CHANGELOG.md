@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commands with 15 proof-authorized updates each took minutes to verify; it now
   takes seconds ([#50](https://github.com/minanode/mina-rust/pull/50))
 
+- **Node**: block and transaction proofs whose bulletproof does not have the
+  wrap circuit's 15 rounds are refused before verification, as OCaml does.
+  Before, such a proof made the verifier panic, which was caught and turned
+  into a rejection ([#51](https://github.com/minanode/mina-rust/pull/51))
+
 ## [0.22.1] - 2026-11-06
 
 0.22.1 is a UI release. It has a design pass over the node dashboard and the

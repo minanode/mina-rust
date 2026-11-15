@@ -751,6 +751,28 @@ fn compute_deferred_values(
     })
 }
 
+/// Whether every wrap proof's bulletproof has the wrap circuit's number of
+/// rounds. OCaml checks this before anything else and refuses the whole
+/// batch if one has another number. Every caller checks it first too, so
+/// that kimchi never sees such a proof: with 16 rounds it would index past
+/// the SRS and panic. `what` names the caller in the log.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/verify.ml#L40-L48>
+fn bulletproof_rounds_ok<'a>(
+    what: &str,
+    proofs: impl IntoIterator<Item = &'a PicklesProofProofsVerified2ReprStableV2>,
+) -> bool {
+    let ok = proofs
+        .into_iter()
+        .all(|proof| proof.proof.bulletproof.lr.len() == BACKEND_TOCK_ROUNDS_N);
+    if !ok {
+        mina_core::debug!(
+            message = format!("{what}: a bulletproof has the wrong number of rounds")
+        );
+    }
+    ok
+}
+
 /// <https://github.com/MinaProtocol/mina/blob/4e0b324912017c3ff576704ee397ade3d9bda412/src/lib/pickles/verification_key.mli#L30>
 pub struct VK<'a> {
     pub commitments: PlonkVerificationKeyEvals<Fp>,
@@ -761,7 +783,8 @@ pub struct VK<'a> {
 /// Verifies a block's SNARK proof using the Kimchi proof system.
 ///
 /// This function validates that a block header contains a valid zero-knowledge proof
-/// by performing two checks:
+/// by performing two checks, once its bulletproof has the wrap circuit's number of
+/// rounds ([`bulletproof_rounds_ok`]):
 /// 1. **Accumulator check**: Validates the polynomial commitment opening proofs
 /// 2. **Proof verification**: Verifies the blockchain SNARK proof against the protocol state hash.
 ///    The blockchain SNARK proves the validity of the protocol state transaction (consensus). Defined
@@ -800,6 +823,10 @@ fn verify_block_contained(
         protocol_state_proof,
         ..
     } = &header;
+
+    if !bulletproof_rounds_ok("verify_block", [&protocol_state_proof.0]) {
+        return false;
+    }
 
     let vk = VK {
         commitments: PlonkVerificationKeyEvals::from(verifier_index),
@@ -858,6 +885,13 @@ fn verify_blocks_contained(
     if headers.is_empty() {
         return true;
     }
+    let proofs = headers
+        .iter()
+        .map(|header| &header.protocol_state_proof.0)
+        .collect::<Vec<_>>();
+    if !bulletproof_rounds_ok("verify_blocks", proofs.iter().copied()) {
+        return false;
+    }
     let Ok(state_hashes) = headers
         .par_iter()
         .map(|header| {
@@ -867,10 +901,6 @@ fn verify_blocks_contained(
     else {
         return false;
     };
-    let proofs = headers
-        .iter()
-        .map(|header| &header.protocol_state_proof.0)
-        .collect::<Vec<_>>();
     // The commitment conversion is the same for every proof in this call.
     // Share it across parallel batches instead of rebuilding it for each one.
     let vk = VK {
@@ -965,6 +995,10 @@ fn verify_transaction_contained<'a>(
             inputs.push((statement, transaction_proof, &vk));
         });
 
+    if !bulletproof_rounds_ok("verify_transaction", accum_check_proofs.iter().copied()) {
+        return false;
+    }
+
     let (accum_check, verified) = rayon::join(
         || accumulator_check::accumulator_check(srs, &accum_check_proofs).unwrap_or(false),
         || {
@@ -1029,14 +1063,7 @@ pub fn verify_zkapps(proofs: &[ZkappProofToVerify], srs: &SRS<Vesta>) -> bool {
 fn verify_zkapps_contained(proofs: &[ZkappProofToVerify], srs: &SRS<Vesta>) -> bool {
     use rayon::prelude::*;
 
-    // OCaml refuses the whole batch before anything else if a bulletproof
-    // has another number of rounds than the wrap circuit's.
-    // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/verify.ml#L40-L48>
-    if !proofs
-        .iter()
-        .all(|(_, _, proof)| proof.proof.bulletproof.lr.len() == BACKEND_TOCK_ROUNDS_N)
-    {
-        mina_core::debug!(message = "verify_zkapps: a bulletproof has the wrong number of rounds");
+    if !bulletproof_rounds_ok("verify_zkapps", proofs.iter().map(|(_, _, proof)| *proof)) {
         return false;
     }
 
@@ -1432,6 +1459,96 @@ mod zkapp_batch_tests {
         for (i, verified) in results.into_iter().enumerate() {
             assert_eq!(verified, i % 4 != 3, "batch {i}");
         }
+    }
+}
+
+#[cfg(test)]
+mod block_rounds_tests {
+    use super::*;
+    use crate::{proofs::verifiers::block_verifier_index_of, verifier::get_srs};
+    use mina_p2p_messages::binprot::BinProtRead;
+    use once_cell::sync::Lazy;
+    use std::sync::Arc;
+
+    /// The block prover's input for Mesa mainnet block 548415, whose parent
+    /// is 548414 with its proof, made by OCaml (`mesa_tests` in `block.rs`).
+    const MAINNET_548415_INPUT: &[u8] = include_bytes!("data/mesa_mainnet_548415_block_input.bin");
+
+    static MAINNET: Lazy<VerifierIndex<Fq>> =
+        Lazy::new(|| block_verifier_index_of("mainnet").unwrap());
+
+    /// Mainnet block 548414's header, as a peer sends it.
+    fn header() -> MinaBlockHeaderStableV2 {
+        let input =
+            v2::ProverExtendBlockchainInputStableV2::binprot_read(&mut &*MAINNET_548415_INPUT)
+                .unwrap();
+        let state = input.chain.state;
+        MinaBlockHeaderStableV2 {
+            delta_block_chain_proof: (
+                state.previous_state_hash.clone(),
+                std::iter::empty().collect(),
+            ),
+            protocol_state: state,
+            protocol_state_proof: input.chain.proof,
+            current_protocol_version: mina_core::constants::PROTOCOL_VERSION,
+            proposed_protocol_version_opt: None,
+        }
+    }
+
+    /// `header` with its proof's bulletproof cut, or padded with copies of
+    /// its last round, to `rounds` rounds.
+    fn with_rounds(header: &MinaBlockHeaderStableV2, rounds: usize) -> MinaBlockHeaderStableV2 {
+        let mut header = header.clone();
+        let proof = Arc::make_mut(&mut header.protocol_state_proof);
+        let lr = proof.0.proof.bulletproof.lr.inner_mut();
+        assert_eq!(lr.len(), BACKEND_TOCK_ROUNDS_N);
+        let last = lr.last().unwrap().clone();
+        lr.resize(rounds, last);
+        header
+    }
+
+    fn contained_panics() -> usize {
+        CONTAINED_PANICS.with(|n| n.get())
+    }
+
+    /// A block proof whose bulletproof has another number of rounds than the
+    /// wrap circuit's 15 fails alone and fails a batch wherever it is, as in
+    /// OCaml. It is refused before kimchi sees it: with 16 rounds kimchi
+    /// would index past the SRS and panic, and no panic is contained here.
+    #[test]
+    fn a_block_proof_with_other_rounds_fails_without_a_panic() {
+        let srs = get_srs::<Fp>();
+        let header = header();
+        let panics = contained_panics();
+
+        assert!(verify_block(&header, &MAINNET, &srs));
+        assert!(verify_block_proof(
+            &header.protocol_state,
+            &header.protocol_state_proof,
+            &MAINNET
+        ));
+        assert!(verify_blocks(&[&header, &header, &header], &MAINNET, &srs));
+
+        for rounds in [0, 14, 16] {
+            let bad = with_rounds(&header, rounds);
+            assert!(!verify_block(&bad, &MAINNET, &srs), "{rounds} rounds");
+            assert!(
+                !verify_block_proof(&bad.protocol_state, &bad.protocol_state_proof, &MAINNET),
+                "{rounds} rounds, producer check"
+            );
+            // The first and the last, and the first of the second kimchi
+            // batch.
+            let mut batch = vec![&header; BLOCKS_PER_BATCH + 2];
+            for at in [0, BLOCKS_PER_BATCH, batch.len() - 1] {
+                let good = std::mem::replace(&mut batch[at], &bad);
+                assert!(
+                    !verify_blocks(&batch, &MAINNET, &srs),
+                    "{rounds} rounds at {at}"
+                );
+                batch[at] = good;
+            }
+        }
+        assert_eq!(contained_panics(), panics);
     }
 }
 
