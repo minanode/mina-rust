@@ -304,6 +304,8 @@ impl NodeServiceCommonBuilder {
                 self.event_sender,
                 self.skip_proof_verification,
             ),
+            snark_work_verify_queue: Default::default(),
+            user_command_verify_queue: Default::default(),
             ledger_manager,
             block_producer,
             // initialized in state machine.
