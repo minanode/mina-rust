@@ -477,6 +477,7 @@ impl P2pNetworkRpcState {
                 data,
                 peer_id,
             } => {
+                rpc_state.abandon_budgeted_answer();
                 rpc_state.last_id = query.id;
                 rpc_state.pending = Some(query.clone());
 
@@ -564,6 +565,19 @@ impl P2pNetworkRpcState {
                 let tag: &[u8] = query.tag.as_ref();
                 tag == rpc::GetTransitionChainV2::NAME || tag == rpc::GetBestTipV2::NAME
             })
+    }
+
+    /// Discards the rest of a large block answer still arriving when a new
+    /// query goes out on the stream. Its query has timed out, so the answer
+    /// would be dropped anyway; this releases its buffer and its share of the
+    /// budget at once, rather than when the rest arrives or the peer goes.
+    fn abandon_budgeted_answer(&mut self) {
+        if let (Some(len), true) = (self.incoming_len, self.incoming_budgeted > 0) {
+            self.skip_remaining = len.saturating_add(8).saturating_sub(self.buffer.len());
+            self.buffer = Vec::new();
+            self.incoming_len = None;
+            self.incoming_budgeted = 0;
+        }
     }
 
     /// Reads `data`, the next bytes of the stream, into `incoming`, and keeps
@@ -1241,9 +1255,9 @@ mod block_answer_limit_tests {
         std::fs::read(path).unwrap()
     }
 
-    /// Feeds `message` to `rpc` in pieces of `piece` bytes, the first piece
-    /// ending inside the length prefix, and checks after each piece that the
-    /// buffer never holds more than the message declares.
+    /// Feeds `message`, or its start, to `rpc` in pieces of `piece` bytes,
+    /// the first piece ending inside the length prefix, and checks after each
+    /// piece that the buffer never holds more than the message declares.
     fn feed(
         rpc: &mut P2pNetworkRpcState,
         message: &[u8],
@@ -1251,10 +1265,11 @@ mod block_answer_limit_tests {
         budgeted_elsewhere: usize,
     ) -> Vec<TakenIncoming> {
         let limits = P2pLimits::default();
+        let bound = 8 + declared(message);
         let mut taken = vec![rpc.take_incoming(&message[..3], &limits, budgeted_elsewhere)];
         for chunk in message[3..].chunks(piece) {
             taken.push(rpc.take_incoming(chunk, &limits, budgeted_elsewhere));
-            assert!(rpc.buffer.capacity() <= message.len());
+            assert!(rpc.buffer.capacity() <= bound);
         }
         taken
     }
@@ -1375,6 +1390,29 @@ mod block_answer_limit_tests {
             the_response(&mut rpc).0.len(),
             len - (answer(vec![]).len() - 8)
         );
+    }
+
+    /// A new query on the stream discards the rest of a large answer still
+    /// arriving, releasing its budget, and the answer after it is read.
+    #[test]
+    fn new_query_abandons_a_large_answer_in_progress() {
+        let message = answer(chain_answer(vec![0; 4_000_000]));
+        let mut rpc = waiting_for(rpc::GetTransitionChainV2::NAME);
+        let (head, rest) = message.split_at(1_000_000);
+        feed(&mut rpc, head, 64 * 1024, 0);
+        assert_eq!(rpc.incoming_budgeted, declared(&message));
+
+        rpc.abandon_budgeted_answer();
+        assert_eq!(rpc.incoming_budgeted, 0);
+        assert_eq!(rpc.buffer.capacity(), 0);
+        assert_eq!(rpc.skip_remaining, rest.len());
+
+        let next = answer(chain_answer(vec![1; 100]));
+        let mut stream = rest.to_vec();
+        stream.extend_from_slice(&next);
+        let taken = rpc.take_incoming(&stream, &P2pLimits::default(), 0);
+        assert!(taken.error.is_none() && taken.deferred.is_none());
+        assert_eq!(the_response(&mut rpc).0.len(), declared(&next) - 2);
     }
 
     /// Block answers up to the old limit, and other answers, don't use the
