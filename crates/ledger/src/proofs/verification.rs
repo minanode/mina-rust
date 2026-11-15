@@ -16,7 +16,6 @@ use crate::{
         BACKEND_TICK_ROUNDS_N, BACKEND_TOCK_ROUNDS_N,
     },
     scan_state::{
-        protocol_state::MinaHash,
         scan_state::transaction_snark::{SokDigest, Statement},
         transaction_logic::{local_state::LazyValue, zkapp_statement::ZkappStatement},
     },
@@ -24,7 +23,6 @@ use crate::{
 };
 
 use super::{
-    block::ProtocolState,
     field::FieldWitness,
     public_input::plonk_checks::make_shifts,
     step::{step_verifier::PlonkDomain, ExpandDeferredParams, FeatureFlags},
@@ -773,6 +771,57 @@ fn bulletproof_rounds_ok<'a>(
     ok
 }
 
+/// The most proofs that the step proof behind a wrap proof verifies, for
+/// every proof verified here: OCaml's block and transaction proofs are
+/// `Proofs_verified_2`, and its zkApp proofs `Proofs_verified_max`, whose
+/// width is 2 too.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/proof.ml#L356-L381>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/proof.ml#L419-L445>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles_base/side_loaded_verification_key.ml#L80-L93>
+const MAX_PROOFS_VERIFIED: usize = 2;
+
+/// Whether every proof's step messages are what OCaml decodes: at most
+/// [`MAX_PROOFS_VERIFIED`] challenge polynomial commitments, and as many
+/// vectors of old bulletproof challenges. OCaml decodes both lists as
+/// `At_most_2`, which fails on a third entry, then requires the same length
+/// of both, so it refuses such a proof before it verifies anything. Every
+/// caller checks this first too. The step messages' hash pairs the two
+/// lists and would leave out the longer one's extra entries, and
+/// [`make_padded_proof_from_p2p`] fails on a third commitment. `what` names
+/// the caller in the log.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/plonkish_prelude/at_most.ml#L29-L37>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/plonkish_prelude/at_most.ml#L110-L127>
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/pickles/proof.ml#L277-L290>
+fn step_messages_ok<'a>(
+    what: &str,
+    proofs: impl IntoIterator<Item = &'a PicklesProofProofsVerified2ReprStableV2>,
+) -> bool {
+    let ok = proofs.into_iter().all(|proof| {
+        let messages = &proof.statement.messages_for_next_step_proof;
+        let commitments = messages.challenge_polynomial_commitments.len();
+        commitments <= MAX_PROOFS_VERIFIED
+            && commitments == messages.old_bulletproof_challenges.len()
+    });
+    if !ok {
+        mina_core::debug!(
+            message = format!("{what}: a proof's step messages have the wrong lengths")
+        );
+    }
+    ok
+}
+
+/// What OCaml checks of every proof before it verifies any, refusing the
+/// whole batch if one fails: [`step_messages_ok`], which OCaml checks as it
+/// decodes the proof, and [`bulletproof_rounds_ok`].
+fn proofs_well_formed<'a>(
+    what: &str,
+    proofs: impl IntoIterator<Item = &'a PicklesProofProofsVerified2ReprStableV2> + Clone,
+) -> bool {
+    step_messages_ok(what, proofs.clone()) && bulletproof_rounds_ok(what, proofs)
+}
+
 /// <https://github.com/MinaProtocol/mina/blob/4e0b324912017c3ff576704ee397ade3d9bda412/src/lib/pickles/verification_key.mli#L30>
 pub struct VK<'a> {
     pub commitments: PlonkVerificationKeyEvals<Fp>,
@@ -780,11 +829,38 @@ pub struct VK<'a> {
     pub data: (), // Unused in proof verification
 }
 
+/// The public input of a block's proof: the state hash of its protocol state,
+/// computed from its hash input as OCaml computes it. Not through the circuit's
+/// `ProtocolState`, whose VRF output holds exactly 253 bits: a shorter output
+/// is hashed as OCaml hashes it (`ConsensusVrfOutputTruncatedStableV1`'s
+/// `to_input`).
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/blockchain_snark/blockchain_snark_state.ml#L394-L398>
+fn public_input(
+    protocol_state: &v2::MinaStateProtocolStateValueStableV2,
+) -> Result<Fp, InvalidBigInt> {
+    // The staged ledger's non-SNARK ledger hash reaches the state hash only
+    // through a SHA-256 digest of its bytes, so the proof does not constrain
+    // it to be a field element. OCaml decodes it as one and refuses a value
+    // at or above the modulus, as binprot decoding does here (`read_fp`).
+    // Check it again for states that did not come through binprot.
+    //
+    // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/kimchi_pasta_snarky_backend/field.ml#L189-L196>
+    protocol_state
+        .body
+        .blockchain_state
+        .staged_ledger_hash
+        .non_snark
+        .ledger_hash
+        .inner()
+        .to_field::<Fp>()?;
+    mina_p2p_messages::hash::MinaHash::try_hash(protocol_state)
+}
+
 /// Verifies a block's SNARK proof using the Kimchi proof system.
 ///
 /// This function validates that a block header contains a valid zero-knowledge proof
-/// by performing two checks, once its bulletproof has the wrap circuit's number of
-/// rounds ([`bulletproof_rounds_ok`]):
+/// by performing two checks, once the proof is well formed ([`proofs_well_formed`]):
 /// 1. **Accumulator check**: Validates the polynomial commitment opening proofs
 /// 2. **Proof verification**: Verifies the blockchain SNARK proof against the protocol state hash.
 ///    The blockchain SNARK proves the validity of the protocol state transaction (consensus). Defined
@@ -824,7 +900,7 @@ fn verify_block_contained(
         ..
     } = &header;
 
-    if !bulletproof_rounds_ok("verify_block", [&protocol_state_proof.0]) {
+    if !proofs_well_formed("verify_block", [&protocol_state_proof.0]) {
         return false;
     }
 
@@ -834,11 +910,10 @@ fn verify_block_contained(
         data: (),
     };
 
-    let Ok(protocol_state) = ProtocolState::try_from(protocol_state) else {
+    let Ok(protocol_state_hash) = public_input(protocol_state) else {
         mina_core::warn!(message = format!("verify_block: Protocol state contains invalid field"));
         return false; // invalid bigint
     };
-    let protocol_state_hash = MinaHash::hash(&protocol_state);
 
     let accum_check =
         accumulator_check::accumulator_check(srs, &[protocol_state_proof]).unwrap_or(false);
@@ -889,14 +964,12 @@ fn verify_blocks_contained(
         .iter()
         .map(|header| &header.protocol_state_proof.0)
         .collect::<Vec<_>>();
-    if !bulletproof_rounds_ok("verify_blocks", proofs.iter().copied()) {
+    if !proofs_well_formed("verify_blocks", proofs.iter().copied()) {
         return false;
     }
     let Ok(state_hashes) = headers
         .par_iter()
-        .map(|header| {
-            ProtocolState::try_from(&header.protocol_state).map(|state| MinaHash::hash(&state))
-        })
+        .map(|header| public_input(&header.protocol_state))
         .collect::<Result<Vec<Fp>, _>>()
     else {
         return false;
@@ -995,7 +1068,7 @@ fn verify_transaction_contained<'a>(
             inputs.push((statement, transaction_proof, &vk));
         });
 
-    if !bulletproof_rounds_ok("verify_transaction", accum_check_proofs.iter().copied()) {
+    if !proofs_well_formed("verify_transaction", accum_check_proofs.iter().copied()) {
         return false;
     }
 
@@ -1063,7 +1136,7 @@ pub fn verify_zkapps(proofs: &[ZkappProofToVerify], srs: &SRS<Vesta>) -> bool {
 fn verify_zkapps_contained(proofs: &[ZkappProofToVerify], srs: &SRS<Vesta>) -> bool {
     use rayon::prelude::*;
 
-    if !bulletproof_rounds_ok("verify_zkapps", proofs.iter().map(|(_, _, proof)| *proof)) {
+    if !proofs_well_formed("verify_zkapps", proofs.iter().map(|(_, _, proof)| *proof)) {
         return false;
     }
 
@@ -1253,6 +1326,135 @@ where
     Ok(result.is_ok() && checks)
 }
 
+/// Shapes of a proof's step messages for tests, `(commitments, challenges)`
+/// ([`with_step_messages`]): seven that OCaml refuses as it decodes the
+/// proof, then the three it decodes. `(1, 0)` and `(2, 0)` made from a proof
+/// with none carry only the padding the verifier adds anyway, and the
+/// step-message hash zips the commitments with the empty challenges, so
+/// without the length check such a proof verifies.
+#[cfg(test)]
+pub(crate) const STEP_MESSAGE_SHAPES: [(usize, usize); 10] = [
+    (3, 3),
+    (3, 2),
+    (2, 1),
+    (2, 3),
+    (0, 1),
+    (1, 0),
+    (2, 0),
+    (0, 0),
+    (1, 1),
+    (2, 2),
+];
+
+/// The shape of `proof`'s step messages, `(commitments, challenges)`.
+#[cfg(test)]
+pub(crate) fn step_message_shape(
+    proof: &PicklesProofProofsVerified2ReprStableV2,
+) -> (usize, usize) {
+    let messages = &proof.statement.messages_for_next_step_proof;
+    (
+        messages.challenge_polynomial_commitments.len(),
+        messages.old_bulletproof_challenges.len(),
+    )
+}
+
+/// `proof` with `commitments` challenge polynomial commitments and
+/// `challenges` vectors of old bulletproof challenges in its step messages,
+/// for tests: each list cut, or padded with copies of its first entry. An
+/// empty list is padded with what OCaml's verifier pads the commitments
+/// with, or with the proof's own bulletproof challenges.
+#[cfg(test)]
+pub(crate) fn with_step_messages(
+    proof: &PicklesProofProofsVerified2ReprStableV2,
+    commitments: usize,
+    challenges: usize,
+) -> PicklesProofProofsVerified2ReprStableV2 {
+    fn resize<T: Clone>(list: &mut std::collections::LinkedList<T>, len: usize, filler: T) {
+        while list.len() > len {
+            list.pop_back();
+        }
+        while list.len() < len {
+            list.push_back(filler.clone());
+        }
+    }
+
+    let mut proof = proof.clone();
+    let own_challenges = proof
+        .statement
+        .proof_state
+        .deferred_values
+        .bulletproof_challenges
+        .clone();
+    let messages = &mut proof.statement.messages_for_next_step_proof;
+    let commitment = messages
+        .challenge_polynomial_commitments
+        .front()
+        .cloned()
+        .unwrap_or_else(super::prover::get_challenge_polynomial_commitments_padding);
+    let challenge = messages
+        .old_bulletproof_challenges
+        .front()
+        .cloned()
+        .unwrap_or(own_challenges);
+    resize(
+        &mut messages.challenge_polynomial_commitments,
+        commitments,
+        commitment,
+    );
+    resize(
+        &mut messages.old_bulletproof_challenges,
+        challenges,
+        challenge,
+    );
+    proof
+}
+
+#[cfg(test)]
+mod step_messages_tests {
+    use super::*;
+
+    /// A real proof with two of each: mainnet block 548414's.
+    fn block_proof() -> PicklesProofProofsVerified2ReprStableV2 {
+        let proof = block_rounds_tests::header().protocol_state_proof.0.clone();
+        assert_eq!(step_message_shape(&proof), (2, 2));
+        proof
+    }
+
+    /// The check passes what OCaml decodes, and only that: at most two
+    /// commitments, and as many challenge vectors.
+    #[test]
+    fn the_check_passes_what_ocaml_decodes() {
+        let proof = block_proof();
+        for commitments in 0..=4 {
+            for challenges in 0..=4 {
+                let proof = with_step_messages(&proof, commitments, challenges);
+                assert_eq!(step_message_shape(&proof), (commitments, challenges));
+                assert_eq!(
+                    step_messages_ok("test", [&proof]),
+                    commitments == challenges && commitments <= MAX_PROOFS_VERIFIED,
+                    "{commitments} commitments, {challenges} challenges"
+                );
+            }
+        }
+    }
+
+    /// The kimchi proof is made with two commitments: fewer are padded, and
+    /// a third is an error, not a panic.
+    #[test]
+    fn a_third_commitment_is_an_error_when_padding() {
+        let proof = block_proof();
+        for (commitments, challenges) in STEP_MESSAGE_SHAPES {
+            let padded =
+                make_padded_proof_from_p2p(&with_step_messages(&proof, commitments, challenges));
+            assert_eq!(
+                padded.is_ok(),
+                commitments <= 2,
+                "{commitments} commitments, {challenges} challenges"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod zkapp_batch_tests {
     use super::*;
@@ -1429,6 +1631,29 @@ mod zkapp_batch_tests {
         });
     }
 
+    /// A proof whose step messages have another shape than it was made
+    /// with fails alone and fails the batch wherever it is, without a
+    /// panic: the shapes OCaml refuses as it decodes the proof, and those
+    /// it decodes. The unchanged proofs still verify.
+    #[test]
+    fn other_step_messages_fail_the_batch_without_a_panic() {
+        let panics = contained_panics();
+        let items = many(8);
+        for at in [0, 4, ZKAPPS_PER_BATCH + 5, items.len() - 1] {
+            let shape = step_message_shape(&items[at].2);
+            for (commitments, challenges) in STEP_MESSAGE_SHAPES.into_iter().filter(|&s| s != shape)
+            {
+                let mut items = items.clone();
+                items[at].2 = with_step_messages(&items[at].2, commitments, challenges);
+                let other = (commitments, challenges);
+                assert!(!verify(&items), "{other:?} at {at} accepted in a batch");
+                assert!(!verify(&items[at..=at]), "{other:?} at {at} accepted alone");
+            }
+        }
+        assert_eq!(contained_panics(), panics);
+        assert!(verify(&items));
+    }
+
     /// A panic in a batch fails it, and leaves the verifier working.
     #[test]
     fn a_panic_fails_the_batch_and_breaks_nothing() {
@@ -1478,7 +1703,7 @@ mod block_rounds_tests {
         Lazy::new(|| block_verifier_index_of("mainnet").unwrap());
 
     /// Mainnet block 548414's header, as a peer sends it.
-    fn header() -> MinaBlockHeaderStableV2 {
+    pub(super) fn header() -> MinaBlockHeaderStableV2 {
         let input =
             v2::ProverExtendBlockchainInputStableV2::binprot_read(&mut &*MAINNET_548415_INPUT)
                 .unwrap();
@@ -1549,6 +1774,50 @@ mod block_rounds_tests {
             }
         }
         assert_eq!(contained_panics(), panics);
+    }
+
+    /// `header` with its proof's step messages in `shape`
+    /// ([`with_step_messages`]).
+    fn with_step_shape(
+        header: &MinaBlockHeaderStableV2,
+        (commitments, challenges): (usize, usize),
+    ) -> MinaBlockHeaderStableV2 {
+        let mut header = header.clone();
+        let proof = Arc::make_mut(&mut header.protocol_state_proof);
+        proof.0 = with_step_messages(&proof.0, commitments, challenges);
+        header
+    }
+
+    /// A block proof whose step messages have another shape than its two
+    /// commitments and two challenge vectors fails alone and fails a batch
+    /// wherever it is. OCaml refuses the shapes it does not decode before
+    /// any verification; here a third commitment no longer reaches the
+    /// padding to two, which panicked, and no panic is contained. The
+    /// shapes it decodes fail verification.
+    #[test]
+    fn a_block_proof_with_other_step_messages_fails_without_a_panic() {
+        let srs = get_srs::<Fp>();
+        let header = header();
+        assert_eq!(step_message_shape(&header.protocol_state_proof.0), (2, 2));
+        let panics = contained_panics();
+
+        for shape in STEP_MESSAGE_SHAPES.into_iter().filter(|&s| s != (2, 2)) {
+            let bad = with_step_shape(&header, shape);
+            assert!(!verify_block(&bad, &MAINNET, &srs), "{shape:?}");
+            assert!(
+                !verify_block_proof(&bad.protocol_state, &bad.protocol_state_proof, &MAINNET),
+                "{shape:?}, producer check"
+            );
+            let mut batch = vec![&header; BLOCKS_PER_BATCH + 2];
+            for at in [0, BLOCKS_PER_BATCH, batch.len() - 1] {
+                let good = std::mem::replace(&mut batch[at], &bad);
+                assert!(!verify_blocks(&batch, &MAINNET, &srs), "{shape:?} at {at}");
+                batch[at] = good;
+            }
+        }
+        assert_eq!(contained_panics(), panics);
+        assert!(verify_block(&header, &MAINNET, &srs));
+        assert!(verify_blocks(&[&header, &header], &MAINNET, &srs));
     }
 }
 
@@ -1675,5 +1944,64 @@ mod on_fail {
             );
             assert!(super::dump_to_file_impl(&7i32, "verify_block").is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod public_input_tests {
+    use ark_ff::{BigInteger, One, PrimeField};
+    use mina_curves::pasta::Fp;
+    use mina_p2p_messages::{
+        bigint::BigInt,
+        binprot::BinProtRead,
+        v2::{self, MinaBaseLedgerHash0StableV1, MinaBlockBlockStableV2},
+    };
+
+    /// Mainnet block 563978 as an OCaml node gossiped it: an 8-byte length,
+    /// the `NewState` tag, then the block.
+    fn protocol_state() -> v2::MinaStateProtocolStateValueStableV2 {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../web-verifier/tests/fixtures/mainnet-563978.gossipbin"
+        );
+        let bytes = std::fs::read(path).unwrap();
+        MinaBlockBlockStableV2::binprot_read(&mut &bytes[9..])
+            .unwrap()
+            .header
+            .protocol_state
+    }
+
+    fn with_non_snark_ledger_hash(
+        state: &v2::MinaStateProtocolStateValueStableV2,
+        value: BigInt,
+    ) -> v2::MinaStateProtocolStateValueStableV2 {
+        let mut state = state.clone();
+        state
+            .body
+            .blockchain_state
+            .staged_ledger_hash
+            .non_snark
+            .ledger_hash = MinaBaseLedgerHash0StableV1(value).into();
+        state
+    }
+
+    /// The values are set directly, as a state that did not come through
+    /// binprot would carry them. The largest field element still gives a
+    /// public input; the modulus and above do not.
+    #[test]
+    fn non_snark_ledger_hash_must_be_a_field_element() {
+        let state = protocol_state();
+        assert!(super::public_input(&state).is_ok());
+
+        let largest = BigInt::from(-Fp::one());
+        let state_largest = with_non_snark_ledger_hash(&state, largest);
+        assert!(super::public_input(&state_largest).is_ok());
+
+        let modulus: [u8; 32] = Fp::MODULUS.to_bytes_le().try_into().unwrap();
+        let state_modulus = with_non_snark_ledger_hash(&state, BigInt::from_bytes(modulus));
+        assert!(super::public_input(&state_modulus).is_err());
+
+        let state_max = with_non_snark_ledger_hash(&state, BigInt::from_bytes([0xFF; 32]));
+        assert!(super::public_input(&state_max).is_err());
     }
 }

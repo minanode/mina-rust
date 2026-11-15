@@ -1573,6 +1573,66 @@ mod tests {
         assert_eq!(decoded.try_hash().unwrap(), hash);
     }
 
+    /// A gossiped block's VRF output is a byte string of any length. Each
+    /// decodes, and is hashed as `ValidateIncomingMessage` hashes it: the
+    /// first 253 bits, or all bits of a shorter output, as OCaml does. A
+    /// shorter output gives another state hash, so its proof check fails;
+    /// the others keep the block's own.
+    #[test]
+    fn a_gossiped_block_with_a_vrf_output_of_any_length_is_hashed() {
+        use mina_p2p_messages::v2::ConsensusVrfOutputTruncatedStableV1;
+
+        let block = mesa_best_tip();
+        let hash = block.try_hash().unwrap();
+        let output = block
+            .header
+            .protocol_state
+            .body
+            .consensus_state
+            .last_vrf_output
+            .to_vec();
+        let mut top_bits = output.clone();
+        top_bits[31] |= 0xE0;
+        let cases = [
+            (Vec::new(), false),
+            (output[..1].to_vec(), false),
+            (output[..31].to_vec(), false),
+            (output.clone(), true),
+            (top_bits.clone(), true),
+            ([&output[..], &[0xFF; 40][..]].concat(), true),
+        ];
+        for (i, (bytes, same_hash)) in cases.into_iter().enumerate() {
+            let len = bytes.len();
+            let mut block = block.clone();
+            block
+                .header
+                .protocol_state
+                .body
+                .consensus_state
+                .last_vrf_output = ConsensusVrfOutputTruncatedStableV1(bytes.into());
+            let data =
+                super::super::encode_message(&GossipNetMessageV2::NewState(block.into())).unwrap();
+            let message = pb::Message {
+                from: Some(vec![0; 38]),
+                data: Some(data),
+                seqno: Some(vec![i as u8; 8]),
+                topic: TOPIC.to_owned(),
+                signature: Some(vec![i as u8; 64]),
+                key: None,
+            };
+            let mut state = state_with_client();
+            let Ok(Some(GossipNetMessageV2::NewState(decoded))) =
+                state.reduce_incoming_message(&message, 10)
+            else {
+                panic!("{len} bytes: not a block");
+            };
+            let block_hash = decoded.try_hash().unwrap();
+            let best_tip = BlockWithHash::try_new(decoded).unwrap();
+            assert_eq!(best_tip.hash(), &block_hash, "{len} bytes");
+            assert_eq!(block_hash == hash, same_hash, "{len} bytes");
+        }
+    }
+
     /// Any split of a stream of RPCs, at any byte: every message arrives, in
     /// order, with its own bytes.
     #[test]

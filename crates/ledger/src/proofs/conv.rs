@@ -17,6 +17,26 @@ use super::{
     },
 };
 
+/// The first `N` (253) bits of a truncated VRF output, least significant bit
+/// of each byte first, as the blockchain circuit takes them.
+/// OCaml's `Truncated.typ` takes them with `Array.sub`, which raises on an
+/// output shorter than 32 bytes, so a short one is an error here. The protocol
+/// state hash reads such an output too, without failing
+/// (`ConsensusVrfOutputTruncatedStableV1::to_input`).
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/consensus/vrf/consensus_vrf.ml#L212-L217>
+fn vrf_output_bits<const N: usize>(
+    output: &v2::ConsensusVrfOutputTruncatedStableV1,
+) -> Result<Box<[bool; N]>, InvalidBigInt> {
+    let bits = output
+        .iter()
+        .flat_map(|byte| (0..8).map(move |i| (byte >> i) & 1 == 1))
+        .take(N)
+        .collect::<Vec<_>>();
+    // TODO: Return a dedicated error
+    bits.try_into().map_err(|_| InvalidBigInt)
+}
+
 fn state_hash(value: Fp) -> v2::StateHash {
     v2::DataHashLibStateHashStableV1(value.into()).into()
 }
@@ -198,18 +218,7 @@ impl TryFrom<&v2::ConsensusProofOfStakeDataConsensusStateValueStableV2> for Cons
                 .iter()
                 .map(|sub| Length::from_u32(sub.as_u32()))
                 .collect(),
-            last_vrf_output: {
-                let mut output = Vec::with_capacity(253);
-                output.extend(last_vrf_output.iter().take(31).flat_map(|b| {
-                    [1u8, 2, 4, 8, 16, 32, 64, 128]
-                        .iter()
-                        .map(|bit| *bit & *b != 0)
-                }));
-                // Ignore last 3 bits
-                let last_byte = last_vrf_output[31];
-                output.extend([1, 2, 4, 8, 16].iter().map(|bit| *bit & last_byte != 0));
-                output.try_into().map_err(|_| InvalidBigInt)? // TODO: Return correct error
-            },
+            last_vrf_output: vrf_output_bits(last_vrf_output)?,
             curr_global_slot_since_hard_fork: curr_global_slot_since_hard_fork.into(),
             global_slot_since_genesis: Slot::from_u32(global_slot_since_genesis.as_u32()),
             total_currency: currency::Amount::from_u64(total_currency.as_u64()),
