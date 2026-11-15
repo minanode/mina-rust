@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   worker module, which was never compiled
   ([#47](https://github.com/minanode/mina-rust/pull/47))
 
+### Fixed
+
+- **Node**: verification services run their jobs on the Rayon pool one at a
+  time, and pool threads get a 64 MiB stack. A burst of SNARK work and
+  transactions could nest verification jobs on one pool thread until it
+  overflowed its 2 MiB stack and aborted the node
+  ([#49](https://github.com/minanode/mina-rust/pull/49))
+
 ## [0.22.1] - 2026-11-06
 
 0.22.1 is a UI release. It has a design pass over the node dashboard and the

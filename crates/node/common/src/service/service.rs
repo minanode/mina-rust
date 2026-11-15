@@ -5,7 +5,7 @@ use super::{
     replay::ReplayerState,
     rpc::{RpcSender, RpcService},
     snark_worker::SnarkWorker,
-    snarks::SnarkBlockVerifyArgs,
+    snarks::{SnarkBlockVerifyArgs, VerifyQueue},
     EventReceiver, EventSender,
 };
 use crate::rpc::RpcReceiver;
@@ -43,6 +43,10 @@ pub struct NodeService {
 
     /// Channel for asynchronous block proof verification requests.
     pub snark_block_proof_verify: mpsc::TrackedUnboundedSender<SnarkBlockVerifyArgs>,
+    /// SNARK work verification jobs, one at a time on the global pool.
+    pub snark_work_verify_queue: VerifyQueue,
+    /// Transaction verification jobs, one at a time on the global pool.
+    pub user_command_verify_queue: VerifyQueue,
 
     /// Manages ledger operations, database access, and staged ledger state.
     pub ledger_manager: LedgerManager,
@@ -149,6 +153,8 @@ impl NodeService {
             event_sender: mpsc::unbounded_channel().0,
             event_receiver: mpsc::unbounded_channel().1.into(),
             snark_block_proof_verify: mpsc::unbounded_channel().0,
+            snark_work_verify_queue: Default::default(),
+            user_command_verify_queue: Default::default(),
             ledger_manager: LedgerManager::spawn(Default::default()),
             snark_worker: None,
             isolated_prover: None,
