@@ -38,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Before, such a proof made the verifier panic, which was caught and turned
   into a rejection ([#51](https://github.com/minanode/mina-rust/pull/51))
 
+- **Node**: block, transaction and zkApp proofs whose step messages hold more
+  than two entries, or two lists of different lengths, are refused before
+  verification, as OCaml refuses them when it decodes the proof
+  ([#52](https://github.com/minanode/mina-rust/pull/52))
+
 ## [0.22.1] - 2026-11-06
 
 0.22.1 is a UI release. It has a design pass over the node dashboard and the
