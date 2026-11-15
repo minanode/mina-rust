@@ -293,24 +293,37 @@ impl Verifier {
             cmds.into_par_iter().map(common::check).collect()
         };
 
-        let mut to_verify = cs
-            .iter()
-            .filter_map(|c| match c {
-                CheckResult::Valid(_) => None,
-                CheckResult::ValidAssuming((_, xs)) => Some(xs),
-                _ => None,
-            })
-            .flatten();
-
+        // Every proof of every command, verified together: one result for
+        // the batch, as in OCaml, which can't say which command's proof
+        // failed either.
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/verifier/prod.ml#L16-L48>
         let all_verified = if skip_verification.is_some() {
             true
         } else {
-            let srs = get_srs::<Fp>();
+            use rayon::prelude::*;
 
-            to_verify.all(|(vk, zkapp_statement, proof)| {
-                let proof: PicklesProofProofsVerified2ReprStableV2 = (&**proof).into();
-                verification::verify_zkapp(vk, zkapp_statement, &proof, &srs)
-            })
+            let to_verify = cs
+                .iter()
+                .filter_map(|c| match c {
+                    CheckResult::ValidAssuming((_, xs)) => Some(xs),
+                    _ => None,
+                })
+                .flatten()
+                .collect::<Vec<_>>();
+            if to_verify.is_empty() {
+                true
+            } else {
+                let proofs = to_verify
+                    .par_iter()
+                    .map(|(_, _, proof)| PicklesProofProofsVerified2ReprStableV2::from(&**proof))
+                    .collect::<Vec<_>>();
+                let batch = to_verify
+                    .iter()
+                    .zip(&proofs)
+                    .map(|((vk, zkapp_statement, _), proof)| (vk, zkapp_statement, proof))
+                    .collect::<Vec<_>>();
+                verification::verify_zkapps(&batch, &get_srs::<Fp>())
+            }
         };
 
         cs.into_iter()
