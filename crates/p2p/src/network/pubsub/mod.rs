@@ -15,8 +15,13 @@ pub use self::p2p_network_pubsub_state::{
 #[cfg(feature = "p2p-libp2p")]
 mod p2p_network_pubsub_reducer;
 
+/// The largest gossipsub RPC we take from a peer, OCaml's largest message.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/8250f62a9bb6450f6c9fdc9a3af72da62c2f5e39/src/app/libp2p_helper/src/libp2p_helper/config_msg.go#L199>
+pub const MAX_RPC_SIZE: usize = 32 * 1024 * 1024;
+
 #[cfg(feature = "p2p-libp2p")]
-const TOPIC: &str = "coda/consensus-messages/0.0.1";
+pub(crate) const TOPIC: &str = "coda/consensus-messages/0.0.1";
 
 pub mod pubsub_effectful;
 use mina_core::snark::SnarkJobId;

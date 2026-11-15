@@ -90,6 +90,17 @@ impl P2pNetworkSchedulerState {
             })
     }
 
+    /// Bytes of large block answers our RPC streams are reading, held against
+    /// [`crate::P2pLimits::RPC_LARGE_BLOCK_ANSWERS_BUDGET`]. The stream is the
+    /// owner, so resets and disconnects release this without counter updates.
+    pub fn rpc_budgeted_answer_bytes(&self) -> usize {
+        self.rpc_outgoing_streams
+            .values()
+            .flat_map(|streams| streams.values())
+            .map(|stream| stream.incoming_budgeted)
+            .fold(0, usize::saturating_add)
+    }
+
     /// Expected output for channel-dispatched RPC work. The stream is the
     /// owner, so resets and disconnects release this without counter updates.
     pub fn reserved_rpc_response_bytes(&self, peer_id: &PeerId) -> (usize, usize) {

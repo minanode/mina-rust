@@ -106,6 +106,55 @@ fn mesa_block_with_zkapp_commands_decodes() {
     assert_eq!(zkapp_commands(blocks.iter().next().unwrap()), 12);
 }
 
+/// Proof-authorized account updates at the top of a block's zkApp commands.
+fn proof_updates(block: &MinaBlockBlockStableV2) -> usize {
+    let diff = &block.body.staged_ledger_diff.diff;
+    diff.0
+        .commands
+        .iter()
+        .chain(diff.1.iter().flat_map(|d| d.commands.iter()))
+        .filter_map(|c| match &c.data {
+            v2::MinaBaseUserCommandStableV2::ZkappCommand(cmd) => Some(cmd),
+            _ => None,
+        })
+        .flat_map(|cmd| cmd.account_updates.iter())
+        .filter(|u| {
+            matches!(
+                u.elt.account_update.authorization,
+                v2::MinaBaseControlStableV2::Proof(_)
+            )
+        })
+        .count()
+}
+
+/// Devnet block 590141 carries 12 zkApp commands with 15 proof-authorized
+/// account updates each, a 3.7 MB `get_transition_chain` answer. Our nodes
+/// stopped reading these answers at 3.5 MB. The fixture is the block as a
+/// node stored it in its frontier, framed as OCaml's answer.
+#[test]
+fn heavy_zkapp_block_decodes() {
+    let name = "get_transition_chain_v2_590141_heavy.bin";
+    assert!(fixture(name).len() > 3_500_000);
+    let blocks: List<MinaBlockBlockStableV2> =
+        decode::<Option<List<MinaBlockBlockStableV2>>>(name).expect("some blocks");
+    assert_eq!(blocks.len(), 1);
+    let block = blocks.iter().next().unwrap();
+    assert_eq!(
+        block.try_hash().unwrap().to_string(),
+        "3NLG3GYbNyDPqpkQf3aJd9biL43JBLWPVWZSbgdqUmsup1MB4Ux9"
+    );
+    let height = &block
+        .header
+        .protocol_state
+        .body
+        .consensus_state
+        .blockchain_length;
+    assert_eq!(height.as_u32(), 590141);
+    assert_eq!(zkapp_commands(block), 12);
+    assert_eq!(proof_updates(block), 180);
+    reencodes_identically::<Option<List<MinaBlockBlockStableV2>>>(name);
+}
+
 /// OCaml rebroadcasts pool diffs with the time in nanoseconds as the nonce,
 /// which needs more than 32 bits.
 #[test]
