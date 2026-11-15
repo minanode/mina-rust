@@ -23,15 +23,10 @@ use super::{
     },
     pb::{self, Message},
     P2pNetworkPubsubAction, P2pNetworkPubsubClientState, P2pNetworkPubsubEffectfulAction,
-    P2pNetworkPubsubMessageCacheId, P2pNetworkPubsubState, TOPIC,
+    P2pNetworkPubsubMessageCacheId, P2pNetworkPubsubState, MAX_RPC_SIZE, TOPIC,
 };
 
 const MAX_MESSAGE_KEEP_DURATION: Duration = Duration::from_secs(300);
-
-/// The largest gossipsub RPC we take from a peer, OCaml's largest message.
-///
-/// OCaml: <https://github.com/MinaProtocol/mina/blob/8250f62a9bb6450f6c9fdc9a3af72da62c2f5e39/src/app/libp2p_helper/src/libp2p_helper/config_msg.go#L199>
-const MAX_RPC_SIZE: usize = 32 * 1024 * 1024;
 
 impl P2pNetworkPubsubState {
     pub fn reducer<Action, State>(

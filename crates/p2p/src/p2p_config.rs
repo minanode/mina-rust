@@ -652,6 +652,34 @@ impl P2pLimits {
     }
 }
 
+impl P2pLimits {
+    /// The largest `get_best_tip` or `get_transition_chain` answer we read,
+    /// 32 MiB. That is the largest gossip message OCaml's helper takes.
+    ///
+    /// Both answers carry whole blocks. OCaml limits a block's size only by
+    /// gossip, since its RPC transport reads an answer of any length. We ask
+    /// `get_transition_chain` for one block at a time, and a gossip message
+    /// wraps a block in more bytes than an answer does. So any block that can
+    /// reach us by gossip fits in one answer. OCaml serves up to 20 blocks a
+    /// request and asks for up to 5. A `get_best_tip` answer carries the tip
+    /// and the root block, which fit while they total under 32 MiB. The
+    /// largest seen on mainnet was 5.96 MB.
+    ///
+    /// Each connection has one outgoing RPC stream with one query pending. A
+    /// peer can therefore make us hold one answer of this size at most, and
+    /// only after we send it a query. Gossip already lets it send a message of
+    /// the same size without one. The old 3.5 MB limit stopped a block of 12
+    /// zkApp commands with 15 proofs each (3.7 MB), and a node that had to
+    /// fetch it couldn't sync.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/app/libp2p_helper/src/libp2p_helper/config_msg.go#L199>
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_networking/rpcs.ml#L1065-L1069>
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/sync_handler/sync_handler.ml#L169-L180>
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/ledger_catchup/super_catchup.ml#L1183-L1184>
+    /// async_rpc_kernel: <https://github.com/janestreet/async_rpc_kernel/blob/v0.14.0/src/pipe_transport.ml#L83-L88>
+    pub const RPC_BLOCK_ANSWER_MAX: usize = crate::network::pubsub::MAX_RPC_SIZE;
+}
+
 impl Default for P2pLimits {
     fn default() -> Self {
         let max_peers = Limit::Some(100);
@@ -685,7 +713,7 @@ impl Default for P2pLimits {
         // bytes); one over the limit is dropped and its stream stalls.
         let rpc_query = Limit::Some(4096);
 
-        let rpc_get_best_tip = Limit::Some(3_500_000); // 3182930 as observed, may vary
+        let rpc_get_best_tip = Limit::Some(Self::RPC_BLOCK_ANSWER_MAX);
 
         // The largest answer is the accounts of a subtree of height 6, 64
         // accounts. A Mesa account is at most 3450 bytes in bin_prot (a zkApp
@@ -701,7 +729,7 @@ impl Default for P2pLimits {
         // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/syncable_ledger/syncable_ledger.ml#L321-L333>
         let rpc_answer_sync_ledger_query = Limit::Some(1_000_000);
         let rpc_get_staged_ledger = Limit::Some(400_000_000); // 59286608 as observed, may go higher
-        let rpc_get_transition_chain = Limit::Some(3_500_000); // 2979112 as observed
+        let rpc_get_transition_chain = Limit::Some(Self::RPC_BLOCK_ANSWER_MAX);
         let rpc_get_some_initial_peers = Limit::Some(32_000); // TODO: calculate
         let max_redials_per_minute = Self::default_max_redials_per_minute();
         let seed_reconnect_below = Self::default_seed_reconnect_below();
@@ -738,6 +766,22 @@ impl Default for P2pLimits {
             libp2p_target_peers,
             staged_ledger_streams: Self::default_staged_ledger_streams(),
         }
+    }
+}
+
+#[cfg(test)]
+mod block_answer_limit_tests {
+    use super::*;
+
+    /// Both answers that carry blocks are read up to the size of the largest
+    /// gossip message, which also bounds what one peer can make us hold.
+    #[test]
+    fn block_answer_limits_are_the_gossip_limit() {
+        let limits = P2pLimits::default();
+        let gossip = crate::network::pubsub::MAX_RPC_SIZE;
+        assert_eq!(P2pLimits::RPC_BLOCK_ANSWER_MAX, gossip);
+        assert_eq!(limits.rpc_get_transition_chain(), Limit::Some(gossip));
+        assert_eq!(limits.rpc_get_best_tip(), Limit::Some(gossip));
     }
 }
 
