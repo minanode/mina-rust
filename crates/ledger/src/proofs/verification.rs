@@ -16,7 +16,6 @@ use crate::{
         BACKEND_TICK_ROUNDS_N, BACKEND_TOCK_ROUNDS_N,
     },
     scan_state::{
-        protocol_state::MinaHash,
         scan_state::transaction_snark::{SokDigest, Statement},
         transaction_logic::{local_state::LazyValue, zkapp_statement::ZkappStatement},
     },
@@ -24,7 +23,6 @@ use crate::{
 };
 
 use super::{
-    block::ProtocolState,
     field::FieldWitness,
     public_input::plonk_checks::make_shifts,
     step::{step_verifier::PlonkDomain, ExpandDeferredParams, FeatureFlags},
@@ -831,6 +829,34 @@ pub struct VK<'a> {
     pub data: (), // Unused in proof verification
 }
 
+/// The public input of a block's proof: the state hash of its protocol state,
+/// computed from its hash input as OCaml computes it. Not through the circuit's
+/// `ProtocolState`, whose VRF output holds exactly 253 bits: a shorter output
+/// is hashed as OCaml hashes it (`ConsensusVrfOutputTruncatedStableV1`'s
+/// `to_input`).
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/blockchain_snark/blockchain_snark_state.ml#L394-L398>
+fn public_input(
+    protocol_state: &v2::MinaStateProtocolStateValueStableV2,
+) -> Result<Fp, InvalidBigInt> {
+    // The staged ledger's non-SNARK ledger hash reaches the state hash only
+    // through a SHA-256 digest of its bytes, so the proof does not constrain
+    // it to be a field element. OCaml decodes it as one and refuses a value
+    // at or above the modulus, as binprot decoding does here (`read_fp`).
+    // Check it again for states that did not come through binprot.
+    //
+    // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/crypto/kimchi_pasta_snarky_backend/field.ml#L189-L196>
+    protocol_state
+        .body
+        .blockchain_state
+        .staged_ledger_hash
+        .non_snark
+        .ledger_hash
+        .inner()
+        .to_field::<Fp>()?;
+    mina_p2p_messages::hash::MinaHash::try_hash(protocol_state)
+}
+
 /// Verifies a block's SNARK proof using the Kimchi proof system.
 ///
 /// This function validates that a block header contains a valid zero-knowledge proof
@@ -884,11 +910,10 @@ fn verify_block_contained(
         data: (),
     };
 
-    let Ok(protocol_state) = ProtocolState::try_from(protocol_state) else {
+    let Ok(protocol_state_hash) = public_input(protocol_state) else {
         mina_core::warn!(message = format!("verify_block: Protocol state contains invalid field"));
         return false; // invalid bigint
     };
-    let protocol_state_hash = MinaHash::hash(&protocol_state);
 
     let accum_check =
         accumulator_check::accumulator_check(srs, &[protocol_state_proof]).unwrap_or(false);
@@ -944,9 +969,7 @@ fn verify_blocks_contained(
     }
     let Ok(state_hashes) = headers
         .par_iter()
-        .map(|header| {
-            ProtocolState::try_from(&header.protocol_state).map(|state| MinaHash::hash(&state))
-        })
+        .map(|header| public_input(&header.protocol_state))
         .collect::<Result<Vec<Fp>, _>>()
     else {
         return false;
@@ -1921,5 +1944,64 @@ mod on_fail {
             );
             assert!(super::dump_to_file_impl(&7i32, "verify_block").is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod public_input_tests {
+    use ark_ff::{BigInteger, One, PrimeField};
+    use mina_curves::pasta::Fp;
+    use mina_p2p_messages::{
+        bigint::BigInt,
+        binprot::BinProtRead,
+        v2::{self, MinaBaseLedgerHash0StableV1, MinaBlockBlockStableV2},
+    };
+
+    /// Mainnet block 563978 as an OCaml node gossiped it: an 8-byte length,
+    /// the `NewState` tag, then the block.
+    fn protocol_state() -> v2::MinaStateProtocolStateValueStableV2 {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../web-verifier/tests/fixtures/mainnet-563978.gossipbin"
+        );
+        let bytes = std::fs::read(path).unwrap();
+        MinaBlockBlockStableV2::binprot_read(&mut &bytes[9..])
+            .unwrap()
+            .header
+            .protocol_state
+    }
+
+    fn with_non_snark_ledger_hash(
+        state: &v2::MinaStateProtocolStateValueStableV2,
+        value: BigInt,
+    ) -> v2::MinaStateProtocolStateValueStableV2 {
+        let mut state = state.clone();
+        state
+            .body
+            .blockchain_state
+            .staged_ledger_hash
+            .non_snark
+            .ledger_hash = MinaBaseLedgerHash0StableV1(value).into();
+        state
+    }
+
+    /// The values are set directly, as a state that did not come through
+    /// binprot would carry them. The largest field element still gives a
+    /// public input; the modulus and above do not.
+    #[test]
+    fn non_snark_ledger_hash_must_be_a_field_element() {
+        let state = protocol_state();
+        assert!(super::public_input(&state).is_ok());
+
+        let largest = BigInt::from(-Fp::one());
+        let state_largest = with_non_snark_ledger_hash(&state, largest);
+        assert!(super::public_input(&state_largest).is_ok());
+
+        let modulus: [u8; 32] = Fp::MODULUS.to_bytes_le().try_into().unwrap();
+        let state_modulus = with_non_snark_ledger_hash(&state, BigInt::from_bytes(modulus));
+        assert!(super::public_input(&state_modulus).is_err());
+
+        let state_max = with_non_snark_ledger_hash(&state, BigInt::from_bytes([0xFF; 32]));
+        assert!(super::public_input(&state_max).is_err());
     }
 }
