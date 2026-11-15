@@ -48,6 +48,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proofs are checked against the state hash OCaml computes for the protocol
   state ([#53](https://github.com/minanode/mina-rust/pull/53))
 
+- **Node**: block and best tip answers from peers are read up to 32 MiB, the
+  block gossip limit, instead of 3.5 MB. A block with many zkApp proofs is
+  larger than 3.5 MB, and a fresh node could not sync while one was among the
+  recent blocks. Answers above 3.5 MB share a 64 MiB node-wide budget, and
+  every answer's buffer grows only to its declared length
+  ([#54](https://github.com/minanode/mina-rust/pull/54))
+
 ## [0.22.1] - 2026-11-06
 
 0.22.1 is a UI release. It has a design pass over the node dashboard and the
