@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.22.2] - 2026-11-15
+
+0.22.2 fixes how the node verifies and fetches blocks with many zkApp proofs.
+On devnet, a 0.22.1 node fell behind the chain on such blocks, and a fresh node
+with 0.22.1's limits could not sync. Every node runner should upgrade before
+proof-heavy zkApp traffic reaches mainnet. See
+[the release notes](docs/release/0.22.2.md).
+
 ### Added
 
 - **Web node**: a link preview card. A minaweb.org link shared in a chat app or
