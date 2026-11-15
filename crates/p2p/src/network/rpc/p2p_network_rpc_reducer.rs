@@ -1053,3 +1053,98 @@ where
     }
     Ok(error)
 }
+
+#[cfg(test)]
+mod block_answer_limit_tests {
+    use super::*;
+    use crate::{
+        network::pubsub::{pb, MAX_RPC_SIZE, TOPIC},
+        ConnectionAddr,
+    };
+    use prost::Message as _;
+
+    /// Our RPC stream to a peer, waiting for the answer to a `tag` query.
+    fn waiting_for(tag: &'static [u8]) -> P2pNetworkRpcState {
+        let addr = ConnectionAddr {
+            sock_addr: "127.0.0.1:8302".parse().unwrap(),
+            incoming: false,
+        };
+        let mut rpc = P2pNetworkRpcState::new(addr, 1);
+        rpc.pending = Some(QueryHeader {
+            tag: tag.into(),
+            version: 2,
+            id: u64::MAX,
+        });
+        rpc
+    }
+
+    /// The length an answer with `payload` gives in its prefix, which is what
+    /// the limit is checked against.
+    fn answer_len(payload: Vec<u8>) -> usize {
+        let message = RpcMessage::Response {
+            header: ResponseHeader { id: u64::MAX },
+            bytes: payload.into(),
+        }
+        .into_bytes();
+        u64::from_le_bytes(message[..8].try_into().unwrap()) as usize
+    }
+
+    /// A `get_transition_chain` answer of one block of `block` bytes.
+    fn chain_answer(block: Vec<u8>) -> Vec<u8> {
+        let mut list = vec![1, 1]; // `Some`, a list of one
+        list.extend_from_slice(&block);
+        let mut payload = vec![0]; // `Ok`
+        binprot::Nat0(list.len() as u64)
+            .binprot_write(&mut payload)
+            .unwrap();
+        payload.extend_from_slice(&list);
+        payload
+    }
+
+    /// Devnet block 590141 (12 zkApp commands with 15 proofs each), as OCaml
+    /// answers `get_transition_chain` for it: 3.7 MB, which the old 3.5 MB
+    /// limit stopped.
+    #[test]
+    fn heavy_devnet_block_answer_is_within_the_limits() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../p2p-messages/tests/files/mesa/get_transition_chain_v2_590141_heavy.bin"
+        );
+        let len = answer_len(std::fs::read(path).unwrap());
+        assert!(len > 3_500_000);
+        let limits = P2pLimits::default();
+        for tag in [rpc::GetTransitionChainV2::NAME, rpc::GetBestTipV2::NAME] {
+            waiting_for(tag).check_rpc_limit(len, &limits).unwrap();
+        }
+    }
+
+    /// The largest block a gossip message can carry, with the least framing a
+    /// gossip message has (no signature, no sender), fits in one answer.
+    #[test]
+    fn largest_gossiped_block_fits_in_one_answer() {
+        let gossip_len = |data_len: usize| {
+            pb::Rpc {
+                publish: vec![pb::Message {
+                    data: Some(vec![0; data_len]),
+                    topic: TOPIC.to_owned(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }
+            .encoded_len()
+        };
+        let framing = gossip_len(MAX_RPC_SIZE) - MAX_RPC_SIZE;
+        // The gossip data is the message tag and the block.
+        let block_len = MAX_RPC_SIZE - framing - 1;
+        assert!(gossip_len(1 + block_len) <= MAX_RPC_SIZE);
+
+        let len = answer_len(chain_answer(vec![0; block_len]));
+        let limits = P2pLimits::default();
+        waiting_for(rpc::GetTransitionChainV2::NAME)
+            .check_rpc_limit(len, &limits)
+            .unwrap();
+        assert!(waiting_for(rpc::GetTransitionChainV2::NAME)
+            .check_rpc_limit(MAX_RPC_SIZE + 1, &limits)
+            .is_err());
+    }
+}
