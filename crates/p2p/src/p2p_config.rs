@@ -665,19 +665,36 @@ impl P2pLimits {
     /// and the root block, which fit while they total under 32 MiB. The
     /// largest seen on mainnet was 5.96 MB.
     ///
-    /// Each connection has one outgoing RPC stream with one query pending. A
-    /// peer can therefore make us hold one answer of this size at most, and
-    /// only after we send it a query. Gossip already lets it send a message of
-    /// the same size without one. The old 3.5 MB limit stopped a block of 12
-    /// zkApp commands with 15 proofs each (3.7 MB), and a node that had to
-    /// fetch it couldn't sync.
+    /// The old 3.5 MB limit stopped a block of 12 zkApp commands with 15
+    /// proofs each (3.7 MB), and a node that had to fetch it couldn't sync.
+    /// Answers over that size are read only within
+    /// [`Self::RPC_LARGE_BLOCK_ANSWERS_BUDGET`].
     ///
     /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/app/libp2p_helper/src/libp2p_helper/config_msg.go#L199>
     /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_networking/rpcs.ml#L1065-L1069>
     /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/sync_handler/sync_handler.ml#L169-L180>
     /// OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/ledger_catchup/super_catchup.ml#L1183-L1184>
-    /// async_rpc_kernel: <https://github.com/janestreet/async_rpc_kernel/blob/v0.14.0/src/pipe_transport.ml#L83-L88>
+    /// async_rpc_kernel: <https://github.com/janestreet/async_rpc_kernel/blob/b53dd54e50129a7f02698a1e08ffe963c23e6cac/src/pipe_transport.ml#L83-L88>
     pub const RPC_BLOCK_ANSWER_MAX: usize = crate::network::pubsub::MAX_RPC_SIZE;
+
+    /// Block answers up to this size, the old limit, are read without
+    /// [`Self::RPC_LARGE_BLOCK_ANSWERS_BUDGET`].
+    pub const RPC_BLOCK_ANSWER_UNBUDGETED: usize = 3_500_000;
+
+    /// The most bytes of block answers over
+    /// [`Self::RPC_BLOCK_ANSWER_UNBUDGETED`] that the node reads at once,
+    /// counted by the lengths they declare: two answers of the largest size,
+    /// or 18 of the 3.7 MB devnet blocks.
+    ///
+    /// Each connection has one outgoing RPC stream, and a stream's buffer
+    /// grows with the bytes received but never past the length its message
+    /// declares. Block answers therefore hold at most 3.5 MB on each of the
+    /// 110 connections of the default 100 peers plus this budget, 431 MiB in
+    /// all. Before, a buffer grew by doubling to 4 MiB under the 3.5 MB
+    /// limit, 440 MiB in all. A
+    /// larger answer that doesn't fit is discarded as it arrives, and its
+    /// query fails at once, so the block is asked of another peer.
+    pub const RPC_LARGE_BLOCK_ANSWERS_BUDGET: usize = 64 * 1024 * 1024;
 }
 
 impl Default for P2pLimits {

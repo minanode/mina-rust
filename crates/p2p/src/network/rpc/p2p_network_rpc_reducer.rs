@@ -141,6 +141,14 @@ impl P2pNetworkRpcState {
                 .checked_add(1)
                 .ok_or("inbound RPC ID exhausted")?;
         }
+        let budgeted = if matches!(action, P2pNetworkRpcAction::IncomingData { .. }) {
+            state_context
+                .get_substate()?
+                .scheduler
+                .rpc_budgeted_answer_bytes()
+        } else {
+            0
+        };
         let rpc_state = state_context
             .get_substate_mut()?
             .find_rpc_state_mut(&action)
@@ -174,68 +182,45 @@ impl P2pNetworkRpcState {
                 peer_id,
                 stream_id,
             } => {
-                rpc_state.buffer.extend_from_slice(&data);
-                let mut offset = 0;
-                // TODO(akoptelov): there shouldn't be the case where we have multiple incoming messages at once (or at least other than heartbeat)
-                loop {
-                    let Some(buf) = &rpc_state.buffer.get(offset..) else {
-                        bug_condition!("Invalid range `buffer[{offset}..]`");
-                        return Ok(());
-                    };
-                    if let Some(len_bytes) = buf.get(..8).and_then(|s| s.try_into().ok()) {
-                        let len = u64::from_le_bytes(len_bytes) as usize;
-                        if let Err(err) = rpc_state.check_rpc_limit(len, limits) {
-                            // The stream takes no more actions from here on.
-                            mina_core::warn!(meta.time();
-                                kind = "P2pNetworkRpcLimitExceeded",
-                                summary = format!("RPC stream stopped: {err}"),
-                                peer_id = display(peer_id),
-                            );
-                            rpc_state.error = Some(err);
-                            break;
-                        }
-                        if let Some(mut slice) = buf.get(8..(8 + len)) {
-                            offset += 8 + len;
-                            let msg = match MessageHeader::binprot_read(&mut slice) {
-                                Ok(MessageHeader::Heartbeat) => RpcMessage::Heartbeat,
-                                Ok(MessageHeader::Response(h))
-                                    if h.id == u64::from_le_bytes(*b"RPC\x00\x00\x00\x00\x00") =>
-                                {
-                                    RpcMessage::Handshake
-                                }
-                                Ok(MessageHeader::Query(header)) => RpcMessage::Query {
-                                    header,
-                                    bytes: slice.to_vec().into(),
-                                },
-                                Ok(MessageHeader::Response(header)) => RpcMessage::Response {
-                                    header,
-                                    bytes: slice.to_vec().into(),
-                                },
-                                Err(err) => {
-                                    let err = P2pNetworkRpcError::Binprot(err.to_string());
-                                    warn!(meta.time(); summary = "unreadable RPC message", peer_id = display(&peer_id), error = display(&err));
-                                    rpc_state.error = Some(err);
-                                    continue;
-                                }
-                            };
-                            rpc_state.incoming.push_back(msg);
-                            continue;
-                        }
+                let budgeted_elsewhere = budgeted.saturating_sub(rpc_state.incoming_budgeted);
+                let taken = rpc_state.take_incoming(&data, limits, budgeted_elsewhere);
+                match &taken.error {
+                    Some(err @ P2pNetworkRpcError::Limit(..)) => {
+                        // The stream takes no more actions from here on.
+                        mina_core::warn!(meta.time();
+                            kind = "P2pNetworkRpcLimitExceeded",
+                            summary = format!("RPC stream stopped: {err}"),
+                            peer_id = display(peer_id),
+                        );
                     }
-
-                    if offset != 0 {
-                        let Some(buf) = rpc_state.buffer.get(offset..) else {
-                            bug_condition!("Invalid range `buffer[{offset}..]`");
-                            return Ok(());
-                        };
-                        rpc_state.buffer = buf.to_vec();
+                    Some(err) => {
+                        warn!(meta.time(); summary = "unreadable RPC message", peer_id = display(&peer_id), error = display(err));
                     }
-                    break;
+                    None => {}
+                }
+                if let Some((query, len)) = &taken.deferred {
+                    mina_core::info!(meta.time();
+                        kind = "P2pNetworkRpcAnswerDeferred",
+                        summary = format!(
+                            "{} answer of {len} bytes discarded, {budgeted_elsewhere} bytes of large block answers already in flight; asking again",
+                            query.tag.to_string_lossy()
+                        ),
+                        peer_id = display(peer_id),
+                    );
                 }
 
                 let incoming = rpc_state.incoming.front().cloned();
                 let dispatcher = state_context.into_dispatcher();
 
+                if let Some((query, _)) = taken.deferred {
+                    // As for an answer that failed: the block is asked again,
+                    // of another peer first.
+                    dispatcher.push(P2pChannelsRpcAction::ResponseReceived {
+                        peer_id,
+                        id: query.id,
+                        response: None,
+                    });
+                }
                 if let Some(message) = incoming {
                     dispatcher.push(P2pNetworkRpcAction::IncomingMessage {
                         addr,
@@ -572,6 +557,115 @@ impl P2pNetworkRpcState {
         }
     }
 
+    /// Whether the pending query is ours and its answer carries blocks.
+    fn awaits_block_answer(&self) -> bool {
+        !self.is_incoming
+            && self.pending.as_ref().is_some_and(|query| {
+                let tag: &[u8] = query.tag.as_ref();
+                tag == rpc::GetTransitionChainV2::NAME || tag == rpc::GetBestTipV2::NAME
+            })
+    }
+
+    /// Reads `data`, the next bytes of the stream, into `incoming`, and keeps
+    /// the start of an incomplete message in `buffer`. `budgeted_elsewhere` is
+    /// what other streams hold of
+    /// [`P2pLimits::RPC_LARGE_BLOCK_ANSWERS_BUDGET`].
+    ///
+    /// A message's buffer grows with the bytes received, never past the
+    /// length it declares, which the limits bound. A block answer over
+    /// [`P2pLimits::RPC_BLOCK_ANSWER_UNBUDGETED`] is read only if it fits the
+    /// budget. Otherwise its bytes are discarded as they arrive, and its query
+    /// is no longer pending and is returned, to be answered as failed.
+    fn take_incoming(
+        &mut self,
+        mut data: &[u8],
+        limits: &P2pLimits,
+        budgeted_elsewhere: usize,
+    ) -> TakenIncoming {
+        const PREFIX: usize = 8;
+        let mut taken = TakenIncoming::default();
+        loop {
+            if self.skip_remaining > 0 {
+                let skipped = self.skip_remaining.min(data.len());
+                self.skip_remaining -= skipped;
+                data = &data[skipped..];
+                if self.skip_remaining > 0 {
+                    break;
+                }
+            }
+            if self.buffer.len() < PREFIX {
+                let n = (PREFIX - self.buffer.len()).min(data.len());
+                self.buffer.extend_from_slice(&data[..n]);
+                data = &data[n..];
+                if self.buffer.len() < PREFIX {
+                    break;
+                }
+            }
+            let len = match self.incoming_len {
+                Some(len) => len,
+                None => {
+                    let mut prefix = [0; PREFIX];
+                    prefix.copy_from_slice(&self.buffer[..PREFIX]);
+                    let len = usize::try_from(u64::from_le_bytes(prefix)).unwrap_or(usize::MAX);
+                    if let Err(err) = self.check_rpc_limit(len, limits) {
+                        self.error = Some(err.clone());
+                        taken.error = Some(err);
+                        break;
+                    }
+                    if self.awaits_block_answer() && len > P2pLimits::RPC_BLOCK_ANSWER_UNBUDGETED {
+                        if budgeted_elsewhere.saturating_add(len)
+                            > P2pLimits::RPC_LARGE_BLOCK_ANSWERS_BUDGET
+                        {
+                            self.buffer = Vec::new();
+                            self.skip_remaining = len;
+                            taken.deferred = self.pending.take().map(|query| (query, len));
+                            continue;
+                        }
+                        self.incoming_budgeted = len;
+                    }
+                    self.incoming_len = Some(len);
+                    len
+                }
+            };
+            let total = len.saturating_add(PREFIX);
+            let n = (total - self.buffer.len()).min(data.len());
+            extend_within(&mut self.buffer, &data[..n], total);
+            data = &data[n..];
+            if self.buffer.len() < total {
+                break;
+            }
+
+            let message = std::mem::take(&mut self.buffer);
+            self.incoming_len = None;
+            self.incoming_budgeted = 0;
+            let mut slice = &message[PREFIX..];
+            let msg = match MessageHeader::binprot_read(&mut slice) {
+                Ok(MessageHeader::Heartbeat) => RpcMessage::Heartbeat,
+                Ok(MessageHeader::Response(h))
+                    if h.id == u64::from_le_bytes(*b"RPC\x00\x00\x00\x00\x00") =>
+                {
+                    RpcMessage::Handshake
+                }
+                Ok(MessageHeader::Query(header)) => RpcMessage::Query {
+                    header,
+                    bytes: slice.to_vec().into(),
+                },
+                Ok(MessageHeader::Response(header)) => RpcMessage::Response {
+                    header,
+                    bytes: slice.to_vec().into(),
+                },
+                Err(err) => {
+                    let err = P2pNetworkRpcError::Binprot(err.to_string());
+                    self.error = Some(err.clone());
+                    taken.error = Some(err);
+                    break;
+                }
+            };
+            self.incoming.push_back(msg);
+        }
+        taken
+    }
+
     fn check_rpc_limit(&self, len: usize, limits: &P2pLimits) -> Result<(), P2pNetworkRpcError> {
         let (limit, kind): (_, &[u8]) = if self.is_incoming {
             // only requests are allowed
@@ -612,6 +706,30 @@ impl P2pNetworkRpcState {
             Ok(())
         }
     }
+}
+
+/// What [`P2pNetworkRpcState::take_incoming`] found besides messages.
+#[derive(Debug, Default)]
+struct TakenIncoming {
+    /// The error that stopped the stream.
+    error: Option<P2pNetworkRpcError>,
+    /// The query whose answer was discarded for the large block answer
+    /// budget, and the answer's length.
+    deferred: Option<(QueryHeader, usize)>,
+}
+
+/// Appends `bytes` to `buf`, which holds the start of a message of `len`
+/// bytes. Grows by doubling, as `Vec` would, so the allocation stays paced by
+/// the bytes received, but never past `len`, as the WebRTC service does.
+fn extend_within(buf: &mut Vec<u8>, bytes: &[u8], len: usize) {
+    let need = buf.len().saturating_add(bytes.len());
+    if need > buf.capacity() {
+        let target = need
+            .max(buf.capacity().saturating_mul(2))
+            .min(len.max(need));
+        buf.reserve_exact(target - buf.len());
+    }
+    buf.extend_from_slice(bytes);
 }
 
 /// Reserves work before dispatch. Staged-ledger answers observed in D4 were
@@ -1063,6 +1181,8 @@ mod block_answer_limit_tests {
     };
     use prost::Message as _;
 
+    const ID: u64 = 7;
+
     /// Our RPC stream to a peer, waiting for the answer to a `tag` query.
     fn waiting_for(tag: &'static [u8]) -> P2pNetworkRpcState {
         let addr = ConnectionAddr {
@@ -1073,23 +1193,35 @@ mod block_answer_limit_tests {
         rpc.pending = Some(QueryHeader {
             tag: tag.into(),
             version: 2,
-            id: u64::MAX,
+            id: ID,
         });
         rpc
     }
 
-    /// The length an answer with `payload` gives in its prefix, which is what
-    /// the limit is checked against.
-    fn answer_len(payload: Vec<u8>) -> usize {
-        let message = RpcMessage::Response {
-            header: ResponseHeader { id: u64::MAX },
+    /// An answer with `payload` as it comes on the stream, length prefix
+    /// first.
+    fn answer(payload: Vec<u8>) -> Vec<u8> {
+        RpcMessage::Response {
+            header: ResponseHeader { id: ID },
             bytes: payload.into(),
         }
-        .into_bytes();
+        .into_bytes()
+    }
+
+    /// An answer whose length prefix declares `len`.
+    fn answer_of_len(len: usize) -> Vec<u8> {
+        let framing = answer(vec![]).len() - 8;
+        let message = answer(vec![0; len - framing]);
+        assert_eq!(message.len(), 8 + len);
+        message
+    }
+
+    /// The length an answer's prefix declares, which the limits check.
+    fn declared(message: &[u8]) -> usize {
         u64::from_le_bytes(message[..8].try_into().unwrap()) as usize
     }
 
-    /// A `get_transition_chain` answer of one block of `block` bytes.
+    /// A `get_transition_chain` answer payload of one block of `block` bytes.
     fn chain_answer(block: Vec<u8>) -> Vec<u8> {
         let mut list = vec![1, 1]; // `Some`, a list of one
         list.extend_from_slice(&block);
@@ -1101,21 +1233,167 @@ mod block_answer_limit_tests {
         payload
     }
 
-    /// Devnet block 590141 (12 zkApp commands with 15 proofs each), as OCaml
-    /// answers `get_transition_chain` for it: 3.7 MB, which the old 3.5 MB
-    /// limit stopped.
-    #[test]
-    fn heavy_devnet_block_answer_is_within_the_limits() {
+    fn heavy_block_payload() -> Vec<u8> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../p2p-messages/tests/files/mesa/get_transition_chain_v2_590141_heavy.bin"
         );
-        let len = answer_len(std::fs::read(path).unwrap());
-        assert!(len > 3_500_000);
+        std::fs::read(path).unwrap()
+    }
+
+    /// Feeds `message` to `rpc` in pieces of `piece` bytes, the first piece
+    /// ending inside the length prefix, and checks after each piece that the
+    /// buffer never holds more than the message declares.
+    fn feed(
+        rpc: &mut P2pNetworkRpcState,
+        message: &[u8],
+        piece: usize,
+        budgeted_elsewhere: usize,
+    ) -> Vec<TakenIncoming> {
         let limits = P2pLimits::default();
-        for tag in [rpc::GetTransitionChainV2::NAME, rpc::GetBestTipV2::NAME] {
-            waiting_for(tag).check_rpc_limit(len, &limits).unwrap();
+        let mut taken = vec![rpc.take_incoming(&message[..3], &limits, budgeted_elsewhere)];
+        for chunk in message[3..].chunks(piece) {
+            taken.push(rpc.take_incoming(chunk, &limits, budgeted_elsewhere));
+            assert!(rpc.buffer.capacity() <= message.len());
         }
+        taken
+    }
+
+    fn the_response(rpc: &mut P2pNetworkRpcState) -> Data {
+        assert_eq!(rpc.incoming.len(), 1);
+        match rpc.incoming.pop_front() {
+            Some(RpcMessage::Response { header, bytes }) => {
+                assert_eq!(header.id, ID);
+                bytes
+            }
+            other => panic!("expected a response, got {other:?}"),
+        }
+    }
+
+    /// Devnet block 590141 (12 zkApp commands with 15 proofs each), as OCaml
+    /// answers `get_transition_chain` for it: 3.7 MB, which the old 3.5 MB
+    /// limit stopped, is read in pieces as OCaml's helper sends them.
+    #[test]
+    fn heavy_devnet_block_answer_is_read() {
+        let payload = heavy_block_payload();
+        let message = answer(payload.clone());
+        assert!(declared(&message) > P2pLimits::RPC_BLOCK_ANSWER_UNBUDGETED);
+        for tag in [rpc::GetTransitionChainV2::NAME, rpc::GetBestTipV2::NAME] {
+            let mut rpc = waiting_for(tag);
+            let taken = feed(&mut rpc, &message, 64 * 1024, 0);
+            assert!(taken
+                .iter()
+                .all(|t| t.error.is_none() && t.deferred.is_none()));
+            assert_eq!(&*the_response(&mut rpc).0, &payload[..]);
+        }
+    }
+
+    /// The largest answer, sent in 64 KiB pieces, holds the budget while it
+    /// arrives and a buffer of exactly its length when its last byte is
+    /// missing, not the 64 MiB that doubling would take. Once read, the
+    /// buffer and the budget are released.
+    #[test]
+    fn fragmented_largest_answer_holds_its_length() {
+        let len = P2pLimits::RPC_BLOCK_ANSWER_MAX;
+        let message = answer_of_len(len);
+        let mut rpc = waiting_for(rpc::GetTransitionChainV2::NAME);
+        let (head, last) = message.split_at(message.len() - 1);
+        let taken = feed(&mut rpc, head, 64 * 1024, 0);
+        assert!(taken
+            .iter()
+            .all(|t| t.error.is_none() && t.deferred.is_none()));
+        assert_eq!(rpc.buffer.len(), 8 + len - 1);
+        assert_eq!(rpc.buffer.capacity(), 8 + len);
+        assert_eq!(rpc.incoming_budgeted, len);
+        assert!(rpc.incoming.is_empty());
+
+        let taken = rpc.take_incoming(last, &P2pLimits::default(), 0);
+        assert!(taken.error.is_none() && taken.deferred.is_none());
+        assert_eq!(
+            the_response(&mut rpc).0.len(),
+            len - (answer(vec![]).len() - 8)
+        );
+        assert_eq!(rpc.buffer.capacity(), 0);
+        assert_eq!(rpc.incoming_budgeted, 0);
+        assert_eq!(rpc.incoming_len, None);
+    }
+
+    /// A length prefix over the limit stops the stream before anything past
+    /// the prefix is kept.
+    #[test]
+    fn oversized_length_prefix_stops_the_stream() {
+        let mut message = (P2pLimits::RPC_BLOCK_ANSWER_MAX as u64 + 1)
+            .to_le_bytes()
+            .to_vec();
+        message.extend_from_slice(&[0; 1024]);
+        let mut rpc = waiting_for(rpc::GetTransitionChainV2::NAME);
+        let taken = rpc.take_incoming(&message, &P2pLimits::default(), 0);
+        assert!(matches!(taken.error, Some(P2pNetworkRpcError::Limit(..))));
+        assert!(rpc.error.is_some());
+        assert_eq!(rpc.buffer.len(), 8);
+        assert_eq!(rpc.incoming_budgeted, 0);
+    }
+
+    /// With the budget taken, a large block answer is discarded as it
+    /// arrives, its query is handed back to be answered as failed, and the
+    /// stream reads what follows the answer as before.
+    #[test]
+    fn answer_over_the_budget_is_discarded_and_its_query_returned() {
+        let message = answer(chain_answer(vec![0; 4_000_000]));
+        let len = declared(&message);
+        let full = P2pLimits::RPC_LARGE_BLOCK_ANSWERS_BUDGET - len + 1;
+        let mut rpc = waiting_for(rpc::GetTransitionChainV2::NAME);
+        let taken = feed(&mut rpc, &message, 64 * 1024, full);
+        let deferred: Vec<_> = taken.into_iter().filter_map(|t| t.deferred).collect();
+        assert_eq!(deferred.len(), 1);
+        assert_eq!((deferred[0].0.id, deferred[0].1), (ID, len));
+        assert!(rpc.pending.is_none());
+        assert!(rpc.error.is_none());
+        assert_eq!(rpc.buffer.capacity(), 0);
+        assert_eq!(rpc.skip_remaining, 0);
+        assert_eq!(rpc.incoming_budgeted, 0);
+        assert!(rpc.incoming.is_empty());
+
+        // A heartbeat after the discarded answer, in the same piece as its
+        // last bytes, is read.
+        let mut rpc = waiting_for(rpc::GetTransitionChainV2::NAME);
+        let mut stream = message.clone();
+        stream.extend_from_slice(&RpcMessage::Heartbeat.into_bytes());
+        rpc.take_incoming(&stream[..100], &P2pLimits::default(), full);
+        let taken = rpc.take_incoming(&stream[100..], &P2pLimits::default(), full);
+        assert!(taken.error.is_none());
+        assert!(matches!(
+            rpc.incoming.pop_front(),
+            Some(RpcMessage::Heartbeat)
+        ));
+
+        // Just within the budget, the same answer is read.
+        let mut rpc = waiting_for(rpc::GetTransitionChainV2::NAME);
+        let taken = feed(&mut rpc, &message, 64 * 1024, full - 1);
+        assert!(taken.iter().all(|t| t.deferred.is_none()));
+        assert_eq!(
+            the_response(&mut rpc).0.len(),
+            len - (answer(vec![]).len() - 8)
+        );
+    }
+
+    /// Block answers up to the old limit, and other answers, don't use the
+    /// budget and are read when it is taken.
+    #[test]
+    fn small_and_other_answers_ignore_the_budget() {
+        let full = P2pLimits::RPC_LARGE_BLOCK_ANSWERS_BUDGET;
+        let message = answer_of_len(P2pLimits::RPC_BLOCK_ANSWER_UNBUDGETED);
+        let mut rpc = waiting_for(rpc::GetTransitionChainV2::NAME);
+        let taken = feed(&mut rpc, &message, 64 * 1024, full);
+        assert!(taken.iter().all(|t| t.deferred.is_none()));
+        the_response(&mut rpc);
+
+        let message = answer_of_len(8 * 1024 * 1024);
+        let mut rpc = waiting_for(rpc::GetStagedLedgerAuxAndPendingCoinbasesAtHashV2::NAME);
+        let taken = feed(&mut rpc, &message, 64 * 1024, full);
+        assert!(taken.iter().all(|t| t.deferred.is_none()));
+        assert_eq!(rpc.incoming_budgeted, 0);
+        the_response(&mut rpc);
     }
 
     /// The largest block a gossip message can carry, with the least framing a
@@ -1138,13 +1416,10 @@ mod block_answer_limit_tests {
         let block_len = MAX_RPC_SIZE - framing - 1;
         assert!(gossip_len(1 + block_len) <= MAX_RPC_SIZE);
 
-        let len = answer_len(chain_answer(vec![0; block_len]));
+        let len = declared(&answer(chain_answer(vec![0; block_len])));
         let limits = P2pLimits::default();
-        waiting_for(rpc::GetTransitionChainV2::NAME)
-            .check_rpc_limit(len, &limits)
-            .unwrap();
-        assert!(waiting_for(rpc::GetTransitionChainV2::NAME)
-            .check_rpc_limit(MAX_RPC_SIZE + 1, &limits)
-            .is_err());
+        let rpc = waiting_for(rpc::GetTransitionChainV2::NAME);
+        rpc.check_rpc_limit(len, &limits).unwrap();
+        assert!(rpc.check_rpc_limit(MAX_RPC_SIZE + 1, &limits).is_err());
     }
 }

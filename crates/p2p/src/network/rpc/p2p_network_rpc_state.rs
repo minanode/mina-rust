@@ -41,7 +41,19 @@ pub struct P2pNetworkRpcState {
     #[ignore_malloc_size_of = "TODO(vlad)"]
     pub total_stats: BTreeMap<(CharString, Ver), usize>,
     pub is_incoming: bool,
+    /// The message being read, from its length prefix on.
     pub buffer: Vec<u8>,
+    /// The length the message in `buffer` declares, once it has passed the
+    /// limits.
+    #[serde(default)]
+    pub incoming_len: Option<usize>,
+    /// What that message holds of the node-wide budget for large block
+    /// answers ([`crate::P2pLimits::RPC_LARGE_BLOCK_ANSWERS_BUDGET`]).
+    #[serde(default)]
+    pub incoming_budgeted: usize,
+    /// Bytes still to discard of an answer that didn't fit that budget.
+    #[serde(default)]
+    pub skip_remaining: usize,
     pub incoming: VecDeque<RpcMessage>,
     pub error: Option<P2pNetworkRpcError>,
 }
@@ -70,6 +82,9 @@ impl P2pNetworkRpcState {
             total_stats: BTreeMap::default(),
             is_incoming: false,
             buffer: vec![],
+            incoming_len: None,
+            incoming_budgeted: 0,
+            skip_remaining: 0,
             incoming: Default::default(),
             error: None,
         }
