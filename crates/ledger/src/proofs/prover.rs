@@ -10,7 +10,9 @@ use mina_p2p_messages::{bigint::BigInt, v2::PicklesProofProofsVerified2ReprStabl
 use once_cell::sync::Lazy;
 use poly_commitment::{commitment::CommitmentCurve, ipa::OpeningProof};
 
-fn get_challenge_polynomial_commitments_padding() -> (BigInt, BigInt) {
+/// The commitment OCaml's verifier pads the step messages' challenge
+/// polynomial commitments with, in front, up to two (`Dummy.Ipa.Wrap.sg`).
+pub(crate) fn get_challenge_polynomial_commitments_padding() -> (BigInt, BigInt) {
     static PADDING: Lazy<(BigInt, BigInt)> = Lazy::new(|| {
         let first = Fp::from_str(
             "8063668238751197448664615329057427953229339439010717262869116690340613895496",
@@ -147,9 +149,15 @@ pub fn make_padded_proof_from_p2p(
         .map(make_poly)
         .collect::<Result<_, _>>()?;
 
-    // Or pad with `Wrap_hack.pad_accumulator`
-    assert_eq!(old_bulletproof_challenges.len(), 2);
-    assert_eq!(challenge_polynomial_commitments.len(), 2);
+    // Or pad with `Wrap_hack.pad_accumulator`. The challenges are the wrap
+    // messages' fixed pair. OCaml decodes at most two commitments, so a
+    // third is an error here, not a panic.
+    anyhow::ensure!(old_bulletproof_challenges.len() == 2);
+    anyhow::ensure!(
+        challenge_polynomial_commitments.len() == 2,
+        "{} challenge polynomial commitments, at most 2 expected",
+        challenge_polynomial_commitments.len()
+    );
     let prev_challenges: Vec<RecursionChallenge<Pallas>> = old_bulletproof_challenges
         .iter()
         .zip(challenge_polynomial_commitments)
