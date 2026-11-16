@@ -48,6 +48,34 @@ pub enum ChannelId {
     StreamingRpc = 8,
 }
 
+/// The largest message we take on the streaming RPC channel, 128 MiB.
+///
+/// The largest messages on this channel are staged ledger parts. A part is one
+/// scan-state tree, or the scan state's base, whose last emitted proof comes
+/// with the transactions of the tree that made it. On mainnet and devnet a
+/// tree has 128 base jobs and 127 merge jobs. A base job keeps its transaction
+/// in full, proofs included, and two sparse ledger witnesses until the tree is
+/// emitted.
+///
+/// The devnet scan state at block 590216 has a tree of 37,273,328 bytes, with
+/// 103 zkApp commands of 15 proofs each. Each of those base jobs is 345,610
+/// bytes: 240,500 for the command and 104,146 for its witnesses. A full tree
+/// of 128 such jobs is 44.2 MB. With the old 16 MiB limit, no web node could
+/// sync while such a tree was in the root's scan state.
+///
+/// 128 MiB is three times that full tree. It is a practical cap, not a
+/// protocol bound. The protocol counts the field elements in a zkApp
+/// command's events and actions, not the events themselves, so a command can
+/// carry any number of empty events, and nothing bounds its serialized size.
+/// A web node cannot fetch a staged ledger with a tree over 128 MiB.
+///
+/// A peer has to send the bytes before we hold them. The receive buffer grows
+/// with the bytes received and never past the declared length. The RPC channel
+/// already takes messages of 256 MiB.
+///
+/// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/mina_base/zkapp_command.ml#L1344-L1423>
+pub const STREAMING_RPC_MAX_MSG_SIZE: usize = 128 * 1024 * 1024;
+
 impl ChannelId {
     /// Data channels for direct peers, without peer-to-peer signaling relay.
     pub fn without_signaling() -> impl Iterator<Item = Self> {
@@ -103,7 +131,7 @@ impl ChannelId {
             Self::SnarkPropagation => 1024,               // 1KB - just snark info.
             Self::SnarkJobCommitmentPropagation => 2 * 1024, // 2KB,
             Self::Rpc => 256 * 1024 * 1024,               // 256MB,
-            Self::StreamingRpc => 16 * 1024 * 1024,       // 16MB,
+            Self::StreamingRpc => STREAMING_RPC_MAX_MSG_SIZE,
         }
     }
 

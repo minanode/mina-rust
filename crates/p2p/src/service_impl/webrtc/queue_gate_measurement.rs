@@ -111,7 +111,7 @@ fn measure_large_message_queue_gate() {
     let overhead = message_weight(&base(mina_p2p_messages::list::List::new()));
     let count = (ChannelId::StreamingRpc.max_msg_size() - overhead - 16) / state_bytes;
     measure(
-        "streaming_near_16MiB",
+        "streaming_near_cap",
         base(std::iter::repeat_n(state.clone(), count).collect()),
     );
     parts.needed_blocks = mina_p2p_messages::list::List::new();
