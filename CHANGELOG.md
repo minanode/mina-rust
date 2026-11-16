@@ -55,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every answer's buffer grows only to its declared length
   ([#54](https://github.com/minanode/mina-rust/pull/54))
 
+- **Web node**: staged ledger messages from relays are read up to 128 MiB
+  instead of 16 MiB. The root's staged ledger arrives one scan-state tree per
+  message, and a tree full of proof-heavy zkApp commands can pass 16 MiB (37.3
+  MB measured on devnet), so a new web node could not start
+  ([#55](https://github.com/minanode/mina-rust/pull/55))
+
 ## [0.22.1] - 2026-11-06
 
 0.22.1 is a UI release. It has a design pass over the node dashboard and the
