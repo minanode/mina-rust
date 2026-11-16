@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.22.2] - 2026-11-16
+
+0.22.2 fixes how the node verifies and fetches blocks with many zkApp proofs.
+On devnet, a 0.22.1 node fell behind the chain on such blocks, and a fresh node
+with 0.22.1's limits could not sync. Every node runner should upgrade before
+proof-heavy zkApp traffic reaches mainnet. See
+[the release notes](docs/release/0.22.2.md).
+
 ### Added
 
 - **Web node**: a link preview card. A minaweb.org link shared in a chat app or
@@ -35,8 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Node**: block and transaction proofs whose bulletproof does not have the
   wrap circuit's 15 rounds are refused before verification, as OCaml does.
-  Before, such a proof made the verifier panic, which was caught and turned
-  into a rejection ([#51](https://github.com/minanode/mina-rust/pull/51))
+  Before, a proof with 16 rounds made the verifier panic, which was caught and
+  turned into a rejection; shorter proofs failed later checks
+  ([#51](https://github.com/minanode/mina-rust/pull/51))
 
 - **Node**: block, transaction and zkApp proofs whose step messages hold more
   than two entries, or two lists of different lengths, are refused before
@@ -44,9 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([#52](https://github.com/minanode/mina-rust/pull/52))
 
 - **Node**: a block's VRF output is hashed at any length, as OCaml does,
-  instead of failing on an output longer or shorter than expected, and block
-  proofs are checked against the state hash OCaml computes for the protocol
-  state ([#53](https://github.com/minanode/mina-rust/pull/53))
+  without reading past the end of a short output, and block proofs are checked
+  against the state hash OCaml computes for the protocol state
+  ([#53](https://github.com/minanode/mina-rust/pull/53))
 
 - **Node**: block and best tip answers from peers are read up to 32 MiB, the
   block gossip limit, instead of 3.5 MB. A block with many zkApp proofs is
