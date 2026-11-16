@@ -994,6 +994,147 @@ mod reassembly_tests {
         assert!(capacities.len() < 16, "{capacities:?}");
         assert!(capacities.windows(2).all(|w| w[1] <= 2 * w[0]));
     }
+
+    /// A staged ledger part of a full scan-state tree of zkApp commands with
+    /// 15 proofs each.
+    ///
+    /// The fixture is one base job of the devnet scan state at block 590216,
+    /// from OCaml's answer: such a command and its two witnesses. The largest
+    /// tree in that scan state holds 103 of them and is 37,273,328 bytes. This
+    /// tree holds 128, as many as a tree can.
+    fn heavy_tree_part() -> ChannelMsg {
+        use crate::channels::streaming_rpc::{
+            staged_ledger_parts::{ScanStateTree, StagedLedgerPartsResponse},
+            P2pStreamingRpcResponse, StreamingRpcChannelMsg,
+        };
+        use mina_p2p_messages::v2;
+
+        let bytes = include_bytes!(
+            "../../../../p2p-messages/tests/files/mesa/scan_state_base_job_590216_heavy.bin"
+        );
+        let mut reader = &bytes[..];
+        let leaf =
+            v2::TransactionSnarkScanStateStableV2TreesABase::binprot_read(&mut reader).unwrap();
+        assert!(reader.is_empty());
+        let v2::TransactionSnarkScanStateStableV2ScanStateTreesABaseT1::Full(job) = &leaf.1 else {
+            panic!("the fixture is a full base job");
+        };
+        let v2::MinaTransactionTransactionStableV2::Command(command) =
+            &job.job.transaction_with_status.data
+        else {
+            panic!("the fixture is a user command");
+        };
+        let v2::MinaBaseUserCommandStableV2::ZkappCommand(zkapp) = &**command else {
+            panic!("the fixture is a zkApp command");
+        };
+        let proofs = zkapp
+            .account_updates
+            .iter()
+            .filter(|u| {
+                matches!(
+                    u.elt.account_update.authorization,
+                    v2::MinaBaseControlStableV2::Proof(_)
+                )
+            })
+            .count();
+        assert_eq!(proofs, 15);
+
+        let empty = (
+            (leaf.0.clone(), leaf.0.clone()),
+            v2::TransactionSnarkScanStateStableV2ScanStateTreesAMergeT1::Empty,
+        );
+        let mut tree = ScanStateTree::Leaf(vec![leaf; 128]);
+        for depth in (0..7).rev() {
+            tree = ScanStateTree::Node {
+                depth: depth.into(),
+                value: vec![empty.clone(); 1 << depth],
+                sub_tree: Box::new(tree),
+            };
+        }
+        ChannelMsg::StreamingRpc(StreamingRpcChannelMsg::Response(
+            1,
+            Some(P2pStreamingRpcResponse::StagedLedgerParts(
+                StagedLedgerPartsResponse::ScanStateTree(tree),
+            )),
+        ))
+    }
+
+    /// The tree arrives in 16 KiB chunks, as `ChannelSend` sends it, and
+    /// comes out whole. The buffer never holds more than the message, and is
+    /// freed after it.
+    #[test]
+    fn heavy_scan_state_tree_passes_the_streaming_limit() {
+        let msg = heavy_tree_part();
+        let encoded = MsgBuffer::new(64 * 1024).encode(&msg).unwrap();
+        let body_len = encoded.len() - 4;
+        assert!(body_len > 37_273_328, "{body_len}");
+        assert!(body_len <= crate::channels::STREAMING_RPC_MAX_MSG_SIZE);
+
+        let mut r = MsgReassembler::new(ChannelId::StreamingRpc);
+        let mut decoded = Vec::new();
+        for chunk in encoded.chunks(CHUNK_SIZE) {
+            r.feed(chunk, |res| {
+                decoded.push(res);
+                true
+            });
+            assert!(r.buf.capacity() <= body_len);
+        }
+        assert_eq!(decoded.len(), 1);
+        let msg = decoded.pop().unwrap().unwrap();
+        let mut again = Vec::new();
+        msg.encode(&mut again).unwrap();
+        assert!(again == encoded[4..], "the tree re-encodes identically");
+        assert_eq!(r.buf.capacity(), 0);
+    }
+
+    /// A length prefix of exactly the limit starts a message, and one byte
+    /// more is refused before anything is buffered. No message of the full
+    /// limit is sent.
+    #[test]
+    fn streaming_limit_is_kept() {
+        let limit = crate::channels::STREAMING_RPC_MAX_MSG_SIZE;
+        let chunk = |len: usize| {
+            let mut chunk = (len as u32).to_be_bytes().to_vec();
+            chunk.resize(CHUNK_SIZE, 0);
+            chunk
+        };
+
+        let mut r = MsgReassembler::new(ChannelId::StreamingRpc);
+        r.feed(&chunk(limit), |_| panic!("nothing is complete"));
+        assert!(r.in_progress());
+
+        let mut r = MsgReassembler::new(ChannelId::StreamingRpc);
+        let mut out = Vec::new();
+        r.feed(&chunk(limit + 1), |res| {
+            out.push(res);
+            true
+        });
+        assert_eq!(out.len(), 1);
+        let err = out.pop().unwrap().unwrap_err();
+        assert_eq!(
+            err,
+            format!("ChannelMsgLenOverLimit; len: {}, limit: {limit}", limit + 1)
+        );
+        assert_eq!(r.buf.capacity(), 0);
+    }
+
+    /// A peer that declares a streaming message of the limit and sends 1 MiB
+    /// of it makes us hold about what it sent, not what it declared.
+    #[test]
+    fn declared_streaming_length_is_not_reserved() {
+        let limit = crate::channels::STREAMING_RPC_MAX_MSG_SIZE;
+        let sent = 1024 * 1024;
+        let mut data = (limit as u32).to_be_bytes().to_vec();
+        data.resize(4 + sent, 0);
+
+        let mut r = MsgReassembler::new(ChannelId::StreamingRpc);
+        for chunk in data.chunks(CHUNK_SIZE) {
+            r.feed(chunk, |_| panic!("nothing is complete"));
+        }
+        assert!(r.in_progress());
+        assert_eq!(r.buf.len(), sent);
+        assert!(r.buf.capacity() <= 2 * sent, "{}", r.buf.capacity());
+    }
 }
 
 #[cfg(test)]
