@@ -17,8 +17,9 @@ use mina_p2p_messages::{
 };
 use poly_commitment::ipa::SRS;
 
+use super::verified_proofs::verify_transaction_once;
 use crate::{
-    proofs::{verification::verify_transaction, VerifierIndex},
+    proofs::VerifierIndex,
     scan_state::scan_state::transaction_snark::{SokDigest, SokMessage, Statement},
 };
 
@@ -95,11 +96,12 @@ pub fn verify_snark_works(
                 .map_err(|_| SnarkWorkError::VerificationFailed)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if verify_transaction(
-        statements.iter().zip(proofs.iter().map(|p| &**p)),
-        verifier_index,
-        srs,
-    ) {
+    let pairs = statements
+        .iter()
+        .zip(proofs.iter().map(|p| &**p))
+        .collect::<Vec<_>>();
+    // Work a block already bought, or offered again, is not verified again.
+    if verify_transaction_once(&pairs, verifier_index, srs) {
         Ok(())
     } else {
         Err(SnarkWorkError::VerificationFailed)
@@ -123,7 +125,9 @@ mod tests {
     use super::*;
     use crate::{
         proofs::{
-            verification::{step_message_shape, with_step_messages, STEP_MESSAGE_SHAPES},
+            verification::{
+                step_message_shape, verify_transaction, with_step_messages, STEP_MESSAGE_SHAPES,
+            },
             verifiers::mainnet_transaction_verifier_index,
         },
         scan_state::{currency::Fee, scan_state::transaction_snark::LedgerProof},
@@ -512,6 +516,94 @@ mod tests {
 
     fn verifies(statement: &Statement<SokDigest>, proof: &TransactionSnarkProofStableV2) -> bool {
         verify_transaction([(statement, proof)], &INDEX, &get_srs::<Fp>())
+    }
+
+    /// Real work is verified once, and what is skipped is only the exact
+    /// statement and proof verified before: the same proof re-advertised
+    /// for another fee or prover has another sok digest in its statement.
+    #[test]
+    fn work_is_verified_once_and_any_change_is_verified() {
+        use crate::verifier::verified_proofs::{
+            verify_transaction_with, Stats, VerifiedProof, VerifiedProofs,
+        };
+
+        type Item = (Statement<SokDigest>, TransactionSnarkProofStableV2);
+        fn pairs(items: &[Item]) -> Vec<(&Statement<SokDigest>, &TransactionSnarkProofStableV2)> {
+            items.iter().map(|(s, p)| (s, p)).collect()
+        }
+
+        let verified = VerifiedProofs::new();
+        let srs = get_srs::<Fp>();
+        let items = statements_and_proofs();
+        assert_eq!(items.len(), 3);
+        let verify =
+            |items: &[Item]| verify_transaction_with(&verified, &pairs(items), &INDEX, &srs);
+
+        assert!(verify(&items[..2]));
+        assert!(verify(&items));
+        assert_eq!(
+            verified.stats(),
+            Stats {
+                skipped: 2,
+                verified: 3,
+                held: 3
+            }
+        );
+
+        // A verified proof with another sok digest: its key differs, it is
+        // verified, and the proof does not verify for that statement.
+        let mut changed = items.clone();
+        changed[0].0.sok_digest = SokDigest::default();
+        assert!(changed[0].0.sok_digest != items[0].0.sok_digest);
+        assert!(VerifiedProof::transaction(&changed[0].0, &changed[0].1).is_some());
+        assert!(
+            VerifiedProof::transaction(&changed[0].0, &changed[0].1)
+                != VerifiedProof::transaction(&items[0].0, &items[0].1)
+        );
+        assert!(!verify(&changed));
+        assert!(!verify(&changed[..1]));
+
+        // Two verified proofs with their statements swapped.
+        let mut changed = items.clone();
+        let statement = changed[0].0.clone();
+        changed[0].0 = changed[1].0.clone();
+        changed[1].0 = statement;
+        assert!(!verify(&changed));
+
+        // A verified statement with a changed proof.
+        let mut changed = items.clone();
+        changed[2].1 .0.proof.ft_eval1 = plus_one(&changed[2].1 .0.proof.ft_eval1);
+        assert!(
+            VerifiedProof::transaction(&changed[2].0, &changed[2].1)
+                != VerifiedProof::transaction(&items[2].0, &items[2].1)
+        );
+        assert!(!verify(&changed));
+
+        // None of the refused ones was remembered, and the three still are.
+        assert_eq!(verified.stats().held, 3);
+        assert_eq!(verified.stats().verified, 3);
+        let skipped = verified.stats().skipped;
+        assert!(verify(&items));
+        assert_eq!(verified.stats().skipped, skipped + 3);
+    }
+
+    /// The fixtures are verified with their own index, not the process's,
+    /// so `verify_snark_works` neither skips nor remembers them: the tests
+    /// above verify every proof every time. Here the process's set is even
+    /// given the key of work that does not verify, and it is still refused.
+    #[test]
+    fn work_verified_with_another_index_is_always_verified() {
+        use crate::verifier::verified_proofs::{remember_unverified, VerifiedProof};
+
+        let mut batch = works();
+        let proof = first_proof(&mut batch[0]);
+        let mut inner = (*proof.0.proof.get().unwrap()).clone();
+        inner.0.proof.ft_eval1 = plus_one(&inner.0.proof.ft_eval1);
+        let statement = Statement::<SokDigest>::try_from(&proof.0.statement).unwrap();
+        remember_unverified(VerifiedProof::transaction(&statement, &inner).unwrap());
+        proof.0.proof = inner.into();
+        assert_eq!(verify(&batch), Err(SnarkWorkError::VerificationFailed));
+        assert_eq!(verify(&works()), Ok(()));
     }
 
     /// A complete proof whose challenge polynomial commitment is (0, 0), the

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- **Node**: verify each transaction proof and zkApp proof once. A proof the
+  node already accepted, from the snark pool or the transaction pool, is not
+  verified again when a block includes it. `MINA_VERIFY_EVERY_PROOF` turns this
+  off ([#57](https://github.com/minanode/mina-rust/pull/57))
+
 ## [0.22.2] - 2026-11-16
 
 0.22.2 fixes how the node verifies and fetches blocks with many zkApp proofs.

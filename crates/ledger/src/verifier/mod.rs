@@ -1,8 +1,6 @@
 use self::common::CheckResult;
 use crate::{
-    proofs::{
-        self, field::FieldWitness, verification, verifiers::TransactionVerifier, VerifierIndex,
-    },
+    proofs::{self, field::FieldWitness, verifiers::TransactionVerifier, VerifierIndex},
     scan_state::{
         scan_state::transaction_snark::{LedgerProof, SokMessage, TransactionSnark},
         transaction_logic::{valid, verifiable, zkapp_statement::ZkappStatement, WithStatus},
@@ -204,9 +202,12 @@ fn verify(ts: Vec<(LedgerProof, SokMessage)>) -> Result<(), String> {
         let proofs = ts
             .iter()
             .zip(&decoded)
-            .map(|((p, _), proof)| (&p.0.statement, &**proof));
+            .map(|((p, _), proof)| (&p.0.statement, &**proof))
+            .collect::<Vec<_>>();
 
-        if !crate::proofs::verification::verify_transaction(proofs, verifier_index, &srs) {
+        // Work the snark pool verified, or an earlier block, is not verified
+        // again.
+        if !verified_proofs::verify_transaction_once(&proofs, verifier_index, &srs) {
             return Err("Transaction_snark.verify: verification failed".into());
         }
         Ok(())
@@ -322,7 +323,9 @@ impl Verifier {
                     .zip(&proofs)
                     .map(|((vk, zkapp_statement, _), proof)| (vk, zkapp_statement, proof))
                     .collect::<Vec<_>>();
-                verification::verify_zkapps(&batch, &get_srs::<Fp>())
+                // A proof the transaction pool verified, or an earlier
+                // block, is not verified again.
+                verified_proofs::verify_zkapps_once(&batch, &get_srs::<Fp>())
             }
         };
 
@@ -365,6 +368,7 @@ impl Verifier {
 
 pub mod common;
 pub mod snark_work;
+pub mod verified_proofs;
 
 #[cfg(test)]
 mod srs_tests {
