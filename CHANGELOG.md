@@ -5,21 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
-
-### Changed
-
-- **Node**: verify each transaction proof and zkApp proof once. A proof the
-  node already accepted, from the snark pool or the transaction pool, is not
-  verified again when a block includes it. `MINA_VERIFY_EVERY_PROOF` turns this
-  off ([#57](https://github.com/minanode/mina-rust/pull/57))
-
-## [0.22.2] - 2026-11-16
+## [0.22.2] - 2026-11-18
 
 0.22.2 fixes how the node verifies and fetches blocks with many zkApp proofs.
 On devnet, a 0.22.1 node fell behind the chain on such blocks, and a fresh node
 with 0.22.1's limits could not sync. Every node runner should upgrade before
-proof-heavy zkApp traffic reaches mainnet. See
+proof-heavy zkApp traffic reaches mainnet. The node also verifies each
+transaction and zkApp proof once. See
 [the release notes](docs/release/0.22.2.md).
 
 ### Added
@@ -27,6 +19,13 @@ proof-heavy zkApp traffic reaches mainnet. See
 - **Web node**: a link preview card. A minaweb.org link shared in a chat app or
   on a social site now shows an image, title and description, in the style of
   the minanode.org card ([#48](https://github.com/minanode/mina-rust/pull/48))
+
+### Changed
+
+- **Node**: verify each transaction proof and zkApp proof once. A proof the
+  node already accepted, from the snark pool or the transaction pool, is not
+  verified again when a block includes it. `MINA_VERIFY_EVERY_PROOF` turns this
+  off ([#57](https://github.com/minanode/mina-rust/pull/57))
 
 ### Removed
 
