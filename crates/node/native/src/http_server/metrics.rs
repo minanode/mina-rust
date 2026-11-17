@@ -452,6 +452,25 @@ fn render(
             estimated
         );
     }
+    let verified_proofs = ledger::verifier::verified_proofs::stats();
+    metric!(
+        "mina_verified_proofs_skipped_total",
+        "counter",
+        "Transaction and zkApp proofs not verified again: this process had verified them.",
+        verified_proofs.skipped
+    );
+    metric!(
+        "mina_verified_proofs_verified_total",
+        "counter",
+        "Transaction and zkApp proofs verified, accepted and remembered.",
+        verified_proofs.verified
+    );
+    metric!(
+        "mina_verified_proofs_held",
+        "gauge",
+        "Verified proofs remembered now.",
+        verified_proofs.held
+    );
     if let Some(bytes) = rss {
         metric!(
             "mina_process_resident_memory_bytes",
@@ -575,6 +594,14 @@ mod tests {
                 Some(expected),
                 "{name}"
             );
+        }
+        // The process's own counts: their values depend on the other tests.
+        for name in [
+            "mina_verified_proofs_skipped_total",
+            "mina_verified_proofs_verified_total",
+            "mina_verified_proofs_held",
+        ] {
+            assert!(sample_value(&text, name).is_some(), "{name}");
         }
         assert!(text.contains("mina_sync_status{status=\"Catchup\"} 1\n"));
         assert!(text.contains("mina_sync_status{status=\"Listening\"} 0\n"));
