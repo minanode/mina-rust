@@ -555,6 +555,7 @@ mod tests {
         let mut changed = items.clone();
         changed[0].0.sok_digest = SokDigest::default();
         assert!(changed[0].0.sok_digest != items[0].0.sok_digest);
+        assert!(VerifiedProof::transaction(&changed[0].0, &changed[0].1).is_some());
         assert!(
             VerifiedProof::transaction(&changed[0].0, &changed[0].1)
                 != VerifiedProof::transaction(&items[0].0, &items[0].1)
@@ -599,7 +600,7 @@ mod tests {
         let mut inner = (*proof.0.proof.get().unwrap()).clone();
         inner.0.proof.ft_eval1 = plus_one(&inner.0.proof.ft_eval1);
         let statement = Statement::<SokDigest>::try_from(&proof.0.statement).unwrap();
-        remember_unverified(VerifiedProof::transaction(&statement, &inner));
+        remember_unverified(VerifiedProof::transaction(&statement, &inner).unwrap());
         proof.0.proof = inner.into();
         assert_eq!(verify(&batch), Err(SnarkWorkError::VerificationFailed));
         assert_eq!(verify(&works()), Ok(()));

@@ -20,7 +20,9 @@
 //! zkApp account holds in the block's ledger.
 //!
 //! Only accepted proofs are kept, in memory, for the life of the process,
-//! the [`CAPACITY`] most recent. Losing an entry costs one verification.
+//! the [`CAPACITY`] most recent. Losing an entry costs one verification. A
+//! batch with a proof that has no digest, because it can't be encoded, is
+//! given to the verifier whole, which refuses it as before.
 //!
 //! OCaml skips work it finds in its snark pool with the same statement, fee,
 //! prover and proofs, and commands it finds in its transaction pool:
@@ -64,7 +66,9 @@ use crate::{
 
 /// Verified proofs kept, the most recent: enough for a transaction pool
 /// full of proof-heavy zkApp commands and the SNARK work of the blocks that
-/// include them. A full set takes about 6 MiB.
+/// include them. A full set takes about 6 MiB when it first fills, and about
+/// 10 MiB once its hash table has grown under replacement (estimates from
+/// the collections' sizes, not measured).
 pub const CAPACITY: usize = 1 << 16;
 
 /// What identifies a verified proof: the SHA-256 of its verification key,
@@ -85,12 +89,12 @@ fn digest(tag: &[u8], parts: &[&[u8]]) -> [u8; 32] {
     sha.finalize().into()
 }
 
-fn binprot(value: &impl BinProtWrite, size_hint: usize) -> Vec<u8> {
+/// `None` for a value its encoder refuses, an array longer than its type
+/// allows for one.
+fn binprot(value: &impl BinProtWrite, size_hint: usize) -> Option<Vec<u8>> {
     let mut bytes = Vec::with_capacity(size_hint);
-    value
-        .binprot_write(&mut bytes)
-        .expect("writing to a Vec does not fail");
-    bytes
+    value.binprot_write(&mut bytes).ok()?;
+    Some(bytes)
 }
 
 /// A statement as the verifier reads it: its field elements, the proof's
@@ -109,40 +113,52 @@ fn statement_bytes(statement: &impl ToFieldElements<Fp>) -> Vec<u8> {
 impl VerifiedProof {
     /// A transaction proof under this process's transaction verification
     /// key. The statement includes the sok digest of the work's fee and
-    /// prover.
+    /// prover. `None` if the proof can't be encoded.
     pub fn transaction(
         statement: &Statement<SokDigest>,
         proof: &TransactionSnarkProofStableV2,
-    ) -> Self {
-        Self(digest(
+    ) -> Option<Self> {
+        Some(Self(digest(
             b"transaction proof",
-            &[&statement_bytes(statement), &binprot(proof, 16 * 1024)],
-        ))
+            &[&statement_bytes(statement), &binprot(proof, 16 * 1024)?],
+        )))
     }
 
     /// A zkApp proof under the verification key with this digest
-    /// ([`verification_key_digest`]).
+    /// ([`verification_key_digest`]). `None` if the proof can't be encoded.
     pub fn zkapp(
         verification_key: &[u8; 32],
         statement: &ZkappStatement,
         proof: &PicklesProofProofsVerified2ReprStableV2,
-    ) -> Self {
-        Self(digest(
+    ) -> Option<Self> {
+        Some(Self(digest(
             b"zkApp proof",
             &[
                 verification_key,
                 &statement_bytes(statement),
-                &binprot(proof, 16 * 1024),
+                &binprot(proof, 16 * 1024)?,
             ],
-        ))
+        )))
     }
 }
 
 /// The digest of everything in a zkApp verification key that its proofs are
-/// verified with.
-pub fn verification_key_digest(verification_key: &VerificationKey) -> [u8; 32] {
+/// verified with. `None` if the key can't be encoded.
+pub fn verification_key_digest(verification_key: &VerificationKey) -> Option<[u8; 32]> {
     let wire = MinaBaseVerificationKeyWireStableV1::from(verification_key);
-    digest(b"zkApp verification key", &[&binprot(&wire, 4 * 1024)])
+    Some(digest(
+        b"zkApp verification key",
+        &[&binprot(&wire, 4 * 1024)?],
+    ))
+}
+
+/// The keys of a batch, or `None` if one of its proofs has none, or if
+/// making them panics: the proofs come from peers, and the verifier, which
+/// then gets the whole batch, contains its own panics.
+fn keys_of_batch(keys: impl FnOnce() -> Option<Vec<VerifiedProof>>) -> Option<Vec<VerifiedProof>> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(keys))
+        .ok()
+        .flatten()
 }
 
 struct Held {
@@ -319,15 +335,16 @@ pub(super) fn verify_transaction_with(
 ) -> bool {
     use rayon::prelude::*;
 
-    let items = proofs
-        .par_iter()
-        .map(|&(statement, proof)| {
-            (
-                VerifiedProof::transaction(statement, proof),
-                (statement, proof),
-            )
-        })
-        .collect::<Vec<_>>();
+    let keys = keys_of_batch(|| {
+        proofs
+            .par_iter()
+            .map(|&(statement, proof)| VerifiedProof::transaction(statement, proof))
+            .collect()
+    });
+    let Some(keys) = keys else {
+        return verify_transaction(proofs.iter().copied(), verifier_index, srs);
+    };
+    let items = keys.into_iter().zip(proofs.iter().copied()).collect();
     verified.verify_once(items, |unverified| {
         verify_transaction(unverified.iter().copied(), verifier_index, srs)
     })
@@ -351,29 +368,33 @@ fn verify_zkapps_with(
 ) -> bool {
     use rayon::prelude::*;
 
-    // Each distinct key digested once: a block's proofs share a few keys.
-    let mut keys: Vec<(&VerificationKey, [u8; 32])> = Vec::new();
-    let key_digests = proofs
-        .iter()
-        .map(|&(key, _, _)| match keys.iter().find(|(k, _)| *k == key) {
-            Some((_, digest)) => *digest,
-            None => {
-                let digest = verification_key_digest(key);
-                keys.push((key, digest));
-                digest
-            }
-        })
-        .collect::<Vec<_>>();
-    let items = proofs
-        .par_iter()
-        .zip(&key_digests)
-        .map(|(&(key, statement, proof), key_digest)| {
-            (
-                VerifiedProof::zkapp(key_digest, statement, proof),
-                (key, statement, proof),
-            )
-        })
-        .collect::<Vec<_>>();
+    let keys = keys_of_batch(|| {
+        // Each distinct key digested once: a block's proofs share a few keys.
+        let mut keys: Vec<(&VerificationKey, [u8; 32])> = Vec::new();
+        let mut key_digests = Vec::with_capacity(proofs.len());
+        for &(key, _, _) in proofs {
+            let digest = match keys.iter().find(|(k, _)| *k == key) {
+                Some((_, digest)) => *digest,
+                None => {
+                    let digest = verification_key_digest(key)?;
+                    keys.push((key, digest));
+                    digest
+                }
+            };
+            key_digests.push(digest);
+        }
+        proofs
+            .par_iter()
+            .zip(&key_digests)
+            .map(|(&(_, statement, proof), key_digest)| {
+                VerifiedProof::zkapp(key_digest, statement, proof)
+            })
+            .collect()
+    });
+    let Some(keys) = keys else {
+        return verify_zkapps(proofs, srs);
+    };
+    let items = keys.into_iter().zip(proofs.iter().copied()).collect();
     verified.verify_once(items, |unverified| verify_zkapps(unverified, srs))
 }
 
@@ -584,7 +605,7 @@ mod tests {
 
         let items = zkapps();
         let key_of = |(key, statement, proof): &Zkapp| {
-            VerifiedProof::zkapp(&verification_key_digest(key), statement, proof)
+            VerifiedProof::zkapp(&verification_key_digest(key).unwrap(), statement, proof).unwrap()
         };
         let original = key_of(&items[0]);
         assert!(original == key_of(&items[0].clone()));
@@ -633,21 +654,67 @@ mod tests {
         items.truncate(1);
         items[0].1.calls.0 += Fp::from(20_261_117u64);
         let srs = srs();
-        assert!(!verify_zkapps_once(&batch(&items), &srs));
+        assert!(!verify_zkapps(&batch(&items), &srs));
 
         let (key, statement, proof) = &items[0];
-        let forged = VerifiedProof::zkapp(&verification_key_digest(key), statement, proof);
+        let forged =
+            VerifiedProof::zkapp(&verification_key_digest(key).unwrap(), statement, proof).unwrap();
         remember_unverified(forged);
-        assert!(enabled());
-        assert!(verify_zkapps_once(&batch(&items), &srs));
+        // Whatever the environment says: the switch is restored below.
+        let was_enabled = enabled();
+        set_enabled(true);
+        let skipped = verify_zkapps_once(&batch(&items), &srs);
         set_enabled(false);
         let refused = !verify_zkapps_once(&batch(&items), &srs);
-        set_enabled(true);
-        assert!(refused);
+        set_enabled(was_enabled);
+        assert!(skipped && refused);
 
         // Another SRS than the node's: verified, whatever the set holds.
         let other_srs = SRS::<Vesta>::clone(&srs);
-        assert!(!verify_zkapps_once(&batch(&items), &other_srs));
+        set_enabled(true);
+        let refused = !verify_zkapps_once(&batch(&items), &other_srs);
+        set_enabled(was_enabled);
+        assert!(refused);
+    }
+
+    /// A proof whose encoder refuses it (an array of 17 evaluations where
+    /// the type allows 16) has no key. The verifier gets the batch and
+    /// refuses it, as it did before proofs were remembered: no panic.
+    #[test]
+    fn a_proof_that_cannot_be_encoded_is_refused_without_a_panic() {
+        let verified = VerifiedProofs::new();
+        let items = zkapps();
+        let srs = srs();
+        let mut bad = items[0].clone();
+        let entry = bad.2.prev_evals.evals.evals.w[0].0[0].clone();
+        bad.2.prev_evals.evals.evals.w.0[0].0 = vec![entry; 17].into();
+        // The round count is refused before any expensive check.
+        bad.2.proof.bulletproof.lr = vec![].into();
+        let key = verification_key_digest(&bad.0).unwrap();
+        assert!(VerifiedProof::zkapp(&key, &bad.1, &bad.2).is_none());
+
+        assert!(!verify_zkapps(&batch(std::slice::from_ref(&bad)), &srs));
+        assert!(!verify_zkapps_with(
+            &verified,
+            &batch(std::slice::from_ref(&bad)),
+            &srs
+        ));
+        // With valid proofs around it, verified before or not.
+        assert!(verify_zkapps_with(&verified, &batch(&items[1..3]), &srs));
+        let mut mixed = items.clone();
+        mixed[0] = bad;
+        assert!(!verify_zkapps_with(&verified, &batch(&mixed), &srs));
+        assert_eq!(verified.stats().held, 2);
+        assert!(verify_zkapps_with(&verified, &batch(&items[1..3]), &srs));
+    }
+
+    /// A panic while the keys of a batch are made is contained: the batch
+    /// has no keys.
+    #[test]
+    fn a_panic_making_keys_is_contained() {
+        assert!(keys_of_batch(|| panic!("a malformed proof")).is_none());
+        assert!(keys_of_batch(|| None).is_none());
+        assert_eq!(keys_of_batch(|| Some(Vec::new())).map(|k| k.len()), Some(0));
     }
 
     #[test]
@@ -659,10 +726,16 @@ mod tests {
 
         let other_index = crate::proofs::verifiers::mainnet_transaction_verifier_index();
         assert!(!is_the_node_verifier(&other_index, &srs));
-        if let Some(node) = TransactionVerifier::get() {
-            assert!(is_the_node_verifier(&node, &srs));
-            assert!(!is_the_node_verifier(&node, &other_srs));
-        }
+        // The node's own, as the node makes it and as the block path reads
+        // it (`VERIFIER_INDEX`), however many times it is cloned.
+        let node = TransactionVerifier::make();
+        assert!(is_the_node_verifier(&node, &srs));
+        assert!(is_the_node_verifier(&node.clone(), &srs));
+        assert!(is_the_node_verifier(&super::super::VERIFIER_INDEX, &srs));
+        assert!(!is_the_node_verifier(&node, &other_srs));
+        // A copy of the node's index is another index.
+        let copy = VerifierIndex::<Fq>::clone(&node);
+        assert!(!is_the_node_verifier(&copy, &srs));
     }
 
     #[test]
