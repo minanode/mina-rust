@@ -1,6 +1,7 @@
 /**
  * The Archive page, on a node that feeds an OCaml archive process: whether
- * the feed is up to date, the outbox's figures and gaps, and replay of
+ * the feed is up to date, the archive's own counts of its database (when the
+ * node reads its metrics), the outbox's figures and gaps, and replay of
  * retained blocks. On any other node the route says there is no such page.
  */
 
@@ -37,6 +38,7 @@ import { StatRow } from "@minanode/design-system/patterns/stat-row";
 import { useNow } from "@minanode/design-system/lib/time";
 
 import {
+  archiveDatabaseView,
   archiveEntryLabel,
   archiveFeedView,
   archiveGapLabel,
@@ -50,6 +52,7 @@ import {
   plural,
   utcDateTime,
   type ArchiveBlockRef,
+  type ArchiveDatabase,
   type ArchiveEntry,
   type ArchiveFeedView,
   type ArchiveGap,
@@ -166,7 +169,10 @@ function ArchiveFeed({
       />
       {view.key === "Failing" ? <Failing status={s} /> : null}
       <div className="grid items-start gap-6 lg:grid-cols-2">
-        <FeedValues status={s} />
+        <div className="flex flex-col gap-6">
+          <DatabaseCheck status={s} />
+          <FeedValues status={s} />
+        </div>
         <Retained status={s} onChanged={onChanged} />
       </div>
       <Gaps status={s} />
@@ -257,6 +263,111 @@ function FeedValues({ status: s }: { status: ArchiveStatus }) {
           value: formatCount(s.deliveredCount),
         },
       ]}
+    />
+  );
+}
+
+/** The stored tip against the highest delivered block, in words. */
+function tipLag(lag: number | null): string | undefined {
+  if (lag === null) return undefined;
+  if (lag === 0) return "same as last delivered";
+  return lag > 0
+    ? `${plural(lag, "block")} below last delivered`
+    : `${plural(-lag, "block")} above last delivered`;
+}
+
+function DatabaseAction({
+  db,
+  status: s,
+}: {
+  db: ArchiveDatabase;
+  status: ArchiveStatus;
+}) {
+  if (!db.configured) {
+    return (
+      <p data-archive-database-action="configure">
+        Set <Code>MINA_ARCHIVE_METRICS_ADDRESS</Code> to the archive's{" "}
+        <Code>--metrics-port</Code> URL.
+      </p>
+    );
+  }
+  switch (db.verdict) {
+    case "incomplete":
+      return (
+        <p data-archive-database-action="resend" className="text-foreground">
+          <TriangleAlert
+            aria-hidden
+            className="mr-1.5 inline size-4 align-[-0.2em] text-destructive"
+          />
+          {s.oldestRetained && s.newestRetained
+            ? `Resend all retained to refill heights ${formatHeight(s.oldestRetained.height)} to ${formatHeight(s.newestRetained.height)}.`
+            : "Resend all retained to refill the heights this node keeps."}{" "}
+          Older heights need a precomputed-block import.
+        </p>
+      );
+    case "behind":
+      return (
+        <p data-archive-database-action="behind" className="text-foreground">
+          <TriangleAlert
+            aria-hidden
+            className="mr-1.5 inline size-4 align-[-0.2em] text-status-pending"
+          />
+          Check the archive's log and its database connection.
+        </p>
+      );
+    case "unavailable":
+      return (
+        <p data-archive-database-action="unavailable">
+          Check the archive runs with <Code>--metrics-port</Code> at{" "}
+          <Code>MINA_ARCHIVE_METRICS_ADDRESS</Code>.
+        </p>
+      );
+    default:
+      return null;
+  }
+}
+
+function DatabaseCheck({ status: s }: { status: ArchiveStatus }) {
+  const db = s.database;
+  const view = archiveDatabaseView(db);
+  const rows = db.configured
+    ? [
+        {
+          label: "Highest stored",
+          value: formatHeight(db.maxBlockHeight),
+          note: tipLag(db.storedTipLag),
+        },
+        {
+          label: "Missing heights",
+          value: formatCount(db.missingBlocks),
+          note: "recent window",
+        },
+        {
+          label: "Blocks without a parent",
+          value: formatCount(db.unparentedBlocks),
+        },
+        {
+          label: "Checked",
+          value:
+            db.lastSuccessMs !== null ? <TimeAgo at={db.lastSuccessMs} /> : "–",
+        },
+        ...(db.verdict === "unavailable" && db.lastError
+          ? [{ label: "Last error", value: db.lastError, wide: true }]
+          : []),
+        { label: "Metrics", value: db.metricsUrl ?? "–", wide: true },
+      ]
+    : [];
+  return (
+    <KeyValueList
+      title="Archive database"
+      data-archive-database={db.verdict}
+      aside={
+        <Signal tone={view.tone} className="text-sm">
+          {view.label}
+        </Signal>
+      }
+      rows={rows}
+      footer={<DatabaseAction db={db} status={s} />}
     />
   );
 }

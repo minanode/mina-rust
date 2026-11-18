@@ -230,7 +230,8 @@ test("up to date: the status, the best tip, the values, no gaps", async () => {
   expect(screen.getByText("#590702 to #591571")).toBeTruthy();
   expect(screen.getByText("83 MB")).toBeTruthy();
   expect(screen.getByText("No gaps")).toBeTruthy();
-  // Delivered, never "stored": the node can't see the database.
+  // Without the database check, delivered, never "stored": the node can't
+  // see the database.
   expect(document.body.textContent).not.toMatch(/stored/i);
   // One docs link.
   const docs = screen.getAllByRole("link", { name: /docs/i });
@@ -478,4 +479,189 @@ test("the recent delivered blocks show ten, then all twenty", async () => {
   ).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Show all 20" }));
   expect(within(recent).getAllByRole("row")).toHaveLength(21);
+});
+
+/** The status's `database` section: complete unless `overrides` say. */
+function database(overrides: Record<string, unknown> = {}) {
+  const now = Date.now();
+  return {
+    configured: true,
+    metrics_url: "http://127.0.0.1:3087/metrics",
+    verdict: "complete",
+    last_attempt_at_ms: now - 20_000,
+    last_success_at_ms: now - 20_000,
+    last_error: null,
+    max_block_height: TIP,
+    missing_blocks: 0,
+    unparented_blocks: 0,
+    delivered_height: TIP,
+    stored_tip_lag: 0,
+    expected_stored_height: TIP - 4,
+    behind_after_ms: 360_000,
+    poll_interval_ms: 60_000,
+    ...overrides,
+  };
+}
+
+const card = async (verdict: string) =>
+  await waitFor(() => {
+    const el = document.querySelector<HTMLElement>(
+      `[data-archive-database="${verdict}"]`,
+    );
+    expect(el).not.toBeNull();
+    return el!;
+  });
+
+test("database complete: the archive's counts, the feed up to date", async () => {
+  renderWith(<ArchivePage />, {
+    archive: archiveStatus({ database: database() }),
+  });
+  await feed("Up to date");
+  const db = await card("complete");
+  expect(within(db).getByText("Archive database")).toBeTruthy();
+  expect(within(db).getByText("Complete")).toBeTruthy();
+  expect(within(db).getByText("Highest stored")).toBeTruthy();
+  expect(within(db).getByText("#591571")).toBeTruthy();
+  expect(within(db).getByText("same as last delivered")).toBeTruthy();
+  expect(within(db).getByText("Missing heights")).toBeTruthy();
+  expect(within(db).getByText("recent window")).toBeTruthy();
+  expect(within(db).getByText("Blocks without a parent")).toBeTruthy();
+  expect(within(db).getAllByText("0")).toHaveLength(2);
+  expect(within(db).getByText("Checked")).toBeTruthy();
+  expect(within(db).getByText("http://127.0.0.1:3087/metrics")).toBeTruthy();
+  expect(db.querySelector("[data-archive-database-action]")).toBeNull();
+  // Still one docs link.
+  expect(screen.getAllByRole("link", { name: /docs/i })).toHaveLength(1);
+});
+
+test("database incomplete: the top status, and resend all for the window", async () => {
+  renderWith(<ArchivePage />, {
+    archive: archiveStatus({
+      database: database({
+        verdict: "incomplete",
+        missing_blocks: 3,
+        unparented_blocks: 2,
+        max_block_height: TIP - 1,
+        stored_tip_lag: 1,
+      }),
+    }),
+  });
+  await feed("Database incomplete");
+  const db = await card("incomplete");
+  expect(within(db).getByText("Incomplete")).toBeTruthy();
+  expect(within(db).getByText("3")).toBeTruthy();
+  expect(within(db).getByText("2")).toBeTruthy();
+  expect(within(db).getByText("1 block below last delivered")).toBeTruthy();
+  const action = db.querySelector("[data-archive-database-action]")!;
+  expect(action.getAttribute("data-archive-database-action")).toBe("resend");
+  expect(action.textContent).toBe(
+    "Resend all retained to refill heights #590702 to #591571. Older heights need a precomputed-block import.",
+  );
+  // The button it names is on the page.
+  expect(
+    screen.getByRole("button", { name: "Resend all retained" }),
+  ).toBeTruthy();
+});
+
+test("database behind and unavailable", async () => {
+  renderWith(<ArchivePage />, {
+    archive: archiveStatus({
+      database: database({
+        verdict: "behind",
+        max_block_height: TIP - 9,
+        stored_tip_lag: 9,
+      }),
+    }),
+  });
+  await feed("Database behind");
+  let db = await card("behind");
+  expect(within(db).getByText("Behind")).toBeTruthy();
+  expect(within(db).getByText("9 blocks below last delivered")).toBeTruthy();
+  expect(db.querySelector("[data-archive-database-action]")!.textContent).toBe(
+    "Check the archive's log and its database connection.",
+  );
+  cleanup();
+
+  renderWith(<ArchivePage />, {
+    archive: archiveStatus({
+      database: database({
+        verdict: "unavailable",
+        last_attempt_at_ms: Date.now() - 5_000,
+        last_error: "cannot connect: Connection refused (os error 111)",
+      }),
+    }),
+  });
+  // Unavailable doesn't change the feed's own status.
+  await feed("Up to date");
+  db = await card("unavailable");
+  expect(within(db).getByText("Unavailable")).toBeTruthy();
+  expect(within(db).getByText("Last error")).toBeTruthy();
+  expect(
+    within(db).getByText("cannot connect: Connection refused (os error 111)"),
+  ).toBeTruthy();
+  // The last good values stay, with when they were read.
+  expect(within(db).getByText("#591571")).toBeTruthy();
+  expect(db.querySelector("[data-archive-database-action]")!.textContent).toBe(
+    "Check the archive runs with --metrics-port at MINA_ARCHIVE_METRICS_ADDRESS.",
+  );
+});
+
+test("database not checked: one line saying what to set", async () => {
+  renderWith(<ArchivePage />);
+  await feed("Up to date");
+  const db = await card("not_checked");
+  expect(within(db).getByText("Not checked")).toBeTruthy();
+  expect(within(db).queryByText("Highest stored")).toBeNull();
+  expect(db.querySelector("[data-archive-database-action]")!.textContent).toBe(
+    "Set MINA_ARCHIVE_METRICS_ADDRESS to the archive's --metrics-port URL.",
+  );
+  cleanup();
+
+  // Configured, before the first fetch.
+  renderWith(<ArchivePage />, {
+    archive: archiveStatus({
+      database: database({
+        verdict: "not_checked",
+        last_attempt_at_ms: null,
+        last_success_at_ms: null,
+        max_block_height: null,
+        missing_blocks: null,
+        unparented_blocks: null,
+        stored_tip_lag: null,
+      }),
+    }),
+  });
+  const checking = await card("not_checked");
+  expect(within(checking).getByText("Checking")).toBeTruthy();
+  expect(checking.querySelector("[data-archive-database-action]")).toBeNull();
+});
+
+test("the database check ranks below failing and not synced, above catching up", async () => {
+  const incomplete = database({ verdict: "incomplete", missing_blocks: 1 });
+  renderWith(<ArchivePage />, {
+    archive: archiveStatus({
+      database: incomplete,
+      pending_entries: 4,
+      newest_retained: block(TIP - 4),
+      last_delivered: block(TIP - 4),
+    }),
+  });
+  await feed("Database incomplete");
+  cleanup();
+
+  renderWith(<ArchivePage />, {
+    archive: archiveStatus({
+      database: incomplete,
+      consecutive_failures: 2,
+      last_error: "refused",
+    }),
+  });
+  await feed("Delivery failing");
+  cleanup();
+
+  renderWith(<ArchivePage />, {
+    phase: "Bootstrap",
+    archive: archiveStatus({ database: incomplete }),
+  });
+  await feed("Node not synced");
 });

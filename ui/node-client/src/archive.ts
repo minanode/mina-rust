@@ -6,7 +6,9 @@
  *
  * "Delivered" means the archive process acknowledged the diff. The archive
  * acknowledges before its database commit, so the node can't see whether a
- * block is stored.
+ * block is stored. With `MINA_ARCHIVE_METRICS_ADDRESS` the status's
+ * `database` section has the archive's own counts of its database, read from
+ * its `--metrics-port`.
  */
 
 import { arr, num, obj, str } from "./json";
@@ -36,6 +38,69 @@ export interface ArchiveGap {
   detectedMs: number | null;
 }
 
+/** The archive database check's verdict. */
+export type ArchiveDatabaseVerdict =
+  | "complete"
+  | "incomplete"
+  | "behind"
+  | "not_checked"
+  | "unavailable";
+
+const DATABASE_VERDICTS: readonly string[] = [
+  "complete",
+  "incomplete",
+  "behind",
+  "not_checked",
+  "unavailable",
+];
+
+/**
+ * The archive's own counts of its database, from its Prometheus gauges:
+ * `Coda_Archive_max_block_height`, `Coda_Archive_missing_blocks` (heights
+ * with no block in the archive's recent window, 2,000 heights by default)
+ * and `Coda_Archive_unparented_blocks`. The archive refreshes them every two
+ * slots.
+ */
+export interface ArchiveDatabase {
+  /** Whether the node has `MINA_ARCHIVE_METRICS_ADDRESS`. */
+  configured: boolean;
+  metricsUrl: string | null;
+  verdict: ArchiveDatabaseVerdict;
+  lastAttemptMs: number | null;
+  /** When the values were read. */
+  lastSuccessMs: number | null;
+  lastError: string | null;
+  maxBlockHeight: number | null;
+  missingBlocks: number | null;
+  unparentedBlocks: number | null;
+  /** The highest block delivered, when the values were read. */
+  deliveredHeight: number | null;
+  /** deliveredHeight - maxBlockHeight; negative when the database has more. */
+  storedTipLag: number | null;
+  /** The stored tip must reach this: the highest block delivered
+   * behindAfterMs before the values were read. */
+  expectedStoredHeight: number | null;
+  behindAfterMs: number;
+  pollIntervalMs: number;
+}
+
+export const ARCHIVE_DATABASE_NOT_CONFIGURED: ArchiveDatabase = {
+  configured: false,
+  metricsUrl: null,
+  verdict: "not_checked",
+  lastAttemptMs: null,
+  lastSuccessMs: null,
+  lastError: null,
+  maxBlockHeight: null,
+  missingBlocks: null,
+  unparentedBlocks: null,
+  deliveredHeight: null,
+  storedTipLag: null,
+  expectedStoredHeight: null,
+  behindAfterMs: 0,
+  pollIntervalMs: 0,
+};
+
 export interface ArchiveStatus {
   archiveAddress: string | null;
   pendingEntries: number;
@@ -62,6 +127,10 @@ export interface ArchiveStatus {
   failingSinceMs: number | null;
   /** The entry being retried while delivery fails. */
   stuckOn: ArchiveBlockRef | null;
+  /** The highest block acknowledged since the node started; a replay of
+   * older blocks doesn't lower it. */
+  highestDelivered: ArchiveBlockRef | null;
+  database: ArchiveDatabase;
 }
 
 export type ArchiveEntryState = "pending" | "in_flight" | "retained";
@@ -127,6 +196,33 @@ function parseGap(value: unknown): ArchiveGap | null {
   };
 }
 
+/** `database` in `/archive/status`; a node without the check (or older
+ * than it) is not configured. */
+export function parseArchiveDatabase(raw: unknown): ArchiveDatabase {
+  const d = obj(raw);
+  if (!d) return ARCHIVE_DATABASE_NOT_CONFIGURED;
+  const verdict = str(d.verdict);
+  return {
+    configured: d.configured === true,
+    metricsUrl: str(d.metrics_url),
+    verdict:
+      verdict && DATABASE_VERDICTS.includes(verdict)
+        ? (verdict as ArchiveDatabaseVerdict)
+        : "not_checked",
+    lastAttemptMs: num(d.last_attempt_at_ms),
+    lastSuccessMs: num(d.last_success_at_ms),
+    lastError: str(d.last_error),
+    maxBlockHeight: num(d.max_block_height),
+    missingBlocks: num(d.missing_blocks),
+    unparentedBlocks: num(d.unparented_blocks),
+    deliveredHeight: num(d.delivered_height),
+    storedTipLag: num(d.stored_tip_lag),
+    expectedStoredHeight: num(d.expected_stored_height),
+    behindAfterMs: count(d.behind_after_ms),
+    pollIntervalMs: count(d.poll_interval_ms),
+  };
+}
+
 export function parseArchiveStatus(raw: unknown): ArchiveStatus {
   const s = obj(raw) ?? {};
   return {
@@ -154,6 +250,8 @@ export function parseArchiveStatus(raw: unknown): ArchiveStatus {
     lastSuccessMs: num(s.last_success_at_ms),
     failingSinceMs: num(s.failing_since_ms),
     stuckOn: blockRef(s.stuck_on),
+    highestDelivered: blockRef(s.highest_delivered),
+    database: parseArchiveDatabase(s.database),
   };
 }
 
@@ -247,6 +345,8 @@ export type ArchiveFeedKey =
   | "CatchingUp"
   | "Failing"
   | "NotSynced"
+  | "DatabaseIncomplete"
+  | "DatabaseBehind"
   | "NoDelivery";
 
 export interface ArchiveFeedView {
@@ -263,13 +363,19 @@ export interface ArchiveFeedView {
 /**
  * Up to date: nothing waiting, no failures, and the newest delivered block
  * is the highest the node accepted. Failing comes first, then a node that
- * isn't synced, whose feed can't be up to date with the network.
+ * isn't synced, whose feed can't be up to date with the network, then the
+ * database check when it found a problem (incomplete or behind), then
+ * catching up.
  */
 export function archiveFeedView(
   status: ArchiveStatus,
   node: { synced: boolean; bestTipHeight: number | null },
 ): ArchiveFeedView {
-  const delivered = [status.newestRetained, status.lastDelivered]
+  const delivered = [
+    status.newestRetained,
+    status.lastDelivered,
+    status.highestDelivered,
+  ]
     .map(b => b?.height ?? null)
     .filter((h): h is number => h !== null);
   const deliveredHeight = delivered.length > 0 ? Math.max(...delivered) : null;
@@ -294,6 +400,22 @@ export function archiveFeedView(
       tone: "warn",
     };
   }
+  if (status.database.verdict === "incomplete") {
+    return {
+      ...base,
+      key: "DatabaseIncomplete",
+      label: "Database incomplete",
+      tone: "error",
+    };
+  }
+  if (status.database.verdict === "behind") {
+    return {
+      ...base,
+      key: "DatabaseBehind",
+      label: "Database behind",
+      tone: "warn",
+    };
+  }
   if (status.pendingEntries > 0) {
     return {
       ...base,
@@ -315,6 +437,29 @@ export function archiveFeedView(
     label: "Nothing delivered yet",
     tone: "neutral",
   };
+}
+
+export interface ArchiveDatabaseView {
+  label: string;
+  tone: "ok" | "info" | "warn" | "error" | "neutral";
+}
+
+/** The database check's verdict in words. */
+export function archiveDatabaseView(db: ArchiveDatabase): ArchiveDatabaseView {
+  switch (db.verdict) {
+    case "complete":
+      return { label: "Complete", tone: "ok" };
+    case "incomplete":
+      return { label: "Incomplete", tone: "error" };
+    case "behind":
+      return { label: "Behind", tone: "warn" };
+    case "unavailable":
+      return { label: "Unavailable", tone: "warn" };
+    case "not_checked":
+      return db.configured
+        ? { label: "Checking", tone: "neutral" }
+        : { label: "Not checked", tone: "neutral" };
+  }
 }
 
 /** A gap's kind in words. */
