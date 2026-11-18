@@ -145,7 +145,7 @@ impl TransactionPoolState {
     pub fn memory_debug(&self) -> serde_json::Value {
         serde_json::json!({
             "pool_entries": self.size(),
-            "pool_commands_json_bytes": crate::stats::serialized_size(&self.pool.get_all_transactions()),
+            "pool_commands_json_bytes": crate::stats::serialized_size(&self.iter_all_transactions().collect::<Vec<_>>()),
             "distributed_entries": self.for_propagation_size(),
             "pending_actions": self.pending_actions.len(),
             "pending_actions_json_bytes": crate::stats::serialized_size(&self.pending_actions.values().collect::<Vec<_>>()),
@@ -205,6 +205,11 @@ impl TransactionPoolState {
 
     pub fn get_all_transactions(&self) -> Vec<ValidCommandWithHash> {
         self.pool.get_all_transactions()
+    }
+
+    /// The commands `get_all_transactions` returns, in place
+    pub fn iter_all_transactions(&self) -> impl Iterator<Item = &ValidCommandWithHash> {
+        self.pool.iter_all_transactions()
     }
 
     pub fn get_pending_amount_and_nonce(&self) -> HashMap<AccountId, (Option<Nonce>, Amount)> {

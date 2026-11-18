@@ -712,7 +712,7 @@ impl TransactionPoolState {
                     .dpool
                     .next_messages_to_send(index_and_limit, |state| {
                         let tx = global_state.transaction_pool.get(&state.hash)?;
-                        let tx = tx.clone().forget();
+                        let tx = tx.forget();
                         // TODO(binier): avoid conversion
                         Some((&Transaction::from(&tx)).into())
                     });

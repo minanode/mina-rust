@@ -985,8 +985,7 @@ pub fn rpc_effects<S: Service>(store: &mut Store<S>, action: ActionWithMeta<RpcE
             let in_tx_pool = store
                 .state()
                 .transaction_pool
-                .get_all_transactions()
-                .iter()
+                .iter_all_transactions()
                 .any(|tx_with_hash| Some(&tx_with_hash.hash) == tx_hash.as_ref());
 
             if in_tx_pool {
