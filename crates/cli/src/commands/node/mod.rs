@@ -403,6 +403,23 @@ pub struct Node {
     #[arg(long, env = "MINA_NO_ROOT_LEDGER_DISK", help_heading = "Storage")]
     pub no_root_ledger_disk: bool,
 
+    /// Don't serve the staged ledger of a root this node has retired to peers
+    /// that bootstrap from it, and keep no scan state for those roots.
+    ///
+    /// A bootstrapping peer asks for the staged ledger of the root it synced
+    /// its snarked ledger to. By then that root may have retired here. By
+    /// default the node keeps the scan states of its last `k + 10` retired
+    /// roots to answer such requests, as OCaml nodes do. With this flag it
+    /// answers as for an unknown root, and the peer asks other peers. The
+    /// node still serves the staged ledger of every root in its frontier, and
+    /// the blocks of the roots it has retired.
+    #[arg(
+        long,
+        env = "MINA_NO_SERVE_RETIRED_STAGED_LEDGERS",
+        help_heading = "Storage"
+    )]
+    pub no_serve_retired_staged_ledgers: bool,
+
     /// Write a ledger on disk again once this many of its accounts changed,
     /// instead of a sixteenth of them (at least 4,096). For tests: 1 writes
     /// the root snarked ledger again at every root move that changes it, 0 at
@@ -1085,6 +1102,7 @@ impl Node {
         let (worker, origin) = startup_worker(flags, saved_worker.as_ref().ok().cloned().flatten());
         let frontier_store = self.frontier_store_enabled()?;
         let proof_cache_setting = self.proof_cache_setting()?;
+        let retired_root_scan_states = self.retired_root_scan_states();
 
         // For `mina report`: how the node was started, and a crash file for
         // each panic from now on.
@@ -1297,6 +1315,14 @@ impl Node {
         }
         if let Some(full) = genesis_ledgers_deferred {
             node_builder.genesis_ledgers_deferred(full);
+        }
+        node_builder.retired_root_scan_states(retired_root_scan_states);
+        if retired_root_scan_states == Some(0) {
+            mina_node::core::info!(
+                mina_node::core::log::system_time();
+                kind = "RetiredRootStagedLedgers",
+                summary = "retired roots keep no scan state: their staged ledger is not served to bootstrapping peers",
+            );
         }
 
         if let Some(chain_id) = chain_id_override {
@@ -1874,6 +1900,12 @@ fn parse_sctp_window(value: &str) -> Result<usize, String> {
 }
 
 impl Node {
+    /// How many retired roots keep their scan state: none with
+    /// `--no-serve-retired-staged-ledgers`, all `k + 10` otherwise.
+    fn retired_root_scan_states(&self) -> Option<usize> {
+        self.no_serve_retired_staged_ledgers.then_some(0)
+    }
+
     /// `--proof-cache`, or the hidden older form `MINA_PROOF_CACHE=<bool>`,
     /// whose `false` turns the cache off as `--no-proof-cache` does. `None`
     /// when neither is given.
@@ -2686,6 +2718,72 @@ mod tests {
             choice(&[("MINA_PROOF_CACHE", "maybe")], ""),
             "Error(MINA_PROOF_CACHE: expected true or false)"
         );
+    }
+
+    /// Retired roots keep their scan states, `k + 10` of them, unless
+    /// `--no-serve-retired-staged-ledgers` says none.
+    #[test]
+    fn retired_roots_keep_scan_states_unless_turned_off() {
+        let kept = |args: &[&str]| parse(args).unwrap().retired_root_scan_states();
+        assert_eq!(kept(&[]), None);
+        assert_eq!(kept(&["--no-serve-retired-staged-ledgers"]), Some(0));
+        let producer = ["--producer-key", "/nonexistent/producer-key"];
+        assert_eq!(kept(&producer), None);
+        assert_eq!(
+            kept(&[&producer[..], &["--no-serve-retired-staged-ledgers"]].concat()),
+            Some(0)
+        );
+        // A plain flag.
+        for value in ["true", "false"] {
+            assert!(parse(&[&format!("--no-serve-retired-staged-ledgers={value}")]).is_err());
+        }
+    }
+
+    /// Run by the test below in a child process, with the environment under
+    /// test, so this process's environment is never changed.
+    #[test]
+    fn retired_root_scan_states_in_a_child_environment() {
+        if std::env::var_os("RETIRED_SCAN_STATES_CHILD").is_none() {
+            return;
+        }
+        let kept = parse(&[]).map(|node| node.retired_root_scan_states());
+        println!("RETIRED_SCAN_STATES={kept:?}");
+    }
+
+    /// `MINA_NO_SERVE_RETIRED_STAGED_LEDGERS` acts as its flag does.
+    #[test]
+    fn the_retired_staged_ledgers_variable_follows_the_flag() {
+        let kept = |value: Option<&str>| {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "commands::node::tests::retired_root_scan_states_in_a_child_environment",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env_clear()
+                .env("RETIRED_SCAN_STATES_CHILD", "1");
+            if let Some(value) = value {
+                command.env("MINA_NO_SERVE_RETIRED_STAGED_LEDGERS", value);
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            stdout
+                .lines()
+                .find_map(|line| {
+                    line.split_once("RETIRED_SCAN_STATES=")
+                        .map(|(_, c)| c.trim())
+                })
+                .unwrap_or_else(|| panic!("no answer in {stdout}"))
+                .to_owned()
+        };
+        assert_eq!(kept(None), "Ok(None)");
+        assert_eq!(kept(Some("true")), "Ok(Some(0))");
+        assert_eq!(kept(Some("false")), "Ok(None)");
+        // As the other `MINA_NO_*` storage variables: true or false only.
+        assert!(kept(Some("1")).starts_with("Err("));
     }
 
     #[test]

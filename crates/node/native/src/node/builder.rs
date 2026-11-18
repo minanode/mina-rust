@@ -85,6 +85,9 @@ pub struct NodeBuilder {
     /// The full genesis config whose ledgers are loaded only if the node
     /// bootstraps (I5d2).
     genesis_ledgers_deferred: Option<Arc<GenesisConfig>>,
+    /// How many retired roots keep their scan state
+    /// (`TransitionFrontierConfig::retired_root_scan_states`).
+    retired_root_scan_states: Option<usize>,
     /// The operator may start, stop and re-price the SNARK worker while the
     /// node runs (P5.4).
     worker_control: bool,
@@ -152,6 +155,7 @@ impl NodeBuilder {
             skip_proof_verification: false,
             persist: Default::default(),
             genesis_ledgers_deferred: None,
+            retired_root_scan_states: None,
             worker_control: false,
             included_work: None,
             worker_setting_warning: None,
@@ -383,6 +387,14 @@ impl NodeBuilder {
     /// bootstraps (the restore from the frontier store replaces them).
     pub fn genesis_ledgers_deferred(&mut self, full: Arc<GenesisConfig>) -> &mut Self {
         self.genesis_ledgers_deferred = Some(full);
+        self
+    }
+
+    /// How many of the newest retired roots keep their scan state, to serve
+    /// their staged ledger to peers that bootstrap from them. `None`, the
+    /// default, keeps it for all `k + 10`.
+    pub fn retired_root_scan_states(&mut self, count: Option<usize>) -> &mut Self {
+        self.retired_root_scan_states = count;
         self
     }
 
@@ -639,6 +651,7 @@ impl NodeBuilder {
             transition_frontier: TransitionFrontierConfig {
                 persist: self.persist,
                 genesis_ledgers_deferred: self.genesis_ledgers_deferred,
+                retired_root_scan_states: self.retired_root_scan_states,
                 ..TransitionFrontierConfig::new(self.genesis_config)
             },
             block_producer: self.block_producer,
