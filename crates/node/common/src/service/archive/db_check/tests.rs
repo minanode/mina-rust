@@ -253,6 +253,24 @@ fn logs_only_changes_and_at_most_every_ten_minutes() {
     );
 }
 
+#[test]
+fn the_startup_line_does_not_hold_back_the_first_change() {
+    let c = check();
+    let t = |m: u64| 1_000 * MIN + m * MIN;
+    assert!(c.record(t(0), None, Ok(gauges(5, 0, 0))).is_some());
+    // Six minutes after startup a block goes missing: logged at once.
+    assert_eq!(
+        c.record(t(6), None, Ok(gauges(5, 1, 1))),
+        Some(LogLine::Verdict(Verdict::Incomplete, gauges(5, 1, 1)))
+    );
+    // Repaired a few minutes later: within ten minutes of that line.
+    assert_eq!(c.record(t(9), None, Ok(gauges(5, 0, 0))), None);
+    assert_eq!(
+        c.record(t(16), None, Ok(gauges(5, 0, 0))),
+        Some(LogLine::Verdict(Verdict::Complete, gauges(5, 0, 0)))
+    );
+}
+
 /// A one-request-at-a-time HTTP server on a free port; `answer` writes the
 /// whole response for each request.
 fn serve(answer: impl Fn(&mut TcpStream) + Send + 'static) -> SocketAddr {

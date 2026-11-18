@@ -57,8 +57,8 @@ pub const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// 2 KiB: the three gauges and one histogram.
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
-/// The most a log line about the check repeats: at most one per 10 minutes,
-/// and only when the verdict changes.
+/// The most a log line about the check repeats: one at startup, then one
+/// when the verdict changes, at most every 10 minutes.
 const LOG_EVERY: Duration = Duration::from_secs(600);
 
 /// How long the stored tip may trail a delivered block: two archive
@@ -334,7 +334,7 @@ impl MetricsFetcher {
 
 /// `5 s`, or `300 ms` below a second.
 fn seconds(d: Duration) -> String {
-    if d.as_millis() % 1000 == 0 {
+    if d.as_millis().is_multiple_of(1000) {
         format!("{} s", d.as_secs())
     } else {
         format!("{} ms", d.as_millis())
@@ -471,7 +471,13 @@ impl DbCheck {
             }
         };
         if due {
-            state.last_logged = Some((at_ms, now));
+            // The first line, at startup, doesn't hold back the first change.
+            let at = if state.last_logged.is_none() {
+                0
+            } else {
+                at_ms
+            };
+            state.last_logged = Some((at, now));
             Some(line)
         } else {
             None
