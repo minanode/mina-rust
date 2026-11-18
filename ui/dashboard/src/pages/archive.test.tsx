@@ -350,6 +350,14 @@ test("replay a block: find it, confirm, and the result", async () => {
   expect(calls.some(c => c.path === "/archive/resend")).toBe(false);
   fireEvent.click(within(confirm).getByRole("button", { name: "Replay" }));
   await screen.findByText("Block #591000 goes to the archive next.");
+  // A new lookup forgets the last outcome.
+  fireEvent.change(box, { target: { value: "591001" } });
+  fireEvent.click(screen.getByRole("button", { name: /Find/ }));
+  await waitFor(() =>
+    expect(
+      screen.queryByText("Block #591000 goes to the archive next."),
+    ).toBeNull(),
+  );
   const post = calls.find(c => c.path === "/archive/resend")!;
   expect(post.method).toBe("POST");
   expect(post.headers.get("x-mina-archive-control")).toBe("1");
@@ -443,4 +451,27 @@ test("resend all retained: how many and how much, behind a confirm", async () =>
   const post = calls.find(c => c.path === "/archive/resend")!;
   expect(post.body).toEqual({ all: true });
   expect(post.headers.get("x-mina-archive-control")).toBe("1");
+});
+
+test("the recent delivered blocks show ten, then all twenty", async () => {
+  const calls = renderWith(<ArchivePage />, {
+    blocks: () =>
+      json(
+        blocksAnswer(
+          Array.from({ length: 20 }, (_, i) => retainedEntry(TIP - i)),
+        ),
+      ),
+  });
+  await feed("Up to date");
+  const recent = await screen.findByRole("region", {
+    name: "Recently delivered blocks table",
+  });
+  await waitFor(() =>
+    expect(within(recent).getAllByRole("row")).toHaveLength(11),
+  );
+  expect(
+    calls.some(c => c.path === "/archive/blocks?state=retained&limit=20"),
+  ).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Show all 20" }));
+  expect(within(recent).getAllByRole("row")).toHaveLength(21);
 });

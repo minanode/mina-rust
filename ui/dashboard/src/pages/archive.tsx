@@ -67,6 +67,7 @@ import {
 
 import { Code } from "../components/code";
 import { PHONE_HIDDEN, PhoneList } from "../components/phone-list";
+import { useShowAll } from "../components/show-all";
 import { Loaded, PolledAge } from "../components/states";
 import { docsUrl } from "../lib/docs";
 import { NotFoundPage } from "./not-found";
@@ -169,7 +170,7 @@ function ArchiveFeed({
         <Retained status={s} onChanged={onChanged} />
       </div>
       <Gaps status={s} />
-      <ReplaySection status={s} onChanged={onChanged} />
+      <ReplaySection onChanged={onChanged} />
       <RecentDelivered onChanged={onChanged} />
     </>
   );
@@ -405,9 +406,11 @@ function Gaps({ status: s }: { status: ArchiveStatus }) {
     <PageSection
       title="Gaps since the feed started"
       aside={
-        <span className="font-mono text-sm text-muted-foreground tabular-nums">
-          {formatCount(s.gapsTotal)}
-        </span>
+        s.gapsTotal > 0 ? (
+          <span className="font-mono text-sm text-muted-foreground tabular-nums">
+            {formatCount(s.gapsTotal)}
+          </span>
+        ) : null
       }
     >
       {s.gapsTotal === 0 ? (
@@ -507,6 +510,11 @@ function useReplay(onChanged: () => void) {
       setConfirming(hash);
     },
     cancel: () => setConfirming(null),
+    /** Forget the confirm and the last outcome: a new lookup. */
+    reset: () => {
+      setConfirming(null);
+      setAction({ kind: "idle" });
+    },
     replay,
   };
 }
@@ -559,7 +567,7 @@ function ReplayConfirm({
   entries,
   replay,
 }: {
-  entries: ArchiveEntry[];
+  entries: readonly ArchiveEntry[];
   replay: Replay;
 }) {
   const entry = entries.find(e => e.stateHash === replay.confirming);
@@ -584,7 +592,7 @@ function Entries({
   replay,
 }: {
   label: string;
-  entries: ArchiveEntry[];
+  entries: readonly ArchiveEntry[];
   replay: Replay;
 }) {
   return (
@@ -639,13 +647,7 @@ function Entries({
   );
 }
 
-function ReplaySection({
-  status: s,
-  onChanged,
-}: {
-  status: ArchiveStatus;
-  onChanged: () => void;
-}) {
+function ReplaySection({ onChanged }: { onChanged: () => void }) {
   const [input, setInput] = React.useState("");
   const [query, setQuery] = React.useState<ArchiveQuery | null>(null);
   const [inputError, setInputError] = React.useState<string | null>(null);
@@ -666,7 +668,7 @@ function ReplaySection({
       return;
     }
     setInputError(null);
-    replay.cancel();
+    replay.reset();
     setQuery(
       lookup.kind === "height"
         ? { height: lookup.height, limit: 20 }
@@ -689,11 +691,7 @@ function ReplaySection({
             id={inputId}
             value={input}
             onChange={e => setInput(e.target.value)}
-            placeholder={
-              s.newestRetained
-                ? String(s.newestRetained.height)
-                : "Height or 3N…"
-            }
+            placeholder="Height or 3N…"
             autoComplete="off"
             spellCheck={false}
             className="min-w-0 flex-1 font-mono"
@@ -759,7 +757,8 @@ function NotRetained({
           {oldest && newest
             ? `It keeps heights ${formatHeight(oldest.height)} to ${formatHeight(newest.height)}.`
             : "It keeps no delivered blocks now."}{" "}
-          Older blocks need a precomputed-block import: see Archive docs.
+          Older blocks need a precomputed-block import, described in Archive
+          docs.
         </p>
       }
     />
@@ -775,14 +774,15 @@ function RecentDelivered({ onChanged }: { onChanged: () => void }) {
     onChanged();
     recent.refresh();
   });
+  const { shown, toggle } = useShowAll(recent.data?.entries ?? [], "newest");
   return (
-    <PageSection title="Recently delivered">
+    <PageSection title="Recently delivered" aside={toggle}>
       <Loaded polled={recent} what="the delivered blocks" rows={4}>
         {list =>
           list.entries.length > 0 ? (
             <Entries
               label="Recently delivered blocks"
-              entries={list.entries}
+              entries={shown}
               replay={replay}
             />
           ) : (
