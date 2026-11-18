@@ -16,6 +16,15 @@ pub struct TransitionFrontierConfig {
     /// frontier store replaces them.
     #[serde(default)]
     pub genesis_ledgers_deferred: Option<Arc<TransitionFrontierGenesisConfig>>,
+    /// How many of the newest retired roots keep their scan state and
+    /// pending coinbase, from which the node serves their staged ledger to
+    /// peers that bootstrap from them. `None` keeps them for every root in
+    /// the root history, `k + 10`, as OCaml does. With `Some(0)` a peer that
+    /// asks for a retired root's staged ledger gets the answer an unknown
+    /// root gets. The root history keeps the retired roots' blocks either
+    /// way.
+    #[serde(default)]
+    pub retired_root_scan_states: Option<usize>,
 }
 
 impl TransitionFrontierConfig {
@@ -24,6 +33,7 @@ impl TransitionFrontierConfig {
             genesis,
             persist: Default::default(),
             genesis_ledgers_deferred: None,
+            retired_root_scan_states: None,
         }
     }
 }

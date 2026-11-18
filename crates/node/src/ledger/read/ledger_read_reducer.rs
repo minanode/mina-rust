@@ -585,17 +585,26 @@ fn build_staged_ledger_parts_request(
     ))
 }
 
+/// The frontier block, or the retired root that kept its scan state, whose
+/// staged ledger a peer asks for. A retired root that kept none is answered
+/// as an unknown block is.
 fn serving_block<'a>(
     state: &'a State,
     hash: &v2::StateHash,
 ) -> Option<&'a mina_core::block::ArcBlockWithHash> {
-    state
-        .transition_frontier
+    let frontier = &state.transition_frontier;
+    frontier
         .best_chain
         .iter()
         .find(|b| b.hash() == hash)
         .map(|b| &b.block)
-        .or_else(|| state.transition_frontier.root_history.get(hash))
+        .or_else(|| {
+            frontier
+                .root_history
+                .newest(frontier.config.retired_root_scan_states)
+                .iter()
+                .find(|b| b.hash() == hash)
+        })
 }
 
 #[cfg(test)]
@@ -765,6 +774,81 @@ mod tests {
             ));
         }
         assert_eq!(reads, 1);
+    }
+
+    /// What one aux request from `peer` turns into: immediate "unavailable"
+    /// answers, and ledger reads.
+    fn aux_outcome(state: &State) -> (usize, usize) {
+        let mut dispatcher = Dispatcher::new();
+        LedgerReadState::next_read_requests_init(&mut dispatcher, state);
+        let (mut unavailable, mut reads) = (0, 0);
+        while let Some(action) = dispatcher.pop() {
+            match action {
+                Action::P2p(P2pAction::Channels(P2pChannelsAction::Rpc(
+                    P2pChannelsRpcAction::ResponseSend {
+                        id: 7,
+                        response: None,
+                        ..
+                    },
+                ))) => unavailable += 1,
+                Action::Ledger(LedgerAction::Read(LedgerReadAction::Init {
+                    request: LedgerReadRequest::GetStagedLedgerAuxAndPendingCoinbases(_),
+                    ..
+                })) => reads += 1,
+                _ => {}
+            }
+        }
+        (unavailable, reads)
+    }
+
+    /// A retired root that kept no scan state
+    /// (`TransitionFrontierConfig::retired_root_scan_states`) is answered as
+    /// an unknown block is, at once and without a ledger read. A frontier
+    /// block is read as before, and the default reads every retired root.
+    #[test]
+    fn a_retired_root_without_scan_state_is_answered_as_unknown() {
+        const UNAVAILABLE: (usize, usize) = (1, 0);
+        const READ: (usize, usize) = (0, 1);
+        let older = root();
+        let mut newer = older.block.as_ref().clone();
+        newer.header.protocol_state.previous_state_hash = older.hash().clone();
+        let newer = mina_core::block::BlockWithHash::try_new(std::sync::Arc::new(newer)).unwrap();
+        let mut frontier = newer.block.as_ref().clone();
+        frontier.header.protocol_state.previous_state_hash = newer.hash().clone();
+        let frontier =
+            mina_core::block::BlockWithHash::try_new(std::sync::Arc::new(frontier)).unwrap();
+
+        let outcome = |kept: Option<usize>, asked: &v2::StateHash| {
+            let mut state = state();
+            state.transition_frontier.config.retired_root_scan_states = kept;
+            state.transition_frontier.root_history.0 = vec![older.clone(), newer.clone()];
+            state
+                .transition_frontier
+                .best_chain
+                .push(mina_core::block::AppliedBlock {
+                    block: frontier.clone(),
+                    just_emitted_a_proof: false,
+                });
+            peer(&mut state, asked.clone(), false);
+            aux_outcome(&state)
+        };
+        let mut unknown = frontier.block.as_ref().clone();
+        unknown.header.protocol_state.previous_state_hash = frontier.hash().clone();
+        let unknown = mina_core::block::BlockWithHash::try_new(std::sync::Arc::new(unknown))
+            .unwrap()
+            .hash()
+            .clone();
+        for kept in [None, Some(0), Some(1), Some(300)] {
+            assert_eq!(outcome(kept, &unknown), UNAVAILABLE, "{kept:?}");
+            assert_eq!(outcome(kept, frontier.hash()), READ, "{kept:?}");
+        }
+        assert_eq!(outcome(None, older.hash()), READ);
+        assert_eq!(outcome(None, newer.hash()), READ);
+        assert_eq!(outcome(Some(300), older.hash()), READ);
+        assert_eq!(outcome(Some(1), older.hash()), UNAVAILABLE);
+        assert_eq!(outcome(Some(1), newer.hash()), READ);
+        assert_eq!(outcome(Some(0), older.hash()), UNAVAILABLE);
+        assert_eq!(outcome(Some(0), newer.hash()), UNAVAILABLE);
     }
 
     #[test]

@@ -482,8 +482,7 @@ impl TransitionFrontierSyncAction {
                         .extend_with_needed(new_root.block_with_hash(), old_chain);
                 }
 
-                let mut root_history = transition_frontier.root_history.clone();
-                root_history.advance(&transition_frontier.best_chain, &new_root.block);
+                let root_history = transition_frontier.root_history_for_commit(&new_root.block);
                 // Historical scan states also need states preceding the current root.
                 let needed_protocol_states = needed_protocol_states
                     .iter()
