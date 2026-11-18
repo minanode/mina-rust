@@ -24,3 +24,4 @@ export * from "./chainview";
 export * from "./mempool";
 export * from "./explorer";
 export * from "./report";
+export * from "./archive";

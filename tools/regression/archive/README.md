@@ -58,9 +58,16 @@ hashes against `blocks`, checking archive errors as well as outbox status.
 Replay retained diffs using the private operator endpoint if necessary:
 
 ```bash
-curl -X POST "$NODE_URL/archive/resend"
+curl -X POST "$NODE_URL/archive/resend" \
+  -H 'x-mina-archive-control: 1' -H 'content-type: application/json' \
+  -d '{"all": true}'
 curl "$NODE_URL/archive/status"
 ```
+
+To replay one block, send `{"state_hash": "3N..."}` instead.
+`GET /archive/blocks` lists the outbox's pending and retained blocks. A browser
+page may replay only from this machine, the node's own dashboard at an IP
+address, or a `--worker-control-origin` origin.
 
 Replay is idempotent by state hash. It cannot recover diffs outside retention;
 use independently saved blocks and the archive import tools for that history.

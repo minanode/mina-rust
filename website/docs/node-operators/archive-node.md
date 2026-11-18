@@ -23,8 +23,20 @@ For a fresh database, use the matching `create_schema.sql` instead.
 
 Restart the archive and compare stored block hashes with the retained outbox;
 RPC acknowledgement alone does not prove database commitment. The private
-`POST /archive/resend` endpoint replays retained diffs if needed. The live
-feeder continues to use `Send_archive_diff` v0, matching OCaml's daemon.
+`POST /archive/resend` endpoint replays retained diffs if needed: one block with
+`{"state_hash": "3N..."}`, or every retained diff with `{"all": true}`. The
+request needs the `x-mina-archive-control` header and a JSON body:
+
+```bash
+curl -X POST http://127.0.0.1:3000/archive/resend \
+  -H 'x-mina-archive-control: 1' -H 'content-type: application/json' \
+  -d '{"all": true}'
+```
+
+From a browser, only pages of this machine, the node's own dashboard at an IP
+address and `--worker-control-origin` origins may send it. The dashboard's
+Archive page shows the feed and replays blocks. The live feeder continues to use
+`Send_archive_diff` v0, matching OCaml's daemon.
 
 Historical versioned JSON import and genesis-ledger population are separate
 operations. Creating `genesis_accounts` does not fill it: use the pinned

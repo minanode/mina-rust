@@ -21,6 +21,30 @@ export const metadata: Metadata = {
   alternates: { canonical: "/docs/dashboard/" },
 };
 
+const archiveReplay = `curl -X POST http://127.0.0.1:3000/archive/resend \\
+  -H 'x-mina-archive-control: 1' \\
+  -H 'content-type: application/json' \\
+  -d '{"state_hash": "3N..."}'`;
+
+const archiveStates = [
+  {
+    term: "Up to date",
+    text: "No diff waits, no delivery failed, and the newest delivered block is the highest block the node accepted.",
+  },
+  {
+    term: "Catching up",
+    text: "Diffs wait in the outbox. The count says how many.",
+  },
+  {
+    term: "Delivery failing",
+    text: "The archive refused the diff or didn't answer. The node retries the same block with back-off and keeps every diff.",
+  },
+  {
+    term: "Node not synced",
+    text: "The node is still syncing, so its feed can't be up to date with the network.",
+  },
+];
+
 const pages = [
   {
     label: "Overview",
@@ -56,6 +80,11 @@ const pages = [
   },
   { label: "Status", value: "The node's own /status and /build_env answers" },
   { label: "GraphQL", value: "The GraphQL address, with an example to copy" },
+  {
+    label: "Archive",
+    value:
+      "On a node that feeds an archive, whether the feed is up to date, its gaps, and replay of retained blocks",
+  },
   {
     label: "Report a problem",
     value: "A bug report to copy, download, or open as a GitHub issue",
@@ -133,6 +162,66 @@ export default function DashboardPage() {
           width={1440}
           height={1155}
         />
+      </DocSection>
+
+      <DocSection id="archive-page" title="The Archive page">
+        <Prose>
+          <p>
+            The Archive page appears on a node started with{" "}
+            <C>--archive-archiver-process</C>, which sends each block it applies
+            to an OCaml archive process. On any other node the page and its link
+            are absent.
+          </p>
+          <p>
+            A block is delivered once the archive process acknowledges its diff.
+            The archive acknowledges a diff before it commits the block to its
+            database, so the node can&apos;t tell whether a block is in the
+            database. To check the database, run{" "}
+            <C>mina-missing-blocks-auditor</C> against it.
+          </p>
+          <p>The status at the top of the page is one of these:</p>
+        </Prose>
+        <Terms items={archiveStates} />
+        <Prose>
+          <h3>Replay a block</h3>
+          <p>
+            Replay sends a block&apos;s diff to the archive again. The node
+            keeps each delivered diff until it is 870 heights below the highest
+            block the node accepted. <C>MINA_ARCHIVE_RETAIN_BLOCKS</C> sets that
+            window, within the outbox&apos;s size limits. Only blocks in the
+            window can be replayed. A replayed diff goes ahead of the diffs that
+            wait. The archive keys blocks by state hash, so a replay of a block
+            it already has leaves its rows unchanged.
+          </p>
+          <p>
+            <strong>Resend all retained</strong> replays every block in the
+            window. The node does the same each time it starts.
+          </p>
+          <h3>Who may replay</h3>
+          <p>
+            From a browser, the node takes a replay only from three kinds of
+            page: pages of this machine, its own dashboard opened at an IP
+            address, and origins you list with <C>--worker-control-origin</C>.
+            That option needs <C>--allow-worker-control</C>. A program sends no
+            page origin. It sends the request with a header and a JSON body:
+          </p>
+        </Prose>
+        <CodeBlock code={archiveReplay} label="archive replay command" />
+        <Prose>
+          <p>
+            Send <C>{'{"all": true}'}</C> instead to replay every block in the
+            window. <C>GET /archive/blocks</C> lists the outbox&apos;s blocks,
+            and <C>GET /archive/status</C> reports the feed.
+          </p>
+          <h3>History outside the window</h3>
+          <p>
+            A block below the window, or one the node never saw, can&apos;t be
+            replayed. The page lists the blocks the node never saw, dropped, or
+            found corrupt under <strong>Gaps since the feed started</strong>.
+            Import such blocks from precomputed block files with{" "}
+            <C>mina-archive-blocks --precomputed</C>.
+          </p>
+        </Prose>
       </DocSection>
 
       <DocSection id="on-a-server" title="Open it on a server">

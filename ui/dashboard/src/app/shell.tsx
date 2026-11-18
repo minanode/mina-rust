@@ -10,6 +10,7 @@ import {
   Braces,
   Bug,
   Cpu,
+  Database,
   FileJson,
   Layers,
   LayoutDashboard,
@@ -30,7 +31,12 @@ import { Signal } from "@minanode/design-system/patterns/signal";
 import { ThemeToggle } from "@minanode/design-system/patterns/theme-toggle";
 import { formatAge, useNow } from "@minanode/design-system/lib/time";
 import { formatHeight } from "@minanode/node-client";
-import { useNodeStatus, useSyncView } from "@minanode/node-client/react";
+import {
+  feedsArchive,
+  useArchiveStatus,
+  useNodeStatus,
+  useSyncView,
+} from "@minanode/node-client/react";
 
 import { DOCS_HOME } from "../lib/docs";
 import { Link, type Route } from "./router";
@@ -100,6 +106,26 @@ export const NAV_GROUPS: [string, NavItem[]][] = [
     ],
   ],
 ];
+
+/** In the Roles group, only on a node that feeds an archive process. */
+export const ARCHIVE: NavItem = {
+  to: "/archive-node",
+  label: "Archive",
+  icon: Database,
+  pages: ["archive"],
+};
+
+/** How often the shell asks whether the node feeds an archive. */
+const ARCHIVE_CHECK_MS = 30_000;
+
+/** The sidebar's groups: Archive joins the roles while the node feeds an
+ * archive process. */
+export function navGroups(archive: boolean): [string, NavItem[]][] {
+  return NAV_GROUPS.map(([group, items]) => [
+    group,
+    group === "Roles" && archive ? [...items, ARCHIVE] : items,
+  ]);
+}
 
 const REPORT: NavItem = {
   to: "/report-a-problem",
@@ -215,6 +241,7 @@ export function Shell({
   route: Route;
   children: React.ReactNode;
 }) {
+  const archive = feedsArchive(useArchiveStatus(ARCHIVE_CHECK_MS));
   return (
     <AppShell
       brand={
@@ -241,7 +268,7 @@ export function Shell({
       navLabel="Dashboard"
       nav={
         <SidebarNav>
-          {NAV_GROUPS.map(([group, items]) => (
+          {navGroups(archive).map(([group, items]) => (
             <SidebarNavGroup key={group} label={group}>
               {items.map(item => (
                 <NavLink key={item.to} item={item} route={route} />

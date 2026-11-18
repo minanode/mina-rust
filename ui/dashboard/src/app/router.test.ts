@@ -20,6 +20,7 @@ test("every page has its path", () => {
   expect(matchRoute("/graphql-endpoint")).toEqual({ page: "graphql" });
   expect(matchRoute("/node-status")).toEqual({ page: "status" });
   expect(matchRoute("/report-a-problem")).toEqual({ page: "report" });
+  expect(matchRoute("/archive-node")).toEqual({ page: "archive" });
 });
 
 test("API paths and deeper paths are not pages", () => {
@@ -32,6 +33,9 @@ test("API paths and deeper paths are not pages", () => {
     "/snarker/control",
     "/report",
     "/report/crash",
+    "/archive/status",
+    "/archive/blocks",
+    "/archive/resend",
     "/blocks/1/2",
     "/account//x",
     "//",

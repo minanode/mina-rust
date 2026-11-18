@@ -1,6 +1,7 @@
 import * as React from "react";
 
 import { AccountPage } from "../pages/account";
+import { ArchivePage } from "../pages/archive";
 import { BlockPage } from "../pages/block";
 import { BlocksPage } from "../pages/blocks";
 import { GraphqlPage } from "../pages/graphql";
@@ -27,11 +28,12 @@ const titles: Record<Route["page"], string> = {
   peers: "Peers",
   status: "Status",
   graphql: "GraphQL",
+  archive: "Archive",
   report: "Report a problem",
   "not-found": "Not found",
 };
 
-function Page({ route }: { route: Route }) {
+function Page({ route, pathname }: { route: Route; pathname: string }) {
   switch (route.page) {
     case "overview":
       return <OverviewPage />;
@@ -53,6 +55,8 @@ function Page({ route }: { route: Route }) {
       return <NodeStatusPage />;
     case "graphql":
       return <GraphqlPage />;
+    case "archive":
+      return <ArchivePage path={pathname} />;
     case "report":
       return <ReportPage />;
     case "not-found":
@@ -78,7 +82,7 @@ export function App() {
   return (
     <NodeStatusProvider>
       <Shell route={route}>
-        <Page route={route} />
+        <Page route={route} pathname={pathname} />
       </Shell>
     </NodeStatusProvider>
   );

@@ -29,6 +29,8 @@ const api = [
   "^/graphql$",
   // The bug report; the page is "/report-a-problem".
   "^/report(/crash)?$",
+  // The archive feed; the page is "/archive-node".
+  "^/archive/",
 ];
 const isApi = (url: string | undefined) => {
   const path = (url ?? "").split("?")[0];

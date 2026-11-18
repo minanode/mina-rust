@@ -18,6 +18,7 @@ export type Route =
   | { page: "peers" }
   | { page: "status" }
   | { page: "graphql" }
+  | { page: "archive" }
   | { page: "report" }
   | { page: "not-found"; path: string };
 
@@ -71,6 +72,8 @@ export function matchRoute(pathname: string): Route {
       return { page: "status" };
     case "/graphql-endpoint":
       return { page: "graphql" };
+    case "/archive-node":
+      return { page: "archive" };
     case "/report-a-problem":
       return { page: "report" };
     default:

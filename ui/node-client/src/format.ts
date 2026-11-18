@@ -114,3 +114,18 @@ export function shortHash(
 export function plural(n: number, one: string, many = `${one}s`): string {
   return `${formatCount(n)} ${n === 1 ? one : many}`;
 }
+
+/** `98 MB`, `1.4 GB`, `512 B`: decimal units, one decimal below 10. */
+export function formatBytes(n: number | null | undefined): string {
+  if (n === null || n === undefined || !Number.isFinite(n) || n < 0) return "–";
+  const units = ["B", "kB", "MB", "GB", "TB"];
+  let value = n;
+  let unit = 0;
+  while (value >= 1000 && unit < units.length - 1) {
+    value /= 1000;
+    unit += 1;
+  }
+  const shown =
+    unit === 0 || value >= 10 ? Math.round(value).toString() : value.toFixed(1);
+  return `${shown} ${units[unit]}`;
+}

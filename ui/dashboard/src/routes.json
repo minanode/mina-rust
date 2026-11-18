@@ -12,6 +12,7 @@
     "/peers",
     "/node-status",
     "/graphql-endpoint",
+    "/archive-node",
     "/report-a-problem"
   ]
 }
