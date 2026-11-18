@@ -22,10 +22,12 @@ The script's `4.0.0` / `5.0.0` labels are protocol eras, not package versions.
 For a fresh database, use the matching `create_schema.sql` instead.
 
 Restart the archive and compare stored block hashes with the retained outbox;
-RPC acknowledgement alone does not prove database commitment. The private
-`POST /archive/resend` endpoint replays retained diffs if needed: one block with
-`{"state_hash": "3N..."}`, or every retained diff with `{"all": true}`. The
-request needs the `x-mina-archive-control` header and a JSON body:
+RPC acknowledgement alone does not prove database commitment. The
+[database check](#check-the-archive-database) reads the archive's own counts of
+its database. The private `POST /archive/resend` endpoint replays retained diffs
+if needed: one block with `{"state_hash": "3N..."}`, or every retained diff with
+`{"all": true}`. The request needs the `x-mina-archive-control` header and a
+JSON body:
 
 ```bash
 curl -X POST http://127.0.0.1:3000/archive/resend \
@@ -45,6 +47,81 @@ era's actual runtime config. Rust's live feed does not reconstruct untouched
 genesis accounts. See `tools/regression/archive/README.md` for the complete
 recipe and regression command. A rollback to a text schema can fail on NUL or
 invalid UTF-8 bytes; do not assume a lossless downgrade.
+
+## Check the archive database
+
+The OCaml archive process counts its own `blocks` table and serves the counts as
+Prometheus gauges when you start it with `--metrics-port`. The Rust node reads
+them from `MINA_ARCHIVE_METRICS_ADDRESS` every 60 seconds, with a 5-second
+timeout and a 1 MiB limit on the answer. The node never connects to PostgreSQL
+and needs no database password.
+
+```bash
+mina-archive run --postgres-uri "$ARCHIVE_DATABASE_URI" \
+  --server-port 3086 --metrics-port 3087
+
+MINA_ARCHIVE_ADDRESS=http://127.0.0.1:3086 \
+MINA_ARCHIVE_METRICS_ADDRESS=http://127.0.0.1:3087 \
+  mina node --archive-archiver-process
+```
+
+A bare address gets the path `/metrics`. The node refuses to start if the value
+is not an `http` or `https` URL. The archive's metrics and RPC servers listen on
+every network interface, and the archive has no option to choose one. Block both
+ports at the firewall, or run the archive where only the node can reach them.
+
+The node reads three gauges:
+
+| Gauge                            | Meaning                                                                                                |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `Coda_Archive_max_block_height`  | The highest block height in `blocks`.                                                                  |
+| `Coda_Archive_missing_blocks`    | Heights with no block row, from `max(lowest height, highest - width)` to the highest height.           |
+| `Coda_Archive_unparented_blocks` | Blocks above the lowest height whose `parent_id` is null, because their parent is not in the database. |
+
+The width is the archive's `--missing-blocks-width`, 2000 by default. The
+archive recomputes the gauges every two slots, which is 3 minutes on Mesa.
+
+`GET /archive/status` reports the check under `database`, and the dashboard's
+Archive page shows it on the **Archive database** card. The `verdict` is one of
+these values:
+
+- `complete` means no missing heights, no blocks without a parent, and a highest
+  stored height at least as high as the highest block the node had delivered 6
+  minutes earlier.
+- `incomplete` means at least one missing height or block without a parent.
+- `behind` means the highest stored height is below a block the node delivered 6
+  minutes ago or more. The archive acknowledged a block it did not write, or its
+  gauges stopped refreshing.
+- `not_checked` means `MINA_ARCHIVE_METRICS_ADDRESS` is not set, or the first
+  read has not finished.
+- `unavailable` means the last read failed, or the answer has no archive gauges.
+  `last_error` says why. The last good counts stay, with their time.
+
+The 6 minutes are two archive refreshes: four slots of the node's network. The
+node also reports `delivered_height`, the highest block the archive acknowledged
+since the node started, and `stored_tip_lag`, that height minus the highest
+stored height.
+
+```bash
+curl -s http://127.0.0.1:3000/archive/status | jq .database
+```
+
+If the verdict is `incomplete`, resend the retained blocks with `{"all": true}`,
+as above. The archive adds the blocks it lacks among the last 870 heights.
+Import older blocks from precomputed block files with
+`mina-archive-blocks --precomputed`.
+
+The check has these limits:
+
+- It gives counts, not heights. Run `mina-missing-blocks-auditor` against the
+  database to list them.
+- A change in the database shows in the status within about 4 minutes: up to 3
+  minutes until the archive's next refresh, then up to 1 minute until the node's
+  next read.
+- Missing heights cover only the archive's window. An older gap does not count.
+  Blocks without a parent cover the whole database.
+- The Rust node sends only its best chain. Blocks of other forks reach the
+  database only from other senders. A height with any block is not missing.
 
 ## Devnet deployment
 
@@ -282,6 +359,11 @@ redundancy. Each mode stores blockchain data in a different location or format.
 
 - `MINA_ARCHIVE_ADDRESS`: Network address for the archiver service (e.g.,
   `http://localhost:3086`)
+
+**Optional environment variables:**
+
+- `MINA_ARCHIVE_METRICS_ADDRESS`: The archive's `--metrics-port` URL, for the
+  [database check](#check-the-archive-database) (e.g., `http://localhost:3087`)
 
 ##### 2. Local Storage (`--archive-local-storage`)
 
