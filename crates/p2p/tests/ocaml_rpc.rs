@@ -1477,7 +1477,7 @@ async fn staged_ledger_over_the_old_ceiling_reaches_a_libp2p_client() -> anyhow:
 /// An answer as large as devnet's on 2026-11-18, 173.8 MB, reaches the
 /// client whole.
 #[tokio::test]
-#[ignore = "large: run with --release"]
+#[ignore = "large: a minute and 1 GB of memory"]
 async fn staged_ledger_of_devnet_size_reaches_a_libp2p_client() -> anyhow::Result<()> {
     let parts = staged_ledgers::heavy_staged_ledger(503);
     let expected = staged_ledgers::expected_payload(&parts);
@@ -1503,7 +1503,7 @@ async fn staged_ledger_over_the_limit_gets_none() -> anyhow::Result<()> {
 
 /// An answer over the default limit, 201.5 MB, gets an empty answer.
 #[tokio::test]
-#[ignore = "large: run with --release"]
+#[ignore = "large: a minute and 1 GB of memory"]
 async fn staged_ledger_over_the_default_limit_gets_none() -> anyhow::Result<()> {
     let parts = staged_ledgers::heavy_staged_ledger(583);
     assert!(staged_ledgers::expected_payload(&parts).len() + 10 > 192 * 1024 * 1024);
