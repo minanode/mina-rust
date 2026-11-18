@@ -344,7 +344,7 @@ impl NodeBuilder {
             .as_ref()
             .map(|snarker| snarker.strategy)
             .unwrap_or_default();
-        let node_config = mina_node::Config {
+        let mut node_config = mina_node::Config {
             global: GlobalConfig {
                 snark_work_fee: None,
                 build: mina_node::BuildEnv::get().into(),
@@ -400,6 +400,9 @@ impl NodeBuilder {
             },
             archive: None,
         };
+        // Without sharing it serves no other browser's bootstrap.
+        node_config.transition_frontier.retired_root_scan_states =
+            TransitionFrontierConfig::retired_root_scan_states_for(&node_config.p2p);
 
         // build service
         let mut service = self.service;
