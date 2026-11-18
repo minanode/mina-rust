@@ -120,6 +120,42 @@ impl P2pNetworkSchedulerState {
         )
     }
 
+    /// Whether the queue check of `P2pNetworkYamuxAction::OutgoingFrame`
+    /// takes `len` bytes of data on `stream_id` of the connection at `addr`,
+    /// as one frame or several in a row, once `released` bytes of `peer_id`'s
+    /// reservations are no longer counted.
+    pub fn outgoing_data_admitted(
+        &self,
+        addr: &ConnectionAddr,
+        peer_id: &PeerId,
+        stream_id: StreamId,
+        len: usize,
+        released: usize,
+        limits: &crate::P2pLimits,
+    ) -> bool {
+        let Some(yamux) = self.connection_state(addr).and_then(|c| c.yamux_state()) else {
+            return false;
+        };
+        let Some(stream) = yamux.streams.get(&stream_id) else {
+            return false;
+        };
+        let (queued, peer_queued) = self.queued_outgoing_bytes(peer_id);
+        let (reserved, peer_reserved) = self.reserved_rpc_response_bytes(peer_id);
+        let total = queued.saturating_add(reserved).saturating_sub(released);
+        let peer = peer_queued
+            .saturating_add(peer_reserved)
+            .saturating_sub(released);
+        let previous = stream.pending_len();
+        limits.outgoing_queue_admits(
+            yamux.pending_outgoing_limit,
+            total,
+            peer,
+            peer_queued,
+            previous,
+            previous.saturating_add(stream.queued_part(len)),
+        )
+    }
+
     pub fn discovery_state(&self) -> Option<&P2pNetworkKadState> {
         self.discovery_state.as_ref()
     }
