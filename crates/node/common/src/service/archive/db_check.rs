@@ -21,9 +21,8 @@
 
 use std::{
     collections::VecDeque,
-    io::Read,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use serde::Serialize;
@@ -251,8 +250,14 @@ pub fn parse_metrics(text: &str) -> Result<ArchiveGauges, String> {
 }
 
 /// Reads the archive's metrics page.
+///
+/// The fetch runs as one future on a runtime of its own, under a single
+/// deadline. A blocking client would apply its timeout to each step on its
+/// own (connect, headers, every read), so a page that dribbles in or closes
+/// late could hold the poller for several timeouts in a row.
 pub struct MetricsFetcher {
-    client: reqwest::blocking::Client,
+    runtime: tokio::runtime::Runtime,
+    client: reqwest::Client,
     url: reqwest::Url,
     timeout: Duration,
     max_body: usize,
@@ -260,14 +265,21 @@ pub struct MetricsFetcher {
 
 impl MetricsFetcher {
     pub fn new(url: reqwest::Url, timeout: Duration, max_body: usize) -> Result<Self, String> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(timeout)
-            .connect_timeout(timeout)
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .map_err(|e| e.to_string())?;
+        let client = {
+            let _context = runtime.enter();
+            reqwest::Client::builder()
+                .connect_timeout(timeout)
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
+                .build()
+                .map_err(|e| e.to_string())?
+        };
         Ok(Self {
+            runtime,
             client,
             url,
             timeout,
@@ -279,13 +291,22 @@ impl MetricsFetcher {
         &self.url
     }
 
-    /// One fetch and parse: at most `timeout` and `max_body` bytes.
+    /// One fetch and parse: all of it, connect to the closed connection,
+    /// within `timeout`, and at most `max_body` bytes.
     pub fn fetch(&self) -> Result<ArchiveGauges, String> {
-        let started = Instant::now();
+        self.runtime.block_on(async {
+            tokio::time::timeout(self.timeout, self.fetch_page())
+                .await
+                .unwrap_or_else(|_| Err(self.timed_out()))
+        })
+    }
+
+    async fn fetch_page(&self) -> Result<ArchiveGauges, String> {
         let mut response = self
             .client
             .get(self.url.clone())
             .send()
+            .await
             .map_err(|e| describe(&e, self.timeout))?;
         let status = response.status();
         if !status.is_success() {
@@ -298,23 +319,15 @@ impl MetricsFetcher {
             return Err(self.too_large());
         }
         let mut body = Vec::new();
-        let mut chunk = [0u8; 16 * 1024];
-        loop {
-            if started.elapsed() > self.timeout {
-                return Err(self.timed_out());
-            }
-            let n = match response.read(&mut chunk) {
-                Ok(n) => n,
-                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => return Err(self.timed_out()),
-                Err(e) => return Err(format!("reading the metrics page failed: {e}")),
-            };
-            if n == 0 {
-                break;
-            }
-            if body.len() + n > self.max_body {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| format!("reading the metrics page failed: {e}"))?
+        {
+            if body.len() + chunk.len() > self.max_body {
                 return Err(self.too_large());
             }
-            body.extend_from_slice(&chunk[..n]);
+            body.extend_from_slice(&chunk);
         }
         let text = String::from_utf8(body).map_err(|_| "the metrics page isn't text".to_owned())?;
         parse_metrics(&text)
@@ -545,9 +558,9 @@ fn now_ms() -> u64 {
 }
 
 /// Starts the poller on its own thread: a fetch now, then every `poll`.
-/// `delivered` gives the highest block the archive acknowledged. The HTTP
-/// client is built on that thread: a blocking client must not be made or
-/// dropped inside an async runtime, which the archive service runs in.
+/// `delivered` gives the highest block the archive acknowledged. The fetcher
+/// and its runtime are built on that thread: a runtime must not be made,
+/// entered or dropped inside the async runtime the archive service runs in.
 pub fn spawn(
     url: reqwest::Url,
     behind_after: Duration,

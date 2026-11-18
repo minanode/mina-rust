@@ -44,6 +44,8 @@ tracing-appender = { workspace = true }
 libp2p-identity = { workspace = true, features = ["ed25519", "rand", "serde"] }
 mio = { workspace = true }
 reqwest = { workspace = true }
+# The archive database check runs its fetch on a runtime of its own.
+tokio = { workspace = true, features = ["rt", "time"] }
 aws-config = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 google-cloud-storage = { workspace = true }

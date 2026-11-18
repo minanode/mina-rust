@@ -352,6 +352,58 @@ fn a_page_that_trickles_in_times_out() {
     assert!(error.contains("no full answer within"), "{error}");
 }
 
+/// Within the deadline plus scheduling slack, well short of the server's
+/// next step: a limit that restarted per step would end later.
+fn assert_within_deadline(started: Instant, deadline: Duration) {
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < deadline + Duration::from_millis(400),
+        "the fetch took {elapsed:?} against a {deadline:?} deadline"
+    );
+}
+
+#[test]
+fn late_headers_then_a_late_body_end_at_the_deadline() {
+    // Headers at 0.8 of the deadline, the body at 1.6: each wait alone is
+    // shorter than the deadline, the whole is not.
+    let address = serve(|s| {
+        thread::sleep(Duration::from_millis(800));
+        let _ = write!(
+            s,
+            "HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n"
+        );
+        let _ = s.flush();
+        thread::sleep(Duration::from_millis(800));
+        let _ = s.write_all(b"#");
+    });
+    let deadline = Duration::from_secs(1);
+    let started = Instant::now();
+    let error = fetcher(address, deadline, MAX_BODY_BYTES)
+        .fetch()
+        .unwrap_err();
+    assert_within_deadline(started, deadline);
+    assert!(error.contains("no full answer within"), "{error}");
+}
+
+#[test]
+fn a_full_page_whose_connection_closes_late_is_refused() {
+    // The whole page at 0.6 of the deadline without a Content-Length, so the
+    // body ends only when the connection closes, at 1.6.
+    let address = serve(|s| {
+        thread::sleep(Duration::from_millis(600));
+        let _ = write!(s, "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{COMPLETE}");
+        let _ = s.flush();
+        thread::sleep(Duration::from_secs(1));
+    });
+    let deadline = Duration::from_secs(1);
+    let started = Instant::now();
+    let error = fetcher(address, deadline, MAX_BODY_BYTES)
+        .fetch()
+        .unwrap_err();
+    assert_within_deadline(started, deadline);
+    assert!(error.contains("no full answer within"), "{error}");
+}
+
 #[test]
 fn an_oversized_page_is_refused() {
     // Declared too large.
