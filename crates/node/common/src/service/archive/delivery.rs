@@ -12,7 +12,9 @@ use std::{
 
 use serde::Serialize;
 
-use super::outbox::{AppendOutcome, BlockRef, Outbox, OutboxStats};
+use super::outbox::{
+    AppendOutcome, BlockRef, EntryList, ListQuery, Outbox, OutboxStats, ResendOutcome,
+};
 
 /// Where entries go. `deliver` returns once the receiver acknowledged the
 /// payload; an error leaves the entry first in line.
@@ -50,6 +52,8 @@ pub struct DeliveryState {
     pub last_error: Option<String>,
     pub last_attempt_at_ms: Option<u64>,
     pub last_success_at_ms: Option<u64>,
+    /// When the current run of failures began; none while delivery works.
+    pub failing_since_ms: Option<u64>,
     /// The entry being retried, when delivery is failing.
     pub stuck_on: Option<BlockRef>,
 }
@@ -73,8 +77,8 @@ const STATUS_NOTE: &str = "RPC acknowledgements precede database commits; delive
      diffs are retained in delivered/ while less than retain_blocks below \
      highest_accepted_height, subject to the shared max_entries/max_bytes bounds \
      for diff files (journal/quarantine excluded; an oversized incoming diff or \
-     protected in-flight entry can exceed tiny limits). Startup and POST /archive/resend requeue all retained diffs, even outside the \
-     frontier. Expiry removes this repair opportunity without verifying storage; \
+     protected in-flight entry can exceed tiny limits). Startup and POST /archive/resend {\"all\": true} requeue all retained \
+     diffs, even outside the frontier; {\"state_hash\": ...} requeues one block's. Expiry removes this repair opportunity without verifying storage; \
      no database reconciliation is performed, so gaps_total=0 does not prove archive \
      completeness. Gaps record unavailable or potentially missing history; interrupted \
      operations can leave both a diff and its gap (duplicate records are possible). \
@@ -102,6 +106,11 @@ static STATUS: OnceLock<SharedOutbox> = OnceLock::new();
 /// The status of this process's archive outbox, if it has one.
 pub fn status() -> Option<ArchiveStatus> {
     STATUS.get().map(SharedOutbox::status)
+}
+
+/// This process's archive outbox, if it has one.
+pub fn global() -> Option<SharedOutbox> {
+    STATUS.get().cloned()
 }
 
 /// Operator-triggered replay of this process's retained acknowledgements.
@@ -157,6 +166,19 @@ impl SharedOutbox {
         let result = self.lock().outbox.resend_retained();
         self.inner.1.notify_all();
         result
+    }
+
+    /// Requeues one block's retained diff and wakes delivery
+    /// ([`Outbox::resend_block`]).
+    pub fn resend_block(&self, state_hash: &str) -> std::io::Result<ResendOutcome> {
+        let result = self.lock().outbox.resend_block(state_hash);
+        self.inner.1.notify_all();
+        result
+    }
+
+    /// The entries matching `query`, metadata only ([`Outbox::list`]).
+    pub fn list(&self, query: &ListQuery) -> EntryList {
+        self.lock().outbox.list(query)
     }
 
     pub fn status(&self) -> ArchiveStatus {
@@ -234,12 +256,17 @@ impl SharedOutbox {
                 inner.outbox.confirm(entry.meta.seq)?;
                 inner.delivery.consecutive_failures = 0;
                 inner.delivery.last_error = None;
+                inner.delivery.failing_since_ms = None;
                 inner.delivery.stuck_on = None;
                 inner.delivery.last_success_at_ms = Some(now_ms());
             }
             Err(e) => {
                 inner.outbox.release();
                 inner.delivery.consecutive_failures += 1;
+                inner.delivery.failing_since_ms = inner
+                    .delivery
+                    .failing_since_ms
+                    .or(inner.delivery.last_attempt_at_ms);
                 inner.delivery.last_error = Some(e.clone());
                 inner.delivery.stuck_on = Some(entry.meta.block.clone());
             }

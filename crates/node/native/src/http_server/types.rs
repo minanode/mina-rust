@@ -26,6 +26,9 @@ pub struct AppState {
     control_origins: super::control_origin::ControlOrigins,
     /// The bug report's work directory and its one collection at a time.
     report: std::sync::Arc<super::routes::report::ReportState>,
+    /// The archive outbox the `/archive` routes serve, instead of this
+    /// process's own (tests).
+    archive: Option<mina_node_common::archive::delivery::SharedOutbox>,
 }
 
 impl AppState {
@@ -45,7 +48,26 @@ impl AppState {
             worker_control: false,
             control_origins: Default::default(),
             report: super::routes::report::ReportState::new(None, None),
+            archive: None,
         }
+    }
+
+    /// Serve `outbox` on the `/archive` routes instead of this process's
+    /// own archive outbox.
+    pub fn with_archive(
+        mut self,
+        outbox: Option<mina_node_common::archive::delivery::SharedOutbox>,
+    ) -> Self {
+        self.archive = outbox;
+        self
+    }
+
+    /// The archive outbox the `/archive` routes serve: none when the node
+    /// doesn't feed an archive process.
+    pub fn archive_outbox(&self) -> Option<mina_node_common::archive::delivery::SharedOutbox> {
+        self.archive
+            .clone()
+            .or_else(mina_node_common::archive::delivery::global)
     }
 
     /// The node's work directory, which `POST /report` reads, and why the
@@ -208,7 +230,8 @@ impl IntoResponse for AppError {
 /// ([`super::control_origin::ReadOrigins`]), and every page may use WebRTC
 /// signalling. Only the origins that may change the worker get CORS headers
 /// for changing it, so a browser sends other pages' requests to it no further
-/// than the preflight (P5.4, [`super::control_origin`]). The bug report
+/// than the preflight (P5.4, [`super::control_origin`]); archive replay
+/// (`POST /archive/resend`) is limited the same way. The bug report
 /// (`/report`, `/report/crash`) is the same for every method, reads included:
 /// it holds the node's logs, so no other page may read it.
 pub fn cors_layer(
@@ -243,7 +266,9 @@ pub fn cors_layer(
                     .to_str()
                     .is_ok_and(|origin| read_origins.allows(origin, &control_origins))
             };
-            if path != super::control_origin::WORKER_CONTROL_PATH || request.method == Method::GET {
+            let controls = path == super::control_origin::WORKER_CONTROL_PATH
+                || path == super::archive::ARCHIVE_RESEND_PATH;
+            if !controls || request.method == Method::GET {
                 readable()
             } else {
                 allowed()
@@ -266,6 +291,7 @@ pub fn cors_layer(
             HeaderName::from_static("sec-fetch-mode"),
             HeaderName::from_static(super::control_origin::WORKER_CONTROL_HEADER),
             HeaderName::from_static(super::routes::report::REPORT_HEADER),
+            HeaderName::from_static(super::archive::ARCHIVE_CONTROL_HEADER),
         ])
 }
 

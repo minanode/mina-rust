@@ -583,3 +583,189 @@ fn acknowledgement_and_replay_moves_preserve_index_on_sync_failure() {
         }
     }
 }
+
+fn listed(list: &EntryList) -> Vec<(u32, EntryState)> {
+    list.entries.iter().map(|e| (e.height, e.state)).collect()
+}
+
+fn query(limit: usize) -> ListQuery {
+    ListQuery {
+        limit,
+        ..Default::default()
+    }
+}
+
+/// ARCHIVE-PANEL: the listing is newest first, bounded, filtered, and reads
+/// only the index: a damaged entry file is listed as it is, not opened.
+#[test]
+fn listing_is_newest_first_bounded_filtered_and_reads_no_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut outbox = Outbox::open(config(&dir)).unwrap();
+    for h in 1..=5 {
+        append(&mut outbox, h);
+    }
+    for _ in 1..=3 {
+        let entry = outbox.next_for_delivery().unwrap().unwrap();
+        outbox.confirm(entry.meta.seq).unwrap();
+    }
+    // Block 4 is being sent, block 5 waits.
+    let in_flight = outbox.next_for_delivery().unwrap().unwrap();
+    assert_eq!(in_flight.meta.block, block(4));
+
+    // Damage a retained file: listing must not notice.
+    let retained = entry_files(&dir.path().join(DELIVERED_DIR));
+    fs::write(&retained[0], b"not an entry").unwrap();
+
+    let all = outbox.list(&query(50));
+    assert_eq!(
+        listed(&all),
+        vec![
+            (5, EntryState::Pending),
+            (4, EntryState::InFlight),
+            (3, EntryState::Retained),
+            (2, EntryState::Retained),
+            (1, EntryState::Retained),
+        ]
+    );
+    assert_eq!(all.matching, 5);
+    assert_eq!(all.entries[0].state_hash, "3NHash5");
+    assert!(all.entries.iter().all(|e| e.size > 0));
+    assert_eq!(all.oldest_retained, Some(block(1)));
+    assert_eq!(all.newest_retained, Some(block(3)));
+    assert_eq!(all.highest_accepted_height, 5);
+    assert_eq!(all.retain_blocks, DEFAULT_RETAIN_BLOCKS);
+
+    let two = outbox.list(&query(2));
+    assert_eq!(listed(&two).len(), 2);
+    assert_eq!((two.matching, two.limit), (5, 2));
+
+    let by_height = outbox.list(&ListQuery {
+        height: Some(2),
+        ..query(50)
+    });
+    assert_eq!(listed(&by_height), vec![(2, EntryState::Retained)]);
+    let by_hash = outbox.list(&ListQuery {
+        state_hash: Some("3NHash4".to_owned()),
+        ..query(50)
+    });
+    assert_eq!(listed(&by_hash), vec![(4, EntryState::InFlight)]);
+    let unknown = outbox.list(&ListQuery {
+        state_hash: Some("3NUnknown".to_owned()),
+        ..query(50)
+    });
+    assert_eq!((unknown.entries.len(), unknown.matching), (0, 0));
+    let retained = outbox.list(&ListQuery {
+        state: Some(StateFilter::Retained),
+        ..query(50)
+    });
+    assert_eq!(
+        retained
+            .entries
+            .iter()
+            .map(|e| e.height)
+            .collect::<Vec<_>>(),
+        vec![3, 2, 1]
+    );
+    let pending = outbox.list(&ListQuery {
+        state: Some(StateFilter::Pending),
+        ..query(50)
+    });
+    assert_eq!(
+        listed(&pending),
+        vec![(5, EntryState::Pending), (4, EntryState::InFlight)]
+    );
+    // Nothing was read, so nothing was found corrupt.
+    assert_eq!(outbox.stats().corrupt, 0);
+    assert_eq!(outbox.stats().gaps_total, 0);
+}
+
+/// ARCHIVE-PANEL: replaying one block requeues only its retained diff, ahead
+/// of newer pending entries; a pending or unknown hash says so.
+#[test]
+fn one_block_replay_requeues_only_that_block() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut outbox = Outbox::open(config(&dir)).unwrap();
+    for h in 1..=3 {
+        append(&mut outbox, h);
+    }
+    assert_eq!(deliver_all(&mut outbox).len(), 3);
+    assert_eq!(outbox.stats().retained_entries, 3);
+    assert_eq!(outbox.stats().newest_retained, Some(block(3)));
+    append(&mut outbox, 4);
+
+    assert_eq!(
+        outbox.resend_block("3NHash2").unwrap(),
+        ResendOutcome::Requeued {
+            requeued: 1,
+            blocks: vec![block(2)],
+        }
+    );
+    // Block 2 goes before block 4, which was waiting already.
+    assert_eq!(heights(&outbox), vec![2, 4]);
+    assert_eq!(outbox.stats().retained_entries, 2);
+    assert_eq!(entry_files(&dir.path().join(DELIVERED_DIR)).len(), 2);
+    assert_eq!(
+        outbox.resend_block("3NHash2").unwrap(),
+        ResendOutcome::AlreadyPending {
+            requeued: 0,
+            blocks: vec![block(2)],
+            in_flight: false,
+        }
+    );
+    let entry = outbox.next_for_delivery().unwrap().unwrap();
+    assert_eq!(entry.payload, payload(2));
+    assert_eq!(
+        outbox.resend_block("3NHash2").unwrap(),
+        ResendOutcome::AlreadyPending {
+            requeued: 0,
+            blocks: vec![block(2)],
+            in_flight: true,
+        }
+    );
+    outbox.confirm(entry.meta.seq).unwrap();
+    assert_eq!(deliver_all(&mut outbox), vec![payload(4)]);
+    assert_eq!(outbox.stats().retained_entries, 4);
+    assert_eq!(outbox.stats().gaps_total, 0);
+
+    assert_eq!(
+        outbox.resend_block("3NUnknown").unwrap(),
+        ResendOutcome::NotRetained {
+            requeued: 0,
+            oldest_retained: Some(block(1)),
+            newest_retained: Some(block(4)),
+            retain_blocks: DEFAULT_RETAIN_BLOCKS,
+        }
+    );
+    assert!(outbox.is_empty());
+
+    // The replayed entry survives a restart like any other.
+    outbox.resend_block("3NHash3").unwrap();
+    drop(outbox);
+    let outbox = Outbox::open(config(&dir)).unwrap();
+    assert_eq!(heights(&outbox), vec![1, 2, 3, 4]);
+}
+
+/// ARCHIVE-PANEL: a block that left the retained window can't be replayed.
+#[test]
+fn an_expired_block_is_not_retained() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut outbox = Outbox::open(OutboxConfig {
+        retain_blocks: 5,
+        ..config(&dir)
+    })
+    .unwrap();
+    append(&mut outbox, 1);
+    deliver_all(&mut outbox);
+    outbox.append(block(10), "3NHash9", &payload(10)).unwrap();
+    deliver_all(&mut outbox);
+    assert_eq!(
+        outbox.resend_block("3NHash1").unwrap(),
+        ResendOutcome::NotRetained {
+            requeued: 0,
+            oldest_retained: Some(block(10)),
+            newest_retained: Some(block(10)),
+            retain_blocks: 5,
+        }
+    );
+    assert!(outbox.is_empty());
+}

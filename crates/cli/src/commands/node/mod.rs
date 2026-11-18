@@ -574,7 +574,9 @@ pub struct Node {
     ///
     /// Pages of this machine are `localhost`, `127.0.0.1` and `[::1]` on any
     /// port. Repeat the option, or give a comma-separated list in the
-    /// environment. Requests from any other page are refused.
+    /// environment. Requests from any other page are refused. The same
+    /// origins may replay blocks to the archive (`POST /archive/resend`) on
+    /// a node that feeds one.
     #[arg(
         long = "worker-control-origin",
         env = "MINA_WORKER_CONTROL_ORIGINS",
@@ -822,7 +824,11 @@ pub struct Node {
     /// oldest entries are dropped and recorded as gaps,
     /// `MINA_ARCHIVE_RETAIN_BLOCKS` (default 870), the acknowledged diffs
     /// kept for replay at startup and `POST /archive/resend`, and
-    /// `MINA_ARCHIVE_SEND_TIMEOUT_SECS` (default 120).
+    /// `MINA_ARCHIVE_SEND_TIMEOUT_SECS` (default 120). `GET /archive/blocks`
+    /// lists the outbox's entries. A replay carries the
+    /// `x-mina-archive-control` header and a JSON body: from a browser, only
+    /// pages of this machine, the node's own dashboard opened at an IP
+    /// address and `--worker-control-origin` origins may send it.
     #[arg(long, env = "MINA_ARCHIVE_ARCHIVER_PROCESS", hide = true)]
     pub archive_archiver_process: bool,
 
