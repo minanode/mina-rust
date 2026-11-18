@@ -202,7 +202,7 @@ function Failing({ status: s }: { status: ArchiveStatus }) {
       </AlertTitle>
       <AlertDescription>
         {s.lastError ? (
-          <p className="font-mono break-all">{s.lastError}</p>
+          <p className="font-mono break-words">{s.lastError}</p>
         ) : null}
         <p>
           {plural(s.consecutiveFailures, "attempt")} failed
@@ -494,7 +494,7 @@ function useReplay(onChanged: () => void) {
         message:
           done.result === "already_pending"
             ? `Block ${formatHeight(entry.height)} is already ${done.inFlight ? "being sent" : "waiting"}.`
-            : `Block ${formatHeight(entry.height)} goes to the archive next.`,
+            : `Block ${formatHeight(entry.height)} is queued again, ahead of newer waiting blocks.`,
       });
       setConfirming(null);
       onChanged();

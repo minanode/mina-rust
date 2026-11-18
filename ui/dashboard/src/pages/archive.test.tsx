@@ -349,13 +349,17 @@ test("replay a block: find it, confirm, and the result", async () => {
   // Nothing is sent before the confirm.
   expect(calls.some(c => c.path === "/archive/resend")).toBe(false);
   fireEvent.click(within(confirm).getByRole("button", { name: "Replay" }));
-  await screen.findByText("Block #591000 goes to the archive next.");
+  await screen.findByText(
+    "Block #591000 is queued again, ahead of newer waiting blocks.",
+  );
   // A new lookup forgets the last outcome.
   fireEvent.change(box, { target: { value: "591001" } });
   fireEvent.click(screen.getByRole("button", { name: /Find/ }));
   await waitFor(() =>
     expect(
-      screen.queryByText("Block #591000 goes to the archive next."),
+      screen.queryByText(
+        "Block #591000 is queued again, ahead of newer waiting blocks.",
+      ),
     ).toBeNull(),
   );
   const post = calls.find(c => c.path === "/archive/resend")!;

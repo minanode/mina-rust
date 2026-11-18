@@ -37,7 +37,7 @@ const archiveStates = [
   },
   {
     term: "Delivery failing",
-    text: "The archive refused the diff or didn't answer. The node retries the same block with back-off and keeps every diff.",
+    text: "The archive refused the diff or didn't answer. The node retries the same block with back-off. Waiting diffs stay in the outbox up to its size limits.",
   },
   {
     term: "Node not synced",
