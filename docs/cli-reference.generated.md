@@ -311,7 +311,7 @@ Environment: `MINA_ALLOW_WORKER_CONTROL`.
 
 A page origin, like `https://dash.example.org`, that may change the SNARK worker besides pages of this machine.
 
-Pages of this machine are `localhost`, `127.0.0.1` and `[::1]` on any port. Repeat the option, or give a comma-separated list in the environment. Requests from any other page are refused.
+Pages of this machine are `localhost`, `127.0.0.1` and `[::1]` on any port. Repeat the option, or give a comma-separated list in the environment. Requests from any other page are refused. The same origins may replay blocks to the archive (`POST /archive/resend`) on a node that feeds one.
 
 Environment: `MINA_WORKER_CONTROL_ORIGINS`.
 
