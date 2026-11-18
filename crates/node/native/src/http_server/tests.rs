@@ -3063,3 +3063,49 @@ async fn archive_resend_refuses_other_sites() {
     assert_eq!(outbox.status().outbox.retained_entries, 3);
     server.abort();
 }
+
+/// `GET /archive/status` has a `database` section: not checked without
+/// `MINA_ARCHIVE_METRICS_ADDRESS`, the archive's counts and the verdict with
+/// it.
+#[tokio::test]
+async fn archive_status_reports_the_database_check() {
+    use mina_node_common::archive::db_check::{metrics_url, ArchiveGauges, DbCheck};
+    let dir = tempfile::tempdir().unwrap();
+    let outbox = archive_outbox(&dir, 3, 0);
+    let (base, server) = serve_archive(HttpServerOptions::default(), Some(outbox.clone())).await;
+    let (status, body) = get_json(format!("{base}/archive/status")).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["database"]["configured"], false);
+    assert_eq!(body["database"]["verdict"], "not_checked");
+    assert_eq!(body["highest_delivered"]["height"], 3);
+
+    let url = metrics_url("http://127.0.0.1:3086").unwrap();
+    let check = std::sync::Arc::new(DbCheck::new(
+        &url,
+        std::time::Duration::from_secs(360),
+        std::time::Duration::from_secs(60),
+    ));
+    check.record(
+        1_000,
+        outbox.highest_delivered_height(),
+        Ok(ArchiveGauges {
+            max_block_height: 3,
+            missing_blocks: 1,
+            unparented_blocks: 0,
+        }),
+    );
+    outbox.set_database_check(check);
+    let (_, body) = get_json(format!("{base}/archive/status")).await;
+    let database = &body["database"];
+    assert_eq!(database["configured"], true);
+    assert_eq!(database["metrics_url"], "http://127.0.0.1:3086/metrics");
+    assert_eq!(database["verdict"], "incomplete");
+    assert_eq!(database["max_block_height"], 3);
+    assert_eq!(database["missing_blocks"], 1);
+    assert_eq!(database["unparented_blocks"], 0);
+    assert_eq!(database["delivered_height"], 3);
+    assert_eq!(database["stored_tip_lag"], 0);
+    assert_eq!(database["last_success_at_ms"], 1_000);
+    assert_eq!(database["behind_after_ms"], 360_000);
+    server.abort();
+}

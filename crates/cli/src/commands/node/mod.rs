@@ -824,8 +824,10 @@ pub struct Node {
     /// oldest entries are dropped and recorded as gaps,
     /// `MINA_ARCHIVE_RETAIN_BLOCKS` (default 870), the acknowledged diffs
     /// kept for replay at startup and `POST /archive/resend`, and
-    /// `MINA_ARCHIVE_SEND_TIMEOUT_SECS` (default 120). `GET /archive/blocks`
-    /// lists the outbox's entries. A replay carries the
+    /// `MINA_ARCHIVE_SEND_TIMEOUT_SECS` (default 120), and
+    /// `MINA_ARCHIVE_METRICS_ADDRESS`, the archive's `--metrics-port` URL,
+    /// whose database counts `GET /archive/status` then reports under
+    /// `database`. `GET /archive/blocks` lists the outbox's entries. A replay carries the
     /// `x-mina-archive-control` header and a JSON body: from a browser, only
     /// pages of this machine, the node's own dashboard opened at an IP
     /// address and `--worker-control-origin` origins may send it.
@@ -1463,6 +1465,10 @@ impl Node {
             archive_storage_options
                 .validate_env_vars()
                 .map_err(|e| anyhow::anyhow!(e))?;
+            if archive_storage_options.uses_archiver_process() {
+                mina_node_native::archive::db_check::metrics_url_from_env()
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            }
 
             node_builder.archive(archive_storage_options, work_dir.clone());
         }

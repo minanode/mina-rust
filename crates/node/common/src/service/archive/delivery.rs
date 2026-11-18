@@ -12,8 +12,9 @@ use std::{
 
 use serde::Serialize;
 
-use super::outbox::{
-    AppendOutcome, BlockRef, EntryList, ListQuery, Outbox, OutboxStats, ResendOutcome,
+use super::{
+    db_check::{DatabaseCheck, DbCheck},
+    outbox::{AppendOutcome, BlockRef, EntryList, ListQuery, Outbox, OutboxStats, ResendOutcome},
 };
 
 /// Where entries go. `deliver` returns once the receiver acknowledged the
@@ -56,6 +57,9 @@ pub struct DeliveryState {
     pub failing_since_ms: Option<u64>,
     /// The entry being retried, when delivery is failing.
     pub stuck_on: Option<BlockRef>,
+    /// The highest block the archive acknowledged since the node started.
+    /// Unlike `last_delivered`, a replay of older blocks doesn't lower it.
+    pub highest_delivered: Option<BlockRef>,
 }
 
 /// `GET /archive/status`.
@@ -67,6 +71,9 @@ pub struct ArchiveStatus {
     pub outbox: OutboxStats,
     #[serde(flatten)]
     pub delivery: DeliveryState,
+    /// The archive's own counts of its database, read from its metrics
+    /// (`MINA_ARCHIVE_METRICS_ADDRESS`).
+    pub database: DatabaseCheck,
     /// What the gaps mean for whoever runs the archive.
     pub note: &'static str,
 }
@@ -79,8 +86,8 @@ const STATUS_NOTE: &str = "RPC acknowledgements precede database commits; delive
      for diff files (journal/quarantine excluded; an oversized incoming diff or \
      protected in-flight entry can exceed tiny limits). Startup and POST /archive/resend {\"all\": true} requeue all retained \
      diffs, even outside the frontier; {\"state_hash\": ...} requeues one block's. Expiry removes this repair opportunity without verifying storage; \
-     no database reconciliation is performed, so gaps_total=0 does not prove archive \
-     completeness. Gaps record unavailable or potentially missing history; interrupted \
+     gaps_total=0 does not prove archive completeness; database reports the archive's \
+     own counts of its database when MINA_ARCHIVE_METRICS_ADDRESS names its metrics. Gaps record unavailable or potentially missing history; interrupted \
      operations can leave both a diff and its gap (duplicate records are possible). \
      Corrupt gaps at height 0 have an unparseable filename. Audit with \
      mina-missing-blocks-auditor; missing blocks outside the retained/pending window, \
@@ -99,6 +106,7 @@ pub struct SharedOutbox {
     inner: Arc<(Mutex<Inner>, Condvar)>,
     stop: Arc<AtomicBool>,
     archive_address: Option<String>,
+    database: Arc<OnceLock<Arc<DbCheck>>>,
 }
 
 static STATUS: OnceLock<SharedOutbox> = OnceLock::new();
@@ -136,7 +144,22 @@ impl SharedOutbox {
             )),
             stop: Arc::new(AtomicBool::new(false)),
             archive_address,
+            database: Arc::new(OnceLock::new()),
         }
+    }
+
+    /// Reports `check` as the status's `database`. The first call wins.
+    pub fn set_database_check(&self, check: Arc<DbCheck>) {
+        let _ = self.database.set(check);
+    }
+
+    /// The highest block the archive acknowledged since the node started.
+    pub fn highest_delivered_height(&self) -> Option<u32> {
+        self.lock()
+            .delivery
+            .highest_delivered
+            .as_ref()
+            .map(|b| b.height)
     }
 
     /// Makes this outbox the one `GET /archive/status` reports. The first
@@ -182,12 +205,18 @@ impl SharedOutbox {
     }
 
     pub fn status(&self) -> ArchiveStatus {
+        // The check has its own lock: read it outside the outbox's.
+        let database = self
+            .database
+            .get()
+            .map_or_else(DatabaseCheck::not_configured, |check| check.report());
         let inner = self.lock();
         ArchiveStatus {
             outbox_dir: inner.outbox.dir().display().to_string(),
             archive_address: self.archive_address.clone(),
             outbox: inner.outbox.stats().clone(),
             delivery: inner.delivery.clone(),
+            database,
             note: STATUS_NOTE,
         }
     }
@@ -259,6 +288,14 @@ impl SharedOutbox {
                 inner.delivery.failing_since_ms = None;
                 inner.delivery.stuck_on = None;
                 inner.delivery.last_success_at_ms = Some(now_ms());
+                if inner
+                    .delivery
+                    .highest_delivered
+                    .as_ref()
+                    .is_none_or(|b| entry.meta.block.height > b.height)
+                {
+                    inner.delivery.highest_delivered = Some(entry.meta.block.clone());
+                }
             }
             Err(e) => {
                 inner.outbox.release();
