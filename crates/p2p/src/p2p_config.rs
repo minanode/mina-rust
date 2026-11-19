@@ -360,6 +360,8 @@ pub struct P2pLimits {
     yamux_pending_outgoing_reserve: Limit<usize>,
     #[serde(default = "P2pLimits::default_rpc_inflight_peer_share")]
     rpc_inflight_peer_share: Limit<usize>,
+    #[serde(default = "P2pLimits::default_rpc_served_staged_ledger")]
+    rpc_served_staged_ledger: Limit<usize>,
 
     identify_message: Limit<usize>,
     kademlia_request: Limit<usize>,
@@ -474,6 +476,12 @@ impl P2pLimits {
         /// Sets one peer's in-flight RPC work budget.
         with_rpc_inflight_peer_share
     );
+    limit!(
+        /// The largest staged-ledger answer we serve over libp2p, with its RPC framing.
+        rpc_served_staged_ledger,
+        /// Sets the largest staged-ledger answer we serve.
+        with_rpc_served_staged_ledger
+    );
 
     fn outgoing_total_and_fair_allow(&self, total: usize, peer: usize, added: usize) -> bool {
         let next_total = total.saturating_add(added);
@@ -507,12 +515,34 @@ impl P2pLimits {
             && self.outgoing_total_and_fair_allow(total, peer, added)
     }
 
+    /// Whether a stream may queue an outgoing data frame: its queue grows from
+    /// `previous` to `pending` bytes, within `stream_limit`, and the bytes it
+    /// adds fit [`Self::outgoing_queue_budget_allows`]. `total` and `peer` are
+    /// the queued and reserved bytes before the frame, node-wide and for the
+    /// stream's peer, and `peer_queued` the peer's queued bytes alone.
+    pub fn outgoing_queue_admits(
+        &self,
+        stream_limit: Limit<usize>,
+        total: usize,
+        peer: usize,
+        peer_queued: usize,
+        previous: usize,
+        pending: usize,
+    ) -> bool {
+        let added = pending.saturating_sub(previous);
+        pending <= stream_limit
+            && (added == 0 || self.outgoing_queue_budget_allows(total, peer, peer_queued, added))
+    }
+
     fn default_yamux_pending_outgoing_total() -> Limit<usize> {
         Limit::Some(256 * 1024 * 1024)
     }
 
+    /// As much as [`Self::rpc_served_staged_ledger`], so that a staged-ledger
+    /// answer under that limit fits even when the peer's receive window is
+    /// full. Other peers keep the reserve and their fair share while it waits.
     fn default_yamux_pending_outgoing_peer_share() -> Limit<usize> {
-        Limit::Some(64 * 1024 * 1024)
+        Limit::Some(192 * 1024 * 1024)
     }
 
     fn default_yamux_pending_outgoing_fair_share() -> Limit<usize> {
@@ -523,8 +553,28 @@ impl P2pLimits {
         Limit::Some(64 * 1024 * 1024)
     }
 
+    /// Room for the reservation of one staged-ledger query, which is up to
+    /// [`Self::rpc_served_staged_ledger`].
     fn default_rpc_inflight_peer_share() -> Limit<usize> {
-        Limit::Some(128 * 1024 * 1024)
+        Limit::Some(192 * 1024 * 1024)
+    }
+
+    /// 192 MiB: the answer to
+    /// `get_staged_ledger_aux_and_pending_coinbases_at_hash`, counting the
+    /// eight-byte length and the message header.
+    ///
+    /// We encode the answer whole before we send it, and the part the peer's
+    /// receive window has no room for waits in our send queue. So this is
+    /// also the most one answer adds to the queue. Devnet's answer was 172 to
+    /// 174 MB on 2026-11-18, and mainnet's 64.7 MB. For a larger answer we
+    /// encode nothing and send an empty (`None`) answer, as for a block we
+    /// don't have, and the peer asks another one.
+    ///
+    /// The queue budgets are what bound it: an answer at this size fits the
+    /// per-peer share with no receive window at all, and the part of the
+    /// node-wide budget that peers above their fair share may use.
+    fn default_rpc_served_staged_ledger() -> Limit<usize> {
+        Limit::Some(192 * 1024 * 1024)
     }
 
     limit!(
@@ -765,6 +815,7 @@ impl Default for P2pLimits {
             yamux_pending_outgoing_fair_share: Self::default_yamux_pending_outgoing_fair_share(),
             yamux_pending_outgoing_reserve: Self::default_yamux_pending_outgoing_reserve(),
             rpc_inflight_peer_share: Self::default_rpc_inflight_peer_share(),
+            rpc_served_staged_ledger: Self::default_rpc_served_staged_ledger(),
 
             identify_message,
             kademlia_request,

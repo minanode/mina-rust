@@ -8,6 +8,7 @@ use crate::{
                 from_unapplied_sequence::{self, FromUnappliedSequence},
                 MaybeWithStatus, WithHash,
             },
+            GenericCommand,
             TransactionStatus::Applied,
             UserCommand, WellFormednessError, WithStatus,
         },
@@ -23,8 +24,17 @@ use mina_p2p_messages::{bigint::BigInt, v2};
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::{Borrow, Cow},
-    collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
+    collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet},
 };
+
+// The ported tests (`use super::*`) and `add_from_gossip_exn` use it.
+#[cfg(test)]
+use std::collections::VecDeque;
+
+mod shared;
+
+pub use shared::{CommandQueue, PooledCommand};
+use shared::{CommandSet, CommandsByHash};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TransactionPoolErrors {
@@ -484,7 +494,7 @@ impl VkRefcountTable {
 
     fn decrement_list(&mut self, list: &[ValidCommandWithHash]) {
         list.iter().for_each(|c| {
-            for (id, vk) in c.data.forget_check().extract_vks() {
+            for (id, vk) in c.data.extract_vks() {
                 self.dec(id, vk.hash());
             }
         });
@@ -496,7 +506,7 @@ impl VkRefcountTable {
         V: Borrow<ValidCommandWithHash>,
     {
         list.into_iter().for_each(|c| {
-            for (id, vk) in c.borrow().data.forget_check().extract_vks() {
+            for (id, vk) in c.borrow().data.extract_vks() {
                 self.dec(id, vk.hash());
             }
         });
@@ -508,7 +518,7 @@ impl VkRefcountTable {
         V: Borrow<ValidCommandWithHash>,
     {
         list.into_iter().for_each(|c| {
-            for (id, vk) in c.borrow().data.forget_check().extract_vks() {
+            for (id, vk) in c.borrow().data.extract_vks() {
                 self.inc(id, vk);
             }
         });
@@ -516,7 +526,7 @@ impl VkRefcountTable {
 
     fn increment_list(&mut self, list: &[ValidCommandWithHash]) {
         list.iter().for_each(|c| {
-            for (id, vk) in c.data.forget_check().extract_vks() {
+            for (id, vk) in c.data.extract_vks() {
                 self.inc(id, vk);
             }
         });
@@ -592,44 +602,87 @@ pub struct IndexedPoolConfig {
     slot_tx_end: Option<Slot>,
 }
 
+/// Each map holds a clone of the same `PooledCommand`, so a command is stored
+/// once however many maps index it (see `shared`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(from = "UnsharedIndexedPool")]
 pub struct IndexedPool {
     /// Transactions valid against the current ledger, indexed by fee per
     /// weight unit.
-    applicable_by_fee: HashMap<FeeRate, HashSet<ValidCommandWithHash>>,
+    applicable_by_fee: HashMap<FeeRate, CommandSet>,
     /// All pending transactions along with the total currency required to
     /// execute them -- plus any currency spent from this account by
     /// transactions from other accounts -- indexed by sender account.
     /// Ordered by nonce inside the accounts.
-    all_by_sender: HashMap<AccountId, (VecDeque<ValidCommandWithHash>, Amount)>,
+    all_by_sender: HashMap<AccountId, (CommandQueue, Amount)>,
     /// All transactions in the pool indexed by fee per weight unit.
-    all_by_fee: HashMap<FeeRate, HashSet<ValidCommandWithHash>>,
-    all_by_hash: HashMap<v2::TransactionHash, ValidCommandWithHash>,
+    all_by_fee: HashMap<FeeRate, CommandSet>,
+    all_by_hash: CommandsByHash,
     /// Only transactions that have an expiry
-    transactions_with_expiration: HashMap<Slot, HashSet<ValidCommandWithHash>>,
+    transactions_with_expiration: HashMap<Slot, CommandSet>,
     size: usize,
     pub config: IndexedPoolConfig,
 }
 
+/// `IndexedPool` as a deserializer reads it: the same fields, so the same
+/// encoding, but with one allocation for each occurrence of a command.
+/// Converting it shares the commands again.
+#[derive(Deserialize)]
+#[serde(rename = "IndexedPool")]
+struct UnsharedIndexedPool {
+    applicable_by_fee: HashMap<FeeRate, CommandSet>,
+    all_by_sender: HashMap<AccountId, (CommandQueue, Amount)>,
+    all_by_fee: HashMap<FeeRate, CommandSet>,
+    all_by_hash: CommandsByHash,
+    transactions_with_expiration: HashMap<Slot, CommandSet>,
+    size: usize,
+    config: IndexedPoolConfig,
+}
+
+impl From<UnsharedIndexedPool> for IndexedPool {
+    fn from(value: UnsharedIndexedPool) -> Self {
+        let UnsharedIndexedPool {
+            applicable_by_fee,
+            all_by_sender,
+            all_by_fee,
+            all_by_hash,
+            transactions_with_expiration,
+            size,
+            config,
+        } = value;
+        let mut pool = Self {
+            applicable_by_fee,
+            all_by_sender,
+            all_by_fee,
+            all_by_hash,
+            transactions_with_expiration,
+            size,
+            config,
+        };
+        pool.share_commands();
+        pool
+    }
+}
+
 enum Update {
     Add {
-        command: ValidCommandWithHash,
+        command: PooledCommand,
         fee_per_wu: FeeRate,
         add_to_applicable_by_fee: bool,
     },
     RemoveAllByFeeAndHashAndExpiration {
-        commands: VecDeque<ValidCommandWithHash>,
+        commands: CommandQueue,
     },
     RemoveFromApplicableByFee {
         fee_per_wu: FeeRate,
-        command: ValidCommandWithHash,
+        command: PooledCommand,
     },
 }
 
 #[derive(Clone)]
 struct SenderState {
     sender: AccountId,
-    state: Option<(VecDeque<ValidCommandWithHash>, Amount)>,
+    state: Option<(CommandQueue, Amount)>,
 }
 
 pub enum RevalidateKind<'a> {
@@ -643,13 +696,39 @@ impl IndexedPool {
             applicable_by_fee: HashMap::new(),
             all_by_sender: HashMap::new(),
             all_by_fee: HashMap::new(),
-            all_by_hash: HashMap::new(),
+            all_by_hash: CommandsByHash::default(),
             transactions_with_expiration: HashMap::new(),
             size: 0,
             config: IndexedPoolConfig {
                 consensus_constants: consensus::Constants::create(constants),
                 slot_tx_end: None,
             },
+        }
+    }
+
+    /// Point every map at the copy of each command that `all_by_hash` holds.
+    /// A deserialized pool has a separate copy for each map entry.
+    fn share_commands(&mut self) {
+        let Self {
+            applicable_by_fee,
+            all_by_sender,
+            all_by_fee,
+            all_by_hash,
+            transactions_with_expiration,
+            size: _,
+            config: _,
+        } = self;
+        for (queue, _) in all_by_sender.values_mut() {
+            for cmd in queue.iter_shared_mut() {
+                *cmd = all_by_hash.share(cmd);
+            }
+        }
+        for set in applicable_by_fee
+            .values_mut()
+            .chain(all_by_fee.values_mut())
+            .chain(transactions_with_expiration.values_mut())
+        {
+            set.map_shared(|cmd| all_by_hash.share(&cmd));
         }
     }
 
@@ -672,7 +751,7 @@ impl IndexedPool {
     fn check_expiry(
         &self,
         global_slot_since_genesis: Slot,
-        cmd: &UserCommand,
+        cmd: &valid::UserCommand,
     ) -> Result<(), CommandError> {
         let valid_until = cmd.valid_until();
 
@@ -686,21 +765,19 @@ impl IndexedPool {
         Ok(())
     }
 
-    /// Insert in a `HashMap<_, HashSet<_>>`
-    fn map_set_insert<K, V>(map: &mut HashMap<K, HashSet<V>>, key: K, value: V)
+    /// Insert in a `HashMap<_, CommandSet>`
+    fn map_set_insert<K>(map: &mut HashMap<K, CommandSet>, key: K, value: PooledCommand)
     where
         K: std::hash::Hash + PartialEq + Eq,
-        V: std::hash::Hash + PartialEq + Eq,
     {
         let entry = map.entry(key).or_default();
         entry.insert(value);
     }
 
-    /// Remove in a `HashMap<_, HashSet<_>>`
-    fn map_set_remove<K, V>(map: &mut HashMap<K, HashSet<V>>, key: K, value: &V)
+    /// Remove in a `HashMap<_, CommandSet>`
+    fn map_set_remove<K>(map: &mut HashMap<K, CommandSet>, key: K, value: &ValidCommandWithHash)
     where
         K: std::hash::Hash + PartialEq + Eq,
-        V: std::hash::Hash + PartialEq + Eq,
     {
         let Entry::Occupied(mut entry) = map.entry(key) else {
             return;
@@ -712,9 +789,8 @@ impl IndexedPool {
         }
     }
 
-    fn update_expiration_map(&mut self, cmd: ValidCommandWithHash, is_add: bool) {
-        let user_cmd = cmd.data.forget_check();
-        let expiry = user_cmd.valid_until();
+    fn update_expiration_map(&mut self, cmd: PooledCommand, is_add: bool) {
+        let expiry = cmd.data.valid_until();
         if expiry == Slot::max() {
             return; // Do nothing
         }
@@ -725,30 +801,31 @@ impl IndexedPool {
         }
     }
 
-    fn remove_from_expiration_exn(&mut self, cmd: ValidCommandWithHash) {
+    fn remove_from_expiration_exn(&mut self, cmd: PooledCommand) {
         self.update_expiration_map(cmd, false);
     }
 
-    fn add_to_expiration(&mut self, cmd: ValidCommandWithHash) {
+    fn add_to_expiration(&mut self, cmd: PooledCommand) {
         self.update_expiration_map(cmd, true);
     }
 
     /// Remove a command from the applicable_by_fee field. This may break an
     /// invariant.
     fn remove_applicable_exn(&mut self, cmd: &ValidCommandWithHash) {
-        let fee_per_wu = cmd.data.forget_check().fee_per_wu();
+        let fee_per_wu = cmd.data.fee_per_wu();
         Self::map_set_remove(&mut self.applicable_by_fee, fee_per_wu, cmd);
     }
 
-    fn make_queue<T>() -> VecDeque<T> {
-        VecDeque::with_capacity(256)
+    fn make_queue() -> CommandQueue {
+        CommandQueue::with_capacity(256)
     }
 
+    /// `cmd` is shared as given: the pool takes no copy of it.
     fn add_from_backtrack(
         &mut self,
         global_slot_since_genesis: Slot,
         current_global_slot: Slot,
-        cmd: ValidCommandWithHash,
+        cmd: impl Into<PooledCommand>,
     ) -> Result<(), CommandError> {
         let IndexedPoolConfig { slot_tx_end, .. } = &self.config;
 
@@ -760,18 +837,16 @@ impl IndexedPool {
             return Err(CommandError::AfterSlotTxEnd);
         }
 
-        let ValidCommandWithHash {
-            data: unchecked,
-            hash: cmd_hash,
-        } = &cmd;
-        let unchecked = unchecked.forget_check();
+        let cmd: PooledCommand = cmd.into();
+        let unchecked = &cmd.data;
 
-        self.check_expiry(global_slot_since_genesis, &unchecked)?;
+        self.check_expiry(global_slot_since_genesis, unchecked)?;
 
         let fee_payer = unchecked.fee_payer();
         let fee_per_wu = unchecked.fee_per_wu();
+        let expected_nonce = unchecked.expected_target_nonce();
 
-        let consumed = currency_consumed(&unchecked)?;
+        let consumed = currency_consumed(unchecked)?;
 
         match self.all_by_sender.get_mut(&fee_payer) {
             None => {
@@ -781,15 +856,14 @@ impl IndexedPool {
                     self.all_by_sender.insert(fee_payer, (queue, consumed));
                 }
                 Self::map_set_insert(&mut self.all_by_fee, fee_per_wu.clone(), cmd.clone());
-                self.all_by_hash.insert(cmd_hash.clone(), cmd.clone());
+                self.all_by_hash.insert(cmd.hash.clone(), cmd.clone());
                 Self::map_set_insert(&mut self.applicable_by_fee, fee_per_wu.clone(), cmd.clone());
                 self.add_to_expiration(cmd);
                 self.size += 1;
             }
             Some((queue, currency_reserved)) => {
-                let first_queued = queue.front().cloned().unwrap();
-                let expected_nonce = unchecked.expected_target_nonce();
-                let first_nonce = first_queued.data.forget_check().applicable_at_nonce();
+                let first_queued = queue.front_shared().cloned().unwrap();
+                let first_nonce = first_queued.data.applicable_at_nonce();
 
                 if expected_nonce != first_nonce {
                     // Ocaml panics here as well
@@ -810,7 +884,7 @@ impl IndexedPool {
 
                 Self::map_set_insert(&mut self.applicable_by_fee, fee_per_wu.clone(), cmd.clone());
                 Self::map_set_insert(&mut self.all_by_fee, fee_per_wu.clone(), cmd.clone());
-                self.all_by_hash.insert(cmd_hash.clone(), cmd.clone());
+                self.all_by_hash.insert(cmd.hash.clone(), cmd.clone());
                 self.add_to_expiration(cmd);
                 self.size += 1;
             }
@@ -820,7 +894,7 @@ impl IndexedPool {
 
     fn update_add(
         &mut self,
-        cmd: ValidCommandWithHash,
+        cmd: PooledCommand,
         fee_per_wu: FeeRate,
         add_to_applicable_by_fee: bool,
     ) {
@@ -840,13 +914,12 @@ impl IndexedPool {
     /// size. This may break an invariant.
     fn update_remove_all_by_fee_and_hash_and_expiration<I>(&mut self, cmds: I)
     where
-        I: IntoIterator<Item = ValidCommandWithHash>,
+        I: IntoIterator<Item = PooledCommand>,
     {
         for cmd in cmds {
-            let fee_per_wu = cmd.data.forget_check().fee_per_wu();
-            let cmd_hash = cmd.hash.clone();
+            let fee_per_wu = cmd.data.fee_per_wu();
             Self::map_set_remove(&mut self.all_by_fee, fee_per_wu, &cmd);
-            self.all_by_hash.remove(&cmd_hash);
+            self.all_by_hash.remove(&cmd.hash);
             self.remove_from_expiration_exn(cmd);
             self.size = self.size.checked_sub(1).unwrap();
         }
@@ -862,8 +935,8 @@ impl IndexedPool {
 
     fn remove_with_dependents_exn(
         &mut self,
-        cmd: &ValidCommandWithHash,
-    ) -> Result<VecDeque<ValidCommandWithHash>, CommandError> {
+        cmd: &PooledCommand,
+    ) -> Result<CommandQueue, CommandError> {
         let sender = cmd.data.fee_payer();
         let mut by_sender = SenderState {
             state: self.all_by_sender.get(&sender).cloned(),
@@ -881,12 +954,12 @@ impl IndexedPool {
 
     fn remove_with_dependents_exn_impl(
         &self,
-        cmd: &ValidCommandWithHash,
+        cmd: &PooledCommand,
         by_sender: &mut SenderState,
         updates: &mut Vec<Update>,
-    ) -> Result<VecDeque<ValidCommandWithHash>, CommandError> {
+    ) -> Result<CommandQueue, CommandError> {
         let (sender_queue, reserved_currency_ref) = by_sender.state.as_mut().unwrap();
-        let unchecked = cmd.data.forget_check();
+        let unchecked = &cmd.data;
 
         my_assert(!sender_queue.is_empty())?;
 
@@ -895,7 +968,7 @@ impl IndexedPool {
         let cmd_index = sender_queue
             .iter()
             .position(|cmd| {
-                let nonce = cmd.data.forget_check().applicable_at_nonce();
+                let nonce = cmd.data.applicable_at_nonce();
                 // we just compare nonce equality since the command we are looking for already exists in the sequence
                 nonce == cmd_nonce
             })
@@ -906,7 +979,7 @@ impl IndexedPool {
         my_assert(!drop_queue.is_empty())?;
 
         let currency_to_remove = drop_queue.iter().try_fold(Amount::zero(), |acc, cmd| {
-            let consumed = currency_consumed(&cmd.data.forget_check())?;
+            let consumed = currency_consumed(&cmd.data)?;
             Ok(consumed.checked_add(&acc).unwrap())
         })?;
 
@@ -971,6 +1044,9 @@ impl IndexedPool {
         }
     }
 
+    /// OCaml's `add_from_gossip_exn` with its old types, for the ported tests:
+    /// they hold commands, not the pool's shared copies.
+    #[cfg(test)]
     fn add_from_gossip_exn(
         &mut self,
         global_slot_since_genesis: Slot,
@@ -979,6 +1055,26 @@ impl IndexedPool {
         current_nonce: Nonce,
         balance: Balance,
     ) -> Result<(ValidCommandWithHash, VecDeque<ValidCommandWithHash>), CommandError> {
+        let (cmd, dropped) = self.add_from_gossip_exn_shared(
+            global_slot_since_genesis,
+            current_global_slot,
+            &PooledCommand::new(cmd.clone()),
+            current_nonce,
+            balance,
+        )?;
+        Ok(((*cmd).clone(), dropped.iter().cloned().collect()))
+    }
+
+    /// OCaml's `add_from_gossip_exn`. The pool shares `cmd` as given: a caller
+    /// that holds a command makes the one copy the pool keeps.
+    fn add_from_gossip_exn_shared(
+        &mut self,
+        global_slot_since_genesis: Slot,
+        current_global_slot: Slot,
+        cmd: &PooledCommand,
+        current_nonce: Nonce,
+        balance: Balance,
+    ) -> Result<(PooledCommand, CommandQueue), CommandError> {
         let sender = cmd.data.fee_payer();
         let mut by_sender = SenderState {
             state: self.all_by_sender.get(&sender).cloned(),
@@ -1002,16 +1098,17 @@ impl IndexedPool {
         Ok(result)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn add_from_gossip_exn_impl(
         &self,
         global_slot_since_genesis: Slot,
         current_global_slot: Slot,
-        cmd: &ValidCommandWithHash,
+        cmd: &PooledCommand,
         current_nonce: Nonce,
         balance: Balance,
         by_sender: &mut SenderState,
         updates: &mut Vec<Update>,
-    ) -> Result<(ValidCommandWithHash, VecDeque<ValidCommandWithHash>), CommandError> {
+    ) -> Result<(PooledCommand, CommandQueue), CommandError> {
         let IndexedPoolConfig { slot_tx_end, .. } = &self.config;
 
         if !slot_tx_end
@@ -1022,14 +1119,14 @@ impl IndexedPool {
             return Err(CommandError::AfterSlotTxEnd);
         }
 
-        let unchecked = cmd.data.forget_check();
+        let unchecked = &cmd.data;
         let fee = unchecked.fee();
         let fee_per_wu = unchecked.fee_per_wu();
         let cmd_applicable_at_nonce = unchecked.applicable_at_nonce();
 
         let consumed = {
-            self.check_expiry(global_slot_since_genesis, &unchecked)?;
-            let consumed = currency_consumed(&unchecked).map_err(|_| CommandError::Overflow)?;
+            self.check_expiry(global_slot_since_genesis, unchecked)?;
+            let consumed = currency_consumed(unchecked).map_err(|_| CommandError::Overflow)?;
             if !unchecked.fee_token().is_default() {
                 return Err(CommandError::UnwantedFeeToken {
                     token_id: unchecked.fee_token(),
@@ -1066,11 +1163,11 @@ impl IndexedPool {
                 my_assert(!queued_cmds.is_empty())?;
                 let queue_applicable_at_nonce = {
                     let first = queued_cmds.front().unwrap();
-                    first.data.forget_check().applicable_at_nonce()
+                    first.data.applicable_at_nonce()
                 };
                 let queue_target_nonce = {
                     let last = queued_cmds.back().unwrap();
-                    last.data.forget_check().expected_target_nonce()
+                    last.data.expected_target_nonce()
                 };
                 if queue_target_nonce == cmd_applicable_at_nonce {
                     let reserved_currency = consumed
@@ -1108,15 +1205,14 @@ impl IndexedPool {
                     let replacement_index = queued_cmds
                         .iter()
                         .position(|cmd| {
-                            let cmd_applicable_at_nonce_prime =
-                                cmd.data.forget_check().applicable_at_nonce();
+                            let cmd_applicable_at_nonce_prime = cmd.data.applicable_at_nonce();
                             cmd_applicable_at_nonce <= cmd_applicable_at_nonce_prime
                         })
                         .unwrap();
 
                     let drop_queue = queued_cmds.split_off(replacement_index);
 
-                    let to_drop = drop_queue.front().unwrap().data.forget_check();
+                    let to_drop = &drop_queue.front().unwrap().data;
                     my_assert(cmd_applicable_at_nonce <= to_drop.applicable_at_nonce())?;
 
                     // We check the fee increase twice because we need to be sure the
@@ -1129,7 +1225,7 @@ impl IndexedPool {
                     }
 
                     let dropped = self.remove_with_dependents_exn_impl(
-                        drop_queue.front().unwrap(),
+                        drop_queue.front_shared().unwrap(),
                         by_sender,
                         updates,
                     )?;
@@ -1150,18 +1246,17 @@ impl IndexedPool {
                         (v, dropped)
                     };
 
-                    let drop_head = dropped.front().cloned().unwrap();
+                    let drop_head = dropped.front_shared().cloned().unwrap();
                     let mut drop_tail = dropped.into_iter().skip(1).peekable();
 
                     let mut increment = fee.checked_sub(&to_drop.fee()).unwrap();
-                    let mut dropped = None::<VecDeque<_>>;
+                    let mut dropped = None::<CommandQueue>;
                     let mut current_nonce = current_nonce;
                     let mut this_updates = Vec::with_capacity(128);
 
                     while let Some(cmd) = drop_tail.peek() {
                         if dropped.is_some() {
-                            let cmd_unchecked = cmd.data.forget_check();
-                            let replace_fee = cmd_unchecked.fee();
+                            let replace_fee = cmd.data.fee();
 
                             increment = increment.checked_sub(&replace_fee).ok_or({
                                 CommandError::InsufficientReplaceFee {
@@ -1219,23 +1314,23 @@ impl IndexedPool {
         }
     }
 
-    fn expired_by_global_slot(&self, global_slot_since_genesis: Slot) -> Vec<ValidCommandWithHash> {
+    fn expired_by_global_slot(&self, global_slot_since_genesis: Slot) -> Vec<PooledCommand> {
         self.transactions_with_expiration
             .iter()
             .filter(|(slot, _cmd)| **slot < global_slot_since_genesis)
-            .flat_map(|(_slot, cmd)| cmd.iter().cloned())
+            .flat_map(|(_slot, cmd)| cmd.iter_shared().cloned())
             .collect()
     }
 
-    fn expired(&self, global_slot_since_genesis: Slot) -> Vec<ValidCommandWithHash> {
+    fn expired(&self, global_slot_since_genesis: Slot) -> Vec<PooledCommand> {
         self.expired_by_global_slot(global_slot_since_genesis)
     }
 
     fn remove_expired(
         &mut self,
         global_slot_since_genesis: Slot,
-    ) -> Result<Vec<ValidCommandWithHash>, CommandError> {
-        let mut dropped = Vec::with_capacity(128);
+    ) -> Result<CommandQueue, CommandError> {
+        let mut dropped = CommandQueue::with_capacity(128);
         for cmd in self.expired(global_slot_since_genesis) {
             if self.member(&cmd) {
                 let removed = self.remove_with_dependents_exn(&cmd)?;
@@ -1245,14 +1340,14 @@ impl IndexedPool {
         Ok(dropped)
     }
 
-    fn remove_lowest_fee(&mut self) -> Result<VecDeque<ValidCommandWithHash>, CommandError> {
+    fn remove_lowest_fee(&mut self) -> Result<CommandQueue, CommandError> {
         let Some(set) = self.min_fee().and_then(|fee| self.all_by_fee.get(&fee)) else {
-            return Ok(VecDeque::new());
+            return Ok(CommandQueue::default());
         };
 
         // TODO: Should `self.all_by_fee` be a `BTreeSet` instead ?
         #[allow(clippy::mutable_key_type)]
-        let bset: BTreeSet<_> = set.iter().collect();
+        let bset: BTreeSet<_> = set.iter_shared().collect();
         // TODO: Not sure if OCaml compare the same way than we do
         let min = bset.first().map(|min| (*min).clone()).unwrap();
 
@@ -1262,22 +1357,15 @@ impl IndexedPool {
     /// Drop commands from the end of the queue until the total currency consumed is
     /// <= the current balance.
     fn drop_until_sufficient_balance(
-        mut queue: VecDeque<ValidCommandWithHash>,
+        mut queue: CommandQueue,
         mut currency_reserved: Amount,
         current_balance: Amount,
-    ) -> Result<
-        (
-            VecDeque<ValidCommandWithHash>,
-            Amount,
-            VecDeque<ValidCommandWithHash>,
-        ),
-        CommandError,
-    > {
-        let mut dropped_so_far = VecDeque::with_capacity(queue.len());
+    ) -> Result<(CommandQueue, Amount, CommandQueue), CommandError> {
+        let mut dropped_so_far = CommandQueue::with_capacity(queue.len());
 
         while currency_reserved > current_balance {
             let last = queue.pop_back().unwrap();
-            let consumed = currency_consumed(&last.data.forget_check())?;
+            let consumed = currency_consumed(&last.data)?;
             dropped_so_far.push_back(last);
             currency_reserved = currency_reserved.checked_sub(&consumed).unwrap();
         }
@@ -1290,7 +1378,7 @@ impl IndexedPool {
         global_slot_since_genesis: Slot,
         kind: RevalidateKind,
         get_account: F,
-    ) -> Result<Vec<ValidCommandWithHash>, CommandError>
+    ) -> Result<CommandQueue, CommandError>
     where
         F: Fn(&AccountId) -> Option<Account>,
     {
@@ -1299,8 +1387,9 @@ impl IndexedPool {
             RevalidateKind::Subset(set) => set.contains(account_id),
         };
 
-        let mut dropped = Vec::new();
+        let mut dropped = CommandQueue::default();
 
+        // The copy holds pointers to the commands, not copies of them.
         for (sender, (mut queue, mut currency_reserved)) in self.all_by_sender.clone() {
             if !requires_revalidation(&sender) {
                 continue;
@@ -1310,8 +1399,8 @@ impl IndexedPool {
             let current_balance = account
                 .liquid_balance_at_slot(global_slot_since_genesis)
                 .to_amount();
-            let first_cmd = queue.front().cloned().unwrap();
-            let first_nonce = first_cmd.data.forget_check().applicable_at_nonce();
+            let first_cmd = queue.front_shared().cloned().unwrap();
+            let first_nonce = first_cmd.data.applicable_at_nonce();
 
             if !(account.has_permission_to_send() && account.has_permission_to_increment_nonce())
                 || account.nonce < first_nonce
@@ -1321,7 +1410,7 @@ impl IndexedPool {
             } else {
                 // current_nonce >= first_nonce
                 let first_applicable_nonce_index = queue.iter().position(|cmd| {
-                    let nonce = cmd.data.forget_check().applicable_at_nonce();
+                    let nonce = cmd.data.applicable_at_nonce();
                     nonce == account.nonce
                 });
 
@@ -1333,7 +1422,7 @@ impl IndexedPool {
 
                 for cmd in &dropped_for_nonce {
                     currency_reserved = currency_reserved
-                        .checked_sub(&currency_consumed(&cmd.data.forget_check())?)
+                        .checked_sub(&currency_consumed(&cmd.data)?)
                         .unwrap();
                 }
 
@@ -1351,7 +1440,7 @@ impl IndexedPool {
                     .chain(dropped_for_balance)
                     .collect();
 
-                match keep_queue.front().cloned() {
+                match keep_queue.front_shared().cloned() {
                     _ if keeping_prefix && keeping_suffix => {
                         // Nothing dropped, nothing needs to be updated
                     }
@@ -1370,13 +1459,13 @@ impl IndexedPool {
                     Some(first_kept) => {
                         // We need to replace old queue head with the new queue head
                         // in applicable_by_fee
-                        let first_kept_unchecked = first_kept.data.forget_check();
+                        let first_kept_fee_per_wu = first_kept.data.fee_per_wu();
                         self.all_by_sender
                             .insert(sender, (keep_queue, currency_reserved));
                         self.remove_applicable_exn(&first_cmd);
                         Self::map_set_insert(
                             &mut self.applicable_by_fee,
-                            first_kept_unchecked.fee_per_wu(),
+                            first_kept_fee_per_wu,
                             first_kept,
                         );
                     }
@@ -1389,10 +1478,10 @@ impl IndexedPool {
         Ok(dropped)
     }
 
-    // TODO(adonagy): clones too expensive? Optimize
-    /// Same as `transactions`, but does not modify the mempool
-    fn list_includable_transactions(&self, limit: usize) -> Vec<ValidCommandWithHash> {
-        let mut txns = Vec::with_capacity(self.applicable_by_fee.len());
+    /// Same as `transactions`, but does not modify the mempool. The copies of
+    /// the maps it works on hold pointers to the commands, not copies of them.
+    fn list_includable_transactions(&self, limit: usize) -> CommandQueue {
+        let mut txns = CommandQueue::with_capacity(self.applicable_by_fee.len());
 
         // get a copy of the maps as we are just listing the transactions
         let mut applicable_by_fee = self.applicable_by_fee.clone();
@@ -1406,7 +1495,7 @@ impl IndexedPool {
                 .unwrap();
 
             // TODO: Check if OCaml compare using `hash` (order)
-            let txn = set.iter().min_by_key(|b| &b.hash).cloned().unwrap();
+            let txn = set.iter_shared().min_by_key(|b| &b.hash).cloned().unwrap();
 
             {
                 set.remove(&txn);
@@ -1417,18 +1506,18 @@ impl IndexedPool {
                 }
             }
 
-            let sender = txn.data.forget_check().fee_payer();
+            let sender = txn.data.fee_payer();
 
             let (sender_queue, _amount) = all_by_sender.get_mut(&sender).unwrap();
             let head_txn = sender_queue.pop_front().unwrap();
 
             if txn.hash == head_txn.hash {
-                match sender_queue.front().cloned() {
+                match sender_queue.front_shared().cloned() {
                     None => {
                         all_by_sender.remove(&sender);
                     }
                     Some(next_txn) => {
-                        let fee = next_txn.data.forget_check().fee_per_wu();
+                        let fee = next_txn.data.fee_per_wu();
                         applicable_by_fee.entry(fee).or_default().insert(next_txn);
                     }
                 }
@@ -1439,7 +1528,7 @@ impl IndexedPool {
                 all_by_sender.remove(&sender);
             }
 
-            txns.push(txn);
+            txns.push_back(txn);
         }
         txns
     }
@@ -1447,35 +1536,38 @@ impl IndexedPool {
     /// Enumerate candidates without changing the pool, as OCaml's persistent
     /// sequence does. Removing only queue heads corrupts the other indexes.
     /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/indexed_pool.ml#L489-L545>
-    fn transactions(&mut self, limit: usize) -> Vec<ValidCommandWithHash> {
+    fn transactions(&mut self, limit: usize) -> CommandQueue {
         self.list_includable_transactions(limit)
+    }
+
+    /// All the transactions in the pool, in place
+    fn iter_all_transactions(&self) -> impl Iterator<Item = &ValidCommandWithHash> {
+        self.all_by_sender
+            .values()
+            .flat_map(|(cmds, _)| cmds.iter())
     }
 
     /// Returns all the transactions in the pool
     fn get_all_transactions(&self) -> Vec<ValidCommandWithHash> {
-        self.all_by_sender
-            .values()
-            .cloned()
-            .flat_map(|(cmds, _)| cmds.into_iter())
-            .collect()
+        self.iter_all_transactions().cloned().collect()
     }
 
     fn get_pending_amount_and_nonce(&self) -> HashMap<AccountId, (Option<Nonce>, Amount)> {
-        // TODO(adonagy): clone too expensive here?
         self.all_by_sender
-            .clone()
-            .into_iter()
-            .map(|(acc_id, (cmds, amount))| (acc_id, (cmds.back().unwrap().data.nonce(), amount)))
+            .iter()
+            .map(|(acc_id, (cmds, amount))| {
+                (acc_id.clone(), (cmds.back().unwrap().data.nonce(), *amount))
+            })
             .collect()
     }
 }
 
-fn currency_consumed(cmd: &UserCommand) -> Result<Amount, CommandError> {
+fn currency_consumed(cmd: &valid::UserCommand) -> Result<Amount, CommandError> {
     use crate::scan_state::transaction_logic::signed_command::{Body::*, PaymentPayload};
 
     let fee_amount = Amount::of_fee(&cmd.fee());
     let amount = match cmd {
-        UserCommand::SignedCommand(c) => {
+        valid::UserCommand::SignedCommand(c) => {
             match &c.payload.body {
                 Payment(PaymentPayload { amount, .. }) => {
                     // The fee-payer is also the sender account, include the amount.
@@ -1484,7 +1576,7 @@ fn currency_consumed(cmd: &UserCommand) -> Result<Amount, CommandError> {
                 StakeDelegation(_) => Amount::zero(),
             }
         }
-        UserCommand::ZkAppCommand(_) => Amount::zero(),
+        valid::UserCommand::ZkAppCommand(_) => Amount::zero(),
     };
 
     fee_amount
@@ -1503,8 +1595,7 @@ pub mod transaction_hash {
                     .unwrap()
             }
             valid::UserCommand::ZkAppCommand(cmd) => {
-                let cmd = cmd.clone().forget();
-                v2::MinaBaseZkappCommandTStableV1WireStableV1::from(&cmd)
+                v2::MinaBaseZkappCommandTStableV1WireStableV1::from(&cmd.zkapp_command)
                     .hash()
                     .unwrap()
             }
@@ -1522,17 +1613,69 @@ pub enum ApplyDecision {
 
 const MAX_PER_15_SECONDS: usize = 10;
 
+/// The locally generated tables hold the pool's copy of a command while the
+/// pool has it (see `shared`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(from = "UnsharedTransactionPool")]
 pub struct TransactionPool {
     pub pool: IndexedPool,
-    locally_generated_uncommitted: HashMap<ValidCommandWithHash, (redux::Timestamp, Batch)>,
-    locally_generated_committed: HashMap<ValidCommandWithHash, (redux::Timestamp, Batch)>,
+    locally_generated_uncommitted: HashMap<PooledCommand, (redux::Timestamp, Batch)>,
+    locally_generated_committed: HashMap<PooledCommand, (redux::Timestamp, Batch)>,
     current_batch: usize,
     remaining_in_batch: usize,
     pub config: Config,
     batcher: (),
     best_tip_diff_relay: Option<()>,
     verification_key_table: VkRefcountTable,
+}
+
+/// `TransactionPool` as a deserializer reads it (see `UnsharedIndexedPool`).
+#[derive(Deserialize)]
+#[serde(rename = "TransactionPool")]
+struct UnsharedTransactionPool {
+    pool: IndexedPool,
+    locally_generated_uncommitted: HashMap<PooledCommand, (redux::Timestamp, Batch)>,
+    locally_generated_committed: HashMap<PooledCommand, (redux::Timestamp, Batch)>,
+    current_batch: usize,
+    remaining_in_batch: usize,
+    config: Config,
+    batcher: (),
+    best_tip_diff_relay: Option<()>,
+    verification_key_table: VkRefcountTable,
+}
+
+impl From<UnsharedTransactionPool> for TransactionPool {
+    fn from(value: UnsharedTransactionPool) -> Self {
+        let UnsharedTransactionPool {
+            pool,
+            locally_generated_uncommitted,
+            locally_generated_committed,
+            current_batch,
+            remaining_in_batch,
+            config,
+            batcher,
+            best_tip_diff_relay,
+            verification_key_table,
+        } = value;
+        // `IndexedPool` shared its own commands when it was deserialized.
+        let share = |table: HashMap<PooledCommand, (redux::Timestamp, Batch)>| {
+            table
+                .into_iter()
+                .map(|(cmd, value)| (pool.all_by_hash.share(&cmd), value))
+                .collect()
+        };
+        Self {
+            locally_generated_uncommitted: share(locally_generated_uncommitted),
+            locally_generated_committed: share(locally_generated_committed),
+            pool,
+            current_batch,
+            remaining_in_batch,
+            config,
+            batcher,
+            best_tip_diff_relay,
+            verification_key_table,
+        }
+    }
 }
 
 impl TransactionPool {
@@ -1565,6 +1708,11 @@ impl TransactionPool {
         self.pool.get_all_transactions()
     }
 
+    /// The commands `get_all_transactions` returns, in place
+    pub fn iter_all_transactions(&self) -> impl Iterator<Item = &ValidCommandWithHash> {
+        self.pool.iter_all_transactions()
+    }
+
     pub fn get_pending_amount_and_nonce(&self) -> HashMap<AccountId, (Option<Nonce>, Amount)> {
         self.pool.get_pending_amount_and_nonce()
     }
@@ -1576,15 +1724,19 @@ impl TransactionPool {
     pub fn inferred_nonce(&self, account_id: &AccountId) -> Option<Nonce> {
         let (commands, _) = self.pool.all_by_sender.get(account_id)?;
         let last = commands.back()?;
-        Some(last.data.forget_check().expected_target_nonce())
+        Some(last.data.expected_target_nonce())
     }
 
+    /// Copies of the commands, which a block producer takes as its own.
     pub fn transactions(&mut self, limit: usize) -> Vec<ValidCommandWithHash> {
-        self.pool.transactions(limit)
+        let cmds = self.pool.transactions(limit);
+        cmds.iter().cloned().collect()
     }
 
+    /// Copies of the commands, which a block producer takes as its own.
     pub fn list_includable_transactions(&self, limit: usize) -> Vec<ValidCommandWithHash> {
-        self.pool.list_includable_transactions(limit)
+        let cmds = self.pool.list_includable_transactions(limit);
+        cmds.iter().cloned().collect()
     }
 
     pub fn get_accounts_to_revalidate_on_new_best_tip(&self) -> BTreeSet<AccountId> {
@@ -1595,7 +1747,7 @@ impl TransactionPool {
         &mut self,
         global_slot_since_genesis: Slot,
         accounts: &BTreeMap<AccountId, Account>,
-    ) -> Result<Vec<ValidCommandWithHash>, CommandError> {
+    ) -> Result<CommandQueue, CommandError> {
         let dropped = self.pool.revalidate(
             global_slot_since_genesis,
             RevalidateKind::EntirePool,
@@ -1615,8 +1767,8 @@ impl TransactionPool {
         let dropped_locally_generated = dropped
             .iter()
             .filter(|cmd| {
-                let dropped_commited = self.locally_generated_committed.remove(cmd).is_some();
-                let dropped_uncommited = self.locally_generated_uncommitted.remove(cmd).is_some();
+                let dropped_commited = self.locally_generated_committed.remove(*cmd).is_some();
+                let dropped_uncommited = self.locally_generated_uncommitted.remove(*cmd).is_some();
                 // Nothing should be in both tables.
                 assert!(!(dropped_commited && dropped_uncommited));
                 dropped_commited || dropped_uncommited
@@ -1640,7 +1792,7 @@ impl TransactionPool {
             None => true,
             Some(min_fee) => {
                 if self.pool.size() >= pool_max_size {
-                    cmd.forget_check().fee_per_wu() > min_fee
+                    cmd.fee_per_wu() > min_fee
                 } else {
                     true
                 }
@@ -1651,8 +1803,8 @@ impl TransactionPool {
     fn drop_until_below_max_size(
         &mut self,
         pool_max_size: usize,
-    ) -> Result<Vec<ValidCommandWithHash>, CommandError> {
-        let mut list = Vec::new();
+    ) -> Result<CommandQueue, CommandError> {
+        let mut list = CommandQueue::default();
 
         while self.pool.size() > pool_max_size {
             let dropped = self.pool.remove_lowest_fee()?;
@@ -1736,11 +1888,12 @@ impl TransactionPool {
         self.verification_key_table
             .decrement_list(&removed_commands);
 
-        let mut dropped_backtrack = Vec::with_capacity(256);
+        let mut dropped_backtrack = CommandQueue::with_capacity(256);
         // Backtrack newest first so each earlier nonce can prepend its queue.
         // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L591-L626>
         for cmd in removed_commands.into_iter().rev() {
-            if let Some(time_added) = self.locally_generated_committed.remove(&cmd) {
+            let cmd = PooledCommand::new(cmd);
+            if let Some(time_added) = self.locally_generated_committed.remove(&*cmd) {
                 self.locally_generated_uncommitted
                     .insert(cmd.clone(), time_added);
             }
@@ -1764,8 +1917,8 @@ impl TransactionPool {
         // Retry in reverse eviction order so predecessors precede their nonces.
         // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L630-L633>
         let locally_generated_dropped = dropped_backtrack
-            .iter()
-            .filter(|t| self.locally_generated_uncommitted.contains_key(t))
+            .iter_shared()
+            .filter(|t| self.locally_generated_uncommitted.contains_key(*t))
             .rev()
             .collect::<Vec<_>>();
 
@@ -1803,16 +1956,14 @@ impl TransactionPool {
                 new_commands.iter().map(|cmd| cmd.hash.clone()).collect();
 
             dropped_commands
-                .iter()
+                .iter_shared()
                 .partition(|cmd| command_hashes.contains(&cmd.hash))
         };
 
-        for cmd in &committed_commands {
+        for &cmd in &committed_commands {
             self.verification_key_table.decrement_hashed([&**cmd]);
-            if let Some(data) = self.locally_generated_uncommitted.remove(cmd) {
-                let old = self
-                    .locally_generated_committed
-                    .insert((*cmd).clone(), data);
+            if let Some(data) = self.locally_generated_uncommitted.remove(&**cmd) {
+                let old = self.locally_generated_committed.insert(cmd.clone(), data);
                 my_assert(old.is_none())?;
             };
         }
@@ -1820,7 +1971,7 @@ impl TransactionPool {
         // OCaml's List.filter is eager; a discarded Rust iterator does nothing.
         // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/network_pool/transaction_pool.ml#L700-L705>
         for cmd in dropped_commit_conflicts {
-            self.locally_generated_uncommitted.remove(cmd);
+            self.locally_generated_uncommitted.remove(&**cmd);
         }
 
         for cmd in locally_generated_dropped {
@@ -1828,18 +1979,18 @@ impl TransactionPool {
             // be in locally_generated_committed. If it wasn't, try re-adding to
             // the pool.
             let remove_cmd = |this: &mut Self| {
-                this.verification_key_table.decrement_hashed([cmd]);
-                assert!(this.locally_generated_uncommitted.remove(cmd).is_some());
+                this.verification_key_table.decrement_hashed([&**cmd]);
+                assert!(this.locally_generated_uncommitted.remove(&**cmd).is_some());
             };
 
-            if !self.locally_generated_committed.contains_key(cmd) {
+            if !self.locally_generated_committed.contains_key(&**cmd) {
                 if !self.has_sufficient_fee(pool_max_size, &cmd.data) {
                     remove_cmd(self)
                 } else {
                     let unchecked = &cmd.data;
                     match uncommited.get(&unchecked.fee_payer()) {
                         Some(account) => {
-                            match self.pool.add_from_gossip_exn(
+                            match self.pool.add_from_gossip_exn_shared(
                                 global_slot_since_genesis,
                                 current_global_slot,
                                 cmd,
@@ -1850,7 +2001,7 @@ impl TransactionPool {
                                     remove_cmd(self);
                                 }
                                 Ok(_) => {
-                                    self.verification_key_table.increment_hashed([cmd]);
+                                    self.verification_key_table.increment_hashed([&**cmd]);
                                 }
                             }
                         }
@@ -1928,10 +2079,11 @@ impl TransactionPool {
                         .get(&fee_payer(cmd))
                         .ok_or(diff::Error::FeePayerAccountNotFound)?;
 
-                    match self.pool.add_from_gossip_exn(
+                    // The one copy of the command the pool keeps.
+                    match self.pool.add_from_gossip_exn_shared(
                         global_slot_since_genesis,
                         current_global_slot,
-                        cmd,
+                        &PooledCommand::new(cmd.clone()),
                         account.nonce,
                         account.liquid_balance_at_slot(global_slot_since_genesis),
                     ) {
@@ -1950,7 +2102,7 @@ impl TransactionPool {
         let added_cmds = add_results
             .iter()
             .filter_map(|cmd| match cmd {
-                Ok((cmd, _)) => Some(cmd),
+                Ok((cmd, _)) => Some(&**cmd),
                 Err(_) => None,
             })
             .collect::<Vec<_>>();
@@ -2006,14 +2158,14 @@ impl TransactionPool {
         let mut accepted = Vec::with_capacity(128);
         let mut rejected = Vec::with_capacity(128);
 
-        // TODO: Re-work this to avoid cloning ?
+        // The actions that take these lists own their commands.
         for result in &add_results {
             match result {
                 Ok((cmd, _dropped)) => {
                     if all_dropped_cmd_hashes.contains(&cmd.hash) {
                         // ignored (dropped)
                     } else {
-                        accepted.push(cmd.clone());
+                        accepted.push((**cmd).clone());
                     }
                 }
                 Err((cmd, error)) => {
@@ -2062,7 +2214,7 @@ impl TransactionPool {
         Ok((decision, accepted, rejected, dropped))
     }
 
-    fn register_locally_generated(&mut self, time: redux::Timestamp, cmd: &ValidCommandWithHash) {
+    fn register_locally_generated(&mut self, time: redux::Timestamp, cmd: &PooledCommand) {
         match self.locally_generated_uncommitted.entry(cmd.clone()) {
             Entry::Occupied(mut entry) => {
                 let (entry_time, _batch_num) = entry.get_mut();
@@ -2229,8 +2381,7 @@ impl TransactionPool {
         rebroadcastable_txs.sort_by(|(txn1, (_, batch1)), (txn2, (_, batch2))| {
             use std::cmp::Ordering::Equal;
 
-            let get_nonce =
-                |txn: &ValidCommandWithHash| txn.data.forget_check().applicable_at_nonce();
+            let get_nonce = |txn: &PooledCommand| txn.data.applicable_at_nonce();
 
             match batch1.cmp(batch2) {
                 Equal => (),

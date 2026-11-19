@@ -59,6 +59,15 @@ pub enum P2pNetworkRpcAction {
         response: ResponseHeader,
         data: Data,
     },
+    /// Answers a libp2p `get_staged_ledger_aux_and_pending_coinbases_at_hash`
+    /// query with `parts`, which this action encodes: the answer is measured
+    /// against its limit and the send budgets first, and encoded only if it
+    /// fits.
+    OutgoingStagedLedgerResponse {
+        peer_id: PeerId,
+        response: ResponseHeader,
+        parts: std::sync::Arc<crate::channels::rpc::StagedLedgerAuxAndPendingCoinbases>,
+    },
     OutgoingData {
         addr: ConnectionAddr,
         peer_id: PeerId,
@@ -89,6 +98,10 @@ impl P2pNetworkRpcAction {
             Self::OutgoingResponse {
                 response: ResponseHeader { id },
                 ..
+            }
+            | Self::OutgoingStagedLedgerResponse {
+                response: ResponseHeader { id },
+                ..
             } => RpcStreamId::WithQuery(*id),
             Self::OutgoingData { stream_id, .. } => RpcStreamId::Exact(*stream_id),
         }
@@ -105,6 +118,7 @@ impl P2pNetworkRpcAction {
             Self::HeartbeatSend { peer_id, .. } => peer_id,
             Self::OutgoingQuery { peer_id, .. } => peer_id,
             Self::OutgoingResponse { peer_id, .. } => peer_id,
+            Self::OutgoingStagedLedgerResponse { peer_id, .. } => peer_id,
             Self::OutgoingData { peer_id, .. } => peer_id,
         }
     }
@@ -173,6 +187,7 @@ impl redux::EnablingCondition<P2pState> for P2pNetworkRpcAction {
                 response,
                 data,
             } => true,
+            P2pNetworkRpcAction::OutgoingStagedLedgerResponse { .. } => true,
             P2pNetworkRpcAction::OutgoingData {
                 addr,
                 peer_id,

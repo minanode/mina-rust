@@ -218,14 +218,30 @@ impl P2pNetworkYamuxState {
 
                         stream.window_theirs = stream.window_theirs.saturating_add(*difference);
 
-                        if *difference > 0 {
-                            // Offer every waiting frame again, oldest first:
-                            // `OutgoingFrame` sends what the window now has
-                            // room for and queues the rest in order.
-                            if !stream.pending.is_empty() {
-                                stream.pending_since = Some(meta.time());
+                        if *difference > 0
+                            && !stream.pending.is_empty()
+                            && !frame.flags.contains(YamuxFlags::RST)
+                        {
+                            // Send what waits and the window now has room
+                            // for, oldest first. Those bytes were admitted
+                            // when they were queued: offering them to the
+                            // budgets again could reset a long answer halfway
+                            // because other peers' answers took the reserve.
+                            stream.pending_since = Some(meta.time());
+                            pending_outgoing = stream.release_pending();
+                            if stream.pending.is_empty() {
+                                stream.pending_since = None;
+                                stream.pending_first_at = None;
                             }
-                            pending_outgoing = stream.take_pending();
+                            for frame in &pending_outgoing {
+                                if frame.flags.contains(YamuxFlags::FIN) {
+                                    connection_state.streams.remove(&frame.stream_id);
+                                    stream.writable = false;
+                                } else {
+                                    stream.established |= frame.flags.contains(YamuxFlags::ACK);
+                                    stream.syn_sent |= frame.flags.contains(YamuxFlags::SYN);
+                                }
+                            }
                         }
                     }
                     YamuxFrameInner::Ping { .. } => {}
@@ -233,6 +249,15 @@ impl P2pNetworkYamuxState {
                 }
 
                 let (dispatcher, state) = state_context.into_dispatcher_and_state();
+                // Released frames have their window and flags accounted for;
+                // they go out as they are.
+                while let Some(frame) = pending_outgoing.pop_front() {
+                    let data = fuzzed_maybe!(
+                        Data::from(frame.into_bytes()),
+                        crate::fuzzer::mutate_yamux_frame
+                    );
+                    dispatcher.push(P2pNetworkNoiseAction::OutgoingData { addr, data });
+                }
                 let limits: &P2pLimits = state.substate()?;
                 let connection_state =
                     <State as SubstateAccess<P2pNetworkSchedulerState>>::substate(state)?
@@ -362,9 +387,6 @@ impl P2pNetworkYamuxState {
                         }
                     }
                     YamuxFrameInner::WindowUpdate { .. } => {
-                        while let Some(frame) = pending_outgoing.pop_front() {
-                            dispatcher.push(P2pNetworkYamuxAction::OutgoingFrame { addr, frame });
-                        }
                         // OCaml's pinned go-yamux v4.0.0 sends FIN on a
                         // WindowUpdate, not just on Data (stream.go, sendClose).
                         // Both frame types must deliver EOF to the protocol.
@@ -401,16 +423,14 @@ impl P2pNetworkYamuxState {
                     let pending = stream.pending_len();
                     let (peer_id, total, peer_total, peer_queued, previous) =
                         queue_before.expect("outgoing frame queue was measured before mutating it");
-                    let added = pending.saturating_sub(previous);
-                    if pending > yamux_state.pending_outgoing_limit
-                        || (added > 0
-                            && !limits.outgoing_queue_budget_allows(
-                                total,
-                                peer_total,
-                                peer_queued,
-                                added,
-                            ))
-                    {
+                    if !limits.outgoing_queue_admits(
+                        yamux_state.pending_outgoing_limit,
+                        total,
+                        peer_total,
+                        peer_queued,
+                        previous,
+                        pending,
+                    ) {
                         // The queued frame is discarded with this stream. A slow
                         // reader must not disconnect the whole peer or pin RAM.
                         stream.pending.clear();
