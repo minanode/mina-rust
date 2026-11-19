@@ -55,6 +55,9 @@ thread_local! { static TRACE: RefCell<Vec<P2pAction>> = const { RefCell::new(Vec
 #[path = "recovery/yamux_limits.rs"]
 mod yamux_limits;
 
+#[path = "common/staged_ledgers.rs"]
+mod staged_ledgers;
+
 #[path = "recovery/sharing.rs"]
 mod sharing;
 

@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Node**: the transaction pool keeps one copy of each command instead of one
+  per index. A pooled zkApp command with 15 proofs takes 321 KiB instead of 727
+  KiB with proofs in memory
+  ([#61](https://github.com/minanode/mina-rust/pull/61))
+- **Node**: read the latest ledger proof without cloning the transactions of the
+  tree that emitted it. Applying or producing a block whose emitted tree holds
+  121 zkApp commands no longer copies 32.4 MiB. `DiffResult::ledger_proof` is
+  now `Option<LedgerProof>`
+  ([#62](https://github.com/minanode/mina-rust/pull/62))
+
+### Fixed
+
+- **Node**: serve staged-ledger answers of up to 192 MiB over libp2p. Before, a
+  node reset the stream for an answer above about 67 MB, so no Rust node could
+  serve a devnet bootstrap, whose answer is about 172 MB. An answer over the
+  limit, or one the send budgets have no room for, now gets an empty answer
+  instead of a stream reset
+  ([#60](https://github.com/minanode/mina-rust/pull/60))
+
 ## [0.22.2] - 2026-11-18
 
 0.22.2 fixes how the node verifies and fetches blocks with many zkApp proofs.

@@ -107,10 +107,10 @@ pub struct PreStatement<L: LedgerNonSnark> {
 #[derive(Debug)]
 pub struct DiffResult {
     pub hash_after_applying: StagedLedgerHash<Fp>,
-    pub ledger_proof: Option<(
-        LedgerProof,
-        Vec<TransactionsOrdered<(WithStatus<Transaction>, Fp, Slot)>>,
-    )>,
+    /// The ledger proof the diff emitted. Mesa returns the proof alone.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/staged_ledger/staged_ledger.ml#L1187>
+    pub ledger_proof: Option<LedgerProof>,
     pub pending_coinbase_update: (bool, Update),
     /// Accounts the diff's transactions created. Mesa scan states no longer
     /// keep applied transactions, so they come from applying the diff.
@@ -185,9 +185,10 @@ impl StagedLedger {
         };
         let statement_check =
             StatementCheck::<fn(Fp) -> MinaStateProtocolStateValueStableV2>::Partial;
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/staged_ledger/staged_ledger.ml#L284-L287>
         let last_proof_statement = scan_state
-            .latest_ledger_proof()
-            .map(|(proof, _)| proof.statement());
+            .latest_ledger_proof_only()
+            .map(LedgerProof::statement);
 
         scan_state.check_invariants(
             constraint_constants,
@@ -375,9 +376,10 @@ impl StagedLedger {
             ));
         }
 
+        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/staged_ledger/staged_ledger.ml#L383-L386>
         let last_proof_statement = scan_state
-            .latest_ledger_proof()
-            .map(|(proof, _)| proof.statement());
+            .latest_ledger_proof_only()
+            .map(LedgerProof::statement);
 
         fun(
             constraint_constants,
@@ -520,7 +522,7 @@ impl StagedLedger {
 
     /// <https://github.com/MinaProtocol/mina/blob/05c2f73d0f6e4f1341286843814ce02dcb3919e0/src/lib/staged_ledger/staged_ledger.ml#434>
     fn current_ledger_proof(&self) -> Option<&LedgerProof> {
-        self.scan_state.latest_ledger_proof().map(|(f, _)| f)
+        self.scan_state.latest_ledger_proof_only()
     }
 
     /// <https://github.com/MinaProtocol/mina/blob/05c2f73d0f6e4f1341286843814ce02dcb3919e0/src/lib/staged_ledger/staged_ledger.ml#439>
@@ -1103,15 +1105,15 @@ impl StagedLedger {
     /// update the pending_coinbase tree with the updated/new stack and delete the oldest stack if a proof was emitted
     ///
     /// <https://github.com/MinaProtocol/mina/blob/05c2f73d0f6e4f1341286843814ce02dcb3919e0/src/lib/staged_ledger/staged_ledger.ml#L806>
-    fn update_pending_coinbase_collection<A>(
+    fn update_pending_coinbase_collection(
         depth: usize,
         pending_coinbase: &mut PendingCoinbase,
         stack_update: StackUpdate,
         is_new_stack: bool,
-        ledger_proof: &Option<(LedgerProof, A)>,
+        ledger_proof: &Option<LedgerProof>,
     ) -> Result<(), StagedLedgerError> {
         // Deleting oldest stack if proof emitted
-        if let Some((proof, _)) = ledger_proof {
+        if let Some(proof) = ledger_proof {
             let oldest_stack = pending_coinbase.remove_coinbase_stack(depth)?;
             let ledger_proof_stack = &proof.statement().target.pending_coinbase_stack;
 
@@ -2164,16 +2166,7 @@ mod tests_ocaml {
         sl: &mut StagedLedger,
         txns: &[valid::UserCommand],
         stmt_to_work: F,
-    ) -> (
-        Option<(
-            LedgerProof,
-            Vec<TransactionsOrdered<(WithStatus<Transaction>, Fp, Slot)>>,
-        )>,
-        Diff,
-        bool,
-        Update,
-        bool,
-    )
+    ) -> (Option<LedgerProof>, Diff, bool, Update, bool)
     where
         F: Fn(&work::Statement) -> Option<work::Unchecked>,
     {
@@ -2700,13 +2693,7 @@ mod tests_ocaml {
         sl: &mut StagedLedger,
         txns: &[valid::UserCommand],
         stmt_to_work: F,
-    ) -> (
-        Option<(
-            LedgerProof,
-            Vec<TransactionsOrdered<(WithStatus<Transaction>, Fp, Slot)>>,
-        )>,
-        Diff,
-    )
+    ) -> (Option<LedgerProof>, Diff)
     where
         F: Fn(&work::Statement) -> Option<work::Checked>,
     {
@@ -2726,15 +2713,33 @@ mod tests_ocaml {
     /// Fee excess at top level ledger proofs should always be zero
     ///
     /// <https://github.com/MinaProtocol/mina/blob/3753a8593cc1577bcf4da16620daf9946d88e8e5/src/lib/staged_ledger/staged_ledger.ml#L2377>
-    fn assert_fee_excess(
-        proof: &Option<(
-            LedgerProof,
-            Vec<TransactionsOrdered<(WithStatus<Transaction>, Fp, Slot)>>,
-        )>,
-    ) {
-        if let Some((proof, _txns)) = proof {
+    fn assert_fee_excess(proof: &Option<LedgerProof>) {
+        if let Some(proof) = proof {
             assert!(proof.statement().fee_excess.is_zero());
         };
+    }
+
+    /// Checks [`ScanState::latest_ledger_proof_only`] against
+    /// [`ScanState::latest_ledger_proof`], which also returns the emitted
+    /// tree's transactions, and checks the proof a diff emitted, if any,
+    /// against the latter.
+    fn assert_latest_proof_accessors_agree(scan_state: &ScanState, emitted: Option<&LedgerProof>) {
+        let with_txns = scan_state.latest_ledger_proof().map(|(proof, _txns)| proof);
+        let only = scan_state.latest_ledger_proof_only();
+
+        assert_eq!(only.is_some(), with_txns.is_some());
+        if let (Some(only), Some(with_txns)) = (only, with_txns) {
+            assert!(std::ptr::eq(only, with_txns));
+            assert_eq!(only, with_txns);
+            assert_eq!(only.statement(), with_txns.statement());
+        }
+
+        if let Some(emitted) = emitted {
+            let with_txns =
+                with_txns.expect("a diff that emits a proof leaves it in the scan state");
+            assert_eq!(emitted, with_txns);
+            assert_eq!(emitted.statement(), with_txns.statement());
+        }
     }
 
     /// <https://github.com/MinaProtocol/mina/blob/3753a8593cc1577bcf4da16620daf9946d88e8e5/src/lib/staged_ledger/staged_ledger.ml#L2322>
@@ -2965,6 +2970,8 @@ mod tests_ocaml {
                     &stmt_to_work,
                 );
 
+                assert_latest_proof_accessors_agree(&sl.scan_state, ledger_proof.as_ref());
+
                 for cmd in diff.commands() {
                     if allow_failure {
                         continue;
@@ -2977,10 +2984,7 @@ mod tests_ocaml {
                     };
                 }
 
-                let do_snarked_ledger_transition = |proof_opt: Option<&(
-                    LedgerProof,
-                    Vec<TransactionsOrdered<(WithStatus<Transaction>, Fp, Slot)>>,
-                )>| {
+                let do_snarked_ledger_transition = |proof_opt: Option<&LedgerProof>| {
                     let mut snarked_ledger = snarked_ledger.clone();
 
                     let apply_first_pass =
@@ -3018,7 +3022,7 @@ mod tests_ocaml {
 
                     let get_state = |hash: Fp| Ok(state_tbl.get(&hash).cloned().unwrap());
 
-                    if let Some((proof, _transactions)) = proof_opt.as_ref() {
+                    if let Some(proof) = proof_opt {
                         // update snarked ledger with the transactions in the most recently emitted proof
                         let _res = sl
                             .scan_state
@@ -3275,6 +3279,61 @@ mod tests_ocaml {
                     provers: NumProvers::One,
                     stmt_to_work: stmt_to_work_one_prover,
                 })
+            },
+        );
+    }
+
+    /// The proof-only accessor and the proof a diff returns match
+    /// [`ScanState::latest_ledger_proof`] on the empty scan state, on every
+    /// block before the first proof and on every block that emits one.
+    #[test]
+    fn latest_ledger_proof_only_matches_latest_ledger_proof() {
+        const EXPECTED_PROOF_COUNT: usize = 3;
+
+        let (ledger_init_state, cmds, cmd_iters) =
+            gen_at_capacity_fixed_blocks(EXPECTED_PROOF_COUNT);
+
+        async_with_ledgers(
+            &ledger_init_state,
+            cmds.clone(),
+            cmd_iters.clone(),
+            |_snarked_ledger, mut sl, _test_mask| {
+                assert!(sl.scan_state.latest_ledger_proof().is_none());
+                assert_latest_proof_accessors_agree(&sl.scan_state, None);
+
+                let (mut before_first_proof, mut emitted) = (0, 0);
+                iter_cmds_acc(
+                    &cmds,
+                    &cmd_iters,
+                    Slot::gen_small(),
+                    |_cmds_left, _count_opt, cmds_this_iter, global_slot| {
+                        let (current_state, current_view) = dummy_state_and_view(Some(global_slot));
+                        let state_and_body_hash = hashes_abstract(&current_state);
+
+                        let (ledger_proof, diff) = create_and_apply(
+                            None,
+                            None,
+                            global_slot,
+                            &current_view,
+                            state_and_body_hash,
+                            &mut sl,
+                            cmds_this_iter,
+                            stmt_to_work_one_prover,
+                        );
+
+                        assert_latest_proof_accessors_agree(&sl.scan_state, ledger_proof.as_ref());
+                        if ledger_proof.is_some() {
+                            emitted += 1;
+                        } else if sl.scan_state.latest_ledger_proof().is_none() {
+                            before_first_proof += 1;
+                        }
+
+                        (diff, global_slot.succ())
+                    },
+                );
+
+                assert!(before_first_proof > 0, "no block before the first proof");
+                assert!(emitted > 0, "no block emitted a proof");
             },
         );
     }

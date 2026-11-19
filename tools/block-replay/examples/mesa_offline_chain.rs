@@ -483,9 +483,8 @@ fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("apply_diff_unchecked: {e:?}"))?;
         staged_ledger.commit_and_reparent_to_root();
         let diff_hash = block_body_hash(&diff).map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        let emitted_ledger_proof: Option<Arc<v2::LedgerProofProdStableV2>> = res
-            .ledger_proof
-            .map(|(proof, ..)| Arc::new((&proof).into()));
+        let emitted_ledger_proof: Option<Arc<v2::LedgerProofProdStableV2>> =
+            res.ledger_proof.map(|proof| Arc::new((&proof).into()));
         let staged_ledger_hash = (&res.hash_after_applying).into();
         let pending_coinbase_update = (&res.pending_coinbase_update.1).into();
         let pending_coinbase_witness = v2::MinaBasePendingCoinbaseWitnessStableV2 {

@@ -621,7 +621,7 @@ fn main() -> anyhow::Result<()> {
             }
             println!("witness_probe {height} {} {bytes} {largest}", seen.len());
         }
-        let statement = result.ledger_proof.as_ref().map(|(proof, _)| {
+        let statement = result.ledger_proof.as_ref().map(|proof| {
             mina_p2p_messages::v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement::from(
                 &proof.statement(),
             )

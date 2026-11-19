@@ -1452,6 +1452,17 @@ impl ScanState {
         Some((proof, txns))
     }
 
+    /// The proof of the last emitted tree, without the tree's transactions.
+    /// Callers that read only the proof or its statement use this:
+    /// [`Self::latest_ledger_proof`] also orders the tree's transactions and
+    /// clones each of them.
+    ///
+    /// OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L870-L874>
+    pub fn latest_ledger_proof_only(&self) -> Option<&LedgerProof> {
+        let (proof, _txns_with_witnesses) = self.scan_state.last_emitted_value()?;
+        Some(proof)
+    }
+
     pub fn latest_ledger_proof(
         &self,
     ) -> Option<(
@@ -2335,13 +2346,7 @@ impl ScanState {
         &mut self,
         transactions: Vec<Arc<TransactionWithWitness>>,
         work: Vec<transaction_snark::work::Unchecked>,
-    ) -> Result<
-        Option<(
-            LedgerProof,
-            Vec<TransactionsOrdered<(WithStatus<Transaction>, Fp, Slot)>>,
-        )>,
-        String,
-    > {
+    ) -> Result<Option<LedgerProof>, String> {
         // Mesa puts each proof of the completed work into the tree as it is.
         //
         // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L1406-L1417>
@@ -2413,13 +2418,13 @@ impl ScanState {
                         self.previous_incomplete_zkapp_updates =
                             incomplete_zkapp_updates_from_old_proof;
 
-                        // This block is for when there's a proof emitted so Option.
-                        // value_exn is safe here
-                        // [latest_ledger_proof] generates ordered transactions
-                        // appropriately*)
-                        let (proof, txns) = self.latest_ledger_proof().unwrap();
+                        // A proof was just emitted, so the unwrap is safe.
+                        // Mesa returns the proof alone, without the tree's
+                        // transactions, which no caller reads.
+                        // OCaml: <https://github.com/MinaProtocol/mina/blob/84b8d96954b218f372b93f65a071abf528e6bb61/src/lib/transaction_snark_scan_state/transaction_snark_scan_state.ml#L1458-L1470>
+                        let proof = self.latest_ledger_proof_only().unwrap();
 
-                        Ok(Some((proof.clone(), txns)))
+                        Ok(Some(proof.clone()))
                     }
                     Err(e) => Err(format!(
                         "The new final statement does not connect to the previous \

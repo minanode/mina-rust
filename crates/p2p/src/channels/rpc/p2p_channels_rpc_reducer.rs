@@ -447,6 +447,19 @@ impl P2pChannelsRpcState {
 
                 #[cfg(feature = "p2p-libp2p")]
                 if is_libp2p {
+                    // The network layer measures a staged-ledger answer
+                    // against its limit and the send budgets before it
+                    // encodes it.
+                    if let Some(P2pRpcResponse::StagedLedgerAuxAndPendingCoinbasesAtBlock(parts)) =
+                        response.as_deref()
+                    {
+                        dispatcher.push(P2pNetworkRpcAction::OutgoingStagedLedgerResponse {
+                            peer_id,
+                            response: mina_p2p_messages::rpc_kernel::ResponseHeader { id },
+                            parts: parts.clone(),
+                        });
+                        return Ok(());
+                    }
                     let encoded = match response {
                         Some(response) => {
                             super::libp2p::internal_response_into_libp2p(*response, id)

@@ -456,6 +456,7 @@ pub enum ActionKind {
     P2pNetworkRpcOutgoingData,
     P2pNetworkRpcOutgoingQuery,
     P2pNetworkRpcOutgoingResponse,
+    P2pNetworkRpcOutgoingStagedLedgerResponse,
     P2pNetworkRpcPrunePending,
     P2pNetworkRpcRefusal,
     P2pNetworkRpcTimeout,
@@ -873,7 +874,7 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    pub const COUNT: u16 = 742;
+    pub const COUNT: u16 = 743;
 }
 
 impl std::fmt::Display for ActionKind {
@@ -2348,6 +2349,9 @@ impl ActionKindGet for P2pNetworkRpcAction {
             Self::HeartbeatSend { .. } => ActionKind::P2pNetworkRpcHeartbeatSend,
             Self::OutgoingQuery { .. } => ActionKind::P2pNetworkRpcOutgoingQuery,
             Self::OutgoingResponse { .. } => ActionKind::P2pNetworkRpcOutgoingResponse,
+            Self::OutgoingStagedLedgerResponse { .. } => {
+                ActionKind::P2pNetworkRpcOutgoingStagedLedgerResponse
+            }
             Self::OutgoingData { .. } => ActionKind::P2pNetworkRpcOutgoingData,
         }
     }

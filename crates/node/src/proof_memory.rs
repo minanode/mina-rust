@@ -416,7 +416,7 @@ impl ProofMemoryReport {
             );
         }
 
-        for command in state.transaction_pool.get_all_transactions() {
+        for command in state.transaction_pool.iter_all_transactions() {
             if let valid::UserCommand::ZkAppCommand(zkapp) = &command.data {
                 zkapp_proofs(
                     &mut seen,
