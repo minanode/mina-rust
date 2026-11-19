@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Node**: serve staged-ledger answers of up to 192 MiB over libp2p. Before, a
+  node reset the stream for an answer above about 67 MB, so no Rust node could
+  serve a devnet bootstrap, whose answer is about 172 MB. An answer over the
+  limit, or one the send budgets have no room for, now gets an empty answer
+  instead of a stream reset
+  ([#60](https://github.com/minanode/mina-rust/pull/60))
+
 ## [0.22.2] - 2026-11-18
 
 0.22.2 fixes how the node verifies and fetches blocks with many zkApp proofs.

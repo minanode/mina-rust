@@ -562,3 +562,140 @@ where
     .expect("no errors");
     assert!(any, "response should be received");
 }
+
+#[path = "common/staged_ledgers.rs"]
+mod staged_ledgers;
+
+/// A staged-ledger answer larger than the released server's ceiling, 64 MiB
+/// of send queue and the initial window, goes from one Rust node to another
+/// over libp2p. The client keeps our default receive window, and reads the
+/// answer whole and byte for byte as OCaml would have encoded it.
+#[tokio::test]
+async fn rust_to_rust_staged_ledger_over_the_old_ceiling() {
+    use mina_core::Substate;
+    use mina_p2p::{P2pAction, P2pNetworkAction, P2pNetworkRpcAction, P2pState, RpcMessage};
+    use p2p_testing::{
+        redux::{Action, State},
+        rust_node::RustNodeConfig,
+    };
+    use redux::{ActionWithMeta, Dispatcher};
+    use std::sync::Mutex;
+
+    // The payloads of the large answers the client's RPC layer reads.
+    static RECEIVED: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
+    fn reducer(
+        state: &mut State,
+        action: &ActionWithMeta<Action>,
+        dispatcher: &mut Dispatcher<Action, State>,
+    ) {
+        let meta = action.meta().clone();
+        let state_context = Substate::new(state, dispatcher);
+        match action.action() {
+            Action::P2p(action) => {
+                if let P2pAction::Network(P2pNetworkAction::Rpc(
+                    P2pNetworkRpcAction::IncomingMessage {
+                        message: RpcMessage::Response { bytes, .. },
+                        ..
+                    },
+                )) = action
+                {
+                    if bytes.len() > 1024 * 1024 {
+                        RECEIVED.lock().unwrap().push(bytes.to_vec());
+                    }
+                }
+                P2pState::reducer(state_context, meta.with_action(action.clone())).unwrap();
+            }
+            // Timeouts and heartbeats, as the cluster's own reducer does.
+            Action::Idle(_) => P2pState::p2p_timeout_dispatch(state_context, &meta).unwrap(),
+            Action::P2pEffectful(_) => {}
+        }
+    }
+
+    let parts = staged_ledgers::heavy_staged_ledger(200);
+    let expected = staged_ledgers::expected_payload(&parts);
+    assert!(expected.len() > 64 * 1024 * 1024 + 256 * 1024);
+
+    let mut cluster = ClusterBuilder::new()
+        .ports(11550..11560)
+        .idle_duration(Duration::from_millis(1))
+        .total_duration(Duration::from_secs(300))
+        .start()
+        .await
+        .expect("should build cluster");
+    let server = cluster
+        .add_rust_node(RustNodeConfig::default())
+        .expect("server");
+    let client = cluster
+        .add_rust_node(RustNodeConfig::default().with_override_reducer(reducer))
+        .expect("client");
+    let [server_id, client_id] = peer_ids(&cluster, [server, client]);
+    assert!(
+        try_wait_for_nodes_to_listen(&mut cluster, [server], Duration::from_secs(2))
+            .await
+            .expect("no error"),
+        "server should listen"
+    );
+    cluster.connect(client, server).expect("no error");
+    assert!(
+        try_wait_for_nodes_to_connect(
+            &mut cluster,
+            [(client, server_id), (server, client_id)],
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("no error"),
+        "nodes should connect"
+    );
+    assert!(
+        rpc_ready(&mut cluster, [(client, server)], Duration::from_secs(5))
+            .await
+            .expect("no errors"),
+        "rpc should be ready"
+    );
+
+    let query = P2pRpcRequest::StagedLedgerAuxAndPendingCoinbasesAtBlock(
+        mina_p2p_messages::v2::StateHash::zero(),
+    );
+    let request_id = send_request(&mut cluster, client, server, query);
+    receive_request(&mut cluster, client, server, request_id).await;
+    send_response(
+        &mut cluster,
+        server,
+        client,
+        request_id,
+        P2pRpcResponse::StagedLedgerAuxAndPendingCoinbasesAtBlock(parts),
+    );
+    let received = try_wait_for_all_nodes_with_value(
+        &mut cluster,
+        [(client, (server_id, request_id))],
+        Duration::from_secs(240),
+        |event| match event {
+            RustNodeEvent::RpcChannelResponseReceived {
+                peer_id,
+                id,
+                response: Some(P2pRpcResponse::StagedLedgerAuxAndPendingCoinbasesAtBlock(_)),
+            } => Some((peer_id, id)),
+            _ => None,
+        },
+    )
+    .await
+    .expect("no errors");
+    assert!(received, "the answer should arrive");
+    let payloads = std::mem::take(&mut *RECEIVED.lock().unwrap());
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0].len(), expected.len());
+    assert!(payloads[0] == expected, "the answer arrived changed");
+    let server_state = cluster.rust_node(server).state();
+    assert_eq!(
+        server_state
+            .network
+            .scheduler
+            .queued_outgoing_bytes(&client_id),
+        (0, 0)
+    );
+    assert!(cluster
+        .rust_node(client)
+        .state()
+        .get_ready_peer(&server_id)
+        .is_some());
+}

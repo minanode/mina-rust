@@ -16,8 +16,8 @@ use redux::Dispatcher;
 
 use crate::{
     channels::rpc::{
-        BestTipWithProof, CatchupRequest, P2pChannelsRpcAction, P2pRpcRequest, P2pRpcResponse,
-        StagedLedgerAuxAndPendingCoinbases, MAX_CATCHUP_RPC_REQUESTS,
+        staged_ledger_serve, BestTipWithProof, CatchupRequest, P2pChannelsRpcAction, P2pRpcRequest,
+        P2pRpcResponse, StagedLedgerAuxAndPendingCoinbases, MAX_CATCHUP_RPC_REQUESTS,
     },
     connection::outgoing::P2pConnectionOutgoingInitOpts,
     disconnection::{P2pDisconnectionAction, P2pDisconnectionReason},
@@ -88,6 +88,9 @@ impl P2pNetworkRpcState {
         // in Yamux accounts for actual bytes;
         // this check prevents many peers from starting expensive work before
         // those responses have been encoded.
+        let staged_ledger_reservation = state_context
+            .get_substate()?
+            .staged_ledger_reservation(limits);
         let memory_rejected = if let P2pNetworkRpcAction::IncomingMessage {
             peer_id,
             message: RpcMessage::Query { header, .. },
@@ -100,7 +103,7 @@ impl P2pNetworkRpcState {
                 let scheduler = &state_context.get_substate()?.scheduler;
                 let (queued, peer_queued) = scheduler.queued_outgoing_bytes(peer_id);
                 let (active, peer_active) = scheduler.reserved_rpc_response_bytes(peer_id);
-                let reserve = response_reservation(header);
+                let reserve = response_reservation(header, staged_ledger_reservation);
                 !limits.rpc_work_budget_allows(
                     queued.saturating_add(active),
                     peer_queued.saturating_add(peer_active),
@@ -141,6 +144,23 @@ impl P2pNetworkRpcState {
                 .checked_add(1)
                 .ok_or("inbound RPC ID exhausted")?;
         }
+        // Measure a staged-ledger answer against its limit and the budgets
+        // while the whole network state can be read, before it is encoded.
+        let staged_ledger = if let P2pNetworkRpcAction::OutgoingStagedLedgerResponse {
+            peer_id,
+            response,
+            parts,
+        } = &action
+        {
+            let network = state_context.get_substate_mut()?;
+            let plan = StagedLedgerAnswer::plan(network, limits, peer_id, response.id, parts);
+            if let Some(len) = plan.as_ref().and_then(StagedLedgerAnswer::len) {
+                network.staged_ledger_answer_len = Some(len);
+            }
+            plan
+        } else {
+            None
+        };
         let budgeted = if matches!(action, P2pNetworkRpcAction::IncomingData { .. }) {
             state_context
                 .get_substate()?
@@ -297,7 +317,7 @@ impl P2pNetworkRpcState {
                             header.id,
                             PendingIncomingQuery {
                                 reserved_bytes: if served_query.is_some() {
-                                    response_reservation(&wire_header)
+                                    response_reservation(&wire_header, staged_ledger_reservation)
                                 } else {
                                     0
                                 },
@@ -555,6 +575,82 @@ impl P2pNetworkRpcState {
                 });
                 Ok(())
             }
+            P2pNetworkRpcAction::OutgoingStagedLedgerResponse {
+                peer_id,
+                response,
+                parts,
+            } => {
+                // Removing the query releases its reservation. The plan was
+                // measured without it, and the queue check of the frames below
+                // runs before any other action, so it sees the same budgets.
+                let Some(query) = rpc_state.pending_incoming.remove(&response.id) else {
+                    bug_condition!("staged-ledger answer for a query that is not pending");
+                    return Ok(());
+                };
+                let stream_id = rpc_state.stream_id;
+                let addr = rpc_state.addr;
+                let header = ResponseHeader {
+                    id: query.header.id,
+                };
+                let dispatcher = state_context.into_dispatcher();
+                let chunks = match staged_ledger {
+                    Some(StagedLedgerAnswer::Send(message)) => {
+                        staged_ledger_serve::encode_chunks(&parts, &message, STAGED_LEDGER_CHUNK)
+                            .map(|chunks| (message.len, chunks))
+                            .map_err(|error| format!("it can't be encoded: {error}"))
+                    }
+                    Some(StagedLedgerAnswer::TooLarge(max)) => {
+                        Err(format!("it is over the {max}-byte limit"))
+                    }
+                    Some(StagedLedgerAnswer::NoRoom(len)) => Err(format!(
+                        "the send budgets have no room for its {len} bytes now"
+                    )),
+                    Some(StagedLedgerAnswer::Unavailable(error)) => {
+                        Err(format!("it can't be measured: {error}"))
+                    }
+                    None => Err("its stream is gone".to_owned()),
+                };
+                match chunks {
+                    Ok((len, chunks)) => {
+                        mina_core::debug!(meta.time();
+                            kind = "P2pStagedLedgerAnswerSent",
+                            summary = format!("staged-ledger answer of {len} bytes sent"),
+                            peer_id = display(peer_id),
+                        );
+                        for chunk in chunks {
+                            dispatcher.push(P2pNetworkRpcAction::OutgoingData {
+                                addr,
+                                peer_id,
+                                stream_id,
+                                data: Data::from(chunk),
+                                fin: false,
+                            });
+                        }
+                    }
+                    Err(reason) => {
+                        mina_core::info!(meta.time();
+                            kind = "P2pStagedLedgerAnswerRefused",
+                            summary = format!("staged-ledger answer refused, {reason}: sent none"),
+                            peer_id = display(peer_id),
+                        );
+                        let none: rpc::GetStagedLedgerAuxAndPendingCoinbasesAtHashV2Response = None;
+                        dispatcher.push(P2pNetworkRpcAction::OutgoingData {
+                            addr,
+                            peer_id,
+                            stream_id,
+                            data: Data::from(
+                                RpcMessage::Response {
+                                    header,
+                                    bytes: crate::channels::rpc::response_bytes(none).into(),
+                                }
+                                .into_bytes(),
+                            ),
+                            fin: false,
+                        });
+                    }
+                }
+                Ok(())
+            }
         }
     }
 
@@ -746,11 +842,89 @@ fn extend_within(buf: &mut Vec<u8>, bytes: &[u8], len: usize) {
     buf.extend_from_slice(bytes);
 }
 
-/// Reserves work before dispatch. Staged-ledger answers observed in D4 were
-/// about 59 MiB; unexpectedly larger answers meet the actual Yamux queue cap.
-fn response_reservation(header: &QueryHeader) -> usize {
+/// The pieces a staged-ledger answer is encoded in. Each waits in the Yamux
+/// queue as one frame and is freed once sent, and splitting one at the edge of
+/// the peer's receive window copies at most this much.
+const STAGED_LEDGER_CHUNK: usize = 1024 * 1024;
+
+/// What to do with a staged-ledger answer, decided before it is encoded.
+enum StagedLedgerAnswer {
+    /// Encode and send it: it fits its limit and the send budgets.
+    Send(staged_ledger_serve::StagedLedgerMessage),
+    /// It is over [`P2pLimits::rpc_served_staged_ledger`], here.
+    TooLarge(usize),
+    /// It is within the limit, but its bytes, here, don't fit the send
+    /// budgets now.
+    NoRoom(usize),
+    /// Its parts can't be encoded.
+    Unavailable(String),
+}
+
+impl StagedLedgerAnswer {
+    /// Measures the answer with `parts` to `peer_id`'s query `id`, with the
+    /// query's own reservation released. `None` if the query is not pending.
+    fn plan(
+        network: &P2pNetworkState,
+        limits: &P2pLimits,
+        peer_id: &PeerId,
+        id: u64,
+        parts: &StagedLedgerAuxAndPendingCoinbases,
+    ) -> Option<Self> {
+        let rpc = network
+            .scheduler
+            .rpc_incoming_streams
+            .get(peer_id)?
+            .values()
+            .find(|stream| stream.pending_incoming.contains_key(&id))?;
+        let query = rpc.pending_incoming.get(&id)?;
+        let mut header = Vec::new();
+        MessageHeader::Response(ResponseHeader {
+            id: query.header.id,
+        })
+        .binprot_write(&mut header)
+        .ok()?;
+        let max = match limits.rpc_served_staged_ledger() {
+            Limit::Some(max) => max,
+            Limit::Unlimited => usize::MAX,
+        };
+        Some(match staged_ledger_serve::measure(parts, &header, max) {
+            Err(error) => Self::Unavailable(error.to_string()),
+            Ok(None) => Self::TooLarge(max),
+            Ok(Some(message)) => {
+                if network.scheduler.outgoing_data_admitted(
+                    &rpc.addr,
+                    peer_id,
+                    rpc.stream_id,
+                    message.len,
+                    query.reserved_bytes,
+                    limits,
+                ) {
+                    Self::Send(message)
+                } else {
+                    Self::NoRoom(message.len)
+                }
+            }
+        })
+    }
+
+    /// The answer's length, as far as it is known: the limit for one over
+    /// it. The next staged-ledger query reserves this much.
+    fn len(&self) -> Option<usize> {
+        match self {
+            Self::Send(message) => Some(message.len),
+            Self::TooLarge(len) | Self::NoRoom(len) => Some(*len),
+            Self::Unavailable(_) => None,
+        }
+    }
+}
+
+/// Reserves work before dispatch: what the answer is expected to take of the
+/// send budgets. A staged-ledger answer reserves `staged_ledger`
+/// ([`P2pNetworkState::staged_ledger_reservation`]); its real length is
+/// checked before it is encoded.
+fn response_reservation(header: &QueryHeader, staged_ledger: usize) -> usize {
     match header.tag.as_ref() {
-        rpc::GetStagedLedgerAuxAndPendingCoinbasesAtHashV2::NAME => 64 * 1024 * 1024,
+        rpc::GetStagedLedgerAuxAndPendingCoinbasesAtHashV2::NAME => staged_ledger,
         rpc::GetCompletedSnarksV1::NAME => 8 * 1024 * 1024,
         rpc::GetBestTipV2::NAME | rpc::GetTransitionChainProofV1ForV2::NAME => 4 * 1024 * 1024,
         _ => crate::channels::rpc::MAX_SERVED_LEDGER_ANSWER_BYTES,

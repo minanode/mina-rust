@@ -20,16 +20,36 @@ impl BinProtWrite for BorrowedParts<'_> {
     }
 }
 
-#[derive(Default)]
-struct CountBytes(usize);
+/// Counts the bytes written, and fails the write that takes the count past
+/// `max`, so that counting stops there.
+struct CountBytes {
+    count: usize,
+    max: usize,
+    over: bool,
+}
+
+impl CountBytes {
+    fn new(max: usize) -> Self {
+        Self {
+            count: 0,
+            max,
+            over: false,
+        }
+    }
+}
 
 impl Write for CountBytes {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0 = self
-            .0
-            .checked_add(bytes.len())
-            .ok_or_else(|| io::Error::other("staged-ledger reply length overflow"))?;
-        Ok(bytes.len())
+        match self.count.checked_add(bytes.len()) {
+            Some(count) if count <= self.max => {
+                self.count = count;
+                Ok(bytes.len())
+            }
+            _ => {
+                self.over = true;
+                Err(io::Error::other("staged-ledger reply over its limit"))
+            }
+        }
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -37,24 +57,40 @@ impl Write for CountBytes {
     }
 }
 
-/// Same framing as `RpcResult(Ok(NeedsLength(payload)))`, with one output
-/// allocation. The size pass retains no bytes; it also propagates cache-read
-/// failures instead of using the infallible `BinProtSize` adapter. The payload
-/// must encode identically on both passes. Our borrowed, immutable wire parts
-/// satisfy this, including proofs whose cache representation can change while
-/// their encoded bytes stay identical.
-fn encode_success(payload: &impl BinProtWrite) -> io::Result<Vec<u8>> {
-    let mut count = CountBytes::default();
-    payload.binprot_write(&mut count)?;
+/// The length of `payload`, or `None` if it is over `max`. The pass retains no
+/// bytes, and it propagates cache-read failures instead of using the
+/// infallible `BinProtSize` adapter.
+fn payload_len(payload: &impl BinProtWrite, max: usize) -> io::Result<Option<usize>> {
+    let mut count = CountBytes::new(max);
+    match payload.binprot_write(&mut count) {
+        Ok(()) => Ok(Some(count.count)),
+        Err(_) if count.over => Ok(None),
+        Err(error) => Err(error),
+    }
+}
 
-    // One result tag and at most nine bytes for bin_prot's Nat0 length.
+/// The framing of `RpcResult(Ok(NeedsLength(payload)))` before a payload of
+/// `len` bytes: one result tag and at most nine bytes for bin_prot's Nat0
+/// length.
+fn result_header(len: usize) -> io::Result<([u8; 10], usize)> {
     let mut header = [0u8; 10];
     let mut cursor = io::Cursor::new(header.as_mut_slice());
     RpcResultKind::Ok.binprot_write(&mut cursor)?;
-    binprot::Nat0(count.0 as u64).binprot_write(&mut cursor)?;
+    binprot::Nat0(len as u64).binprot_write(&mut cursor)?;
     let header_len = cursor.position() as usize;
-    let total_len = count
-        .0
+    Ok((header, header_len))
+}
+
+/// Same framing as `RpcResult(Ok(NeedsLength(payload)))`, with one output
+/// allocation. The payload must encode identically on both passes. Our
+/// borrowed, immutable wire parts satisfy this, including proofs whose cache
+/// representation can change while their encoded bytes stay identical.
+#[cfg(any(test, feature = "p2p-libp2p"))]
+fn encode_success(payload: &impl BinProtWrite) -> io::Result<Vec<u8>> {
+    let len = payload_len(payload, usize::MAX)?
+        .ok_or_else(|| io::Error::other("staged-ledger reply length overflow"))?;
+    let (header, header_len) = result_header(len)?;
+    let total_len = len
         .checked_add(header_len)
         .ok_or_else(|| io::Error::other("staged-ledger reply length overflow"))?;
     let mut bytes = Vec::with_capacity(total_len);
@@ -66,8 +102,121 @@ fn encode_success(payload: &impl BinProtWrite) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+#[cfg(feature = "p2p-libp2p")]
 pub(super) fn encode(parts: &StagedLedgerAuxAndPendingCoinbases) -> io::Result<Vec<u8>> {
     encode_success(&Some(BorrowedParts(parts)))
+}
+
+/// A staged-ledger answer measured for one RPC message: `prefix` (the RPC
+/// length and message header), then the reply.
+pub struct StagedLedgerMessage {
+    prefix: Vec<u8>,
+    /// The whole message's length, `prefix` included.
+    pub len: usize,
+}
+
+/// Measures the RPC message that answers with `parts`, whose message header is
+/// `message_header`, or returns `None` if it is longer than `max` bytes. The
+/// measuring stops at `max`, so a longer answer costs no more to refuse than
+/// one at `max`. Nothing is allocated for the answer.
+pub fn measure(
+    parts: &StagedLedgerAuxAndPendingCoinbases,
+    message_header: &[u8],
+    max: usize,
+) -> io::Result<Option<StagedLedgerMessage>> {
+    const LENGTH: usize = 8;
+    let payload = Some(BorrowedParts(parts));
+    // A payload that doesn't fit beside the length and the message header
+    // can't fit with the result header either.
+    let room = max.saturating_sub(LENGTH + message_header.len());
+    let Some(payload_len) = payload_len(&payload, room)? else {
+        return Ok(None);
+    };
+    let (result, result_len) = result_header(payload_len)?;
+    let len = LENGTH + message_header.len() + result_len + payload_len;
+    if len > max {
+        return Ok(None);
+    }
+    let mut prefix = Vec::with_capacity(LENGTH + message_header.len() + result_len);
+    prefix.extend_from_slice(&((len - LENGTH) as u64).to_le_bytes());
+    prefix.extend_from_slice(message_header);
+    prefix.extend_from_slice(&result[..result_len]);
+    Ok(Some(StagedLedgerMessage { prefix, len }))
+}
+
+/// Writes a message of a known length into chunks of `chunk` bytes, the last
+/// one shorter, each allocated once at its final size.
+struct Chunks {
+    chunks: Vec<Vec<u8>>,
+    current: Vec<u8>,
+    /// The length `current` is filled to.
+    target: usize,
+    chunk: usize,
+    /// Bytes not yet written, `current`'s included.
+    remaining: usize,
+}
+
+impl Chunks {
+    fn new(len: usize, chunk: usize) -> Self {
+        let target = chunk.min(len);
+        Self {
+            chunks: Vec::with_capacity(len.div_ceil(chunk)),
+            current: Vec::with_capacity(target),
+            target,
+            chunk,
+            remaining: len,
+        }
+    }
+
+    fn finish(mut self) -> io::Result<Vec<Vec<u8>>> {
+        if self.current.len() != self.remaining {
+            return Err(io::Error::other("staged-ledger reply length changed"));
+        }
+        if !self.current.is_empty() {
+            self.chunks.push(self.current);
+        }
+        Ok(self.chunks)
+    }
+}
+
+impl Write for Chunks {
+    fn write(&mut self, mut bytes: &[u8]) -> io::Result<usize> {
+        let written = bytes.len();
+        while !bytes.is_empty() {
+            if self.current.len() == self.target {
+                if self.current.len() == self.remaining {
+                    return Err(io::Error::other("staged-ledger reply length changed"));
+                }
+                self.remaining -= self.current.len();
+                self.target = self.chunk.min(self.remaining);
+                let next = Vec::with_capacity(self.target);
+                self.chunks.push(std::mem::replace(&mut self.current, next));
+            }
+            let n = (self.target - self.current.len()).min(bytes.len());
+            self.current.extend_from_slice(&bytes[..n]);
+            bytes = &bytes[n..];
+        }
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Encodes the measured message in chunks of at most `chunk` bytes, so that
+/// the answer is never held twice: the Yamux queue keeps the chunks as they
+/// are, and frees each one once it is sent. Fails if the parts encode to
+/// another length than measured.
+pub fn encode_chunks(
+    parts: &StagedLedgerAuxAndPendingCoinbases,
+    message: &StagedLedgerMessage,
+    chunk: usize,
+) -> io::Result<Vec<Vec<u8>>> {
+    let mut out = Chunks::new(message.len, chunk.max(1));
+    out.write_all(&message.prefix)?;
+    Some(BorrowedParts(parts)).binprot_write(&mut out)?;
+    out.finish()
 }
 
 #[cfg(test)]
@@ -161,6 +310,150 @@ mod tests {
             assert_eq!(actual, expected, "payload length {size}");
             assert_eq!(actual.capacity(), actual.len(), "no spare output capacity");
         }
+    }
+
+    /// A small staged ledger, with `blocks` copies of a Mesa protocol state
+    /// as its needed blocks to give it some length.
+    pub(crate) fn staged_ledger(blocks: usize) -> StagedLedgerAuxAndPendingCoinbases {
+        use mina_p2p_messages::{list::List, rpc::GetBestTipV2Response};
+        let bytes = include_bytes!("../../../../p2p-messages/tests/files/mesa/get_best_tip_v3.bin");
+        let tip = ResponsePayload::<GetBestTipV2Response>::binprot_read(&mut &bytes[..])
+            .unwrap()
+            .0
+            .unwrap()
+            .0
+            .unwrap();
+        let state = tip.data.header.protocol_state.clone();
+        StagedLedgerAuxAndPendingCoinbases {
+            scan_state: v2::TransactionSnarkScanStateStableV2 {
+                scan_state: v2::TransactionSnarkScanStateStableV2ScanState {
+                    trees: (
+                        v2::TransactionSnarkScanStateStableV2ScanStateTreesA::Leaf(vec![(
+                            v2::ParallelScanWeightStableV1 {
+                                base: 1.into(),
+                                merge: 0.into(),
+                            },
+                            v2::TransactionSnarkScanStateStableV2ScanStateTreesABaseT1::Empty,
+                        )]),
+                        List::new(),
+                    ),
+                    acc: None,
+                    curr_job_seq_no: 0.into(),
+                    max_base_jobs: 1.into(),
+                    delay: 2.into(),
+                },
+                previous_incomplete_zkapp_updates: (
+                    List::new(),
+                    v2::TransactionSnarkScanStateStableV2PreviousIncompleteZkappUpdates1::Border_block_continued_in_the_next_tree(false),
+                ),
+            },
+            staged_ledger_hash: v2::LedgerHash::zero(),
+            pending_coinbase: v2::MinaBasePendingCoinbaseStableV2 {
+                tree: v2::MinaBasePendingCoinbaseMerkleTreeVersionedStableV2 {
+                    indexes: List::new(),
+                    depth: 5.into(),
+                    tree: v2::MinaBasePendingCoinbaseMerkleTreeVersionedStableV2Tree::Hash(
+                        v2::MinaBasePendingCoinbaseHashVersionedStableV1(
+                            v2::MinaBasePendingCoinbaseHashBuilderStableV1(
+                                mina_p2p_messages::bigint::BigInt::zero(),
+                            ),
+                        )
+                        .into(),
+                    ),
+                },
+                pos_list: List::new(),
+                new_pos: v2::MinaBasePendingCoinbaseStackIdStableV1(0.into()),
+            },
+            needed_blocks: std::iter::repeat_n(state, blocks).collect(),
+        }
+    }
+
+    /// The RPC message the answer was before, built by the old encoder and
+    /// the generic RPC framing.
+    fn old_message(parts: &StagedLedgerAuxAndPendingCoinbases, id: u64) -> Vec<u8> {
+        use crate::RpcMessage;
+        use mina_p2p_messages::rpc_kernel::ResponseHeader;
+        RpcMessage::Response {
+            header: ResponseHeader { id },
+            bytes: old_encoder(parts).into(),
+        }
+        .into_bytes()
+    }
+
+    fn message_header(id: u64) -> Vec<u8> {
+        use mina_p2p_messages::rpc_kernel::{MessageHeader, ResponseHeader};
+        let mut header = Vec::new();
+        MessageHeader::Response(ResponseHeader { id })
+            .binprot_write(&mut header)
+            .unwrap();
+        header
+    }
+
+    /// The chunks are the old message, cut into pieces of the chunk size, the
+    /// last one shorter, each with no spare capacity.
+    #[test]
+    fn chunks_are_the_old_message_in_pieces() {
+        let parts = staged_ledger(40);
+        for id in [0, 1, 300, u64::MAX] {
+            let expected = old_message(&parts, id);
+            let message = measure(&parts, &message_header(id), usize::MAX)
+                .unwrap()
+                .unwrap();
+            assert_eq!(message.len, expected.len());
+            for chunk in [1, 7, 4096, expected.len() - 1, expected.len(), 1 << 30] {
+                let chunks = encode_chunks(&parts, &message, chunk).unwrap();
+                assert_eq!(
+                    chunks.len(),
+                    expected.len().div_ceil(chunk),
+                    "chunk {chunk}"
+                );
+                assert!(chunks.iter().all(|c| c.len() == c.capacity()));
+                assert!(chunks[..chunks.len() - 1].iter().all(|c| c.len() == chunk));
+                assert_eq!(chunks.concat(), expected, "chunk {chunk}, id {id}");
+            }
+        }
+    }
+
+    /// An answer is measured against its limit with its framing: it passes at
+    /// its length and is refused one byte below.
+    #[test]
+    fn the_limit_counts_the_whole_message() {
+        let parts = staged_ledger(40);
+        let header = message_header(7);
+        let len = old_message(&parts, 7).len();
+        assert_eq!(measure(&parts, &header, len).unwrap().unwrap().len, len);
+        assert!(measure(&parts, &header, len - 1).unwrap().is_none());
+        assert!(measure(&parts, &header, 0).unwrap().is_none());
+    }
+
+    /// Measuring an answer over the limit stops at the limit.
+    #[test]
+    fn measuring_stops_at_the_limit() {
+        struct Endless(Cell<usize>);
+        impl BinProtWrite for Endless {
+            fn binprot_write<W: Write>(&self, w: &mut W) -> io::Result<()> {
+                loop {
+                    w.write_all(&[0; 1024])?;
+                    self.0.set(self.0.get() + 1024);
+                }
+            }
+        }
+        use std::cell::Cell;
+        let endless = Endless(Cell::new(0));
+        assert!(payload_len(&endless, 10 * 1024).unwrap().is_none());
+        assert_eq!(endless.0.get(), 10 * 1024);
+    }
+
+    /// Parts that encode to another length than measured are not sent.
+    #[test]
+    fn a_length_that_changes_fails() {
+        let parts = staged_ledger(2);
+        let header = message_header(7);
+        let message = measure(&parts, &header, usize::MAX).unwrap().unwrap();
+        let longer = staged_ledger(3);
+        assert!(encode_chunks(&longer, &message, 100).is_err());
+        let shorter = staged_ledger(1);
+        assert!(encode_chunks(&shorter, &message, 100).is_err());
     }
 
     #[test]

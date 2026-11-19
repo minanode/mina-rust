@@ -11,7 +11,7 @@ mod p2p_network_service;
 pub use self::p2p_network_service::*;
 
 mod p2p_network_state;
-pub use self::p2p_network_state::P2pNetworkState;
+pub use self::p2p_network_state::{P2pNetworkState, STAGED_LEDGER_FIRST_RESERVATION};
 
 #[cfg(feature = "p2p-libp2p")]
 mod p2p_network_reducer;

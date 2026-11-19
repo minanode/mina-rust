@@ -1344,3 +1344,171 @@ async fn webrtc_peers_keep_full_answers_without_serving_budgets() -> anyhow::Res
     assert!(channel.remote_pending_request().is_none());
     Ok(())
 }
+
+#[path = "common/staged_ledgers.rs"]
+mod staged_ledgers;
+
+/// The staged ledger a client asks for on a fresh stream, as OCaml asks for
+/// it, answered by the Rust node with `parts`. The client is rust-libp2p's
+/// Yamux, whose receive window stays at 256 KiB and grows only as the client
+/// reads. Returns the answer's payload.
+async fn staged_ledger_to_libp2p_client(
+    parts: std::sync::Arc<mina_p2p::channels::rpc::StagedLedgerAuxAndPendingCoinbases>,
+    limits: mina_p2p::P2pLimits,
+    time: Duration,
+) -> anyhow::Result<Vec<u8>> {
+    use mina_p2p::channels::rpc::{P2pChannelsRpcAction, P2pRpcResponse};
+    use mina_p2p_messages::{rpc::GetStagedLedgerAuxAndPendingCoinbasesAtHashV2, v2::StateHash};
+    let mut cluster = ClusterBuilder::default()
+        .ports_with_len(10)
+        .idle_duration(Duration::from_millis(1))
+        .total_duration(time + Duration::from_secs(30))
+        .start()
+        .await?;
+    let client = cluster.add_libp2p_node(Libp2pNodeConfig::default())?;
+    let client_id = cluster.peer_id(client);
+    let server = cluster.add_rust_node(RustNodeConfig {
+        limits,
+        ..Default::default()
+    })?;
+    let server_id = cluster.peer_id(server).try_into()?;
+    assert!(wait_for_all_nodes_to_listen(&mut cluster, [server], Duration::from_secs(2)).await);
+    cluster.connect(client, server)?;
+    assert!(
+        try_wait_for_nodes_to_connect(&mut cluster, [(server, client_id)], Duration::from_secs(5))
+            .await?
+    );
+    cluster
+        .libp2p_node_mut(client)
+        .swarm_mut()
+        .behaviour_mut()
+        .rpc
+        .open(server_id, 0);
+    assert!(matches!(
+        next_rpc_received(&mut cluster, client, Duration::from_secs(5)).await,
+        Some(Received::Menu(_))
+    ));
+    cluster
+        .libp2p_node_mut(client)
+        .swarm_mut()
+        .behaviour_mut()
+        .rpc
+        .query::<GetStagedLedgerAuxAndPendingCoinbasesAtHashV2>(
+            server_id,
+            StreamId::Outgoing(0),
+            1,
+            StateHash::zero().inner().0.clone(),
+        )?;
+    run_cluster(&mut cluster, Duration::from_secs(1)).await;
+    let ids = cluster
+        .rust_node(server)
+        .state()
+        .network
+        .scheduler
+        .rpc_incoming_streams[&client_id]
+        .values()
+        .flat_map(|s| s.pending_incoming.keys().copied())
+        .collect::<Vec<_>>();
+    assert_eq!(ids.len(), 1, "the query is pending");
+    assert!(cluster
+        .rust_node_mut(server)
+        .dispatch_action(P2pChannelsRpcAction::ResponseSend {
+            peer_id: client_id,
+            id: ids[0],
+            response: Some(Box::new(
+                P2pRpcResponse::StagedLedgerAuxAndPendingCoinbasesAtBlock(parts)
+            )),
+        }));
+    // OCaml's Async RPC sends a heartbeat every 10 s while it reads. This
+    // client only answers ours, which wait behind the answer, so it sends a
+    // menu query every 5 s instead, for the server's heartbeat timeout.
+    let start = std::time::Instant::now();
+    let mut keepalive = 100;
+    let bytes = loop {
+        match next_rpc_received(&mut cluster, client, Duration::from_secs(5)).await {
+            Some(Received::Response { header, bytes }) if header.id == 1 => break bytes,
+            Some(_) => {}
+            None => {
+                assert!(start.elapsed() < time, "no answer");
+                cluster
+                    .libp2p_node_mut(client)
+                    .swarm_mut()
+                    .behaviour_mut()
+                    .rpc
+                    .query::<mina_p2p_messages::rpc::VersionedRpcMenuV1>(
+                        server_id,
+                        StreamId::Outgoing(0),
+                        keepalive,
+                        (),
+                    )?;
+                keepalive += 1;
+            }
+        }
+    };
+    run_cluster(&mut cluster, Duration::from_secs(1)).await;
+    assert_peer_is_ready(&cluster, server, client_id);
+    assert_eq!(
+        cluster
+            .rust_node(server)
+            .state()
+            .network
+            .scheduler
+            .queued_outgoing_bytes(&client_id),
+        (0, 0)
+    );
+    Ok(bytes)
+}
+
+/// An answer larger than the released server's ceiling, 64 MiB of send queue
+/// and the initial window, reaches the client whole and byte for byte as
+/// OCaml encodes it.
+#[tokio::test]
+async fn staged_ledger_over_the_old_ceiling_reaches_a_libp2p_client() -> anyhow::Result<()> {
+    let parts = staged_ledgers::heavy_staged_ledger(200);
+    let expected = staged_ledgers::expected_payload(&parts);
+    assert!(expected.len() > 64 * 1024 * 1024 + 256 * 1024);
+    let bytes =
+        staged_ledger_to_libp2p_client(parts, Default::default(), Duration::from_secs(240)).await?;
+    assert_eq!(bytes.len(), expected.len());
+    assert!(bytes == expected, "the answer arrived changed");
+    Ok(())
+}
+
+/// An answer as large as devnet's on 2026-11-18, 173.8 MB, reaches the
+/// client whole.
+#[tokio::test]
+#[ignore = "large: a minute and 1 GB of memory"]
+async fn staged_ledger_of_devnet_size_reaches_a_libp2p_client() -> anyhow::Result<()> {
+    let parts = staged_ledgers::heavy_staged_ledger(503);
+    let expected = staged_ledgers::expected_payload(&parts);
+    assert!(expected.len() > 173_000_000, "{} bytes", expected.len());
+    let bytes =
+        staged_ledger_to_libp2p_client(parts, Default::default(), Duration::from_secs(600)).await?;
+    assert!(bytes == expected, "the answer arrived changed");
+    Ok(())
+}
+
+/// An answer one byte over the limit gets an empty answer on the same stream,
+/// and the connection stays up.
+#[tokio::test]
+async fn staged_ledger_over_the_limit_gets_none() -> anyhow::Result<()> {
+    let parts = staged_ledgers::staged_ledger(40, 0);
+    // The payload, the eight-byte length and the header of a response to 1.
+    let len = staged_ledgers::expected_payload(&parts).len() + 8 + 2;
+    let limits = mina_p2p::P2pLimits::default().with_rpc_served_staged_ledger(Some(len - 1));
+    let bytes = staged_ledger_to_libp2p_client(parts, limits, Duration::from_secs(30)).await?;
+    assert_eq!(bytes, staged_ledgers::none_payload());
+    Ok(())
+}
+
+/// An answer over the default limit, 201.5 MB, gets an empty answer.
+#[tokio::test]
+#[ignore = "large: a minute and 1 GB of memory"]
+async fn staged_ledger_over_the_default_limit_gets_none() -> anyhow::Result<()> {
+    let parts = staged_ledgers::heavy_staged_ledger(583);
+    assert!(staged_ledgers::expected_payload(&parts).len() + 10 > 192 * 1024 * 1024);
+    let bytes =
+        staged_ledger_to_libp2p_client(parts, Default::default(), Duration::from_secs(240)).await?;
+    assert_eq!(bytes, staged_ledgers::none_payload());
+    Ok(())
+}

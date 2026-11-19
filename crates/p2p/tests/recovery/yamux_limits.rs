@@ -1096,3 +1096,6 @@ fn kademlia_timeout_requires_its_partial_frame_and_deadline() {
     }
     .is_enabled(&s.0, at(30)));
 }
+
+#[path = "staged_ledger_answers.rs"]
+mod staged_ledger_answers;

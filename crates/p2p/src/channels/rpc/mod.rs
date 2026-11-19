@@ -1,5 +1,4 @@
-#[cfg(feature = "p2p-libp2p")]
-mod staged_ledger_serve;
+pub(crate) mod staged_ledger_serve;
 
 mod serving_limits;
 pub use serving_limits::*;
