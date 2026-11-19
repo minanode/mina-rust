@@ -27,6 +27,8 @@ use std::sync::LazyLock;
 mod indexed;
 #[path = "resource_tests.rs"]
 mod resource;
+#[path = "sharing_tests.rs"]
+mod sharing;
 
 const MINA: u64 = 1_000_000_000;
 // OCaml's transaction_pool tests use 2 MINA, not the mainnet minimum.

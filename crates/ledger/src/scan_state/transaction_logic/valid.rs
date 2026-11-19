@@ -1,7 +1,10 @@
 use super::{GenericCommand, GenericTransaction};
 use crate::{
-    scan_state::currency::{Fee, Nonce},
-    AccountId,
+    scan_state::{
+        currency::{Fee, Nonce, Slot},
+        fee_rate::FeeRate,
+    },
+    AccountId, TokenId, VerificationKeyWire,
 };
 use mina_curves::pasta::Fp;
 use mina_p2p_messages::v2::MinaBaseUserCommandStableV2;
@@ -42,6 +45,58 @@ impl UserCommand {
         match self {
             UserCommand::SignedCommand(cmd) => Some(cmd.nonce()),
             UserCommand::ZkAppCommand(_) => None,
+        }
+    }
+
+    // The accessors below read the command in place. They return what the same
+    // accessor returns on `forget_check()`, without copying the command.
+
+    pub fn valid_until(&self) -> Slot {
+        match self {
+            UserCommand::SignedCommand(cmd) => cmd.valid_until(),
+            UserCommand::ZkAppCommand(cmd) => cmd
+                .zkapp_command
+                .fee_payer
+                .body
+                .valid_until
+                .unwrap_or_else(Slot::max),
+        }
+    }
+
+    pub fn applicable_at_nonce(&self) -> Nonce {
+        match self {
+            UserCommand::SignedCommand(cmd) => cmd.nonce(),
+            UserCommand::ZkAppCommand(cmd) => cmd.zkapp_command.applicable_at_nonce(),
+        }
+    }
+
+    pub fn expected_target_nonce(&self) -> Nonce {
+        self.applicable_at_nonce().succ()
+    }
+
+    pub fn weight(&self) -> u64 {
+        match self {
+            UserCommand::SignedCommand(cmd) => cmd.weight(),
+            UserCommand::ZkAppCommand(cmd) => cmd.zkapp_command.weight(),
+        }
+    }
+
+    /// Fee per weight unit
+    pub fn fee_per_wu(&self) -> FeeRate {
+        FeeRate::make_exn(self.fee(), self.weight())
+    }
+
+    pub fn fee_token(&self) -> TokenId {
+        match self {
+            UserCommand::SignedCommand(cmd) => cmd.fee_token(),
+            UserCommand::ZkAppCommand(cmd) => cmd.zkapp_command.fee_token(),
+        }
+    }
+
+    pub fn extract_vks(&self) -> Vec<(AccountId, VerificationKeyWire)> {
+        match self {
+            UserCommand::SignedCommand(_) => vec![],
+            UserCommand::ZkAppCommand(cmd) => cmd.zkapp_command.extract_vks(),
         }
     }
 }
