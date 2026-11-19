@@ -5,6 +5,7 @@
 
 #[macro_use]
 mod macros;
+pub mod archive;
 pub mod control_origin;
 #[cfg(feature = "dashboard")]
 pub mod dashboard;
@@ -228,8 +229,19 @@ fn dashboard_state(options: &HttpServerOptions) -> &'static str {
 
 /// Every route the HTTP server serves.
 pub fn router(rpc_sender: RpcSender, options: HttpServerOptions) -> axum::Router {
+    router_with_archive(rpc_sender, options, None)
+}
+
+/// [`router`], with `archive` on the `/archive` routes instead of this
+/// process's own archive outbox (tests).
+pub(crate) fn router_with_archive(
+    rpc_sender: RpcSender,
+    options: HttpServerOptions,
+    archive: Option<mina_node_common::archive::delivery::SharedOutbox>,
+) -> axum::Router {
     let cdn_pages = serves_cdn_pages(&options);
     let state = AppState::new(rpc_sender)
+        .with_archive(archive)
         .with_tx_submission(options.tx_submission && !options.public_graphql)
         .with_public_graphql(options.public_graphql)
         .with_ledger_export(options.ledger_export && !options.public_graphql)
@@ -281,9 +293,8 @@ pub fn router(rpc_sender: RpcSender, options: HttpServerOptions) -> axum::Router
         let (app, _api) = routes::openapi_router().split_for_parts();
 
         // Archive controls are private even while the outbox is active.
-        let mut app = app
-            .route("/archive/status", axum::routing::get(archive_status))
-            .route("/archive/resend", axum::routing::post(archive_resend));
+        #[allow(unused_mut)]
+        let mut app = archive::routes(app);
 
         #[cfg(feature = "memory-debug")]
         if std::env::var_os("MINA_MEMORY_DEBUG").as_deref() == Some(std::ffi::OsStr::new("1")) {
@@ -419,41 +430,6 @@ fn host_refusal(host: &str, origin: Option<&str>) -> String {
         "a page opened at {host} may not use this node's API: start the node with \
          --http-cors-origin {origin}, or open the page at the node's IP address or localhost"
     )
-}
-
-/// `GET /archive/status`: the archive outbox's pending entries, delivery
-/// failures and history gaps; 404 when the node doesn't feed an archive
-/// process.
-async fn archive_status() -> axum::response::Response {
-    use axum::response::IntoResponse;
-    match mina_node_common::archive::delivery::status() {
-        Some(status) => axum::Json(status).into_response(),
-        None => (
-            axum::http::StatusCode::NOT_FOUND,
-            axum::Json(serde_json::json!({
-                "error": "this node does not feed an archive process (--archive-archiver-process)"
-            })),
-        )
-            .into_response(),
-    }
-}
-
-/// Requeue retained diffs without rebuilding ledger/archive data.
-async fn archive_resend() -> axum::response::Response {
-    use axum::{http::StatusCode, response::IntoResponse, Json};
-    // Disk moves/fsyncs must not block the async runtime.
-    match tokio::task::spawn_blocking(mina_node_common::archive::delivery::resend_retained).await {
-        Ok(Some(Ok(requeued))) => Json(serde_json::json!({ "requeued": requeued })).into_response(),
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            "this node does not feed an archive process",
-        )
-            .into_response(),
-        Ok(Some(Err(error))) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
-        }
-        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
-    }
 }
 
 #[cfg(test)]

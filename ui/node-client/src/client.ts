@@ -7,6 +7,17 @@
  */
 
 import {
+  ARCHIVE_CONTROL_HEADER,
+  archiveBlocksPath,
+  parseArchiveEntries,
+  parseArchiveReplay,
+  parseArchiveStatus,
+  type ArchiveEntries,
+  type ArchiveQuery,
+  type ArchiveReplay,
+  type ArchiveStatus,
+} from "./archive";
+import {
   ACCOUNT,
   blockQuery,
   parseAccount,
@@ -166,6 +177,22 @@ export interface NodeClient {
   report(options?: ReportOptions, signal?: AbortSignal): Promise<Report>;
   /** `POST /report/crash`: whether the node crashed lately. */
   crashNotice(signal?: AbortSignal): Promise<CrashNotice | null>;
+  /** `GET /archive/status`; `absent` when the node doesn't feed an
+   * archive process. */
+  archiveStatus(signal?: AbortSignal): Promise<ArchiveStatus>;
+  /** `GET /archive/blocks`: the archive outbox's entries, newest first. */
+  archiveBlocks(
+    query?: ArchiveQuery,
+    signal?: AbortSignal,
+  ): Promise<ArchiveEntries>;
+  /** `POST /archive/resend` for one block: requeues its retained diff. A
+   * block the node doesn't retain is a 404 NodeError. */
+  replayArchiveBlock(
+    stateHash: string,
+    signal?: AbortSignal,
+  ): Promise<ArchiveReplay>;
+  /** `POST /archive/resend` for every retained block. */
+  replayArchiveAll(signal?: AbortSignal): Promise<ArchiveReplay>;
   /** `GET /transaction-pool`, highest fee first. */
   transactionPool(signal?: AbortSignal): Promise<PendingTransaction[]>;
   /** `GET /state/peers`. */
@@ -313,6 +340,26 @@ export function createNodeClient(options: NodeClientOptions = {}): NodeClient {
         {},
         parseCrashNotice,
         { [REPORT_HEADER]: "1" },
+        signal,
+      ),
+    archiveStatus: signal =>
+      client.getJson("/archive/status", parseArchiveStatus, signal),
+    archiveBlocks: (query, signal) =>
+      client.getJson(archiveBlocksPath(query), parseArchiveEntries, signal),
+    replayArchiveBlock: (stateHash, signal) =>
+      client.postJson(
+        "/archive/resend",
+        { state_hash: stateHash.trim() },
+        parseArchiveReplay,
+        { [ARCHIVE_CONTROL_HEADER]: "1" },
+        signal,
+      ),
+    replayArchiveAll: signal =>
+      client.postJson(
+        "/archive/resend",
+        { all: true },
+        parseArchiveReplay,
+        { [ARCHIVE_CONTROL_HEADER]: "1" },
         signal,
       ),
     transactionPool: signal =>

@@ -465,3 +465,52 @@ fn acknowledged_but_not_stored_is_repaired_beyond_the_frontier() {
     outbox.stop();
     handle.join().unwrap();
 }
+
+/// ARCHIVE-PANEL: one block's replay reaches the archive again, and only
+/// that block; a failing archive says since when, cleared once it answers.
+#[test]
+fn one_block_replay_reaches_the_archive_and_failures_say_since_when() {
+    let dir = tempfile::tempdir().unwrap();
+    let addr = free_addr();
+    let (outbox, handle) = start(&dir, addr);
+    append(&outbox, 10);
+    wait_for("a failure", Duration::from_secs(5), || {
+        outbox.status().delivery.consecutive_failures >= 2
+    });
+    let failing = outbox.status().delivery;
+    let since = failing.failing_since_ms.expect("failing since");
+    assert!(since <= failing.last_attempt_at_ms.unwrap());
+    assert_eq!(failing.stuck_on, Some(block(10)));
+
+    let archive = FakeArchive::start(addr, 0);
+    for h in 11..=12 {
+        append(&outbox, h);
+    }
+    assert!(outbox.wait_empty(Duration::from_secs(20)));
+    wait_for("delivery recovered", Duration::from_secs(5), || {
+        outbox.status().delivery.failing_since_ms.is_none()
+    });
+    assert_eq!(
+        archive.received(),
+        vec![payload(10), payload(11), payload(12)]
+    );
+
+    let outcome = outbox.resend_block("3NHash11").unwrap();
+    assert!(matches!(
+        outcome,
+        super::outbox::ResendOutcome::Requeued { requeued: 1, .. }
+    ));
+    assert!(outbox.wait_empty(Duration::from_secs(20)));
+    wait_for("the replay", Duration::from_secs(5), || {
+        archive.received().len() == 4
+    });
+    assert_eq!(archive.received()[3], payload(11));
+    let status = outbox.status();
+    assert_eq!(status.outbox.retained_entries, 3);
+    assert_eq!(status.outbox.newest_retained, Some(block(12)));
+    assert_eq!(status.outbox.last_delivered, Some(block(11)));
+    assert_eq!(status.outbox.gaps_total, 0);
+
+    outbox.stop();
+    handle.join().unwrap();
+}

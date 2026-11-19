@@ -21,6 +21,89 @@ export const metadata: Metadata = {
   alternates: { canonical: "/docs/dashboard/" },
 };
 
+const archiveReplay = `curl -X POST http://127.0.0.1:3000/archive/resend \\
+  -H 'x-mina-archive-control: 1' \\
+  -H 'content-type: application/json' \\
+  -d '{"state_hash": "3N..."}'`;
+
+const archiveMetrics = `# The archive process: serve its database counts on port 3087.
+mina-archive run --postgres-uri "$ARCHIVE_DATABASE_URI" \\
+  --server-port 3086 --metrics-port 3087
+
+# The node: send blocks to port 3086, read the counts from port 3087.
+MINA_ARCHIVE_ADDRESS=http://127.0.0.1:3086 \\
+MINA_ARCHIVE_METRICS_ADDRESS=http://127.0.0.1:3087 \\
+  mina node --archive-archiver-process`;
+
+const archiveCounts = [
+  {
+    term: "Highest stored",
+    text: "The highest block height in the archive's blocks table, beside how far it is below the highest block the node delivered.",
+  },
+  {
+    term: "Missing heights",
+    text: "Heights with no block row, counted from the archive's highest block down by its --missing-blocks-width, 2,000 heights by default, and never below its lowest block.",
+  },
+  {
+    term: "Blocks without a parent",
+    text: "Blocks above the archive's lowest height whose parent block isn't in the database. It counts the whole database.",
+  },
+  {
+    term: "Checked",
+    text: "When the node last read the counts. It reads them every 60 seconds.",
+  },
+];
+
+const archiveVerdicts = [
+  {
+    term: "Complete",
+    text: "No missing heights, no blocks without a parent, and the highest stored block has caught up with every block the node delivered 6 minutes earlier.",
+  },
+  {
+    term: "Incomplete",
+    text: "At least one missing height or block without a parent.",
+  },
+  {
+    term: "Behind",
+    text: "A block the archive acknowledged 6 minutes ago or more is above the highest stored block. The archive took it but didn't write it, or its counts stopped refreshing.",
+  },
+  {
+    term: "Not checked",
+    text: "MINA_ARCHIVE_METRICS_ADDRESS isn't set.",
+  },
+  {
+    term: "Unavailable",
+    text: "The last read failed, or the page at that address has no archive counts. The card keeps the last counts it read, with their time.",
+  },
+];
+
+const archiveStates = [
+  {
+    term: "Up to date",
+    text: "No diff waits, no delivery failed, and the newest delivered block is the highest block the node accepted.",
+  },
+  {
+    term: "Catching up",
+    text: "Diffs wait in the outbox. The count says how many.",
+  },
+  {
+    term: "Delivery failing",
+    text: "The archive refused the diff or didn't answer. The node retries the same block with back-off. Waiting diffs stay in the outbox up to its size limits.",
+  },
+  {
+    term: "Node not synced",
+    text: "The node is still syncing, so its feed can't be up to date with the network.",
+  },
+  {
+    term: "Database incomplete",
+    text: "The archive database check found missing heights or blocks without a parent.",
+  },
+  {
+    term: "Database behind",
+    text: "The archive's highest stored block is below blocks the node delivered 6 minutes ago or more.",
+  },
+];
+
 const pages = [
   {
     label: "Overview",
@@ -56,6 +139,11 @@ const pages = [
   },
   { label: "Status", value: "The node's own /status and /build_env answers" },
   { label: "GraphQL", value: "The GraphQL address, with an example to copy" },
+  {
+    label: "Archive",
+    value:
+      "On a node that feeds an archive, whether the feed is up to date, the archive database's own counts, gaps, and replay of retained blocks",
+  },
   {
     label: "Report a problem",
     value: "A bug report to copy, download, or open as a GitHub issue",
@@ -133,6 +221,125 @@ export default function DashboardPage() {
           width={1440}
           height={1155}
         />
+      </DocSection>
+
+      <DocSection id="archive-page" title="The Archive page">
+        <Prose>
+          <p>
+            The Archive page appears on a node started with{" "}
+            <C>--archive-archiver-process</C>, which sends each block it applies
+            to an OCaml archive process. On any other node the page and its link
+            are absent.
+          </p>
+          <p>
+            A block is delivered once the archive process acknowledges its diff.
+            The archive acknowledges a diff before it commits the block to its
+            database, so delivery alone doesn&apos;t show that a block is in the
+            database. The <strong>Archive database</strong> card shows the
+            archive&apos;s own counts of its database, if you turn on the
+            database check.
+          </p>
+          <p>
+            The status at the top of the page is one of these. When several
+            apply, it shows the first of Delivery failing, Node not synced,
+            Database incomplete, Database behind and Catching up.
+          </p>
+        </Prose>
+        <Terms items={archiveStates} />
+        <Prose>
+          <h3>Check the archive database</h3>
+          <p>
+            The OCaml archive process counts its own blocks table and serves the
+            counts as Prometheus gauges on its <C>--metrics-port</C>. The node
+            reads them from <C>MINA_ARCHIVE_METRICS_ADDRESS</C> every 60
+            seconds, with a 5-second timeout. It never connects to PostgreSQL
+            and needs no database password.
+          </p>
+        </Prose>
+        <CodeBlock
+          code={archiveMetrics}
+          label="archive database check commands"
+        />
+        <Prose>
+          <p>
+            The archive&apos;s metrics server, like its RPC server, listens on
+            every network interface. Block both ports at the firewall, or run
+            the archive where only the node can reach them. The card shows these
+            values:
+          </p>
+        </Prose>
+        <Terms items={archiveCounts} />
+        <Prose>
+          <p>The card&apos;s verdict is one of these:</p>
+        </Prose>
+        <Terms items={archiveVerdicts} />
+        <Prose>
+          <p>
+            When the verdict is Incomplete, <strong>Resend all retained</strong>{" "}
+            sends the blocks of the last 870 heights again, and the archive adds
+            the ones it lacks. The check has these limits:
+          </p>
+          <ul>
+            <li>
+              It shows counts, not which heights are missing. To list them, run{" "}
+              <C>mina-missing-blocks-auditor</C> against the database.
+            </li>
+            <li>
+              The archive recomputes the counts every two slots, 3 minutes on
+              Mesa. A change in the database shows on the card within about 4
+              minutes.
+            </li>
+            <li>
+              Missing heights cover only the archive&apos;s{" "}
+              <C>--missing-blocks-width</C>. An older gap doesn&apos;t count.
+            </li>
+            <li>
+              The node sends only its best chain. Blocks of other forks reach
+              the database only from other senders, and a height that has any
+              block isn&apos;t missing.
+            </li>
+          </ul>
+        </Prose>
+        <Prose>
+          <h3>Replay a block</h3>
+          <p>
+            Replay sends a block&apos;s diff to the archive again. The node
+            keeps each delivered diff until it is 870 heights below the highest
+            block the node accepted. <C>MINA_ARCHIVE_RETAIN_BLOCKS</C> sets that
+            window, within the outbox&apos;s size limits. Only blocks in the
+            window can be replayed. A replayed diff goes ahead of the diffs that
+            wait. The archive keys blocks by state hash, so a replay of a block
+            it already has leaves its rows unchanged.
+          </p>
+          <p>
+            <strong>Resend all retained</strong> replays every block in the
+            window. The node does the same each time it starts.
+          </p>
+          <h3>Who may replay</h3>
+          <p>
+            From a browser, the node takes a replay only from three kinds of
+            page: pages of this machine, its own dashboard opened at an IP
+            address, and origins you list with <C>--worker-control-origin</C>.
+            That option needs <C>--allow-worker-control</C>. A program sends no
+            page origin. It sends the request with a header and a JSON body:
+          </p>
+        </Prose>
+        <CodeBlock code={archiveReplay} label="archive replay command" />
+        <Prose>
+          <p>
+            Send <C>{'{"all": true}'}</C> instead to replay every block in the
+            window. <C>GET /archive/blocks</C> lists the outbox&apos;s blocks,
+            and <C>GET /archive/status</C> reports the feed.
+          </p>
+          <h3>History outside the window</h3>
+          <p>
+            A block below the window, or one the node never saw, can&apos;t be
+            replayed. The page lists the blocks the node never saw, dropped, or
+            found corrupt under <strong>Gaps since the feed started</strong>.
+            Import such blocks from precomputed block files with{" "}
+            <C>mina-archive-blocks --precomputed</C>.
+          </p>
+        </Prose>
       </DocSection>
 
       <DocSection id="on-a-server" title="Open it on a server">

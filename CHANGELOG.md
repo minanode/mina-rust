@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request for a retired root as for an unknown block. The web node does this by
   default while sharing is off
   ([#63](https://github.com/minanode/mina-rust/pull/63))
+- **Dashboard**: an Archive page for a node that feeds an archive process. It
+  shows whether the feed is up to date, replays one or every retained block, and
+  checks the archive's database through the archive's metrics
+  (`MINA_ARCHIVE_METRICS_ADDRESS`)
+  ([#64](https://github.com/minanode/mina-rust/pull/64))
 
 ### Changed
 
@@ -27,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   121 zkApp commands no longer copies 32.4 MiB. `DiffResult::ledger_proof` is
   now `Option<LedgerProof>`
   ([#62](https://github.com/minanode/mina-rust/pull/62))
+- **Node**: `POST /archive/resend` needs the `x-mina-archive-control` header and
+  a JSON body, and refuses requests from other sites' pages. A plain
+  `curl -X POST` to the route now gets 403, and the error message shows the full
+  command ([#64](https://github.com/minanode/mina-rust/pull/64))
 
 ### Fixed
 

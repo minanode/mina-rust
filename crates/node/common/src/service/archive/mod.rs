@@ -14,6 +14,8 @@ use super::NodeService;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod aws;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod db_check;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod delivery;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gcp;
@@ -275,7 +277,8 @@ fn env_parse<T: std::str::FromStr>(name: &str) -> Result<Option<T>, Error> {
 }
 
 /// Opens the archive outbox (`MINA_ARCHIVE_OUTBOX_DIR`, by default
-/// `<work dir>/archive-outbox`) and starts delivering it to `address`.
+/// `<work dir>/archive-outbox`) and starts delivering it to `address`. With
+/// `MINA_ARCHIVE_METRICS_ADDRESS`, also starts the database check.
 #[cfg(not(target_arch = "wasm32"))]
 fn start_archiver_outbox(
     address: SocketAddr,
@@ -309,6 +312,37 @@ fn start_archiver_outbox(
         gaps_total = stats.gaps_total,
     );
     let shared = delivery::SharedOutbox::new(opened, Some(address.to_string()));
+    // The CLI refuses a bad address at startup; elsewhere the check is
+    // skipped and delivery goes ahead.
+    let metrics_url = db_check::metrics_url_from_env().unwrap_or_else(|error| {
+        mina_node::core::error!(
+            mina_node::core::log::system_time();
+            summary = "archive database check off",
+            error = error,
+        );
+        None
+    });
+    if let Some(url) = metrics_url {
+        let behind_after = db_check::behind_after(
+            mina_core::constants::constraint_constants().block_window_duration_ms,
+        );
+        let outbox = shared.clone();
+        let check = db_check::spawn(
+            url.clone(),
+            behind_after,
+            db_check::POLL_INTERVAL,
+            move || outbox.highest_delivered_height(),
+        )
+        .map_err(|e| Error::Outbox(format!("archive database check thread: {e}")))?;
+        mina_node::core::info!(
+            mina_node::core::log::system_time();
+            summary = "archive database check enabled",
+            metrics_url = url.to_string(),
+            poll_interval_secs = db_check::POLL_INTERVAL.as_secs(),
+            behind_after_secs = behind_after.as_secs(),
+        );
+        shared.set_database_check(check);
+    }
     shared.register_global();
     shared.spawn_delivery(
         Box::new(RpcSink {

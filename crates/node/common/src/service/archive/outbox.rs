@@ -187,6 +187,9 @@ pub struct OutboxStats {
     pub retain_blocks: u32,
     pub highest_accepted_height: u32,
     pub oldest_retained: Option<BlockRef>,
+    /// The highest retained block: the newest the archive acknowledged
+    /// that is still kept for replay.
+    pub newest_retained: Option<BlockRef>,
     pub oldest_pending: Option<BlockRef>,
     pub newest_pending: Option<BlockRef>,
     pub max_entries: usize,
@@ -200,6 +203,86 @@ pub struct OutboxStats {
     pub gaps_total: u64,
     pub last_delivered: Option<BlockRef>,
     pub recent_gaps: Vec<Gap>,
+}
+
+/// Where an entry is, for [`Outbox::list`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryState {
+    /// Waiting to be sent.
+    Pending,
+    /// Being sent now.
+    InFlight,
+    /// Acknowledged by the archive and kept for replay in `delivered/`.
+    Retained,
+}
+
+/// Which entries [`Outbox::list`] returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StateFilter {
+    /// Pending and in flight.
+    Pending,
+    Retained,
+}
+
+/// A bounded listing: newest first, at most `limit` entries.
+#[derive(Debug, Clone, Default)]
+pub struct ListQuery {
+    pub height: Option<u32>,
+    pub state_hash: Option<String>,
+    pub state: Option<StateFilter>,
+    pub limit: usize,
+}
+
+/// One entry as [`Outbox::list`] shows it: its file name's metadata, never
+/// its payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ListedEntry {
+    pub height: u32,
+    pub state_hash: String,
+    pub state: EntryState,
+    pub seq: u64,
+    /// The entry file's size in bytes.
+    pub size: u64,
+}
+
+/// What [`Outbox::list`] found.
+#[derive(Debug, Clone, Serialize)]
+pub struct EntryList {
+    pub entries: Vec<ListedEntry>,
+    /// How many entries match the query, before the limit.
+    pub matching: usize,
+    pub limit: usize,
+    pub oldest_retained: Option<BlockRef>,
+    pub newest_retained: Option<BlockRef>,
+    pub retain_blocks: u32,
+    pub highest_accepted_height: u32,
+}
+
+/// What [`Outbox::resend_block`] did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum ResendOutcome {
+    /// The retained entries for the hash are pending again.
+    Requeued {
+        requeued: usize,
+        blocks: Vec<BlockRef>,
+    },
+    /// Nothing to do: the block is already waiting, or being sent.
+    AlreadyPending {
+        requeued: usize,
+        blocks: Vec<BlockRef>,
+        in_flight: bool,
+    },
+    /// The outbox has no entry for the hash: it expired from the retained
+    /// window, was never accepted, or was dropped.
+    NotRetained {
+        requeued: usize,
+        oldest_retained: Option<BlockRef>,
+        newest_retained: Option<BlockRef>,
+        retain_blocks: u32,
+    },
 }
 
 pub struct Outbox {
@@ -715,6 +798,103 @@ impl Outbox {
         Ok(metas.len())
     }
 
+    /// The entries matching `query`, newest (highest, then latest accepted)
+    /// first. Reads only the in-memory index: no entry file is opened.
+    pub fn list(&self, query: &ListQuery) -> EntryList {
+        let pending = self.entries.values().map(|meta| {
+            let state = if Some(meta.seq) == self.in_flight {
+                EntryState::InFlight
+            } else {
+                EntryState::Pending
+            };
+            (meta, state)
+        });
+        let retained = self
+            .retained
+            .values()
+            .map(|meta| (meta, EntryState::Retained));
+        let wanted = |(meta, state): &(&EntryMeta, EntryState)| {
+            query.height.is_none_or(|h| meta.block.height == h)
+                && query
+                    .state_hash
+                    .as_deref()
+                    .is_none_or(|hash| meta.block.state_hash == hash)
+                && match query.state {
+                    None => true,
+                    Some(StateFilter::Retained) => *state == EntryState::Retained,
+                    Some(StateFilter::Pending) => *state != EntryState::Retained,
+                }
+        };
+        let mut matching: Vec<_> = match query.state {
+            Some(StateFilter::Pending) => pending.filter(wanted).collect(),
+            Some(StateFilter::Retained) => retained.filter(wanted).collect(),
+            None => pending.chain(retained).filter(wanted).collect(),
+        };
+        let total = matching.len();
+        matching.sort_unstable_by(|(a, _), (b, _)| {
+            (b.block.height, b.seq).cmp(&(a.block.height, a.seq))
+        });
+        matching.truncate(query.limit);
+        EntryList {
+            entries: matching
+                .into_iter()
+                .map(|(meta, state)| ListedEntry {
+                    height: meta.block.height,
+                    state_hash: meta.block.state_hash.clone(),
+                    state,
+                    seq: meta.seq,
+                    size: meta.size,
+                })
+                .collect(),
+            matching: total,
+            limit: query.limit,
+            oldest_retained: self.stats.oldest_retained.clone(),
+            newest_retained: self.stats.newest_retained.clone(),
+            retain_blocks: self.config.retain_blocks,
+            highest_accepted_height: self.cursor.max_height,
+        }
+    }
+
+    /// Requeue the retained entries of one block, so the archive gets its
+    /// diff again (the archive is idempotent by state hash). The entries
+    /// keep their sequence numbers, so they go before newer pending ones.
+    pub fn resend_block(&mut self, state_hash: &str) -> io::Result<ResendOutcome> {
+        let metas: Vec<_> = self
+            .retained
+            .values()
+            .filter(|meta| meta.block.state_hash == state_hash)
+            .cloned()
+            .collect();
+        if metas.is_empty() {
+            let pending: Vec<_> = self
+                .entries
+                .values()
+                .filter(|meta| meta.block.state_hash == state_hash)
+                .collect();
+            if !pending.is_empty() {
+                return Ok(ResendOutcome::AlreadyPending {
+                    requeued: 0,
+                    in_flight: pending.iter().any(|meta| Some(meta.seq) == self.in_flight),
+                    blocks: pending.into_iter().map(|meta| meta.block.clone()).collect(),
+                });
+            }
+            return Ok(ResendOutcome::NotRetained {
+                requeued: 0,
+                oldest_retained: self.stats.oldest_retained.clone(),
+                newest_retained: self.stats.newest_retained.clone(),
+                retain_blocks: self.config.retain_blocks,
+            });
+        }
+        for meta in &metas {
+            self.requeue_one(meta)?;
+        }
+        self.refresh_stats();
+        Ok(ResendOutcome::Requeued {
+            requeued: metas.len(),
+            blocks: metas.into_iter().map(|meta| meta.block).collect(),
+        })
+    }
+
     fn requeue_retained_files(&mut self) -> io::Result<()> {
         let dir = self.config.dir.join(DELIVERED_DIR);
         for entry in fs::read_dir(&dir)? {
@@ -898,6 +1078,11 @@ impl Outbox {
             .retained
             .values()
             .min_by_key(|m| m.block.height)
+            .map(|m| m.block.clone());
+        self.stats.newest_retained = self
+            .retained
+            .values()
+            .max_by_key(|m| (m.block.height, m.seq))
             .map(|m| m.block.clone());
         self.stats.feed_started_at = self.cursor.first.clone();
         self.stats.pending_entries = self.entries.len();

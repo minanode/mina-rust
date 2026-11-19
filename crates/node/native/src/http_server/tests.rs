@@ -2637,3 +2637,475 @@ async fn reporting_status_is_local_and_private() {
     }
     assert_eq!(count.load(Ordering::SeqCst), 0);
 }
+
+// ARCHIVE-PANEL: the archive feed's routes.
+
+struct AcceptingArchive;
+
+impl mina_node_common::archive::delivery::ArchiveSink for AcceptingArchive {
+    fn deliver(&mut self, _payload: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+fn archive_hash(height: u32) -> String {
+    format!("3NArchiveTestBlock{height}")
+}
+
+/// An outbox whose archive acknowledged blocks 1 to `delivered`, with
+/// `pending` more blocks waiting.
+fn archive_outbox(
+    dir: &tempfile::TempDir,
+    delivered: u32,
+    pending: u32,
+) -> mina_node_common::archive::delivery::SharedOutbox {
+    use mina_node_common::archive::{
+        delivery::SharedOutbox,
+        outbox::{BlockRef, Outbox, OutboxConfig},
+    };
+    let outbox = SharedOutbox::new(
+        Outbox::open(OutboxConfig::new(dir.path())).unwrap(),
+        Some("127.0.0.1:3086".to_owned()),
+    );
+    for height in 1..=delivered + pending {
+        let block = BlockRef {
+            height,
+            state_hash: archive_hash(height),
+        };
+        let diff = format!("diff of block {height}");
+        outbox
+            .append(block, &archive_hash(height - 1), diff.as_bytes())
+            .unwrap();
+    }
+    for _ in 0..delivered {
+        outbox
+            .deliver_one(&mut AcceptingArchive)
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+    outbox
+}
+
+async fn serve_archive(
+    options: HttpServerOptions,
+    outbox: Option<mina_node_common::archive::delivery::SharedOutbox>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    // The archive routes never ask the node.
+    let (tx, _rx) = mpsc::channel::<NodeRpcRequest>(1);
+    let app = super::router_with_archive(RpcSender::new(tx), options, outbox);
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (base, server)
+}
+
+/// A replay request: from a page when `origin` is given, with the archive
+/// header when `header`.
+async fn post_resend(
+    base: &str,
+    host: Option<&str>,
+    origin: Option<&str>,
+    header: bool,
+    content_type: &str,
+    body: &str,
+) -> (u16, Value) {
+    let mut request = reqwest::Client::new()
+        .post(format!("{base}/archive/resend"))
+        .header("content-type", content_type.to_owned())
+        .body(body.to_owned());
+    if let Some(host) = host {
+        request = request.header("host", host.to_owned());
+    }
+    if let Some(origin) = origin {
+        request = request.header("origin", origin.to_owned());
+    }
+    if header {
+        request = request.header("x-mina-archive-control", "1");
+    }
+    let response = request.send().await.unwrap();
+    let status = response.status().as_u16();
+    (status, response.json().await.unwrap_or(Value::Null))
+}
+
+async fn get_json(url: String) -> (u16, Value) {
+    let response = reqwest::get(url).await.unwrap();
+    let status = response.status().as_u16();
+    (status, response.json().await.unwrap_or(Value::Null))
+}
+
+/// A node that doesn't feed an archive has no archive routes to show: each
+/// answers 404 with why, so the dashboard hides its Archive page; the
+/// public API has none at all.
+#[tokio::test]
+async fn archive_routes_are_absent_without_an_archive() {
+    let (base, server) = serve_archive(HttpServerOptions::default(), None).await;
+    for path in ["/archive/status", "/archive/blocks"] {
+        let (status, body) = get_json(format!("{base}{path}")).await;
+        assert_eq!(status, 404, "{path}");
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .contains("--archive-archiver-process"));
+    }
+    let (status, _) = post_resend(
+        &base,
+        None,
+        None,
+        true,
+        "application/json",
+        r#"{"all": true}"#,
+    )
+    .await;
+    assert_eq!(status, 404);
+    server.abort();
+
+    let dir = tempfile::tempdir().unwrap();
+    let (base, server) = serve_archive(
+        HttpServerOptions {
+            public_graphql: true,
+            ..Default::default()
+        },
+        Some(archive_outbox(&dir, 2, 0)),
+    )
+    .await;
+    for path in ["/archive/status", "/archive/blocks"] {
+        let (status, _) = get_json(format!("{base}{path}")).await;
+        assert_eq!(status, 404, "public {path}");
+    }
+    let (status, _) = post_resend(
+        &base,
+        None,
+        None,
+        true,
+        "application/json",
+        r#"{"all": true}"#,
+    )
+    .await;
+    assert_eq!(status, 404);
+    server.abort();
+}
+
+/// `GET /archive/blocks` lists the index newest first, bounded, with its
+/// filters; bad filters are refused with why.
+#[tokio::test]
+async fn archive_blocks_lists_entries_newest_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let (base, server) = serve_archive(
+        HttpServerOptions::default(),
+        Some(archive_outbox(&dir, 3, 2)),
+    )
+    .await;
+
+    let (status, body) = get_json(format!("{base}/archive/blocks")).await;
+    assert_eq!(status, 200, "{body}");
+    let heights: Vec<_> = body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["height"].as_u64().unwrap(), e["state"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        heights,
+        vec![
+            (5, "pending"),
+            (4, "pending"),
+            (3, "retained"),
+            (2, "retained"),
+            (1, "retained")
+        ]
+    );
+    assert_eq!(body["entries"][0]["state_hash"], archive_hash(5));
+    assert!(body["entries"][0]["seq"].is_u64());
+    assert!(body["entries"][0]["size"].as_u64().unwrap() > 0);
+    assert_eq!(body["matching"], 5);
+    assert_eq!(body["limit"], 50);
+    assert_eq!(body["oldest_retained"]["height"], 1);
+    assert_eq!(body["newest_retained"]["height"], 3);
+    assert_eq!(body["retain_blocks"], 870);
+    assert_eq!(body["highest_accepted_height"], 5);
+
+    let (_, body) = get_json(format!("{base}/archive/blocks?limit=1")).await;
+    assert_eq!(body["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(body["matching"], 5);
+    let (_, body) = get_json(format!("{base}/archive/blocks?limit=100000")).await;
+    assert_eq!(body["limit"], 500, "the hard cap");
+    let (_, body) = get_json(format!("{base}/archive/blocks?height=2")).await;
+    assert_eq!(body["entries"][0]["state_hash"], archive_hash(2));
+    assert_eq!(body["matching"], 1);
+    let hash = archive_hash(4);
+    let (_, body) = get_json(format!("{base}/archive/blocks?state_hash=%20{hash}%20")).await;
+    assert_eq!(body["entries"][0]["height"], 4);
+    let (_, body) = get_json(format!("{base}/archive/blocks?state=retained&limit=2")).await;
+    assert_eq!(body["matching"], 3);
+    assert_eq!(body["entries"][0]["height"], 3);
+    let (_, body) = get_json(format!("{base}/archive/blocks?state=pending")).await;
+    assert_eq!(body["matching"], 2);
+
+    for bad in [
+        "height=abc",
+        "state=stored",
+        "limit=-1",
+        &format!("state_hash={}", "3N".repeat(40)),
+    ] {
+        let (status, body) = get_json(format!("{base}/archive/blocks?{bad}")).await;
+        assert_eq!(status, 400, "{bad}");
+        assert!(body["error"].is_string(), "{bad}: {body}");
+    }
+    server.abort();
+}
+
+/// `POST /archive/resend` replays one retained block, says when it is
+/// pending already or not retained, and still replays every retained block
+/// when asked to.
+#[tokio::test]
+async fn archive_resend_replays_one_block_or_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let outbox = archive_outbox(&dir, 3, 1);
+    let (base, server) = serve_archive(HttpServerOptions::default(), Some(outbox.clone())).await;
+    let resend = |body: String| {
+        let base = base.clone();
+        async move { post_resend(&base, None, None, true, "application/json", &body).await }
+    };
+
+    let (status, body) = resend(json!({ "state_hash": archive_hash(2) }).to_string()).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["result"], "requeued");
+    assert_eq!(body["requeued"], 1);
+    assert_eq!(body["blocks"][0]["height"], 2);
+    let status = outbox.status();
+    assert_eq!(status.outbox.pending_entries, 2);
+    assert_eq!(status.outbox.retained_entries, 2);
+    assert_eq!(status.outbox.oldest_pending.unwrap().height, 2);
+
+    let (status, body) = resend(json!({ "state_hash": archive_hash(2) }).to_string()).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["result"], "already_pending");
+    assert_eq!(body["requeued"], 0);
+    assert_eq!(body["in_flight"], false);
+
+    let (status, body) = resend(json!({ "state_hash": "3NUnknownBlock" }).to_string()).await;
+    assert_eq!(status, 404, "{body}");
+    assert_eq!(body["result"], "not_retained");
+    assert_eq!(body["requeued"], 0);
+    assert_eq!(body["oldest_retained"]["height"], 1);
+    assert_eq!(body["newest_retained"]["height"], 3);
+    assert_eq!(body["retain_blocks"], 870);
+    let error = body["error"].as_str().unwrap();
+    assert!(error.contains("not retained by this node"), "{error}");
+    assert!(error.contains("heights 1 to 3"), "{error}");
+
+    let (status, body) = resend(json!({ "all": true }).to_string()).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body, json!({ "result": "requeued", "requeued": 2 }));
+    assert_eq!(outbox.status().outbox.retained_entries, 0);
+    assert_eq!(outbox.status().outbox.pending_entries, 4);
+
+    for bad in [
+        json!({}),
+        json!({ "all": false }),
+        json!({ "all": true, "state_hash": archive_hash(1) }),
+        json!({ "state_hash": "  " }),
+        json!({ "state_hash": "3N".repeat(40) }),
+        json!({ "hash": archive_hash(1) }),
+    ] {
+        let (status, body) = resend(bad.to_string()).await;
+        assert_eq!(status, 400, "{bad}: {body}");
+        assert!(body["error"].is_string(), "{bad}");
+    }
+    let (status, _) = resend("not json".to_owned()).await;
+    assert_eq!(status, 400);
+    server.abort();
+}
+
+/// Replay is guarded like worker control: another site's page is refused
+/// whatever it sends, and gets no CORS grant; a request a form could send
+/// (no header, no JSON) is refused; this machine's pages, a listed origin,
+/// the node's own dashboard at an IP address and a program get through.
+#[tokio::test]
+async fn archive_resend_refuses_other_sites() {
+    let dir = tempfile::tempdir().unwrap();
+    let outbox = archive_outbox(&dir, 3, 0);
+    let (base, server) = serve_archive(
+        HttpServerOptions {
+            dashboard: true,
+            worker_control_origins: super::control_origin::ControlOrigins::new([
+                "https://dash.example.org".to_owned(),
+            ])
+            .unwrap(),
+            ..Default::default()
+        },
+        Some(outbox.clone()),
+    )
+    .await;
+    let one = json!({ "state_hash": archive_hash(1) }).to_string();
+
+    // Another site's page: refused, whatever it sends.
+    for (host, origin, header, content_type) in [
+        (None, "http://evil.example", true, "application/json"),
+        (None, "http://evil.example", false, "application/json"),
+        (None, "http://evil.example", false, "text/plain"),
+        (None, "null", true, "application/json"),
+        // DNS rebinding: an attacker's name resolving to this node.
+        (
+            Some("evil.example:3700"),
+            "http://evil.example:3700",
+            true,
+            "application/json",
+        ),
+        // Another port of the node's address is another site.
+        (
+            Some("192.0.2.44:3700"),
+            "http://192.0.2.44:4282",
+            true,
+            "application/json",
+        ),
+    ] {
+        let (status, body) =
+            post_resend(&base, host, Some(origin), header, content_type, &one).await;
+        assert_eq!(status, 403, "{origin} {header} {content_type}: {body}");
+    }
+    let (_, body) = post_resend(
+        &base,
+        None,
+        Some("http://evil.example"),
+        true,
+        "application/json",
+        &one,
+    )
+    .await;
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("--worker-control-origin"));
+    // What a form or a simple fetch could send: no header, or no JSON.
+    let (status, body) = post_resend(&base, None, None, false, "application/json", &one).await;
+    assert_eq!(status, 403);
+    let error = body["error"].as_str().unwrap();
+    assert!(error.contains("x-mina-archive-control"), "{error}");
+    assert!(
+        error.contains("curl -X POST"),
+        "a program is told how: {error}"
+    );
+    let (status, body) = post_resend(&base, None, None, true, "text/plain", &one).await;
+    assert_eq!(status, 415);
+    assert!(body["error"].as_str().unwrap().contains("curl -X POST"));
+    assert_eq!(
+        outbox.status().outbox.retained_entries,
+        3,
+        "nothing was replayed"
+    );
+
+    // The browser asks first: no grant for another site, one for ours.
+    let client = reqwest::Client::new();
+    let preflight = |origin: &str| {
+        client
+            .request(reqwest::Method::OPTIONS, format!("{base}/archive/resend"))
+            .header("origin", origin.to_owned())
+            .header("access-control-request-method", "POST")
+            .header(
+                "access-control-request-headers",
+                "content-type,x-mina-archive-control",
+            )
+            .send()
+    };
+    let response = preflight("http://evil.example").await.unwrap();
+    assert!(response
+        .headers()
+        .get("access-control-allow-origin")
+        .is_none());
+    for origin in ["http://127.0.0.1:4282", "https://dash.example.org"] {
+        let response = preflight(origin).await.unwrap();
+        assert_eq!(
+            response.headers()["access-control-allow-origin"],
+            origin,
+            "{origin}"
+        );
+        let allowed = response.headers()["access-control-allow-headers"]
+            .to_str()
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(allowed.contains("x-mina-archive-control"), "{allowed}");
+    }
+
+    // The operator's requests: this machine's pages, a listed origin, the
+    // node's own dashboard at an IP address (when it serves one), a program.
+    let own = cfg!(feature = "dashboard");
+    let mut replayed = 0;
+    for (host, origin, allowed) in [
+        (None, Some("http://localhost:4282"), true),
+        (None, Some("http://127.0.0.1:3000"), true),
+        (
+            Some("192.0.2.44:3700"),
+            Some("https://dash.example.org"),
+            true,
+        ),
+        (Some("192.0.2.44:3700"), Some("http://192.0.2.44:3700"), own),
+        (None, None, true),
+    ] {
+        let (status, body) = post_resend(&base, host, origin, true, "application/json", &one).await;
+        if allowed {
+            assert_eq!(status, 200, "{origin:?}: {body}");
+            replayed += 1;
+            // Delivered again, so the next request replays it again.
+            outbox
+                .deliver_one(&mut AcceptingArchive)
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        } else {
+            assert_eq!(status, 403, "{origin:?}: {body}");
+        }
+    }
+    assert!(replayed >= 4);
+    assert_eq!(outbox.status().outbox.retained_entries, 3);
+    server.abort();
+}
+
+/// `GET /archive/status` has a `database` section: not checked without
+/// `MINA_ARCHIVE_METRICS_ADDRESS`, the archive's counts and the verdict with
+/// it.
+#[tokio::test]
+async fn archive_status_reports_the_database_check() {
+    use mina_node_common::archive::db_check::{metrics_url, ArchiveGauges, DbCheck};
+    let dir = tempfile::tempdir().unwrap();
+    let outbox = archive_outbox(&dir, 3, 0);
+    let (base, server) = serve_archive(HttpServerOptions::default(), Some(outbox.clone())).await;
+    let (status, body) = get_json(format!("{base}/archive/status")).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["database"]["configured"], false);
+    assert_eq!(body["database"]["verdict"], "not_checked");
+    assert_eq!(body["highest_delivered"]["height"], 3);
+
+    let url = metrics_url("http://127.0.0.1:3086").unwrap();
+    let check = std::sync::Arc::new(DbCheck::new(
+        &url,
+        std::time::Duration::from_secs(360),
+        std::time::Duration::from_secs(60),
+    ));
+    check.record(
+        1_000,
+        outbox.highest_delivered_height(),
+        Ok(ArchiveGauges {
+            max_block_height: 3,
+            missing_blocks: 1,
+            unparented_blocks: 0,
+        }),
+    );
+    outbox.set_database_check(check);
+    let (_, body) = get_json(format!("{base}/archive/status")).await;
+    let database = &body["database"];
+    assert_eq!(database["configured"], true);
+    assert_eq!(database["metrics_url"], "http://127.0.0.1:3086/metrics");
+    assert_eq!(database["verdict"], "incomplete");
+    assert_eq!(database["max_block_height"], 3);
+    assert_eq!(database["missing_blocks"], 1);
+    assert_eq!(database["unparented_blocks"], 0);
+    assert_eq!(database["delivered_height"], 3);
+    assert_eq!(database["stored_tip_lag"], 0);
+    assert_eq!(database["last_success_at_ms"], 1_000);
+    assert_eq!(database["behind_after_ms"], 360_000);
+    server.abort();
+}

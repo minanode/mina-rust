@@ -1,0 +1,22 @@
+#HELP Coda_Archive_ingest_duration_ms Time a block ingest request waited before the archive took the block off its queue, in milliseconds, by the source that sent it
+#TYPE Coda_Archive_ingest_duration_ms histogram
+Coda_Archive_ingest_duration_ms_sum{source="diff"} 2089.34
+Coda_Archive_ingest_duration_ms_count{source="diff"} 292
+Coda_Archive_ingest_duration_ms_bucket{le="+Inf", source="diff"} 292
+Coda_Archive_ingest_duration_ms_bucket{le="16384", source="diff"} 292
+Coda_Archive_ingest_duration_ms_bucket{le="4096", source="diff"} 292
+Coda_Archive_ingest_duration_ms_bucket{le="1024", source="diff"} 292
+Coda_Archive_ingest_duration_ms_bucket{le="256", source="diff"} 292
+Coda_Archive_ingest_duration_ms_bucket{le="64", source="diff"} 292
+Coda_Archive_ingest_duration_ms_bucket{le="16", source="diff"} 273
+Coda_Archive_ingest_duration_ms_bucket{le="4", source="diff"} 86
+Coda_Archive_ingest_duration_ms_bucket{le="1", source="diff"} 33
+#HELP Coda_Archive_max_block_height Max block height recorded in the archive database
+#TYPE Coda_Archive_max_block_height gauge
+Coda_Archive_max_block_height 591643
+#HELP Coda_Archive_missing_blocks Number of missing blocks in the last n (n = 2000 by default) blocks. A block for a specific height is missing if there is no entry in the blocks table for that height
+#TYPE Coda_Archive_missing_blocks gauge
+Coda_Archive_missing_blocks 0
+#HELP Coda_Archive_unparented_blocks Number of blocks without a parent
+#TYPE Coda_Archive_unparented_blocks gauge
+Coda_Archive_unparented_blocks 0

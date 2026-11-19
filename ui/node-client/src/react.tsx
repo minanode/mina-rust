@@ -8,6 +8,7 @@
 import * as React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import type { ArchiveEntries, ArchiveQuery, ArchiveStatus } from "./archive";
 import type { Block, Account } from "./chain";
 import type {
   BestChainHeaders,
@@ -16,7 +17,7 @@ import type {
   SyncProgress,
 } from "./chainview";
 import { createNodeClient, type NodeClient, type RawRoute } from "./client";
-import { isUnreachable } from "./errors";
+import { isUnreachable, kindOf } from "./errors";
 import type { PendingTransaction } from "./mempool";
 import type { ProducerStats } from "./producer";
 import type { LedgerSync, SyncBlocks } from "./progress";
@@ -397,3 +398,29 @@ export const useLedgerAccounts = (
     (c, s) => c.ledgerAccounts(publicKey!, s),
     intervalMs,
   );
+
+/** `GET /archive/status` of a node that feeds an archive process. */
+export const useArchiveStatus = (intervalMs = 5_000): Polled<ArchiveStatus> =>
+  useClientPoll("archive/status", (c, s) => c.archiveStatus(s), intervalMs);
+
+/** `GET /archive/blocks` for `query` (null: nothing). */
+export const useArchiveBlocks = (
+  query: ArchiveQuery | null,
+  intervalMs = 5_000,
+): Polled<ArchiveEntries> =>
+  useClientPoll(
+    query === null
+      ? null
+      : `archive/blocks:${query.height ?? ""}:${query.stateHash ?? ""}:${query.state ?? ""}:${query.limit ?? ""}`,
+    (c, s) => c.archiveBlocks(query!, s),
+    intervalMs,
+  );
+
+/**
+ * Whether the node feeds an archive process: its `/archive/status` answered,
+ * and the latest request didn't say the route is absent (404, or an older
+ * node). A node that stops answering keeps its last answer.
+ */
+export function feedsArchive(status: Polled<unknown>): boolean {
+  return status.data !== null && kindOf(status.error) !== "absent";
+}
