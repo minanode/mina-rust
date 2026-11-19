@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per index. A pooled zkApp command with 15 proofs takes 321 KiB instead of 727
   KiB with proofs in memory
   ([#61](https://github.com/minanode/mina-rust/pull/61))
+- **Node**: read the latest ledger proof without cloning the transactions of the
+  tree that emitted it. Applying or producing a block whose emitted tree holds
+  121 zkApp commands no longer copies 32.4 MiB. `DiffResult::ledger_proof` is
+  now `Option<LedgerProof>`
+  ([#62](https://github.com/minanode/mina-rust/pull/62))
 
 ### Fixed
 
