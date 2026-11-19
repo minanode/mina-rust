@@ -1706,7 +1706,7 @@ impl LedgerCtx {
         // OCaml: <https://github.com/MinaProtocol/mina/blob/c9e2eac5344da621828c1e96c074b8bdce665b51/src/lib/mina_block/validation.ml#L646-L675>
         // Validate before publishing the child ledger, including catch-up with
         // proof verification skipped. The body reference was checked above.
-        let statement = result.ledger_proof.as_ref().map(|(proof, _)| {
+        let statement = result.ledger_proof.as_ref().map(|proof| {
             v2::MinaStateBlockchainStateValueStableV2LedgerProofStatement::from(&proof.statement())
         });
         let constants = mina_core::consensus::ConsensusConstants::create(
@@ -2542,10 +2542,7 @@ impl LedgerCtx {
             diff,
             diff_hash,
             staged_ledger_hash: (&res.hash_after_applying).into(),
-            emitted_ledger_proof: res
-                .ledger_proof
-                .map(|(proof, ..)| (&proof).into())
-                .map(Arc::new),
+            emitted_ledger_proof: res.ledger_proof.map(|proof| (&proof).into()).map(Arc::new),
             pending_coinbase_update: (&res.pending_coinbase_update.1).into(),
             pending_coinbase_witness: MinaBasePendingCoinbaseWitnessStableV2 {
                 pending_coinbases: pending_coinbase_witness,

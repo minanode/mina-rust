@@ -205,7 +205,7 @@ fn build(args: &Args) -> anyhow::Result<v2::ProverExtendBlockchainInputStableV2>
             let ledger_proof = result
                 .ledger_proof
                 .as_ref()
-                .map(|(proof, ..)| std::sync::Arc::new(proof.into()));
+                .map(|proof| std::sync::Arc::new(proof.into()));
 
             return Ok(v2::ProverExtendBlockchainInputStableV2 {
                 chain: v2::BlockchainSnarkBlockchainStableV2 {
