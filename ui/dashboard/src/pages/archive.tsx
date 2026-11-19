@@ -276,13 +276,13 @@ function tipLag(lag: number | null): string | undefined {
     : `${plural(-lag, "block")} above last delivered`;
 }
 
-function DatabaseAction({
-  db,
-  status: s,
-}: {
-  db: ArchiveDatabase;
-  status: ArchiveStatus;
-}) {
+/** What the operator should do about the verdict; nothing when the
+ * database is complete or not yet checked, so the card then has no
+ * footer. */
+function databaseAction(
+  db: ArchiveDatabase,
+  s: ArchiveStatus,
+): React.ReactNode {
   if (!db.configured) {
     return (
       <p data-archive-database-action="configure">
@@ -367,7 +367,7 @@ function DatabaseCheck({ status: s }: { status: ArchiveStatus }) {
         </Signal>
       }
       rows={rows}
-      footer={<DatabaseAction db={db} status={s} />}
+      footer={databaseAction(db, s)}
     />
   );
 }

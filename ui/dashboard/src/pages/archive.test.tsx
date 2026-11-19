@@ -530,6 +530,8 @@ test("database complete: the archive's counts, the feed up to date", async () =>
   expect(within(db).getByText("Checked")).toBeTruthy();
   expect(within(db).getByText("http://127.0.0.1:3087/metrics")).toBeTruthy();
   expect(db.querySelector("[data-archive-database-action]")).toBeNull();
+  // With nothing to do the card ends at its rows: no empty footer.
+  expect(db.lastElementChild?.tagName).toBe("DL");
   // Still one docs link.
   expect(screen.getAllByRole("link", { name: /docs/i })).toHaveLength(1);
 });
@@ -634,6 +636,7 @@ test("database not checked: one line saying what to set", async () => {
   const checking = await card("not_checked");
   expect(within(checking).getByText("Checking")).toBeTruthy();
   expect(checking.querySelector("[data-archive-database-action]")).toBeNull();
+  expect(checking.lastElementChild?.tagName).toBe("DL");
 });
 
 test("the database check ranks below failing and not synced, above catching up", async () => {
