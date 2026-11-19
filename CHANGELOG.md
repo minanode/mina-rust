@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Node**: `--no-serve-retired-staged-ledgers`
+  (`MINA_NO_SERVE_RETIRED_STAGED_LEDGERS`) keeps no scan states for retired
+  roots on a node that serves no bootstrapping peers. Such a node answers a
+  request for a retired root as for an unknown block. The web node does this by
+  default while sharing is off
+  ([#63](https://github.com/minanode/mina-rust/pull/63))
+
 ### Changed
 
 - **Node**: the transaction pool keeps one copy of each command instead of one
