@@ -7,13 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-11-20
+
+0.23.0 lets a Rust node serve staged-ledger answers of up to 192 MiB, so it can
+serve a devnet bootstrap. It cuts memory in the transaction pool and in block
+apply, and adds `--no-serve-retired-staged-ledgers` for nodes that serve no
+bootstrapping peers. The dashboard gets an Archive page. `POST /archive/resend`
+now needs a header and a JSON body. See
+[the release notes](docs/release/0.23.0.md).
+
 ### Added
 
 - **Node**: `--no-serve-retired-staged-ledgers`
   (`MINA_NO_SERVE_RETIRED_STAGED_LEDGERS`) keeps no scan states for retired
   roots on a node that serves no bootstrapping peers. Such a node answers a
   request for a retired root as for an unknown block. The web node does this by
-  default while sharing is off
+  default, while it dials only its seed relays and sharing is off
   ([#63](https://github.com/minanode/mina-rust/pull/63))
 - **Dashboard**: an Archive page for a node that feeds an archive process. It
   shows whether the feed is up to date, replays one or every retained block, and
@@ -24,26 +33,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Node**: the transaction pool keeps one copy of each command instead of one
-  per index. A pooled zkApp command with 15 proofs takes 321 KiB instead of 727
-  KiB with proofs in memory
+  per index. In a pool of 120 zkApp commands with 15 proofs each, one per
+  sender, a command takes 321 KiB instead of 727 KiB with proofs in memory
   ([#61](https://github.com/minanode/mina-rust/pull/61))
 - **Node**: read the latest ledger proof without cloning the transactions of the
   tree that emitted it. Applying or producing a block whose emitted tree holds
-  121 zkApp commands no longer copies 32.4 MiB. `DiffResult::ledger_proof` is
-  now `Option<LedgerProof>`
+  121 zkApp commands with 15 proofs each no longer copies 32.4 MiB.
+  `DiffResult::ledger_proof` is now `Option<LedgerProof>`
   ([#62](https://github.com/minanode/mina-rust/pull/62))
 - **Node**: `POST /archive/resend` needs the `x-mina-archive-control` header and
-  a JSON body, and refuses requests from other sites' pages. A plain
-  `curl -X POST` to the route now gets 403, and the error message shows the full
-  command ([#64](https://github.com/minanode/mina-rust/pull/64))
+  a JSON body, and refuses pages of unapproved origins. A plain `curl -X POST`
+  to the route on a node that feeds an archive now gets 403, and the error
+  message shows the full command. With the header, a request without
+  `content-type: application/json` gets 415, and one with an empty or invalid
+  JSON body gets 400 ([#64](https://github.com/minanode/mina-rust/pull/64))
 
 ### Fixed
 
 - **Node**: serve staged-ledger answers of up to 192 MiB over libp2p. Before, a
-  node reset the stream for an answer above about 67 MB, so no Rust node could
-  serve a devnet bootstrap, whose answer is about 172 MB. An answer over the
-  limit, or one the send budgets have no room for, now gets an empty answer
-  instead of a stream reset
+  node reset the stream when an answer exceeded its 64 MiB per-peer queue plus
+  the client's receive window, about 67 MB for an idle server and a fresh 256
+  KiB window. So no Rust node could serve a devnet bootstrap, whose answer is
+  about 172 MB, to an ordinary libp2p client. An answer over the limit, or one
+  whose measured size the send budgets have no room for, now gets an empty
+  answer instead of a stream reset. A request the budgets can't admit still gets
+  the capacity error
   ([#60](https://github.com/minanode/mina-rust/pull/60))
 
 ## [0.22.2] - 2026-11-18
