@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-11-20
+
+0.23.0 lets a Rust node serve staged-ledger answers of up to 192 MiB, so it can
+serve a devnet bootstrap. It cuts memory in the transaction pool and in block
+apply, and adds `--no-serve-retired-staged-ledgers` for nodes that serve no
+bootstrapping peers. The dashboard gets an Archive page. `POST /archive/resend`
+now needs a header and a JSON body. See
+[the release notes](docs/release/0.23.0.md).
+
 ### Added
 
 - **Node**: `--no-serve-retired-staged-ledgers`
