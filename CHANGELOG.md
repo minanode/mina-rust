@@ -43,19 +43,21 @@ now needs a header and a JSON body. See
   ([#62](https://github.com/minanode/mina-rust/pull/62))
 - **Node**: `POST /archive/resend` needs the `x-mina-archive-control` header and
   a JSON body, and refuses pages of unapproved origins. A plain `curl -X POST`
-  to the route now gets 403, and the error message shows the full command. With
-  the header, a request that isn't JSON gets 415, and an empty or invalid body
-  gets 400 ([#64](https://github.com/minanode/mina-rust/pull/64))
+  to the route on a node that feeds an archive now gets 403, and the error
+  message shows the full command. With the header, a request without
+  `content-type: application/json` gets 415, and one with an empty or invalid
+  JSON body gets 400 ([#64](https://github.com/minanode/mina-rust/pull/64))
 
 ### Fixed
 
 - **Node**: serve staged-ledger answers of up to 192 MiB over libp2p. Before, a
   node reset the stream when an answer exceeded its 64 MiB per-peer queue plus
-  the client's receive window, about 67 MB for a fresh 256 KiB window. So no
-  Rust node could serve a devnet bootstrap, whose answer is about 172 MB, to an
-  ordinary libp2p client. An answer over the limit, or one whose measured size
-  the send budgets have no room for, now gets an empty answer instead of a
-  stream reset. A request the budgets can't admit still gets the capacity error
+  the client's receive window, about 67 MB for an idle server and a fresh 256
+  KiB window. So no Rust node could serve a devnet bootstrap, whose answer is
+  about 172 MB, to an ordinary libp2p client. An answer over the limit, or one
+  whose measured size the send budgets have no room for, now gets an empty
+  answer instead of a stream reset. A request the budgets can't admit still gets
+  the capacity error
   ([#60](https://github.com/minanode/mina-rust/pull/60))
 
 ## [0.22.2] - 2026-11-18
