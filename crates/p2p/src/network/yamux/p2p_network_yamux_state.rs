@@ -308,10 +308,40 @@ impl YamuxStreamState {
         Some(frame)
     }
 
-    /// The frames waiting for the peer's window, oldest first, to offer to
-    /// `take_sendable` again once the window grows.
-    pub fn take_pending(&mut self) -> VecDeque<YamuxFrame> {
-        std::mem::take(&mut self.pending)
+    /// How many bytes of a data frame of `len` bytes `take_sendable` would
+    /// queue now.
+    pub fn queued_part(&self, len: usize) -> usize {
+        if !self.pending.is_empty() || self.window_theirs == 0 {
+            len
+        } else {
+            len.saturating_sub(self.window_theirs as usize)
+        }
+    }
+
+    /// Takes the frames waiting in `pending` that the peer's window has room
+    /// for now, oldest first, splitting the first one that doesn't fit, and
+    /// leaves the rest waiting. What waits was admitted when it was queued,
+    /// so it is not checked against the budgets again.
+    pub fn release_pending(&mut self) -> VecDeque<YamuxFrame> {
+        let mut released = VecDeque::new();
+        while let Some(mut frame) = self.pending.pop_front() {
+            if let Some(window) = self.window_theirs.checked_sub(frame.len_as_u32()) {
+                self.window_theirs = window;
+                released.push_back(frame);
+                continue;
+            }
+            if self.window_theirs > 0 {
+                if let Some(rest) = frame.split_at(self.window_theirs as usize) {
+                    self.pending.push_front(rest);
+                }
+                self.window_theirs = 0;
+                released.push_back(frame);
+            } else {
+                self.pending.push_front(frame);
+            }
+            break;
+        }
+        released
     }
 
     /// Bytes waiting for the peer's window.
@@ -559,15 +589,13 @@ mod tests {
         }
     }
 
-    /// Offers every waiting frame again, as a window update does, and returns
-    /// the bytes sent.
+    /// Releases what the window now has room for, as a window update does,
+    /// and returns the bytes sent.
     fn window_update(stream: &mut YamuxStreamState, difference: u32) -> Vec<u8> {
         stream.window_theirs += difference;
         let mut sent = vec![];
-        for frame in stream.take_pending() {
-            if let Some(frame) = stream.take_sendable(frame) {
-                sent.extend(bytes(&frame));
-            }
+        for frame in stream.release_pending() {
+            sent.extend(bytes(&frame));
         }
         sent
     }
@@ -601,6 +629,55 @@ mod tests {
         assert_eq!(sent, b"abcdefgh");
         assert!(stream.pending.is_empty());
         assert_eq!(stream.window_theirs, 9);
+    }
+
+    /// `queued_part` is what `take_sendable` queues, whatever the window and
+    /// whatever waits already.
+    #[test]
+    fn queued_part_is_what_take_sendable_queues() {
+        for window in [0, 1, 4, 10] {
+            for waiting in [false, true] {
+                for len in [0, 1, 4, 9] {
+                    let mut stream = YamuxStreamState {
+                        window_theirs: window,
+                        ..Default::default()
+                    };
+                    if waiting {
+                        stream.pending.push_back(frame(YamuxFlags::empty(), b"x"));
+                    }
+                    let before = stream.pending_len();
+                    let expected = stream.queued_part(len);
+                    stream.take_sendable(frame(YamuxFlags::empty(), &vec![0; len]));
+                    assert_eq!(
+                        stream.pending_len() - before,
+                        expected,
+                        "window {window}, waiting {waiting}, {len} bytes"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A window update sends whole frames while they fit, splits only the
+    /// first that doesn't, and leaves the rest as they were.
+    #[test]
+    fn release_splits_one_frame_at_most() {
+        let mut stream = YamuxStreamState {
+            window_theirs: 0,
+            ..Default::default()
+        };
+        for part in [b"abcde", b"fghij", b"klmno"] {
+            assert!(stream
+                .take_sendable(frame(YamuxFlags::empty(), part))
+                .is_none());
+        }
+        assert!(stream.release_pending().is_empty());
+        stream.window_theirs = 7;
+        let sent: Vec<_> = stream.release_pending().iter().map(bytes).collect();
+        assert_eq!(sent, [b"abcde".to_vec(), b"fg".to_vec()]);
+        let left: Vec<_> = stream.pending.iter().map(bytes).collect();
+        assert_eq!(left, [b"hij".to_vec(), b"klmno".to_vec()]);
+        assert_eq!(stream.window_theirs, 0);
     }
 
     #[test]

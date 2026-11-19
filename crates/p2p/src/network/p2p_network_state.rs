@@ -17,9 +17,39 @@ pub struct P2pNetworkState {
     pub serving_limits: crate::channels::rpc::ServingLimits,
     #[serde(default)]
     pub refusal_warnings: RpcRefusalWarnings,
+    /// Length of the last staged-ledger answer we built for a libp2p peer,
+    /// with its RPC framing. A staged-ledger query reserves this much of the
+    /// send budgets until its answer is built
+    /// ([`Self::staged_ledger_reservation`]).
+    #[serde(default)]
+    pub staged_ledger_answer_len: Option<usize>,
 }
 
+/// What a staged-ledger query reserves before we have built any staged-ledger
+/// answer: what every one reserved before the reservation followed the answer.
+pub const STAGED_LEDGER_FIRST_RESERVATION: usize = 64 * 1024 * 1024;
+
 impl P2pNetworkState {
+    /// The send budget an incoming staged-ledger query reserves until its
+    /// answer is built: the length of the last answer we built, the best guess
+    /// at the next one, as the scan state changes little from one root to the
+    /// next. At most the largest answer we serve
+    /// ([`crate::P2pLimits::rpc_served_staged_ledger`]), and
+    /// [`STAGED_LEDGER_FIRST_RESERVATION`] before the first answer.
+    ///
+    /// The answer's real length is checked against the budgets once it is
+    /// known, before the answer is encoded, so a guess that is too small costs
+    /// only the work of building the answer.
+    pub fn staged_ledger_reservation(&self, limits: &crate::P2pLimits) -> usize {
+        let cap = match limits.rpc_served_staged_ledger() {
+            crate::Limit::Some(cap) => cap,
+            crate::Limit::Unlimited => usize::MAX,
+        };
+        self.staged_ledger_answer_len
+            .unwrap_or(STAGED_LEDGER_FIRST_RESERVATION)
+            .min(cap)
+    }
+
     pub fn new(
         identity: PublicKey,
         addrs: Vec<Multiaddr>,
@@ -46,6 +76,7 @@ impl P2pNetworkState {
             next_incoming_rpc_id: 0,
             serving_limits: Default::default(),
             refusal_warnings: Default::default(),
+            staged_ledger_answer_len: None,
             scheduler: P2pNetworkSchedulerState {
                 interfaces: Default::default(),
                 listeners: Default::default(),
