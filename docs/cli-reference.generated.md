@@ -237,6 +237,14 @@ Keep the root snarked ledger's accounts in memory, while the epoch ledgers' go t
 
 Environment: `MINA_NO_ROOT_LEDGER_DISK`.
 
+#### `--no-serve-retired-staged-ledgers`
+
+Don't serve the staged ledger of a root this node has retired to peers that bootstrap from it, and keep no scan state for those roots.
+
+A bootstrapping peer asks for the staged ledger of the root it synced its snarked ledger to. By then that root may have retired here. By default the node keeps the scan states of its last `k + 10` retired roots to answer such requests, as OCaml nodes do. With this flag it answers as for an unknown root, and the peer asks other peers. The node still serves the staged ledger of every root in its frontier, and the blocks of the roots it has retired.
+
+Environment: `MINA_NO_SERVE_RETIRED_STAGED_LEDGERS`.
+
 ### Block production
 
 #### `--producer-key <FILE>`

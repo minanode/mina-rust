@@ -1759,6 +1759,9 @@ impl LedgerCtx {
     /// Snapshot before commit prunes/reparents the old frontier's masks.
     /// Protocol states are shared across the window and pruned to the union
     /// required by its scan states, including states older than the window.
+    /// `history` holds the retired roots that keep their scan state, the
+    /// newest of the root history
+    /// (`TransitionFrontierConfig::retired_root_scan_states`).
     fn retain_root_history(
         &mut self,
         history: &crate::transition_frontier::root_history::RootHistory,
@@ -1766,6 +1769,13 @@ impl LedgerCtx {
     ) {
         self.root_history
             .retain(|hash, _| history.get(hash).is_some());
+        if history.is_empty() {
+            // Only retired roots' scan states need these protocol states:
+            // a node that keeps none of them keeps none of these either
+            // (`TransitionFrontierConfig::retired_root_scan_states`).
+            self.root_history_protocol_states.clear();
+            return;
+        }
         for block in history.iter() {
             if self.root_history.contains_key(block.hash()) {
                 continue;
@@ -3894,6 +3904,87 @@ mod tests {
                 BTreeMap::new()
             )
             .is_none());
+    }
+
+    /// With `retired_root_scan_states = Some(0)` the ledger service keeps
+    /// nothing of a retired root, so a request for it gets what a request
+    /// for an unknown root gets. A frontier root is served as before. The
+    /// default keeps the retired root and serves the same bytes it served
+    /// while the root was in the frontier.
+    #[test]
+    fn a_retired_root_without_scan_state_is_answered_as_unknown() {
+        use crate::transition_frontier::root_history::RootHistory;
+        use mina_p2p_messages::{binprot::BinProtWrite, rpc_kernel::PayloadBinprotReader};
+        let bytes = include_bytes!("../../../p2p-messages/tests/files/mesa/get_best_tip_v3.bin");
+        let captured =
+            mina_p2p_messages::rpc::GetBestTipV2::response_payload(&mut bytes.as_slice())
+                .unwrap()
+                .unwrap()
+                .data;
+        let retired = mina_core::block::BlockWithHash::try_new(Arc::new(captured.clone())).unwrap();
+        let mut unknown = captured;
+        unknown
+            .header
+            .protocol_state
+            .body
+            .consensus_state
+            .blockchain_length = 1u32.into();
+        let unknown = mina_core::block::BlockWithHash::try_new(Arc::new(unknown)).unwrap();
+        // The fixture's jobs name state hash 0: serving needs its state.
+        let states: BTreeMap<StateHash, MinaStateProtocolStateValueStableV2> = BTreeMap::from([(
+            DataHashLibStateHashStableV1(Fp::from(0u64).into()).into(),
+            retired.header().protocol_state.clone(),
+        )]);
+        let aux = |ctx: &mut LedgerCtx,
+                   block: &ArcBlockWithHash,
+                   hash: &MinaBaseStagedLedgerHashStableV1| {
+            ctx.staged_ledger_aux_and_pending_coinbase(block.hash(), hash, states.clone())
+                .map(|parts| {
+                    let mut bytes = Vec::new();
+                    parts.binprot_write(&mut bytes).unwrap();
+                    bytes
+                })
+        };
+        for setting in [None, Some(0)] {
+            let mut ctx = LedgerCtx::default();
+            ctx.staged_ledgers.insert(
+                Arc::new(retired.staged_ledger_hashes().clone()),
+                staged_ledger_with_base_jobs(&[128, 64]),
+            );
+            let mut frontier = staged_ledger_with_base_jobs(&[128, 64, 32]);
+            let frontier_hash: MinaBaseStagedLedgerHashStableV1 = (&frontier.hash()).into();
+            assert_ne!(&frontier_hash, retired.staged_ledger_hashes());
+            ctx.staged_ledgers
+                .insert(Arc::new(frontier_hash.clone()), frontier);
+            let retired_before = aux(&mut ctx, &retired, retired.staged_ledger_hashes()).unwrap();
+            let frontier_before = aux(&mut ctx, &unknown, &frontier_hash).unwrap();
+
+            // The root moves past `retired`, as `commit` moves it.
+            let mut history = RootHistory(vec![retired.clone()]);
+            history.keep_newest(setting);
+            ctx.retain_root_history(&history, &states);
+            ctx.staged_ledgers.retain(|hash| hash == &frontier_hash);
+            assert!(ctx
+                .staged_ledger_mut(retired.staged_ledger_hashes())
+                .is_none());
+
+            let unknown_answer = aux(&mut ctx, &unknown, unknown.staged_ledger_hashes());
+            assert_eq!(unknown_answer, None);
+            let retired_after = aux(&mut ctx, &retired, retired.staged_ledger_hashes());
+            if setting.is_none() {
+                assert_eq!(ctx.root_history.len(), 1);
+                assert_eq!(ctx.root_history_protocol_states.len(), 1);
+                assert_eq!(retired_after, Some(retired_before));
+            } else {
+                assert!(ctx.root_history.is_empty());
+                assert!(ctx.root_history_protocol_states.is_empty());
+                assert_eq!(retired_after, unknown_answer);
+            }
+            assert_eq!(
+                aux(&mut ctx, &unknown, &frontier_hash),
+                Some(frontier_before)
+            );
+        }
     }
 
     /// Use an OCaml-sourced reconstruction dump to compare all four response

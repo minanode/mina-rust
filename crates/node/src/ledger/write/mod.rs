@@ -76,6 +76,9 @@ pub enum LedgerWriteRequest {
         restored: bool,
     },
     Commit {
+        /// The retired roots whose scan states the ledger service keeps: the
+        /// newest of the frontier's root history
+        /// (`TransitionFrontierConfig::retired_root_scan_states`).
         root_history: crate::transition_frontier::root_history::RootHistory,
         ledgers_to_keep: LedgersToKeep,
         root_snarked_ledger_updates: TransitionFrontierRootSnarkedLedgerUpdates,

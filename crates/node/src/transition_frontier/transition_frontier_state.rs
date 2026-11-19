@@ -127,6 +127,19 @@ impl TransitionFrontierState {
         }
     }
 
+    /// The root history once the root moves to `new_root`, cut to the
+    /// retired roots whose scan states the ledger service keeps
+    /// ([`TransitionFrontierConfig::retired_root_scan_states`]).
+    pub fn root_history_for_commit(
+        &self,
+        new_root: &ArcBlockWithHash,
+    ) -> super::root_history::RootHistory {
+        let mut history = self.root_history.clone();
+        history.advance(&self.best_chain, new_root);
+        history.keep_newest(self.config.retired_root_scan_states);
+        history
+    }
+
     pub fn ledger_recovery_pending(&self) -> bool {
         self.ledger_recovery
             .as_ref()
