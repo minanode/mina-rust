@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Node**: the transaction pool keeps one copy of each command instead of one
+  per index. A pooled zkApp command with 15 proofs takes 321 KiB instead of 727
+  KiB with proofs in memory
+  ([#61](https://github.com/minanode/mina-rust/pull/61))
+
 ### Fixed
 
 - **Node**: serve staged-ledger answers of up to 192 MiB over libp2p. Before, a
