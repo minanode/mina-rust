@@ -46,7 +46,7 @@ export function Roles() {
                     href={devnetBlock(role.link.height)}
                     className="mt-auto font-mono text-xs"
                   >
-                    Block {role.link.height}
+                    Devnet block {role.link.height}
                   </ExternalLink>
                 ) : null}
                 {role.site ? (

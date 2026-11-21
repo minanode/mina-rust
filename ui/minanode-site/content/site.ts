@@ -105,9 +105,9 @@ export const roles: Role[] = [
     id: "block-producer",
     claim: "C15 C17",
     title: "Block producer",
-    status: "devnet",
-    statusLabel: "Public devnet",
-    text: "Its blocks reach devnet's best chain. Not yet on mainnet.",
+    status: "live",
+    statusLabel: "Mainnet beta",
+    text: "Produces blocks on mainnet and devnet. Mainnet production is in beta.",
     link: { height: 579510 },
   },
   {

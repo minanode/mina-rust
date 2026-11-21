@@ -14,9 +14,9 @@ Documentation: **[minanode.org](https://minanode.org)**.
 
 ## Status
 
-Release 0.23.0 runs on Mina devnet. It follows the chain, produces blocks and
-runs a SNARK worker. Mainnet support comes later, and the web node is available
-as a devnet beta.
+Release 0.23.0 follows Mina mainnet and devnet and produces blocks on both, with
+mainnet block production in beta. It runs a SNARK worker on devnet, and the web
+node is available as a devnet beta.
 
 See the [0.23.0 release notes](docs/release/0.23.0.md), including the known
 issues, and the [CHANGELOG](CHANGELOG.md).

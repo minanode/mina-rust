@@ -159,12 +159,12 @@ export const docsIndex = {
   },
   lead: {
     claim: "C60",
-    text: `minanode ${release.version} is a Mina node for the public devnet. It is one program for Linux on x86-64 or ARM64, with a dashboard. It runs as a full node that verifies the chain, and it can also prove SNARK work or produce blocks.`,
+    text: `minanode ${release.version} is a Mina node for mainnet and devnet. It is one program for Linux on x86-64 or ARM64, with a dashboard. It runs as a full node that verifies the chain, and it can also prove SNARK work or produce blocks.`,
   },
   limitations: {
     claim: "C76",
     items: [
-      "Devnet only.",
+      "Block production on mainnet is in beta.",
       "Hard forks aren't handled yet. Each one will need a new release.",
       "Memory rises slowly on a node that runs for days.",
       "The browser node is a separate build from this native release.",

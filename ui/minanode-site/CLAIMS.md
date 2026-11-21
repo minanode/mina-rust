@@ -134,8 +134,9 @@ the subject of the private measurement; they do not link to unavailable files.
 
 ### C15 Block producer: public devnet blocks
 
-- Page: home, Block producer card, with an explorer link to 579510.
-- Says: "Its blocks reach devnet's best chain."
+- Page: home, Block producer card, with an explorer link labelled "Devnet block
+  579510".
+- Says: "Produces blocks on mainnet and devnet." (the devnet half)
 - Sources:
   `coordinator: private pre-release evidence; Block producer: public devnet blocks`
 - Figures: `bestChain(maxLength: 290)`, `12 of the 290`, `579510`,
@@ -147,15 +148,21 @@ the subject of the private measurement; they do not link to unavailable files.
   counted by coinbase receiver (private run receipt); the producer's
   `/stats/block_producer` at the same time (private run receipt) listed 22
   canonical, 6 orphaned and 21 discarded attempts. Replaces blocks 577948 and
-  577952 (private evidence), cited until 25 October 2026.
+  577952 (private evidence), cited until 25 October 2026. The card said "Its
+  blocks reach devnet's best chain." until 21 November 2026.
 
-### C17 Not yet on mainnet
+### C17 Mainnet beta
 
-- Page: home, Block producer card.
-- Says: "Not yet on mainnet."
-- Sources: `coordinator: private pre-release evidence; Not yet on mainnet`
-- Figures: `mainnet block production`
-- Caveat kept: this is the caveat.
+- Page: home, Block producer card: the badge and the second half of its text.
+- Says: "Mainnet beta"; "Produces blocks on mainnet and devnet. Mainnet
+  production is in beta." (the mainnet half)
+- Sources: `coordinator: owner-supplied evidence; first known mainnet block`
+- Figures: `one mainnet block`, `canonical`, `7 November 2026`
+- Caveat kept: one known mainnet block, made by a third-party operator running
+  the Rust node and canonical on 7 November 2026, as the owner announced
+  publicly that day. The site does not link the block or name the operator.
+  "Beta" carries the caution: the card gives no mainnet production count.
+  Replaces "Not yet on mainnet", shown until 21 November 2026.
 
 ### C18 SNARK worker
 
@@ -188,7 +195,7 @@ the subject of the private measurement; they do not link to unavailable files.
 - Sources: `coordinator: private pre-release evidence; Native build`
 - Figures: `Every node role`, `GraphQL`, `archive`
 - Caveat kept: the roles' own statuses on the page say where each was shown;
-  block production is "Not yet on mainnet" (C17).
+  mainnet block production is in beta (C17).
 
 ### C05 Mainnet replayed
 
@@ -343,11 +350,14 @@ condition or caveat changed.
 
 - Page: Docs overview, the lead; Requirements, the operating system and C
   library rows.
-- Says: "one program for Linux on x86-64 or ARM64"; "Linux, x86-64 or ARM64";
-  "glibc 2.31 or newer".
+- Says: "a Mina node for mainnet and devnet"; "one program for Linux on x86-64
+  or ARM64"; "Linux, x86-64 or ARM64"; "glibc 2.31 or newer".
 - Sources: `coordinator: private pre-release evidence; Platforms`
 - Figures: `x86-64`, `ARM64`, `glibc floor of 2.31`
-- Caveat kept: Linux only; the archives are not published yet (C69).
+- Caveat kept: Linux only; the archives are in the 0.23.0 release (C69). "For
+  mainnet and devnet" rests on C13 (syncs both) and C17 (mainnet block
+  production in beta); the lead said "for the public devnet" until 21
+  November 2026.
 
 ### C61 x86-64 CPUs
 
@@ -548,13 +558,15 @@ condition or caveat changed.
 ### C76 Known limitations
 
 - Page: Docs overview, "Known limitations".
-- Says: "Devnet only."; "Hard forks aren't handled yet. Each one will need a new
-  release."; "Memory rises slowly on a node that runs for days."; "The browser
-  node is a separate build from this native release." The DOCS-STYLE pass (25
-  October 2026) removed "We're looking into it." from the memory item and "on
-  Linux x86-64 and ARM64" from the first item: through Docker Desktop the node
-  also runs on macOS and Windows, and the platforms stay in the overview lead
-  (C60).
+- Says: "Block production on mainnet is in beta."; "Hard forks aren't handled
+  yet. Each one will need a new release."; "Memory rises slowly on a node that
+  runs for days."; "The browser node is a separate build from this native
+  release." The DOCS-STYLE pass (25 October 2026) removed "We're looking into
+  it." from the memory item, and "on Linux x86-64 and ARM64" from the first
+  item, leaving "Devnet only.": through Docker Desktop the node also runs on
+  macOS and Windows, and the platforms stay in the overview lead (C60). "Devnet
+  only." was replaced on 21 November 2026, when the home card moved to Mainnet
+  beta (C17).
 - Sources: `coordinator: private pre-release evidence; Known limitations`
 - Figures: `port at each hard fork`, `No automatic migration`, `memory creep`
 - Caveat kept: no rate for the memory rise on the site; the release notes give
