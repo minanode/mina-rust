@@ -10,7 +10,7 @@ import { docsIndex, docsNav } from "@/content/docs";
 export const metadata: Metadata = {
   title: "Docs",
   description:
-    "How to run minanode on Mina's devnet: requirements, install, the dashboard, the SNARK worker, block production, the web node, and bug reports.",
+    "How to run minanode on Mina mainnet and devnet: requirements, install, the dashboard, the SNARK worker, block production, the web node, and bug reports.",
   alternates: { canonical: "/docs/" },
 };
 
@@ -18,7 +18,7 @@ export default function DocsIndex() {
   return (
     <DocsPage
       slug=""
-      title="Run a node on devnet"
+      title="Run minanode"
       lead={
         <span data-claim={docsIndex.lead.claim}>{docsIndex.lead.text}</span>
       }

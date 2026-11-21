@@ -155,16 +155,15 @@ export const docsIndex = {
   status: { claim: "C04", label: releaseLabel },
   beta: {
     claim: "C04",
-    text: `${release.version} is a beta release. Run it on devnet and in test setups. Expect changes before it is ready for production.`,
+    text: `${release.version} is a beta release. Expect changes before it is ready for production.`,
   },
   lead: {
     claim: "C60",
-    text: `minanode ${release.version} is a Mina node for the public devnet. It is one program for Linux on x86-64 or ARM64, with a dashboard. It runs as a full node that verifies the chain, and it can also prove SNARK work or produce blocks.`,
+    text: `minanode ${release.version} is a Mina node for mainnet and devnet. It is one program for Linux on x86-64 or ARM64, with a dashboard. It runs as a full node that verifies the chain, and it can also prove SNARK work or produce blocks.`,
   },
   limitations: {
     claim: "C76",
     items: [
-      "Devnet only.",
       "Hard forks aren't handled yet. Each one will need a new release.",
       "Memory rises slowly on a node that runs for days.",
       "The browser node is a separate build from this native release.",
@@ -190,7 +189,7 @@ export const requirements = {
       claim: "C62",
       label: "Other software",
       value:
-        "None at run time. The devnet circuits and the dashboard are inside mina. Installing needs the tools below.",
+        "None at run time. The prover circuits and the dashboard are inside mina. Installing needs the tools below.",
     },
     {
       claim: "C68",
@@ -343,7 +342,7 @@ export const run = {
 export const worker = {
   mainnet: {
     claim: "C94",
-    text: "The 0.20.1 mainnet worker passed offline base, merge and zkApp proof tests with embedded circuits. Public mainnet work publication, purchases and fees remain untested.",
+    text: "Mainnet producers buy its work. From 6 to 21 November 2026, 422 mainnet blocks included 3,364 bundles from a worker asking a fee of 0. In an earlier three-hour test, a worker asking 0.0001 MINA sold none.",
   },
   fee: {
     claim: "C72",

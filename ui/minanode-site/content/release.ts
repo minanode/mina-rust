@@ -32,7 +32,7 @@ export function archiveName(arch: string) {
   return `mina-${release.version}-linux-${arch}.tar.gz`;
 }
 
-export const releaseLabel = `${release.version} beta for devnet`;
+export const releaseLabel = `${release.version} beta`;
 
 /** The Docker image, pushed to GHCR at release (docs/release/DOCKER.md). */
 export const dockerImage = "ghcr.io/minanode/mina-rust";
