@@ -41,16 +41,17 @@ the subject of the private measurement; they do not link to unavailable files.
 
 - Page: home and Docs overview badges, Open Graph image; the beta sentence under
   the Docs overview lead.
-- Says: "0.23.0 beta for devnet"; Open Graph adds "available now". The Docs
-  overview adds "0.23.0 is a beta release. Run it on devnet and in test setups.
-  Expect changes before it is ready for production." The site header carries a
-  "Beta" badge with no claim id.
+- Says: "0.23.0 beta"; Open Graph adds "available now". The Docs overview adds
+  "0.23.0 is a beta release. Expect changes before it is ready for production."
+  The site header carries a "Beta" badge with no claim id.
 - Sources: `coordinator: DOCS-V launch copy, 2026-10-24`,
   `coordinator: SITE-BETA, 2026-10-26`
 - Figures: `0.23.0`
 - Caveat kept: Site copy is prepared for publication on minanode.org. Release
   availability is unverified until publish; see C69. The beta sentence is the
-  site's one beta warning and appears on the Docs overview only.
+  site's one beta warning and appears on the Docs overview only. One beta label
+  covers mainnet and devnet: until 21 November 2026 the badge read "0.23.0 beta
+  for devnet" and the beta sentence added "Run it on devnet and in test setups."
 
 ### C84 Devnet sync from scratch
 
@@ -151,30 +152,34 @@ the subject of the private measurement; they do not link to unavailable files.
   577952 (private evidence), cited until 25 October 2026. The card said "Its
   blocks reach devnet's best chain." until 21 November 2026.
 
-### C17 Mainnet beta
+### C17 Mainnet blocks
 
-- Page: home, Block producer card: the badge and the second half of its text.
-- Says: "Mainnet beta"; "Produces blocks on mainnet and devnet. Mainnet
-  production is in beta." (the mainnet half)
+- Page: home, Block producer card.
+- Says: "Produces blocks on mainnet and devnet." (the mainnet half), under the
+  badge "Working".
 - Sources: `coordinator: owner-supplied evidence; first known mainnet block`
 - Figures: `one mainnet block`, `canonical`, `7 November 2026`
 - Caveat kept: one known mainnet block, made by a third-party operator running
   the Rust node and canonical on 7 November 2026, as the owner announced
-  publicly that day. The site does not link the block or name the operator.
-  "Beta" carries the caution: the card gives no mainnet production count.
-  Replaces "Not yet on mainnet", shown until 21 November 2026.
+  publicly that day. The site does not link the block or name the operator. The
+  release's beta label (C04) carries the caution: the card gives no mainnet
+  production count. Replaces "Not yet on mainnet", shown until 21 November 2026.
 
 ### C18 SNARK worker
 
 - Page: home, SNARK worker card.
-- Says: "Produces the transaction SNARK work that block producers buy. Devnet
-  producers buy its work."
+- Says: "Produces the transaction SNARK work that block producers buy. Mainnet
+  and devnet producers buy its work.", under the badge "Working".
 - Sources: `coordinator: private pre-release evidence; SNARK worker`,
-  `coordinator: devnet worker totals, 2026-10-28T02:20Z`
-- Figures: `4,602 bundles`, `1,069 blocks`, `38.37 MINA`
-- Caveat kept: devnet. No count on the card. At 2026-10-28T02:20Z devnet
-  producers had bought 4,602 of its bundles in 1,069 blocks, 38.37 MINA in fees.
-  zkApp jobs are not mentioned.
+  `coordinator: devnet worker totals, 2026-10-28T02:20Z`,
+  `coordinator: mainnet worker totals, 2026-11-21T15:00Z`
+- Figures: `4,602 bundles`, `1,069 blocks`, `38.37 MINA`, `3,364 bundles`,
+  `422 blocks`
+- Caveat kept: no count on the card. At 2026-10-28T02:20Z devnet producers had
+  bought 4,602 of its bundles in 1,069 blocks, 38.37 MINA in fees. On mainnet, a
+  worker asking a fee of 0 had 3,364 bundles in 422 blocks from 6 to 21 November
+  2026 (C94). zkApp jobs are not mentioned. The card read "Public devnet" and
+  "Devnet producers buy its work." until 21 November 2026.
 
 ### C21 Web build: browser-signed transactions
 
@@ -194,8 +199,7 @@ the subject of the private measurement; they do not link to unavailable files.
   OCaml's archive."
 - Sources: `coordinator: private pre-release evidence; Native build`
 - Figures: `Every node role`, `GraphQL`, `archive`
-- Caveat kept: the roles' own statuses on the page say where each was shown;
-  mainnet block production is in beta (C17).
+- Caveat kept: the roles' own statuses on the page say where each was shown.
 
 ### C05 Mainnet replayed
 
@@ -300,9 +304,9 @@ the subject of the private measurement; they do not link to unavailable files.
 ### C50 Release state
 
 - Page: home, "Get started" and the four build cards.
-- Says: "Run 0.23.0 beta for devnet"; download the archive or run the Docker
-  image, then open the dashboard. The web node card links to minaweb.org and the
-  web archive (C83); the source card describes building from public source.
+- Says: "Run 0.23.0 beta"; download the archive or run the Docker image, then
+  open the dashboard. The web node card links to minaweb.org and the web archive
+  (C83); the source card describes building from public source.
 - Sources: `coordinator: DOCS-V launch copy, 2026-10-24`
 - Figures: `0.23.0`
 - Caveat kept: Planned public repository and release availability are unverified
@@ -311,12 +315,13 @@ the subject of the private measurement; they do not link to unavailable files.
 ### C56 Native release builds
 
 - Page: home, "Get started", native node card.
-- Says: "Linux builds for x86-64 and ARM64, with the devnet prover circuits
-  inside."
+- Says: "Linux builds for x86-64 and ARM64, with the prover circuits inside."
 - Sources: `coordinator: private pre-release evidence; Native release builds`
 - Figures: `x86-64`, `ARM64`, `travel inside`
 - Caveat kept: Archive contents were checked locally. Public availability is
-  unverified until publish (C69).
+  unverified until publish (C69). The build embeds the devnet and mainnet
+  circuits (C78); the card said "the devnet prover circuits" until 21
+  November 2026.
 
 ### C92 Docker image
 
@@ -355,8 +360,8 @@ condition or caveat changed.
 - Sources: `coordinator: private pre-release evidence; Platforms`
 - Figures: `x86-64`, `ARM64`, `glibc floor of 2.31`
 - Caveat kept: Linux only; the archives are in the 0.23.0 release (C69). "For
-  mainnet and devnet" rests on C13 (syncs both) and C17 (mainnet block
-  production in beta); the lead said "for the public devnet" until 21
+  mainnet and devnet" rests on C13 (syncs both), C17 (mainnet blocks) and C18
+  (mainnet work bought); the lead said "for the public devnet" until 21
   November 2026.
 
 ### C61 x86-64 CPUs
@@ -372,11 +377,12 @@ condition or caveat changed.
 ### C62 Nothing else to install
 
 - Page: Requirements, the other software row.
-- Says: "None at run time. The devnet circuits and the dashboard are inside
+- Says: "None at run time. The prover circuits and the dashboard are inside
   mina. Installing needs the tools below."
 - Sources: `coordinator: private pre-release evidence; Nothing else to install`
 - Figures: `travel inside`, `embeds`, `on by default for the`
-- Caveat kept: devnet circuits, named.
+- Caveat kept: the devnet and mainnet circuits are both embedded (C78). The row
+  said "The devnet circuits" until 21 November 2026.
 
 ### C63 Clock
 
@@ -558,15 +564,14 @@ condition or caveat changed.
 ### C76 Known limitations
 
 - Page: Docs overview, "Known limitations".
-- Says: "Block production on mainnet is in beta."; "Hard forks aren't handled
-  yet. Each one will need a new release."; "Memory rises slowly on a node that
-  runs for days."; "The browser node is a separate build from this native
-  release." The DOCS-STYLE pass (25 October 2026) removed "We're looking into
-  it." from the memory item, and "on Linux x86-64 and ARM64" from the first
-  item, leaving "Devnet only.": through Docker Desktop the node also runs on
-  macOS and Windows, and the platforms stay in the overview lead (C60). "Devnet
-  only." was replaced on 21 November 2026, when the home card moved to Mainnet
-  beta (C17).
+- Says: "Hard forks aren't handled yet. Each one will need a new release.";
+  "Memory rises slowly on a node that runs for days."; "The browser node is a
+  separate build from this native release." The DOCS-STYLE pass (25
+  October 2026) removed "We're looking into it." from the memory item, and "on
+  Linux x86-64 and ARM64" from the first item, leaving "Devnet only.": through
+  Docker Desktop the node also runs on macOS and Windows, and the platforms stay
+  in the overview lead (C60). "Devnet only." was removed on 21 November 2026:
+  the node runs on mainnet and devnet under one beta label (C04).
 - Sources: `coordinator: private pre-release evidence; Known limitations`
 - Figures: `port at each hard fork`, `No automatic migration`, `memory creep`
 - Caveat kept: no rate for the memory rise on the site; the release notes give
@@ -597,14 +602,19 @@ condition or caveat changed.
 ### C94 Mainnet worker proof gate
 
 - Page: Run a SNARK worker, introduction.
-- Says: "The 0.20.1 mainnet worker passed offline base, merge and zkApp proof
-  tests with embedded circuits. Public mainnet work publication, purchases and
-  fees remain untested."
-- Sources: `coordinator: BP-MN-1 clean-cache offline proof gate, 2026-10-28`
-- Figures: `0.20.1`, `base`, `merge`, `zkApp`
-- Caveat kept: offline proof verification. The public full-node sync run had its
-  worker disabled. The worker startup run had no external network routes. Public
-  mainnet work admission and payment require a separate live gate.
+- Says: "Mainnet producers buy its work. From 6 to 21 November 2026, 422 mainnet
+  blocks included 3,364 bundles from a worker asking a fee of 0. Fees above 0
+  are untested on mainnet."
+- Sources: `coordinator: BP-MN-1 clean-cache offline proof gate, 2026-10-28`,
+  `coordinator: mainnet worker totals, 2026-11-21T15:00Z`
+- Figures: `422`, `3,364`, `fee of 0`, `6 to 21 November 2026`
+- Caveat kept: one mainnet worker at a fee of 0, counted by the node's own
+  included-work totals (final bundles, pending ones excluded) at
+  2026-11-21T15:00Z, across 0.22.1, 0.22.2 and the 0.23.0 code. No fee above 0
+  was tested on mainnet. Until 21 November 2026 the page said: "The 0.20.1
+  mainnet worker passed offline base, merge and zkApp proof tests with embedded
+  circuits. Public mainnet work publication, purchases and fees remain
+  untested."
 
 ### C79 Source-build measurements
 

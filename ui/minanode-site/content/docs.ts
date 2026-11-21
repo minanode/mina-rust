@@ -155,7 +155,7 @@ export const docsIndex = {
   status: { claim: "C04", label: releaseLabel },
   beta: {
     claim: "C04",
-    text: `${release.version} is a beta release. Run it on devnet and in test setups. Expect changes before it is ready for production.`,
+    text: `${release.version} is a beta release. Expect changes before it is ready for production.`,
   },
   lead: {
     claim: "C60",
@@ -164,7 +164,6 @@ export const docsIndex = {
   limitations: {
     claim: "C76",
     items: [
-      "Block production on mainnet is in beta.",
       "Hard forks aren't handled yet. Each one will need a new release.",
       "Memory rises slowly on a node that runs for days.",
       "The browser node is a separate build from this native release.",
@@ -190,7 +189,7 @@ export const requirements = {
       claim: "C62",
       label: "Other software",
       value:
-        "None at run time. The devnet circuits and the dashboard are inside mina. Installing needs the tools below.",
+        "None at run time. The prover circuits and the dashboard are inside mina. Installing needs the tools below.",
     },
     {
       claim: "C68",
@@ -343,7 +342,7 @@ export const run = {
 export const worker = {
   mainnet: {
     claim: "C94",
-    text: "The 0.20.1 mainnet worker passed offline base, merge and zkApp proof tests with embedded circuits. Public mainnet work publication, purchases and fees remain untested.",
+    text: "Mainnet producers buy its work. From 6 to 21 November 2026, 422 mainnet blocks included 3,364 bundles from a worker asking a fee of 0. Fees above 0 are untested on mainnet.",
   },
   fee: {
     claim: "C72",
