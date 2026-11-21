@@ -9,23 +9,23 @@ export const candidateVersion = "0.23.0";
  * RELEASE_FINAL validates the signer; it does not publish or select a candidate.
  */
 export const release = {
-  version: "0.22.2",
+  version: "0.23.0",
   repositoryUrl: "https://github.com/minanode/mina-rust",
   downloadUrl:
-    "https://github.com/minanode/mina-rust/releases/download/v0.22.2",
-  notesUrl: "https://github.com/minanode/mina-rust/releases/tag/v0.22.2",
+    "https://github.com/minanode/mina-rust/releases/download/v0.23.0",
+  notesUrl: "https://github.com/minanode/mina-rust/releases/tag/v0.23.0",
   /** The Docker image index digest, as the release notes list it. */
   dockerDigest:
-    "sha256:c67b91930ac96d6032fecec9126b0c49332ffe738f6aa3dce8887fcc89a7e4ae",
+    "sha256:0d07a1b45635e69c29685abcc48defd7f1ad99e588f7da83f0b14048bde153e1",
 };
 
-/** The web node's release, 0.22.2: minaweb.org and the web archive. It is
- * versioned apart from the native release above; the archive is a 0.22.2
+/** The web node's release, 0.23.0: minaweb.org and the web archive. It is
+ * versioned apart from the native release above; the archive is a 0.23.0
  * release asset. */
 export const webRelease = {
-  version: "0.22.2",
+  version: "0.23.0",
   downloadUrl:
-    "https://github.com/minanode/mina-rust/releases/download/v0.22.2",
+    "https://github.com/minanode/mina-rust/releases/download/v0.23.0",
 };
 
 export function archiveName(arch: string) {
