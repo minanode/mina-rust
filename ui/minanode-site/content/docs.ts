@@ -342,7 +342,7 @@ export const run = {
 export const worker = {
   mainnet: {
     claim: "C94",
-    text: "Mainnet producers buy its work. From 6 to 21 November 2026, 422 mainnet blocks included 3,364 bundles from a worker asking a fee of 0. Fees above 0 are untested on mainnet.",
+    text: "Mainnet producers buy its work. From 6 to 21 November 2026, 422 mainnet blocks included 3,364 bundles from a worker asking a fee of 0. In an earlier three-hour test, a worker asking 0.0001 MINA sold none.",
   },
   fee: {
     claim: "C72",

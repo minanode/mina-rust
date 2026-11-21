@@ -47,11 +47,11 @@ the subject of the private measurement; they do not link to unavailable files.
 - Sources: `coordinator: DOCS-V launch copy, 2026-10-24`,
   `coordinator: SITE-BETA, 2026-10-26`
 - Figures: `0.23.0`
-- Caveat kept: Site copy is prepared for publication on minanode.org. Release
-  availability is unverified until publish; see C69. The beta sentence is the
-  site's one beta warning and appears on the Docs overview only. One beta label
-  covers mainnet and devnet: until 21 November 2026 the badge read "0.23.0 beta
-  for devnet" and the beta sentence added "Run it on devnet and in test setups."
+- Caveat kept: the release was published on 21 November 2026 (C69). The beta
+  sentence is the site's one beta warning and appears on the Docs overview only.
+  One beta label covers mainnet and devnet: until 21 November 2026 the badge
+  read "0.23.0 beta for devnet" and the beta sentence added "Run it on devnet
+  and in test setups."
 
 ### C84 Devnet sync from scratch
 
@@ -199,7 +199,7 @@ the subject of the private measurement; they do not link to unavailable files.
   OCaml's archive."
 - Sources: `coordinator: private pre-release evidence; Native build`
 - Figures: `Every node role`, `GraphQL`, `archive`
-- Caveat kept: the roles' own statuses on the page say where each was shown.
+- Caveat kept: the role cards' text says where each role was shown.
 
 ### C05 Mainnet replayed
 
@@ -309,8 +309,8 @@ the subject of the private measurement; they do not link to unavailable files.
   (C83); the source card describes building from public source.
 - Sources: `coordinator: DOCS-V launch copy, 2026-10-24`
 - Figures: `0.23.0`
-- Caveat kept: Planned public repository and release availability are unverified
-  until publish (C69). The browser build is separate.
+- Caveat kept: the release and its archives are published (C69). The browser
+  build is separate.
 
 ### C56 Native release builds
 
@@ -318,10 +318,9 @@ the subject of the private measurement; they do not link to unavailable files.
 - Says: "Linux builds for x86-64 and ARM64, with the prover circuits inside."
 - Sources: `coordinator: private pre-release evidence; Native release builds`
 - Figures: `x86-64`, `ARM64`, `travel inside`
-- Caveat kept: Archive contents were checked locally. Public availability is
-  unverified until publish (C69). The build embeds the devnet and mainnet
-  circuits (C78); the card said "the devnet prover circuits" until 21
-  November 2026.
+- Caveat kept: Archive contents were checked locally. The archives are in the
+  published release (C69). The build embeds the devnet and mainnet circuits
+  (C78); the card said "the devnet prover circuits" until 21 November 2026.
 
 ### C92 Docker image
 
@@ -482,10 +481,10 @@ condition or caveat changed.
   `coordinator: DOCS-V public release URLs, 2026-10-24`
 - Figures: `mina-0.23.0-linux-x86_64.tar.gz`, `mina-0.23.0-linux-arm64.tar.gz`,
   `SHA256SUMS`
-- Caveat kept: The planned public repository, download location and release
-  notes in content/release.ts are **unverified until publish**. Confirm the
-  archives and SHA256SUMS are available at launch. The site is written for
-  publication day; it makes no network request to these URLs until clicked.
+- Caveat kept: the v0.23.0 release, published on 21 November 2026, lists both
+  archives, the web archive, SHA256SUMS and SHA256SUMS.sig at the URLs in
+  content/release.ts. The site makes no network request to these URLs until
+  clicked.
 
 ### C81 Release signing key
 
@@ -603,18 +602,19 @@ condition or caveat changed.
 
 - Page: Run a SNARK worker, introduction.
 - Says: "Mainnet producers buy its work. From 6 to 21 November 2026, 422 mainnet
-  blocks included 3,364 bundles from a worker asking a fee of 0. Fees above 0
-  are untested on mainnet."
+  blocks included 3,364 bundles from a worker asking a fee of 0. In an earlier
+  three-hour test, a worker asking 0.0001 MINA sold none."
 - Sources: `coordinator: BP-MN-1 clean-cache offline proof gate, 2026-10-28`,
-  `coordinator: mainnet worker totals, 2026-11-21T15:00Z`
-- Figures: `422`, `3,364`, `fee of 0`, `6 to 21 November 2026`
+  `coordinator: mainnet worker totals, 2026-11-21T15:00Z`,
+  `coordinator: MAINNET-0201 live mainnet worker, 2026-10-29`
+- Figures: `422`, `3,364`, `fee of 0`, `6 to 21 November 2026`, `0.0001 MINA`
 - Caveat kept: one mainnet worker at a fee of 0, counted by the node's own
   included-work totals (final bundles, pending ones excluded) at
-  2026-11-21T15:00Z, across 0.22.1, 0.22.2 and the 0.23.0 code. No fee above 0
-  was tested on mainnet. Until 21 November 2026 the page said: "The 0.20.1
-  mainnet worker passed offline base, merge and zkApp proof tests with embedded
-  circuits. Public mainnet work publication, purchases and fees remain
-  untested."
+  2026-11-21T15:00Z, across 0.22.1, 0.22.2 and the 0.23.0 code. The 0.0001 MINA
+  test ran for about 170 minutes on 29 October 2026, before 0.20.1, and sold no
+  work. Until 21 November 2026 the page said: "The 0.20.1 mainnet worker passed
+  offline base, merge and zkApp proof tests with embedded circuits. Public
+  mainnet work publication, purchases and fees remain untested."
 
 ### C79 Source-build measurements
 
