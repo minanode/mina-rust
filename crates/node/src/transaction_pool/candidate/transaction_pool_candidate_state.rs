@@ -32,13 +32,25 @@ type NextBatch = (
 pub struct TransactionPoolCandidatesState {
     by_peer: BTreeMap<PeerId, BTreeMap<TransactionHash, TransactionPoolCandidateState>>,
     by_hash: BTreeMap<TransactionHash, BTreeSet<PeerId>>,
-    /// Each queued pubsub message, with the peer that forwarded it and its own
-    /// commands in wire order. A message is verified whole, from these exact
-    /// bodies, and leaves the queue when its verification is dispatched. It is
-    /// kept apart from the peer candidates in `by_peer`: a transaction hash
-    /// leaves out signatures and proofs, so another copy under the same hash is
-    /// not the message's own command, and the verdict on a message forwards it.
-    by_message_id: BTreeMap<P2pNetworkPubsubMessageCacheId, (PeerId, Vec<TransactionWithHash>)>,
+    /// Queued pubsub messages in arrival order, by arrival number: each with
+    /// its ID, the peer that forwarded it, and its own commands in wire order.
+    /// Arrival order keeps a sender's commands in nonce order across messages.
+    /// A message is verified whole, from these exact bodies, and leaves the
+    /// queue when its verification is dispatched. It is kept apart from the
+    /// peer candidates in `by_peer`: a transaction hash leaves out signatures
+    /// and proofs, so another copy under the same hash is not the message's
+    /// own command, and the verdict on a message forwards it.
+    pubsub_queue: BTreeMap<u64, QueuedMessage>,
+    /// The arrival number of each queued message, by its ID.
+    pubsub_by_id: BTreeMap<P2pNetworkPubsubMessageCacheId, u64>,
+    pubsub_next: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct QueuedMessage {
+    id: P2pNetworkPubsubMessageCacheId,
+    peer_id: PeerId,
+    commands: Vec<TransactionWithHash>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -80,9 +92,9 @@ impl TransactionPoolCandidatesState {
     pub fn transactions_count(&self) -> usize {
         self.by_hash.len()
             + self
-                .by_message_id
+                .pubsub_queue
                 .values()
-                .map(|(_, commands)| commands.len())
+                .map(|queued| queued.commands.len())
                 .sum::<usize>()
     }
 
@@ -95,7 +107,7 @@ impl TransactionPoolCandidatesState {
     }
 
     pub fn message_id_contains(&self, message_id: &P2pNetworkPubsubMessageCacheId) -> bool {
-        self.by_message_id.contains_key(message_id)
+        self.pubsub_by_id.contains_key(message_id)
     }
 
     pub fn peer_contains(&self, peer_id: PeerId, hash: &TransactionHash) -> bool {
@@ -234,10 +246,11 @@ impl TransactionPoolCandidatesState {
     }
 
     /// Queues a pubsub message, unless it holds no commands or the queue is
-    /// full. A message with the same commands as a queued one takes its place:
-    /// the verdict on a message forwards it from the gossip cache, so the
-    /// newer copy, likelier to still be cached, is the one to keep. Returns
-    /// whether it was queued.
+    /// full. A message with the same commands as a queued one takes its ID and
+    /// relay, and keeps its place: the verdict on a message forwards it from
+    /// the gossip cache, so the newer copy, likelier to still be cached, is
+    /// the one to name, and the place keeps the commands ahead of any that
+    /// came after them. Returns whether it was queued.
     pub fn transactions_received(
         &mut self,
         _time: Timestamp,
@@ -248,21 +261,35 @@ impl TransactionPoolCandidatesState {
         if transactions.is_empty() {
             return false;
         }
-        let same_commands = self.by_message_id.iter().find_map(|(id, (_, queued))| {
-            (queued.len() == transactions.len()
+        let same_commands = self.pubsub_queue.iter_mut().find(|(_, queued)| {
+            queued.commands.len() == transactions.len()
                 && queued
+                    .commands
                     .iter()
                     .zip(&transactions)
-                    .all(|(a, b)| a.body() == b.body()))
-            .then_some(*id)
+                    .all(|(a, b)| a.body() == b.body())
         });
-        if let Some(older) = same_commands {
-            self.by_message_id.remove(&older);
-        } else if self.by_message_id.len() >= MAX_QUEUED_MESSAGES {
+        if let Some((&place, queued)) = same_commands {
+            self.pubsub_by_id.remove(&queued.id);
+            queued.id = message_id;
+            queued.peer_id = peer_id;
+            self.pubsub_by_id.insert(message_id, place);
+            return true;
+        }
+        if self.pubsub_queue.len() >= MAX_QUEUED_MESSAGES {
             return false;
         }
-        self.by_message_id
-            .insert(message_id, (peer_id, transactions));
+        let place = self.pubsub_next;
+        self.pubsub_next += 1;
+        self.pubsub_queue.insert(
+            place,
+            QueuedMessage {
+                id: message_id,
+                peer_id,
+                commands: transactions,
+            },
+        );
+        self.pubsub_by_id.insert(message_id, place);
         true
     }
 
@@ -308,14 +335,15 @@ impl TransactionPoolCandidatesState {
         None
     }
 
-    /// The first queued pubsub message, whole: its own commands, in its own
-    /// order, so that one sender's commands reach the pool in nonce order.
+    /// The first queued pubsub message to arrive, whole: its own commands, in
+    /// its own order, so that one sender's commands reach the pool in nonce
+    /// order.
     fn next_batch_from_pubsub(&self) -> Option<NextBatch> {
-        let (message_id, (peer_id, commands)) = self.by_message_id.iter().next()?;
+        let (_, queued) = self.pubsub_queue.first_key_value()?;
         Some((
-            *peer_id,
-            commands.clone(),
-            TransactionPoolMessageSource::pubsub(*message_id),
+            queued.peer_id,
+            queued.commands.clone(),
+            TransactionPoolMessageSource::pubsub(queued.id),
         ))
     }
 
@@ -353,7 +381,9 @@ impl TransactionPoolCandidatesState {
     ) {
         match from_source {
             TransactionPoolMessageSource::Pubsub { id } => {
-                self.by_message_id.remove(id);
+                if let Some(place) = self.pubsub_by_id.remove(id) {
+                    self.pubsub_queue.remove(&place);
+                }
             }
             _ => {
                 if let Some(peer_transactions) = self.by_peer.get_mut(peer_id) {
@@ -661,5 +691,40 @@ mod pubsub_queue_tests {
         state.transactions_received(Timestamp::ZERO, peer(1), vec![], message(1));
         assert!(state.get_batch_to_verify().is_none());
         assert_eq!(state.transactions_count(), 0);
+    }
+
+    /// The queue keeps arrival order. One publisher sends A, then B at the
+    /// next nonce, then A again: A is still verified first, under its newer
+    /// ID, so B does not reach the pool ahead of it and fail as a nonce gap.
+    /// A message from a publisher whose ID sorts first still waits its turn.
+    #[test]
+    fn the_queue_keeps_arrival_order() {
+        let txs = signed(2);
+        let (a, b) = (vec![txs[0].clone()], vec![txs[1].clone()]);
+        let mut state = TransactionPoolCandidatesState::new();
+        let other = |seqno| P2pNetworkPubsubMessageCacheId {
+            source: SecretKey::from_bytes([1; 32])
+                .public_key()
+                .peer_id()
+                .try_into()
+                .unwrap(),
+            seqno,
+            digest: [0; 32],
+        };
+        assert!(state.transactions_received(Timestamp::ZERO, peer(1), a.clone(), message(5)));
+        assert!(state.transactions_received(Timestamp::ZERO, peer(1), b.clone(), message(6)));
+        assert!(state.transactions_received(Timestamp::ZERO, peer(2), a.clone(), message(7)));
+        let late = signed(3)[2..].to_vec();
+        assert!(state.transactions_received(Timestamp::ZERO, peer(3), late.clone(), other(0)));
+
+        let (from, batch, source) = verify_next(&mut state);
+        assert_eq!(bodies(&batch), bodies(&a));
+        assert_eq!(from, peer(2));
+        assert!(matches!(source, TransactionPoolMessageSource::Pubsub { id } if id == message(7)));
+        let (_, batch, _) = verify_next(&mut state);
+        assert_eq!(bodies(&batch), bodies(&b));
+        let (_, batch, _) = verify_next(&mut state);
+        assert_eq!(bodies(&batch), bodies(&late));
+        assert!(state.get_batch_to_verify().is_none());
     }
 }
