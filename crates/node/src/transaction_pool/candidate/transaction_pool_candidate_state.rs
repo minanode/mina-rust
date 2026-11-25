@@ -272,30 +272,51 @@ impl TransactionPoolCandidatesState {
         None
     }
 
+    /// The first pubsub message with a transaction still waiting from its
+    /// peer. A message with none yields no batch: an empty batch is never
+    /// verified, so it would stay first and stop every later message.
     fn next_batch_from_pubsub(&self) -> Option<NextBatch> {
-        let (message_id, (peer_id, transaction_hashes)) = self.by_message_id.iter().next()?;
-        let transactions = self
-            .by_peer
-            .get(peer_id)?
+        self.by_message_id
             .iter()
-            .filter_map(|(hash, state)| {
-                let TransactionPoolCandidateState::Received { transaction, .. } = state else {
-                    return None;
-                };
-                if transaction_hashes.contains(hash) {
-                    Some(transaction)
-                } else {
-                    None
-                }
-            })
-            .cloned()
-            .collect();
+            .find_map(|(message_id, (peer_id, transaction_hashes))| {
+                let transactions = self
+                    .by_peer
+                    .get(peer_id)?
+                    .iter()
+                    .filter_map(|(hash, state)| {
+                        let TransactionPoolCandidateState::Received { transaction, .. } = state
+                        else {
+                            return None;
+                        };
+                        if transaction_hashes.contains(hash) {
+                            Some(transaction)
+                        } else {
+                            None
+                        }
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
 
-        Some((
-            *peer_id,
-            transactions,
-            TransactionPoolMessageSource::pubsub(*message_id),
-        ))
+                (!transactions.is_empty()).then(|| {
+                    (
+                        *peer_id,
+                        transactions,
+                        TransactionPoolMessageSource::pubsub(*message_id),
+                    )
+                })
+            })
+    }
+
+    /// Drops the pubsub messages none of whose transactions still wait from
+    /// their peer: another copy was verified first, or the peer left.
+    fn prune_message_ids(&mut self) {
+        let by_peer = &self.by_peer;
+        self.by_message_id
+            .retain(|_, (peer_id, transaction_hashes)| {
+                by_peer
+                    .get(peer_id)
+                    .is_some_and(|txs| transaction_hashes.iter().any(|hash| txs.contains_key(hash)))
+            });
     }
 
     pub fn verify_pending(
@@ -354,6 +375,7 @@ impl TransactionPoolCandidatesState {
                 }
             }
         }
+        self.prune_message_ids();
     }
 
     pub fn peer_remove(&mut self, peer_id: PeerId) {
@@ -367,6 +389,7 @@ impl TransactionPoolCandidatesState {
                 }
             }
         }
+        self.prune_message_ids();
     }
 
     pub fn peer_transaction_remove(&mut self, peer_id: PeerId, hash: &TransactionHash) {
@@ -379,6 +402,7 @@ impl TransactionPoolCandidatesState {
                 }
             }
         }
+        self.prune_message_ids();
     }
 
     fn transaction_remove(&mut self, hash: &TransactionHash) {
@@ -399,6 +423,7 @@ impl TransactionPoolCandidatesState {
             }
             Ok(hash) => self.transaction_remove(&hash),
         };
+        self.prune_message_ids();
     }
 
     pub fn retain<F1, F2>(&mut self, mut predicate: F1)
@@ -424,7 +449,8 @@ impl TransactionPoolCandidatesState {
                 }
             });
             !peers.is_empty()
-        })
+        });
+        self.prune_message_ids();
     }
 }
 
@@ -458,5 +484,94 @@ impl TransactionPoolCandidateState {
             Self::VerifyPending { verify_id, .. } => Some(*verify_id),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod stale_pubsub_entry_tests {
+    use redux::Timestamp;
+
+    use super::*;
+    use crate::{p2p::identity::SecretKey, transaction_pool::submission_tests::fixture_block};
+
+    /// The first two signed payments of the fixture block.
+    fn payments() -> (TransactionWithHash, TransactionWithHash) {
+        let diff = fixture_block().body.staged_ledger_diff.diff;
+        let mut signed = diff
+            .0
+            .commands
+            .into_iter()
+            .chain(diff.1.into_iter().flat_map(|d| d.commands))
+            .map(|c| c.data)
+            .filter(|c| matches!(c, Transaction::SignedCommand(_)))
+            .map(|c| TransactionWithHash::try_new(c).unwrap());
+        let first = signed.next().expect("a signed command");
+        let second = signed.next().expect("a second signed command");
+        assert_ne!(first.hash(), second.hash());
+        (first, second)
+    }
+
+    /// A payment that reaches the node in two gossip messages (its sender
+    /// rebroadcasts it) must not stop the queue once one copy is verified.
+    #[test]
+    fn a_verified_duplicate_does_not_block_later_gossip() {
+        let peer = SecretKey::from_bytes([1; 32]).public_key().peer_id();
+        let id = |seqno| P2pNetworkPubsubMessageCacheId {
+            source: peer.try_into().unwrap(),
+            seqno,
+        };
+        let time = Timestamp::ZERO;
+        let (payment, later) = payments();
+        let mut state = TransactionPoolCandidatesState::new();
+
+        state.transactions_received(time, peer, vec![payment.clone()], id(1));
+        state.transactions_received(time, peer, vec![payment.clone()], id(2));
+
+        // Verify the first copy, as `VerifyNext`, `VerifyPending` and
+        // `VerifySuccess` do.
+        let (from, batch, source) = state.get_batch_to_verify().expect("a batch");
+        assert_eq!(batch.len(), 1);
+        let hashes = batch.iter().map(|tx| tx.hash().clone()).collect::<Vec<_>>();
+        state.verify_pending(time, &from, (), &hashes);
+        state.verify_result(time, &from, (), &source, Ok(()));
+
+        state.transactions_received(time, peer, vec![later.clone()], id(3));
+
+        let (_, batch, _) = state.get_batch_to_verify().expect("a batch");
+        assert!(
+            batch.iter().any(|tx| tx.hash() == later.hash()),
+            "the next batch holds {} commands, not the later payment",
+            batch.len()
+        );
+        assert_eq!(state.by_message_id.len(), 1, "message 2 is left queued");
+    }
+
+    /// A message whose forwarding peer disconnected must not keep later
+    /// messages off the pubsub path, where they get their gossip verdict.
+    #[test]
+    fn a_departed_peer_does_not_block_pubsub_verification() {
+        let origin = SecretKey::from_bytes([3; 32]).public_key().peer_id();
+        let id = |seqno| P2pNetworkPubsubMessageCacheId {
+            source: origin.try_into().unwrap(),
+            seqno,
+        };
+        let gone = SecretKey::from_bytes([1; 32]).public_key().peer_id();
+        let here = SecretKey::from_bytes([2; 32]).public_key().peer_id();
+        let time = Timestamp::ZERO;
+        let (payment, later) = payments();
+        let mut state = TransactionPoolCandidatesState::new();
+
+        state.transactions_received(time, gone, vec![payment], id(1));
+        state.peer_remove(gone);
+        state.transactions_received(time, here, vec![later.clone()], id(2));
+
+        let (from, batch, source) = state.get_batch_to_verify().expect("a batch");
+        assert_eq!(from, here);
+        assert!(batch.iter().any(|tx| tx.hash() == later.hash()));
+        assert!(
+            matches!(source, TransactionPoolMessageSource::Pubsub { .. }),
+            "the later message is verified without its pubsub source: {source:?}"
+        );
+        assert_eq!(state.by_message_id.len(), 1, "message 1 is left queued");
     }
 }
