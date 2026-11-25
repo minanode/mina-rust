@@ -45,11 +45,6 @@ pub struct P2pNetworkPubsubState {
     /// the same message multiple times.
     pub seen: VecDeque<Vec<u8>>,
 
-    /// The IDs of recently seen messages, kept as `seen` keeps signatures. A
-    /// publisher signs each message ID once, so a later message under a seen
-    /// ID is a duplicate, as go-libp2p treats it.
-    pub seen_ids: VecDeque<Vec<u8>>,
-
     /// Cache of published messages for efficient retrieval and broadcasting.
     ///
     /// For quick access and reducing redundant data transmission across peers.
