@@ -530,6 +530,7 @@ mod stale_pubsub_entry_tests {
         P2pNetworkPubsubMessageCacheId {
             source: origin.try_into().unwrap(),
             seqno,
+            digest: [0; 32],
         }
     }
 
@@ -553,6 +554,7 @@ mod stale_pubsub_entry_tests {
         let id = |seqno| P2pNetworkPubsubMessageCacheId {
             source: peer.try_into().unwrap(),
             seqno,
+            digest: [0; 32],
         };
         let time = Timestamp::ZERO;
         let (payment, later) = payments();
@@ -588,6 +590,7 @@ mod stale_pubsub_entry_tests {
         let id = |seqno| P2pNetworkPubsubMessageCacheId {
             source: origin.try_into().unwrap(),
             seqno,
+            digest: [0; 32],
         };
         let gone = SecretKey::from_bytes([1; 32]).public_key().peer_id();
         let here = SecretKey::from_bytes([2; 32]).public_key().peer_id();

@@ -412,14 +412,11 @@ impl P2pNetworkPubsubState {
 
                 let mut source_sk = super::webrtc_source_sk_from_bytes(&data[8..]);
                 let source_peer_id = source_sk.public_key().peer_id();
-                let message_id = P2pNetworkPubsubMessageCacheId {
-                    source: libp2p_identity::PeerId::try_from(source_peer_id).unwrap(),
-                    seqno: 0,
-                };
+                let source = libp2p_identity::PeerId::try_from(source_peer_id).unwrap();
                 let mut msg = pb::Message {
-                    from: Some(message_id.source.to_bytes().to_vec()),
+                    from: Some(source.to_bytes().to_vec()),
                     data: Some(data),
-                    seqno: Some(message_id.seqno.to_be_bytes().to_vec()),
+                    seqno: Some(0u64.to_be_bytes().to_vec()),
                     topic: super::TOPIC.to_owned(),
                     signature: None,
                     key: None,
@@ -431,6 +428,12 @@ impl P2pNetworkPubsubState {
                         return Ok(());
                     }
                     Ok(sig) => Some(sig.to_bytes().to_vec()),
+                };
+                // The ID covers the signed message, so it is taken after signing.
+                let Ok(message_id) = super::p2p_network_pubsub_state::compute_message_id(&msg)
+                else {
+                    bug_condition!("WebRTC rebroadcast: no message ID");
+                    return Ok(());
                 };
 
                 let message_state = P2pNetworkPubsubMessageCacheMessage::Validated {
@@ -1729,5 +1732,42 @@ mod tests {
         let client = &state.clients[&peer()];
         assert_eq!(client.incoming_messages.len(), 1);
         assert!(client.buffer.is_empty());
+    }
+
+    /// Two messages under one source and sequence number are two cache
+    /// entries. The second can't replace the first, so a verdict on the
+    /// first, which names its ID, acts on the first's own bytes and relay.
+    #[test]
+    fn a_second_message_under_one_source_and_seqno_does_not_replace_the_first() {
+        let block = mesa_block();
+        let time = slot_start(&block);
+        let first = message(block.clone(), 1);
+        let mut second = first.clone();
+        second.signature = Some(vec![4; 64]);
+        let (a, b) = (
+            compute_message_id(&first).unwrap(),
+            compute_message_id(&second).unwrap(),
+        );
+        assert_eq!((a.source, a.seqno), (b.source, b.seqno));
+        assert_eq!(
+            a.to_raw_bytes(),
+            b.to_raw_bytes(),
+            "the wire ID is unchanged"
+        );
+        assert_ne!(a, b);
+
+        let mut state = state_with_client();
+        let content = GossipNetMessageV2::NewState(block);
+        let relay = PeerId::from_bytes([5; 32]);
+        let put = |state: &mut P2pNetworkPubsubState, message, content, peer_id| {
+            state.mcache.put(message, content, peer_id, time).unwrap()
+        };
+        assert_eq!(put(&mut state, first.clone(), content.clone(), peer()), a);
+        assert_eq!(put(&mut state, second.clone(), content, relay), b);
+        assert_eq!(state.mcache.map.len(), 2);
+        assert_eq!(state.mcache.map[&a].message(), &first);
+        assert_eq!(state.mcache.map[&a].peer_id(), &peer());
+        assert_eq!(state.mcache.map[&b].message(), &second);
+        assert!(state.mcache.get_message_from(a.source, 1).is_some());
     }
 }

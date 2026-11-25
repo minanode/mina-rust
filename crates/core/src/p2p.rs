@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 pub struct P2pNetworkPubsubMessageCacheId {
     pub source: libp2p_identity::PeerId,
     pub seqno: u64,
+    /// SHA-256 of the whole encoded message. Two messages under one source
+    /// and sequence number get distinct IDs, so neither replaces the other in
+    /// the cache, and a verdict on one never acts on the other. It is not part
+    /// of the wire ID, `to_raw_bytes`.
+    pub digest: [u8; 32],
 }
 
 impl P2pNetworkPubsubMessageCacheId {

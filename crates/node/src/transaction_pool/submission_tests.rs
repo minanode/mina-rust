@@ -440,6 +440,7 @@ fn gossip_while_bootstrapping_is_ignored_not_queued() {
     let message_id = crate::p2p::P2pNetworkPubsubMessageCacheId {
         source: crate::p2p::libp2p_identity::PeerId::random(),
         seqno: 1,
+        digest: [0; 32],
     };
     let ran = run(
         &mut state,
@@ -522,6 +523,7 @@ fn admitted_gossip_payment_counts_one_forwarded_diff() {
     let message_id = crate::p2p::P2pNetworkPubsubMessageCacheId {
         source: crate::p2p::libp2p_identity::PeerId::random(),
         seqno: 1,
+        digest: [0; 32],
     };
 
     let mut state = synced_state();
@@ -627,6 +629,7 @@ fn a_partly_taken_gossip_message_reaches_the_pool_but_is_not_forwarded() {
     let message = |seqno| crate::p2p::P2pNetworkPubsubMessageCacheId {
         source: origin,
         seqno,
+        digest: [0; 32],
     };
     let peer = crate::p2p::identity::SecretKey::rand()
         .public_key()

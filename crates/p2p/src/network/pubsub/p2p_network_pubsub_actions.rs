@@ -255,10 +255,7 @@ impl redux::EnablingCondition<P2pState> for P2pNetworkPubsubAction {
                     .peer_id()
                     .try_into()
                     .unwrap();
-                pubsub
-                    .mcache
-                    .get_message(&P2pNetworkPubsubMessageCacheId { source, seqno: 0 })
-                    .is_none()
+                pubsub.mcache.get_message_from(source, 0).is_none()
             }
             P2pNetworkPubsubAction::Broadcast { message } => {
                 if let Some(reason) = pubsub.block_gossip.announce_rejection(message, time) {

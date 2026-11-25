@@ -390,7 +390,16 @@ pub fn compute_message_id(
         .map(u64::from_be_bytes)
         .unwrap_or_default();
 
-    Ok(P2pNetworkPubsubMessageCacheId { source, seqno })
+    let digest = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(prost::Message::encode_to_vec(message)).into()
+    };
+
+    Ok(P2pNetworkPubsubMessageCacheId {
+        source,
+        seqno,
+        digest,
+    })
 }
 
 macro_rules! enum_field {
@@ -441,6 +450,30 @@ impl P2pNetworkPubsubMessageCache {
             }
         }
         Ok(id)
+    }
+
+    /// The content of an unvalidated message from `source` with `seqno`,
+    /// whatever its digest.
+    pub fn get_message_from(
+        &self,
+        source: libp2p_identity::PeerId,
+        seqno: u64,
+    ) -> Option<&GossipNetMessageV2> {
+        let first = P2pNetworkPubsubMessageCacheId {
+            source,
+            seqno,
+            digest: [0; 32],
+        };
+        let last = P2pNetworkPubsubMessageCacheId {
+            digest: [u8::MAX; 32],
+            ..first
+        };
+        self.map
+            .range(first..=last)
+            .find_map(|(_, message)| match message {
+                P2pNetworkPubsubMessageCacheMessage::Init { content, .. } => Some(content),
+                _ => None,
+            })
     }
 
     pub fn get_message(&self, id: &P2pNetworkPubsubMessageCacheId) -> Option<&GossipNetMessageV2> {

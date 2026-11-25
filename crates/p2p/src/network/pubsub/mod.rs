@@ -194,6 +194,7 @@ mod snark_admission_tests {
         let id = |seqno| mina_core::p2p::P2pNetworkPubsubMessageCacheId {
             source: peer_id.to_libp2p_string().parse().unwrap(),
             seqno,
+            digest: [0; 32],
         };
         let mut cache = P2pNetworkPubsubMessageCache::default();
         let mut other = snark.clone();
@@ -241,6 +242,7 @@ mod snark_admission_tests {
         let id = mina_core::p2p::P2pNetworkPubsubMessageCacheId {
             source: peer_id.to_libp2p_string().parse().unwrap(),
             seqno: 1,
+            digest: [0; 32],
         };
         let message = pb::Message {
             data: Some(encode_message(&content).unwrap()),
