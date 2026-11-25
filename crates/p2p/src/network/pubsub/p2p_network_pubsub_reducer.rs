@@ -252,6 +252,20 @@ impl P2pNetworkPubsubState {
                 message_content,
                 peer_id,
             } => {
+                // While a message is cached, a second one under its wire ID
+                // (publisher and sequence number) is ignored, as go-libp2p
+                // ignores a message ID it has seen. Only the publisher can
+                // sign under its ID (`key_is_publishers`), so this drops only
+                // a publisher contradicting itself, and no two cached messages
+                // share a wire ID for IHAVE and IWANT to choose between.
+                if pubsub_state.mcache.reuses_wire_id(&message) {
+                    let dispatcher = state_context.into_dispatcher();
+                    dispatcher.push(P2pNetworkPubsubAction::IgnoreMessage {
+                        message_id: None,
+                        reason: "Message ID reused".to_owned(),
+                    });
+                    return Ok(());
+                }
                 let Ok(message_id) =
                     pubsub_state
                         .mcache
@@ -1029,7 +1043,7 @@ impl P2pNetworkPubsubState {
     fn filter_outgoing_rpc(&mut self, rpc: &mut pb::Rpc, peer_id: PeerId, time: Timestamp) {
         self.block_gossip.prune(time);
         rpc.publish.retain(|message| {
-            let requested = super::p2p_network_pubsub_state::compute_message_id(message)
+            let requested = super::p2p_network_pubsub_state::compute_wire_id(message)
                 .ok()
                 .is_some_and(|id| {
                     self.clients
@@ -1763,6 +1777,9 @@ mod tests {
         assert_eq!(put(&mut state, first.clone(), content.clone(), peer()), a);
         assert_eq!(put(&mut state, second.clone(), content, relay), b);
         assert_eq!(state.mcache.map.len(), 2);
+        // `HandleIncomingMessage` ignores the second, as its wire ID is cached.
+        assert!(state.mcache.reuses_wire_id(&second));
+        assert!(!state.mcache.reuses_wire_id(&message(mesa_block(), 2)));
         assert_eq!(state.mcache.map[&a].message(), &first);
         assert_eq!(state.mcache.map[&a].peer_id(), &peer());
         assert_eq!(state.mcache.map[&b].message(), &second);
@@ -1801,5 +1818,21 @@ mod tests {
         };
         state.respond_to_iwant_requests(&peer(), &[request], time);
         assert_eq!(take_reply(&mut state, time).publish, vec![validated]);
+    }
+
+    /// The digest covers the data, not only the signature: the verifier
+    /// accepts keys for which one signature fits several payloads, so two
+    /// messages with one signature and different data get different IDs.
+    #[test]
+    fn a_message_id_digest_covers_the_data() {
+        let block = mesa_block();
+        let first = message(block.clone(), 1);
+        let mut other = first.clone();
+        other.data = Some(b"other data".to_vec());
+        assert_eq!(first.signature, other.signature);
+        assert_ne!(
+            compute_message_id(&first).unwrap(),
+            compute_message_id(&other).unwrap()
+        );
     }
 }
