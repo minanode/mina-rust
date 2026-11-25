@@ -989,14 +989,12 @@ impl P2pNetworkPubsubState {
         // Respond to iwant requests by publishing available messages from the cache.
         for iwant in iwant_requests {
             for msg_id in &iwant.message_ids {
-                if let Some(msg) = self.mcache.get_message_from_raw_message_id(msg_id) {
-                    // Signature validation alone does not authorize forwarding a
-                    // block, transaction or SNARK that is still being validated.
-                    if !matches!(msg, P2pNetworkPubsubMessageCacheMessage::Validated { .. })
-                        || !super::block_gossip::BlockGossipState::is_fresh(msg.message(), time)
-                    {
-                        continue;
-                    }
+                // Signature validation alone does not authorize forwarding a
+                // block, transaction or SNARK that is still being validated.
+                if let Some(msg) = self.mcache.find_message_from_raw_message_id(msg_id, |msg| {
+                    matches!(msg, P2pNetworkPubsubMessageCacheMessage::Validated { .. })
+                        && super::block_gossip::BlockGossipState::is_fresh(msg.message(), time)
+                }) {
                     if let Some(client) = self.clients.get_mut(peer_id) {
                         client.reply_to_iwant(msg.message());
                     }
@@ -1048,8 +1046,7 @@ impl P2pNetworkPubsubState {
             for ihave in &mut control.ihave {
                 ihave.message_ids.retain(|id| {
                     self.mcache
-                        .get_message_from_raw_message_id(id)
-                        .is_some_and(|message| {
+                        .find_message_from_raw_message_id(id, |message| {
                             matches!(
                                 message,
                                 P2pNetworkPubsubMessageCacheMessage::Validated { .. }
@@ -1058,6 +1055,7 @@ impl P2pNetworkPubsubState {
                                 time,
                             )
                         })
+                        .is_some()
                 });
             }
             control.ihave.retain(|ihave| !ihave.message_ids.is_empty());
@@ -1769,5 +1767,39 @@ mod tests {
         assert_eq!(state.mcache.map[&a].peer_id(), &peer());
         assert_eq!(state.mcache.map[&b].message(), &second);
         assert!(state.mcache.get_message_from(a.source, 1).is_some());
+    }
+
+    /// Several cached messages can share a wire ID. One still being
+    /// validated must not hide a validated sibling from an IWANT reply.
+    #[test]
+    fn iwant_finds_a_validated_sibling_under_a_shared_wire_id() {
+        let block = mesa_block();
+        let time = slot_start(&block);
+        let mut a = message(block.clone(), 1);
+        let mut b = a.clone();
+        a.signature = Some(vec![6; 64]);
+        b.signature = Some(vec![7; 64]);
+        let (ia, ib) = (
+            compute_message_id(&a).unwrap(),
+            compute_message_id(&b).unwrap(),
+        );
+        // The pending one sorts first, where a first-match lookup stops.
+        let ((pending, pending_id), validated) = if ia < ib { ((a, ia), b) } else { ((b, ib), a) };
+        let mut state = state_with_client();
+        state.mcache.map.insert(
+            pending_id,
+            P2pNetworkPubsubMessageCacheMessage::PreValidated {
+                message: pending,
+                peer_id: PeerId::from_bytes([2; 32]),
+                time,
+            },
+        );
+        let id = cache_validated(&mut state, validated.clone(), time);
+        assert_eq!(id.to_raw_bytes(), pending_id.to_raw_bytes());
+        let request = pb::ControlIWant {
+            message_ids: vec![id.to_raw_bytes()],
+        };
+        state.respond_to_iwant_requests(&peer(), &[request], time);
+        assert_eq!(take_reply(&mut state, time).publish, vec![validated]);
     }
 }

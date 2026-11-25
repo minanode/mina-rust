@@ -121,8 +121,8 @@ fn filter_snark_gossip(
         for ihave in &mut control.ihave {
             ihave.message_ids.retain(|id| {
                 cache
-                    .get_message_from_raw_message_id(id)
-                    .is_some_and(|message| allowed(message.message()))
+                    .find_message_from_raw_message_id(id, |message| allowed(message.message()))
+                    .is_some()
             });
         }
         control.ihave.retain(|ihave| !ihave.message_ids.is_empty());

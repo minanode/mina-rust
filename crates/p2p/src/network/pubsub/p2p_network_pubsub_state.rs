@@ -390,9 +390,13 @@ pub fn compute_message_id(
         .map(u64::from_be_bytes)
         .unwrap_or_default();
 
+    // The signature covers the publisher, sequence number, topic and data,
+    // and the key that made it is the publisher's (`key_is_publishers`), so
+    // it names the message as well as the whole encoding would, at the cost
+    // of hashing 64 bytes instead of up to a 2 MB block for every send.
     let digest = {
         use sha2::{Digest, Sha256};
-        Sha256::digest(prost::Message::encode_to_vec(message)).into()
+        Sha256::digest(message.signature.as_deref().unwrap_or_default()).into()
     };
 
     Ok(P2pNetworkPubsubMessageCacheId {
@@ -573,12 +577,19 @@ impl P2pNetworkPubsubMessageCache {
         &self,
         message_id: &[u8],
     ) -> Option<&P2pNetworkPubsubMessageCacheMessage> {
+        self.find_message_from_raw_message_id(message_id, |_| true)
+    }
+
+    /// The first cached message with the wire ID `message_id` that `eligible`
+    /// accepts. The wire ID leaves out the digest, so several messages can
+    /// share it, and one that isn't eligible must not hide one that is.
+    pub fn find_message_from_raw_message_id(
+        &self,
+        message_id: &[u8],
+        mut eligible: impl FnMut(&P2pNetworkPubsubMessageCacheMessage) -> bool,
+    ) -> Option<&P2pNetworkPubsubMessageCacheMessage> {
         self.map.iter().find_map(|(key, value)| {
-            if key.to_raw_bytes() == message_id {
-                Some(value)
-            } else {
-                None
-            }
+            (key.to_raw_bytes() == message_id && eligible(value)).then_some(value)
         })
     }
 }
