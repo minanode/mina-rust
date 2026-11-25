@@ -847,3 +847,78 @@ fn a_refused_copy_from_one_relay_does_not_take_its_valid_copy() {
         .get_batch_to_verify()
         .is_none());
 }
+
+/// A payment held both as a peer candidate and in a pubsub message from the
+/// same peer: verifying the message must not leave the peer candidate marked
+/// pending, which stranded it and stopped the peer queue. A later message
+/// whose commands are all in the pool is ignored, not queued.
+#[test]
+fn a_pubsub_batch_does_not_strand_a_peer_candidate() {
+    use crate::transaction_pool::candidate::TransactionPoolCandidateAction;
+    use mina_core::transaction::TransactionWithHash;
+
+    let ([payment, _], accounts) = two_payments();
+    let payment = TransactionWithHash::try_new(payment).unwrap();
+    let origin = crate::p2p::libp2p_identity::PeerId::random();
+    let message = |seqno| crate::p2p::P2pNetworkPubsubMessageCacheId {
+        source: origin,
+        seqno,
+        digest: [0; 32],
+    };
+    let relay = crate::p2p::identity::SecretKey::rand()
+        .public_key()
+        .peer_id();
+    let mut state = synced_state();
+    state.p2p.initialize(&mina_core::MAINNET_CHAIN_ID).unwrap();
+    state
+        .transaction_pool
+        .candidates
+        .transaction_received(now(), relay, payment.clone());
+    let received = |state: &mut State, seqno| {
+        run(
+            state,
+            TransactionPoolAction::Candidate(
+                TransactionPoolCandidateAction::Libp2pTransactionsReceived {
+                    peer_id: relay,
+                    transactions: vec![payment.clone()],
+                    message_id: message(seqno),
+                },
+            ),
+        )
+    };
+    received(&mut state, 1);
+    let verify_next =
+        || TransactionPoolAction::Candidate(TransactionPoolCandidateAction::VerifyNext);
+
+    // The pubsub message first, through the pool.
+    let ran = run(&mut state, verify_next());
+    let ran = fetched(&mut state, &ran, Ok(accounts.clone()));
+    let ran = verified(&mut state, &ran, true);
+    fetched(&mut state, &ran, Ok(accounts));
+    assert_eq!(state.transaction_pool.size(), 1);
+
+    // The peer candidate is still a batch to verify, not stranded.
+    let (from, batch, source) = state
+        .transaction_pool
+        .candidates
+        .get_batch_to_verify()
+        .expect("the peer candidate");
+    assert_eq!(from, relay);
+    assert_eq!(batch.len(), 1);
+    assert!(matches!(source, TransactionPoolMessageSource::None));
+    // Its command is in the pool, so it leaves without a verification.
+    run(&mut state, verify_next());
+    assert!(state
+        .transaction_pool
+        .candidates
+        .get_batch_to_verify()
+        .is_none());
+
+    let ran = received(&mut state, 2);
+    assert_eq!(pubsub_verdicts(&ran), 1, "the rebroadcast got no ignore");
+    assert!(state
+        .transaction_pool
+        .candidates
+        .get_batch_to_verify()
+        .is_none());
+}

@@ -13,6 +13,12 @@ use crate::{
     p2p::{channels::rpc::P2pRpcId, PeerId},
 };
 
+/// The most pubsub messages queued for verification. The queue drains one
+/// message a tick, so it fills only while verification is held, as during
+/// block production; a message refused here comes again if its sender
+/// rebroadcasts it.
+pub const MAX_QUEUED_MESSAGES: usize = 256;
+
 static EMPTY_PEER_TX_CANDIDATES: BTreeMap<TransactionHash, TransactionPoolCandidateState> =
     BTreeMap::new();
 
@@ -227,19 +233,32 @@ impl TransactionPoolCandidatesState {
         self.by_peer.entry(peer_id).or_default().insert(hash, state);
     }
 
+    /// Queues a pubsub message, unless it holds no commands, its commands
+    /// are those of a message already queued, or the queue is full. Returns
+    /// whether it was queued.
     pub fn transactions_received(
         &mut self,
         _time: Timestamp,
         peer_id: PeerId,
         transactions: Vec<TransactionWithHash>,
         message_id: P2pNetworkPubsubMessageCacheId,
-    ) {
-        // Nothing to verify: queued, it would never leave.
-        if transactions.is_empty() {
-            return;
+    ) -> bool {
+        let same_commands = |(_, queued): &(PeerId, Vec<TransactionWithHash>)| {
+            queued.len() == transactions.len()
+                && queued
+                    .iter()
+                    .zip(&transactions)
+                    .all(|(a, b)| a.body() == b.body())
+        };
+        if transactions.is_empty()
+            || self.by_message_id.len() >= MAX_QUEUED_MESSAGES
+            || self.by_message_id.values().any(same_commands)
+        {
+            return false;
         }
         self.by_message_id
             .insert(message_id, (peer_id, transactions));
+        true
     }
 
     /// Get next batch of transactions to verify,
@@ -265,7 +284,13 @@ impl TransactionPoolCandidatesState {
                                 _ => None,
                             })
                             .cloned()
-                            .collect();
+                            .collect::<Vec<_>>();
+                        // A peer with nothing received to verify yields no
+                        // batch: an empty batch is never verified, and would
+                        // stay first.
+                        if transactions.is_empty() {
+                            continue;
+                        }
                         return Some((*peer_id, transactions, TransactionPoolMessageSource::None));
                     }
                 }
@@ -496,28 +521,71 @@ mod pubsub_queue_tests {
         (from, batch, source)
     }
 
-    /// The same payment in two messages, as when its sender rebroadcasts it:
-    /// verifying one must not leave the other queued with nothing to verify,
-    /// which stopped every later message.
+    /// The same payment in two messages, as when its sender rebroadcasts it.
+    /// A copy with the same commands as a queued message is not queued; one
+    /// arriving after the first left the queue is, and is verified whole.
+    /// Neither leaves anything behind that could stop later messages.
     #[test]
-    fn a_verified_duplicate_does_not_block_later_gossip() {
+    fn a_rebroadcast_payment_does_not_block_later_gossip() {
         let txs = signed(2);
         let (payment, later) = (txs[0].clone(), txs[1].clone());
         let mut state = TransactionPoolCandidatesState::new();
-        state.transactions_received(Timestamp::ZERO, peer(1), vec![payment.clone()], message(1));
-        state.transactions_received(Timestamp::ZERO, peer(1), vec![payment.clone()], message(2));
+        assert!(state.transactions_received(
+            Timestamp::ZERO,
+            peer(1),
+            vec![payment.clone()],
+            message(1)
+        ));
+        assert!(!state.transactions_received(
+            Timestamp::ZERO,
+            peer(2),
+            vec![payment.clone()],
+            message(2)
+        ));
 
-        for seqno in [1, 2] {
-            let (_, batch, source) = verify_next(&mut state);
-            assert_eq!(bodies(&batch), bodies(&[payment.clone()]));
-            assert!(
-                matches!(source, TransactionPoolMessageSource::Pubsub { id } if id == message(seqno))
-            );
-        }
-        state.transactions_received(Timestamp::ZERO, peer(1), vec![later.clone()], message(3));
+        let (_, batch, source) = verify_next(&mut state);
+        assert_eq!(bodies(&batch), bodies(&[payment.clone()]));
+        assert!(matches!(source, TransactionPoolMessageSource::Pubsub { id } if id == message(1)));
+        assert!(state.transactions_received(
+            Timestamp::ZERO,
+            peer(2),
+            vec![payment.clone()],
+            message(3)
+        ));
+        assert!(state.transactions_received(
+            Timestamp::ZERO,
+            peer(1),
+            vec![later.clone()],
+            message(4)
+        ));
+        let (_, batch, _) = verify_next(&mut state);
+        assert_eq!(bodies(&batch), bodies(&[payment]));
         let (_, batch, _) = verify_next(&mut state);
         assert_eq!(bodies(&batch), bodies(&[later]));
         assert!(state.get_batch_to_verify().is_none());
+    }
+
+    /// The queue holds at most `MAX_QUEUED_MESSAGES` messages.
+    #[test]
+    fn the_message_queue_is_bounded() {
+        let txs = signed(1);
+        let mut state = TransactionPoolCandidatesState::new();
+        for seqno in 0..MAX_QUEUED_MESSAGES as u64 {
+            // Distinct command lists: the payment repeated `seqno + 1` times.
+            let commands = vec![txs[0].clone(); seqno as usize + 1];
+            assert!(state.transactions_received(
+                Timestamp::ZERO,
+                peer(1),
+                commands,
+                message(seqno)
+            ));
+        }
+        assert!(!state.transactions_received(
+            Timestamp::ZERO,
+            peer(1),
+            vec![txs[0].clone(); MAX_QUEUED_MESSAGES + 1],
+            message(MAX_QUEUED_MESSAGES as u64),
+        ));
     }
 
     /// A message whose forwarding peer left is still verified under its own

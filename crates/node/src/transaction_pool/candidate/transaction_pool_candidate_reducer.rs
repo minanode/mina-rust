@@ -7,6 +7,7 @@ use crate::{
     },
     p2p_ready, TransactionPoolAction,
 };
+use mina_core::transaction::TransactionPoolMessageSource;
 
 use super::{
     TransactionPoolCandidateAction, TransactionPoolCandidateActionWithMetaRef,
@@ -23,21 +24,36 @@ impl TransactionPoolCandidatesState {
         // While bootstrapping there is no ledger to judge gossip against:
         // drop it now, rather than queue it until the sync ends (OCaml
         // refuses it too, without penalty).
-        if let TransactionPoolCandidateAction::Libp2pTransactionsReceived { message_id, .. } =
-            action
+        // A message whose commands are all in the pool already, as when a
+        // sender rebroadcasts what we admitted, has nothing to verify: it is
+        // ignored, not queued, so a burst of rebroadcasts costs no memory or
+        // verification.
+        if let TransactionPoolCandidateAction::Libp2pTransactionsReceived {
+            message_id,
+            transactions,
+            ..
+        } = action
         {
-            if state_context
-                .unsafe_get_state()
-                .transition_frontier
-                .is_bootstrapping(meta.time())
+            let global = state_context.unsafe_get_state();
+            let reason = if global.transition_frontier.is_bootstrapping(meta.time()) {
+                Some("bootstrapping")
+            } else if !transactions.is_empty()
+                && transactions
+                    .iter()
+                    .all(|tx| global.transaction_pool.contains(tx.hash()))
             {
+                Some("transactions already in the pool")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
                 state_context
                     .into_dispatcher()
                     .push(P2pNetworkPubsubAction::IgnoreMessage {
                         message_id: Some(BroadcastMessageId::MessageId {
                             message_id: *message_id,
                         }),
-                        reason: "bootstrapping".to_owned(),
+                        reason: reason.to_owned(),
                     });
                 return;
             }
@@ -120,12 +136,21 @@ impl TransactionPoolCandidatesState {
                 transactions,
                 message_id,
             } => {
-                state.transactions_received(
+                if !state.transactions_received(
                     meta.time(),
                     *peer_id,
                     transactions.clone(),
                     *message_id,
-                );
+                ) {
+                    state_context
+                        .into_dispatcher()
+                        .push(P2pNetworkPubsubAction::IgnoreMessage {
+                            message_id: Some(BroadcastMessageId::MessageId {
+                                message_id: *message_id,
+                            }),
+                            reason: "not queued".to_owned(),
+                        });
+                }
             }
             TransactionPoolCandidateAction::VerifyNext => {
                 let (dispatcher, global_state) = state_context.into_dispatcher_and_state();
@@ -156,7 +181,11 @@ impl TransactionPoolCandidatesState {
                 verify_id,
                 from_source,
             } => {
-                state.verify_pending(meta.time(), peer_id, *verify_id, transaction_hashes);
+                // A pubsub batch is its queued message, apart from the peer
+                // candidates: marking those pending would strand them.
+                if !matches!(from_source, TransactionPoolMessageSource::Pubsub { .. }) {
+                    state.verify_pending(meta.time(), peer_id, *verify_id, transaction_hashes);
+                }
                 let dispatcher = state_context.into_dispatcher();
                 dispatcher.push(TransactionPoolCandidateAction::VerifySuccess {
                     peer_id: *peer_id,
