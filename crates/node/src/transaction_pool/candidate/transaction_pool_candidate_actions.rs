@@ -124,16 +124,26 @@ impl redux::EnablingCondition<crate::State> for TransactionPoolCandidateAction {
             TransactionPoolCandidateAction::VerifyPending {
                 peer_id,
                 transaction_hashes,
+                from_source,
                 ..
             } => {
                 !transaction_hashes.is_empty()
-                    && state
-                        .transaction_pool
-                        .candidates
-                        .candidates_from_peer_with_hashes(*peer_id, transaction_hashes)
-                        .all(|(_, state)| {
-                            matches!(state, Some(TransactionPoolCandidateState::Received { .. }))
-                        })
+                    && match from_source {
+                        // A pubsub batch is its queued message, whole.
+                        TransactionPoolMessageSource::Pubsub { id } => {
+                            state.transaction_pool.candidates.message_id_contains(id)
+                        }
+                        _ => state
+                            .transaction_pool
+                            .candidates
+                            .candidates_from_peer_with_hashes(*peer_id, transaction_hashes)
+                            .all(|(_, state)| {
+                                matches!(
+                                    state,
+                                    Some(TransactionPoolCandidateState::Received { .. })
+                                )
+                            }),
+                    }
             }
             TransactionPoolCandidateAction::VerifyError { .. } => {
                 // TODO(binier)

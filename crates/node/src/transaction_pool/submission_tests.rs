@@ -607,20 +607,15 @@ fn pubsub_verdicts(ran: &[Action]) -> usize {
         .count()
 }
 
-/// A gossip message that another message partly took: its waiting command
-/// reaches the pool, but without the pubsub source, so the message gets no
-/// verdict and is not forwarded. The command goes out only as our own
-/// rebroadcast, which sends a non-local command to browser peers alone.
+/// A gossip message overlapping an earlier one is verified whole, from its
+/// own commands, and forwarded on its own verdict: the command it shares is a
+/// duplicate in the pool, and its new command is admitted.
 #[test]
-fn a_partly_taken_gossip_message_reaches_the_pool_but_is_not_forwarded() {
+fn an_overlapping_gossip_message_is_verified_whole_and_forwarded() {
     use crate::transaction_pool::candidate::TransactionPoolCandidateAction;
     use mina_core::transaction::TransactionWithHash;
 
     let ([shared, own], accounts) = two_payments();
-    let own_hash = TransactionWithHash::try_new(own.clone())
-        .unwrap()
-        .hash()
-        .clone();
     let (shared, own) = (
         TransactionWithHash::try_new(shared).unwrap(),
         TransactionWithHash::try_new(own).unwrap(),
@@ -693,30 +688,23 @@ fn a_partly_taken_gossip_message_reaches_the_pool_but_is_not_forwarded() {
     let ran = verify_next(&mut state);
     assert!(matches!(
         applied_sources(&ran)[..],
-        [TransactionPoolMessageSource::None]
+        [TransactionPoolMessageSource::Pubsub { id }] if id == message(2)
     ));
     assert_eq!(state.transaction_pool.size(), 2);
-    assert_eq!(pubsub_verdicts(&ran), 0, "message 2 got a verdict");
-    let rebroadcasts = ran
-        .iter()
-        .filter_map(|action| match action {
-            Action::TransactionPool(TransactionPoolAction::Rebroadcast {
-                accepted,
-                rejected,
-                is_local: false,
-            }) => Some((
-                accepted
-                    .iter()
-                    .map(|cmd| cmd.hash.clone())
-                    .collect::<Vec<_>>(),
-                rejected.len(),
-            )),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(rebroadcasts, vec![(vec![own_hash], 0)]);
-    // One command added, and one diff out: our rebroadcast of it, counted
-    // only when the rebroadcast ran, not when it was merely dispatched.
+    assert_eq!(pubsub_verdicts(&ran), 1, "message 2 got no single verdict");
+    assert!(ran.iter().any(|action| matches!(
+        action,
+        Action::P2p(crate::p2p::P2pAction::Network(crate::p2p::P2pNetworkAction::Pubsub(
+            crate::p2p::P2pNetworkPubsubAction::BroadcastValidatedMessage {
+                message_id: crate::p2p::BroadcastMessageId::MessageId { message_id },
+            }
+        ))) if *message_id == message(2)
+    )));
+    assert!(!ran.iter().any(|action| matches!(
+        action,
+        Action::TransactionPool(TransactionPoolAction::Rebroadcast { .. })
+    )));
+    // One more command added, and one more diff forwarded: message 2.
     assert_eq!(telemetry(&state), (2, 2));
     assert!(state
         .transaction_pool
@@ -764,6 +752,74 @@ fn a_refused_copy_does_not_take_a_valid_copy_with_it() {
                     peer_id: crate::p2p::identity::SecretKey::rand()
                         .public_key()
                         .peer_id(),
+                    transactions: vec![copy],
+                    message_id: message(seqno),
+                },
+            ),
+        );
+    }
+    let verify_next =
+        || TransactionPoolAction::Candidate(TransactionPoolCandidateAction::VerifyNext);
+
+    // The forged copy: its signature does not verify.
+    let ran = run(&mut state, verify_next());
+    let ran = fetched(&mut state, &ran, Ok(accounts.clone()));
+    verified(&mut state, &ran, false);
+    assert_eq!(state.transaction_pool.size(), 0);
+
+    // The valid copy is still queued, and reaches the pool.
+    let ran = run(&mut state, verify_next());
+    let ran = fetched(&mut state, &ran, Ok(accounts.clone()));
+    let ran = verified(&mut state, &ran, true);
+    fetched(&mut state, &ran, Ok(accounts));
+    assert_eq!(state.transaction_pool.size(), 1, "the valid copy was lost");
+    assert!(state
+        .transaction_pool
+        .candidates
+        .get_batch_to_verify()
+        .is_none());
+}
+
+/// Two copies of one payment share a hash and differ in their signature,
+/// which the hash leaves out. The queue verifies the forged copy first and
+/// the verifier refuses it: the valid copy, from the same relay, must still
+/// be queued, and reach the pool in its own turn.
+#[test]
+fn a_refused_copy_from_one_relay_does_not_take_its_valid_copy() {
+    use crate::transaction_pool::candidate::TransactionPoolCandidateAction;
+    use mina_core::transaction::TransactionWithHash;
+
+    let ([good, other], accounts) = two_payments();
+    let MinaBaseUserCommandStableV2::SignedCommand(mut forged) = good.clone() else {
+        unreachable!("two_payments() returns payments")
+    };
+    let MinaBaseUserCommandStableV2::SignedCommand(other) = other else {
+        unreachable!("two_payments() returns payments")
+    };
+    forged.signature = other.signature;
+    let forged =
+        TransactionWithHash::try_new(MinaBaseUserCommandStableV2::SignedCommand(forged)).unwrap();
+    let good = TransactionWithHash::try_new(good).unwrap();
+    assert_eq!(forged.hash(), good.hash());
+    assert_ne!(forged.body(), good.body());
+
+    let origin = crate::p2p::libp2p_identity::PeerId::random();
+    let message = |seqno| crate::p2p::P2pNetworkPubsubMessageCacheId {
+        source: origin,
+        seqno,
+        digest: [0; 32],
+    };
+    let mut state = synced_state();
+    state.p2p.initialize(&mina_core::MAINNET_CHAIN_ID).unwrap();
+    let relay = crate::p2p::identity::SecretKey::rand()
+        .public_key()
+        .peer_id();
+    for (seqno, copy) in [(1, forged), (2, good)] {
+        run(
+            &mut state,
+            TransactionPoolAction::Candidate(
+                TransactionPoolCandidateAction::Libp2pTransactionsReceived {
+                    peer_id: relay,
                     transactions: vec![copy],
                     message_id: message(seqno),
                 },
