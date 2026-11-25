@@ -128,15 +128,10 @@ impl TransactionPoolCandidatesState {
                 );
             }
             TransactionPoolCandidateAction::VerifyNext => {
-                let (dispatcher, global_state) = state_context.into_dispatcher_and_state();
-
-                let batch = global_state
-                    .transaction_pool
-                    .candidates
-                    .get_batch_to_verify();
-                let Some((peer_id, batch, from_source)) = batch else {
+                let Some((peer_id, batch, from_source)) = state.begin_verify() else {
                     return;
                 };
+                let dispatcher = state_context.into_dispatcher();
 
                 let transaction_hashes = batch.iter().map(|tx| tx.hash().clone()).collect();
                 dispatcher.push(TransactionPoolAction::StartVerify {

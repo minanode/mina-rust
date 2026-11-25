@@ -29,6 +29,10 @@ pub struct TransactionPoolCandidatesState {
     /// Each queued pubsub message, with its forwarding peer and its own
     /// commands in wire order: the exact bodies its verdict must cover.
     by_message_id: BTreeMap<P2pNetworkPubsubMessageCacheId, (PeerId, Vec<TransactionWithHash>)>,
+    /// The exact commands of the batch sent to verification, from
+    /// `begin_verify` to `verify_result`.
+    #[serde(default)]
+    in_flight: Vec<TransactionWithHash>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -236,6 +240,14 @@ impl TransactionPoolCandidatesState {
         })
     }
 
+    /// Takes the next batch to verify, as `get_batch_to_verify` picks it, and
+    /// remembers its exact commands for `verify_result`.
+    pub fn begin_verify(&mut self) -> Option<NextBatch> {
+        let batch = self.get_batch_to_verify()?;
+        self.in_flight = batch.1.clone();
+        Some(batch)
+    }
+
     /// Get next batch of transactions to verify,
     /// first checks if there are any transactions to verify from pubsub
     /// after that checks for transactions from peers
@@ -352,36 +364,66 @@ impl TransactionPoolCandidatesState {
     pub fn verify_result(
         &mut self,
         _time: Timestamp,
-        peer_id: &PeerId,
-        verify_id: (),
+        _peer_id: &PeerId,
+        _verify_id: (),
         from_source: &TransactionPoolMessageSource,
         _result: Result<(), ()>,
     ) {
-        match from_source {
-            TransactionPoolMessageSource::Pubsub { id } => {
-                let Some((_, commands)) = self.by_message_id.remove(id) else {
-                    return;
-                };
-
-                for command in commands {
-                    self.transaction_remove(command.hash());
-                }
-            }
-            _ => {
-                if let Some(peer_transactions) = self.by_peer.get_mut(peer_id) {
-                    let txs_to_remove = peer_transactions
-                        .iter()
-                        .filter(|(_, job_state)| job_state.pending_verify_id() == Some(verify_id))
-                        .map(|(hash, _)| hash.clone())
-                        .collect::<Vec<_>>();
-
-                    for hash in txs_to_remove {
-                        self.transaction_remove(&hash);
-                    }
+        if let TransactionPoolMessageSource::Pubsub { id } = from_source {
+            self.by_message_id.remove(id);
+        }
+        let verified = std::mem::take(&mut self.in_flight);
+        self.verified_remove(&verified);
+        // A copy marked pending for this batch but not verified in it, as
+        // another body under the same hash, waits for its own turn.
+        for txs in self.by_peer.values_mut() {
+            for state in txs.values_mut() {
+                if let TransactionPoolCandidateState::VerifyPending {
+                    time, transaction, ..
+                } = state
+                {
+                    *state = TransactionPoolCandidateState::Received {
+                        time: *time,
+                        transaction: transaction.clone(),
+                    };
                 }
             }
         }
         self.prune_message_ids();
+    }
+
+    /// Removes the waiting copies of the `verified` commands from every peer,
+    /// and only those. A transaction hash leaves out signatures and proofs, so
+    /// a copy with the same hash and another body was not verified here: it
+    /// stays, to be verified in its own turn, in case the pool refuses this
+    /// one.
+    fn verified_remove(&mut self, verified: &[TransactionWithHash]) {
+        let (by_peer, by_hash) = (&mut self.by_peer, &mut self.by_hash);
+        for command in verified {
+            let hash = command.hash();
+            let Some(peers) = by_hash.get_mut(hash) else {
+                continue;
+            };
+            peers.retain(|peer_id| {
+                let Some(txs) = by_peer.get_mut(peer_id) else {
+                    return false;
+                };
+                match txs
+                    .get(hash)
+                    .and_then(TransactionPoolCandidateState::transaction)
+                {
+                    Some(copy) if copy.body() == command.body() => {
+                        txs.remove(hash);
+                        false
+                    }
+                    Some(_) => true,
+                    None => txs.contains_key(hash),
+                }
+            });
+            if peers.is_empty() {
+                by_hash.remove(hash);
+            }
+        }
     }
 
     pub fn peer_remove(&mut self, peer_id: PeerId) {
@@ -540,7 +582,7 @@ mod stale_pubsub_entry_tests {
 
     /// Runs `VerifyNext`, `VerifyPending` and `VerifySuccess` on the state.
     fn verify_next(state: &mut TransactionPoolCandidatesState) -> NextBatch {
-        let (from, batch, source) = state.get_batch_to_verify().expect("a batch");
+        let (from, batch, source) = state.begin_verify().expect("a batch");
         state.verify_pending(Timestamp::ZERO, &from, (), &hashes(&batch));
         state.verify_result(Timestamp::ZERO, &from, (), &source, Ok(()));
         (from, batch, source)
@@ -565,7 +607,7 @@ mod stale_pubsub_entry_tests {
 
         // Verify the first copy, as `VerifyNext`, `VerifyPending` and
         // `VerifySuccess` do.
-        let (from, batch, source) = state.get_batch_to_verify().expect("a batch");
+        let (from, batch, source) = state.begin_verify().expect("a batch");
         assert_eq!(batch.len(), 1);
         let hashes = batch.iter().map(|tx| tx.hash().clone()).collect::<Vec<_>>();
         state.verify_pending(time, &from, (), &hashes);

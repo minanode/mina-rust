@@ -724,3 +724,70 @@ fn a_partly_taken_gossip_message_reaches_the_pool_but_is_not_forwarded() {
         .get_batch_to_verify()
         .is_none());
 }
+
+/// Two copies of one payment share a hash and differ in their signature,
+/// which the hash leaves out. The queue verifies the forged copy first and
+/// the verifier refuses it: the valid copy, from another peer, must still be
+/// queued, and reach the pool in its own turn.
+#[test]
+fn a_refused_copy_does_not_take_a_valid_copy_with_it() {
+    use crate::transaction_pool::candidate::TransactionPoolCandidateAction;
+    use mina_core::transaction::TransactionWithHash;
+
+    let ([good, other], accounts) = two_payments();
+    let MinaBaseUserCommandStableV2::SignedCommand(mut forged) = good.clone() else {
+        unreachable!("two_payments() returns payments")
+    };
+    let MinaBaseUserCommandStableV2::SignedCommand(other) = other else {
+        unreachable!("two_payments() returns payments")
+    };
+    forged.signature = other.signature;
+    let forged =
+        TransactionWithHash::try_new(MinaBaseUserCommandStableV2::SignedCommand(forged)).unwrap();
+    let good = TransactionWithHash::try_new(good).unwrap();
+    assert_eq!(forged.hash(), good.hash());
+    assert_ne!(forged.body(), good.body());
+
+    let origin = crate::p2p::libp2p_identity::PeerId::random();
+    let message = |seqno| crate::p2p::P2pNetworkPubsubMessageCacheId {
+        source: origin,
+        seqno,
+        digest: [0; 32],
+    };
+    let mut state = synced_state();
+    state.p2p.initialize(&mina_core::MAINNET_CHAIN_ID).unwrap();
+    for (seqno, copy) in [(1, forged), (2, good)] {
+        run(
+            &mut state,
+            TransactionPoolAction::Candidate(
+                TransactionPoolCandidateAction::Libp2pTransactionsReceived {
+                    peer_id: crate::p2p::identity::SecretKey::rand()
+                        .public_key()
+                        .peer_id(),
+                    transactions: vec![copy],
+                    message_id: message(seqno),
+                },
+            ),
+        );
+    }
+    let verify_next =
+        || TransactionPoolAction::Candidate(TransactionPoolCandidateAction::VerifyNext);
+
+    // The forged copy: its signature does not verify.
+    let ran = run(&mut state, verify_next());
+    let ran = fetched(&mut state, &ran, Ok(accounts.clone()));
+    verified(&mut state, &ran, false);
+    assert_eq!(state.transaction_pool.size(), 0);
+
+    // The valid copy is still queued, and reaches the pool.
+    let ran = run(&mut state, verify_next());
+    let ran = fetched(&mut state, &ran, Ok(accounts.clone()));
+    let ran = verified(&mut state, &ran, true);
+    fetched(&mut state, &ran, Ok(accounts));
+    assert_eq!(state.transaction_pool.size(), 1, "the valid copy was lost");
+    assert!(state
+        .transaction_pool
+        .candidates
+        .get_batch_to_verify()
+        .is_none());
+}
