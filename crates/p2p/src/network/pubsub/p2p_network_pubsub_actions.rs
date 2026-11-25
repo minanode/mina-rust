@@ -255,7 +255,10 @@ impl redux::EnablingCondition<P2pState> for P2pNetworkPubsubAction {
                     .peer_id()
                     .try_into()
                     .unwrap();
-                pubsub.mcache.get_message_from(source, 0).is_none()
+                // Any cached message under this wire ID, validated or not:
+                // one cached message per wire ID, so that IHAVE and IWANT
+                // never choose between two.
+                !pubsub.mcache.contains_wire_id(source, 0)
             }
             P2pNetworkPubsubAction::Broadcast { message } => {
                 if let Some(reason) = pubsub.block_gossip.announce_rejection(message, time) {

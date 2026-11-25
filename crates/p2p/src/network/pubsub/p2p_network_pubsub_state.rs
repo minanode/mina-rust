@@ -495,30 +495,6 @@ impl P2pNetworkPubsubMessageCache {
         self.map.range(first..=last).next().is_some()
     }
 
-    /// The content of an unvalidated message from `source` with `seqno`,
-    /// whatever its digest.
-    pub fn get_message_from(
-        &self,
-        source: libp2p_identity::PeerId,
-        seqno: u64,
-    ) -> Option<&GossipNetMessageV2> {
-        let first = P2pNetworkPubsubMessageCacheId {
-            source,
-            seqno,
-            digest: [0; 32],
-        };
-        let last = P2pNetworkPubsubMessageCacheId {
-            digest: [u8::MAX; 32],
-            ..first
-        };
-        self.map
-            .range(first..=last)
-            .find_map(|(_, message)| match message {
-                P2pNetworkPubsubMessageCacheMessage::Init { content, .. } => Some(content),
-                _ => None,
-            })
-    }
-
     pub fn get_message(&self, id: &P2pNetworkPubsubMessageCacheId) -> Option<&GossipNetMessageV2> {
         let message = self.map.get(id)?;
         match message {

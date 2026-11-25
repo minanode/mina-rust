@@ -1783,7 +1783,11 @@ mod tests {
         assert_eq!(state.mcache.map[&a].message(), &first);
         assert_eq!(state.mcache.map[&a].peer_id(), &peer());
         assert_eq!(state.mcache.map[&b].message(), &second);
-        assert!(state.mcache.get_message_from(a.source, 1).is_some());
+        assert!(state.mcache.contains_wire_id(a.source, 1));
+        // A validated entry counts too: the WebRTC rebroadcast gate asks.
+        let mut validated = state_with_client();
+        let id = cache_validated(&mut validated, message(mesa_block(), 3), time);
+        assert!(validated.mcache.contains_wire_id(id.source, 3));
     }
 
     /// Several cached messages can share a wire ID. One still being
