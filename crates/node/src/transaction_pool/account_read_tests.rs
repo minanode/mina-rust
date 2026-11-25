@@ -120,6 +120,7 @@ fn responses_apply_in_submission_order_and_preserve_rebroadcast_and_nonce() {
                 crate::p2p::P2pNetworkPubsubMessageCacheId {
                     source: crate::p2p::libp2p_identity::PeerId::random(),
                     seqno: 1,
+                    digest: [0; 32],
                 },
             ),
         },

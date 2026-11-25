@@ -288,7 +288,7 @@ impl P2pNetworkPubsubClientState {
             self.publish(message);
             return;
         }
-        let Ok(id) = compute_message_id(message) else {
+        let Ok(id) = compute_wire_id(message) else {
             return;
         };
         // Coalesce repeated IDs, including a copy already queued by broadcast.
@@ -297,14 +297,14 @@ impl P2pNetworkPubsubClientState {
                 .message
                 .publish
                 .iter()
-                .any(|msg| compute_message_id(msg).ok() == Some(id))
+                .any(|msg| compute_wire_id(msg).ok() == Some(id))
         {
             self.message.publish.push(message.clone());
         }
     }
 
     pub fn publish(&mut self, message: &pb::Message) {
-        let Ok(id) = compute_message_id(message) else {
+        let Ok(id) = compute_wire_id(message) else {
             self.message.publish.push(message.clone());
             return;
         };
@@ -378,6 +378,26 @@ pub enum P2pNetworkPubsubMessageCacheMessage {
 
 // TODO: what if wasm32?
 // How to test it?
+/// The message's wire ID, its publisher and sequence number, with no digest:
+/// what a peer names in IHAVE and IWANT, and what sends dedupe by. It hashes
+/// nothing.
+pub fn compute_wire_id(
+    message: &pb::Message,
+) -> Result<P2pNetworkPubsubMessageCacheId, ParseError> {
+    let source = source_from_message(message)?;
+    let seqno = message
+        .seqno
+        .as_ref()
+        .and_then(|b| <[u8; 8]>::try_from(b.as_slice()).ok())
+        .map(u64::from_be_bytes)
+        .unwrap_or_default();
+    Ok(P2pNetworkPubsubMessageCacheId {
+        source,
+        seqno,
+        digest: [0; 32],
+    })
+}
+
 pub fn compute_message_id(
     message: &pb::Message,
 ) -> Result<P2pNetworkPubsubMessageCacheId, ParseError> {
@@ -390,7 +410,19 @@ pub fn compute_message_id(
         .map(u64::from_be_bytes)
         .unwrap_or_default();
 
-    Ok(P2pNetworkPubsubMessageCacheId { source, seqno })
+    // The whole encoding: a signature alone need not name one message, as
+    // the verifier accepts keys for which one signature fits many. Taken once
+    // per message cached; sends dedupe by `compute_wire_id`.
+    let digest = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(prost::Message::encode_to_vec(message)).into()
+    };
+
+    Ok(P2pNetworkPubsubMessageCacheId {
+        source,
+        seqno,
+        digest,
+    })
 }
 
 macro_rules! enum_field {
@@ -441,6 +473,26 @@ impl P2pNetworkPubsubMessageCache {
             }
         }
         Ok(id)
+    }
+
+    /// Whether a cached message has the wire ID of `message`.
+    pub fn reuses_wire_id(&self, message: &pb::Message) -> bool {
+        compute_wire_id(message).is_ok_and(|id| self.contains_wire_id(id.source, id.seqno))
+    }
+
+    /// Whether a message from `source` with `seqno` is cached, whatever its
+    /// digest.
+    pub fn contains_wire_id(&self, source: libp2p_identity::PeerId, seqno: u64) -> bool {
+        let first = P2pNetworkPubsubMessageCacheId {
+            source,
+            seqno,
+            digest: [0; 32],
+        };
+        let last = P2pNetworkPubsubMessageCacheId {
+            digest: [u8::MAX; 32],
+            ..first
+        };
+        self.map.range(first..=last).next().is_some()
     }
 
     pub fn get_message(&self, id: &P2pNetworkPubsubMessageCacheId) -> Option<&GossipNetMessageV2> {
@@ -540,12 +592,19 @@ impl P2pNetworkPubsubMessageCache {
         &self,
         message_id: &[u8],
     ) -> Option<&P2pNetworkPubsubMessageCacheMessage> {
+        self.find_message_from_raw_message_id(message_id, |_| true)
+    }
+
+    /// The first cached message with the wire ID `message_id` that `eligible`
+    /// accepts. The wire ID leaves out the digest, so several messages can
+    /// share it, and one that isn't eligible must not hide one that is.
+    pub fn find_message_from_raw_message_id(
+        &self,
+        message_id: &[u8],
+        mut eligible: impl FnMut(&P2pNetworkPubsubMessageCacheMessage) -> bool,
+    ) -> Option<&P2pNetworkPubsubMessageCacheMessage> {
         self.map.iter().find_map(|(key, value)| {
-            if key.to_raw_bytes() == message_id {
-                Some(value)
-            } else {
-                None
-            }
+            (key.to_raw_bytes() == message_id && eligible(value)).then_some(value)
         })
     }
 }

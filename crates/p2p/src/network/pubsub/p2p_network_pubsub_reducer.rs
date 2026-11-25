@@ -252,6 +252,20 @@ impl P2pNetworkPubsubState {
                 message_content,
                 peer_id,
             } => {
+                // While a message is cached, a second one under its wire ID
+                // (publisher and sequence number) is ignored, as go-libp2p
+                // ignores a message ID it has seen. Only the publisher can
+                // sign under its ID (`key_is_publishers`), so this drops only
+                // a publisher contradicting itself, and no two cached messages
+                // share a wire ID for IHAVE and IWANT to choose between.
+                if pubsub_state.mcache.reuses_wire_id(&message) {
+                    let dispatcher = state_context.into_dispatcher();
+                    dispatcher.push(P2pNetworkPubsubAction::IgnoreMessage {
+                        message_id: None,
+                        reason: "Message ID reused".to_owned(),
+                    });
+                    return Ok(());
+                }
                 let Ok(message_id) =
                     pubsub_state
                         .mcache
@@ -412,14 +426,11 @@ impl P2pNetworkPubsubState {
 
                 let mut source_sk = super::webrtc_source_sk_from_bytes(&data[8..]);
                 let source_peer_id = source_sk.public_key().peer_id();
-                let message_id = P2pNetworkPubsubMessageCacheId {
-                    source: libp2p_identity::PeerId::try_from(source_peer_id).unwrap(),
-                    seqno: 0,
-                };
+                let source = libp2p_identity::PeerId::try_from(source_peer_id).unwrap();
                 let mut msg = pb::Message {
-                    from: Some(message_id.source.to_bytes().to_vec()),
+                    from: Some(source.to_bytes().to_vec()),
                     data: Some(data),
-                    seqno: Some(message_id.seqno.to_be_bytes().to_vec()),
+                    seqno: Some(0u64.to_be_bytes().to_vec()),
                     topic: super::TOPIC.to_owned(),
                     signature: None,
                     key: None,
@@ -431,6 +442,12 @@ impl P2pNetworkPubsubState {
                         return Ok(());
                     }
                     Ok(sig) => Some(sig.to_bytes().to_vec()),
+                };
+                // The ID covers the signed message, so it is taken after signing.
+                let Ok(message_id) = super::p2p_network_pubsub_state::compute_message_id(&msg)
+                else {
+                    bug_condition!("WebRTC rebroadcast: no message ID");
+                    return Ok(());
                 };
 
                 let message_state = P2pNetworkPubsubMessageCacheMessage::Validated {
@@ -986,14 +1003,12 @@ impl P2pNetworkPubsubState {
         // Respond to iwant requests by publishing available messages from the cache.
         for iwant in iwant_requests {
             for msg_id in &iwant.message_ids {
-                if let Some(msg) = self.mcache.get_message_from_raw_message_id(msg_id) {
-                    // Signature validation alone does not authorize forwarding a
-                    // block, transaction or SNARK that is still being validated.
-                    if !matches!(msg, P2pNetworkPubsubMessageCacheMessage::Validated { .. })
-                        || !super::block_gossip::BlockGossipState::is_fresh(msg.message(), time)
-                    {
-                        continue;
-                    }
+                // Signature validation alone does not authorize forwarding a
+                // block, transaction or SNARK that is still being validated.
+                if let Some(msg) = self.mcache.find_message_from_raw_message_id(msg_id, |msg| {
+                    matches!(msg, P2pNetworkPubsubMessageCacheMessage::Validated { .. })
+                        && super::block_gossip::BlockGossipState::is_fresh(msg.message(), time)
+                }) {
                     if let Some(client) = self.clients.get_mut(peer_id) {
                         client.reply_to_iwant(msg.message());
                     }
@@ -1028,7 +1043,7 @@ impl P2pNetworkPubsubState {
     fn filter_outgoing_rpc(&mut self, rpc: &mut pb::Rpc, peer_id: PeerId, time: Timestamp) {
         self.block_gossip.prune(time);
         rpc.publish.retain(|message| {
-            let requested = super::p2p_network_pubsub_state::compute_message_id(message)
+            let requested = super::p2p_network_pubsub_state::compute_wire_id(message)
                 .ok()
                 .is_some_and(|id| {
                     self.clients
@@ -1045,8 +1060,7 @@ impl P2pNetworkPubsubState {
             for ihave in &mut control.ihave {
                 ihave.message_ids.retain(|id| {
                     self.mcache
-                        .get_message_from_raw_message_id(id)
-                        .is_some_and(|message| {
+                        .find_message_from_raw_message_id(id, |message| {
                             matches!(
                                 message,
                                 P2pNetworkPubsubMessageCacheMessage::Validated { .. }
@@ -1055,6 +1069,7 @@ impl P2pNetworkPubsubState {
                                 time,
                             )
                         })
+                        .is_some()
                 });
             }
             control.ihave.retain(|ihave| !ihave.message_ids.is_empty());
@@ -1729,5 +1744,99 @@ mod tests {
         let client = &state.clients[&peer()];
         assert_eq!(client.incoming_messages.len(), 1);
         assert!(client.buffer.is_empty());
+    }
+
+    /// Two messages under one source and sequence number are two cache
+    /// entries. The second can't replace the first, so a verdict on the
+    /// first, which names its ID, acts on the first's own bytes and relay.
+    #[test]
+    fn a_second_message_under_one_source_and_seqno_does_not_replace_the_first() {
+        let block = mesa_block();
+        let time = slot_start(&block);
+        let first = message(block.clone(), 1);
+        let mut second = first.clone();
+        second.signature = Some(vec![4; 64]);
+        let (a, b) = (
+            compute_message_id(&first).unwrap(),
+            compute_message_id(&second).unwrap(),
+        );
+        assert_eq!((a.source, a.seqno), (b.source, b.seqno));
+        assert_eq!(
+            a.to_raw_bytes(),
+            b.to_raw_bytes(),
+            "the wire ID is unchanged"
+        );
+        assert_ne!(a, b);
+
+        let mut state = state_with_client();
+        let content = GossipNetMessageV2::NewState(block);
+        let relay = PeerId::from_bytes([5; 32]);
+        let put = |state: &mut P2pNetworkPubsubState, message, content, peer_id| {
+            state.mcache.put(message, content, peer_id, time).unwrap()
+        };
+        assert_eq!(put(&mut state, first.clone(), content.clone(), peer()), a);
+        assert_eq!(put(&mut state, second.clone(), content, relay), b);
+        assert_eq!(state.mcache.map.len(), 2);
+        // `HandleIncomingMessage` ignores the second, as its wire ID is cached.
+        assert!(state.mcache.reuses_wire_id(&second));
+        assert!(!state.mcache.reuses_wire_id(&message(mesa_block(), 2)));
+        assert_eq!(state.mcache.map[&a].message(), &first);
+        assert_eq!(state.mcache.map[&a].peer_id(), &peer());
+        assert_eq!(state.mcache.map[&b].message(), &second);
+        assert!(state.mcache.contains_wire_id(a.source, 1));
+        // A validated entry counts too: the WebRTC rebroadcast gate asks.
+        let mut validated = state_with_client();
+        let id = cache_validated(&mut validated, message(mesa_block(), 3), time);
+        assert!(validated.mcache.contains_wire_id(id.source, 3));
+    }
+
+    /// Several cached messages can share a wire ID. One still being
+    /// validated must not hide a validated sibling from an IWANT reply.
+    #[test]
+    fn iwant_finds_a_validated_sibling_under_a_shared_wire_id() {
+        let block = mesa_block();
+        let time = slot_start(&block);
+        let mut a = message(block.clone(), 1);
+        let mut b = a.clone();
+        a.signature = Some(vec![6; 64]);
+        b.signature = Some(vec![7; 64]);
+        let (ia, ib) = (
+            compute_message_id(&a).unwrap(),
+            compute_message_id(&b).unwrap(),
+        );
+        // The pending one sorts first, where a first-match lookup stops.
+        let ((pending, pending_id), validated) = if ia < ib { ((a, ia), b) } else { ((b, ib), a) };
+        let mut state = state_with_client();
+        state.mcache.map.insert(
+            pending_id,
+            P2pNetworkPubsubMessageCacheMessage::PreValidated {
+                message: pending,
+                peer_id: PeerId::from_bytes([2; 32]),
+                time,
+            },
+        );
+        let id = cache_validated(&mut state, validated.clone(), time);
+        assert_eq!(id.to_raw_bytes(), pending_id.to_raw_bytes());
+        let request = pb::ControlIWant {
+            message_ids: vec![id.to_raw_bytes()],
+        };
+        state.respond_to_iwant_requests(&peer(), &[request], time);
+        assert_eq!(take_reply(&mut state, time).publish, vec![validated]);
+    }
+
+    /// The digest covers the data, not only the signature: the verifier
+    /// accepts keys for which one signature fits several payloads, so two
+    /// messages with one signature and different data get different IDs.
+    #[test]
+    fn a_message_id_digest_covers_the_data() {
+        let block = mesa_block();
+        let first = message(block.clone(), 1);
+        let mut other = first.clone();
+        other.data = Some(b"other data".to_vec());
+        assert_eq!(first.signature, other.signature);
+        assert_ne!(
+            compute_message_id(&first).unwrap(),
+            compute_message_id(&other).unwrap()
+        );
     }
 }

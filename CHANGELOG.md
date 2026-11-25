@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Node**: a long-running node could stop adding gossiped transactions to its
+  pool, and a block producer then made empty blocks. The candidate queue now
+  verifies each pubsub message whole, from its own commands in wire and arrival
+  order, so no message is left with nothing to verify ahead of later ones
+  ([#68](https://github.com/minanode/mina-rust/pull/68))
+- **Node**: gossip forwards only the message it verified. A message's attached
+  signing key must be its publisher's, each cached message is named by a digest
+  of its bytes, and a second message under a cached publisher and sequence
+  number is ignored ([#68](https://github.com/minanode/mina-rust/pull/68))
+
 ## [0.23.0] - 2026-11-20
 
 0.23.0 lets a Rust node serve staged-ledger answers of up to 192 MiB, so it can

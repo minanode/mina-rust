@@ -121,8 +121,8 @@ fn filter_snark_gossip(
         for ihave in &mut control.ihave {
             ihave.message_ids.retain(|id| {
                 cache
-                    .get_message_from_raw_message_id(id)
-                    .is_some_and(|message| allowed(message.message()))
+                    .find_message_from_raw_message_id(id, |message| allowed(message.message()))
+                    .is_some()
             });
         }
         control.ihave.retain(|ihave| !ihave.message_ids.is_empty());
@@ -194,6 +194,7 @@ mod snark_admission_tests {
         let id = |seqno| mina_core::p2p::P2pNetworkPubsubMessageCacheId {
             source: peer_id.to_libp2p_string().parse().unwrap(),
             seqno,
+            digest: [0; 32],
         };
         let mut cache = P2pNetworkPubsubMessageCache::default();
         let mut other = snark.clone();
@@ -241,6 +242,7 @@ mod snark_admission_tests {
         let id = mina_core::p2p::P2pNetworkPubsubMessageCacheId {
             source: peer_id.to_libp2p_string().parse().unwrap(),
             seqno: 1,
+            digest: [0; 32],
         };
         let message = pb::Message {
             data: Some(encode_message(&content).unwrap()),

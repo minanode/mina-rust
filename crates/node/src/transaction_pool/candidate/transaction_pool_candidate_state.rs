@@ -13,6 +13,12 @@ use crate::{
     p2p::{channels::rpc::P2pRpcId, PeerId},
 };
 
+/// The most pubsub messages queued for verification. The queue drains one
+/// message a tick, so it fills only while verification is held, as during
+/// block production; a message refused here comes again if its sender
+/// rebroadcasts it.
+pub const MAX_QUEUED_MESSAGES: usize = 256;
+
 static EMPTY_PEER_TX_CANDIDATES: BTreeMap<TransactionHash, TransactionPoolCandidateState> =
     BTreeMap::new();
 
@@ -26,7 +32,25 @@ type NextBatch = (
 pub struct TransactionPoolCandidatesState {
     by_peer: BTreeMap<PeerId, BTreeMap<TransactionHash, TransactionPoolCandidateState>>,
     by_hash: BTreeMap<TransactionHash, BTreeSet<PeerId>>,
-    by_message_id: BTreeMap<P2pNetworkPubsubMessageCacheId, (PeerId, Vec<TransactionHash>)>,
+    /// Queued pubsub messages in arrival order, by arrival number: each with
+    /// its ID, the peer that forwarded it, and its own commands in wire order.
+    /// Arrival order keeps a sender's commands in nonce order across messages.
+    /// A message is verified whole, from these exact bodies, and leaves the
+    /// queue when its verification is dispatched. It is kept apart from the
+    /// peer candidates in `by_peer`: a transaction hash leaves out signatures
+    /// and proofs, so another copy under the same hash is not the message's
+    /// own command, and the verdict on a message forwards it.
+    pubsub_queue: BTreeMap<u64, QueuedMessage>,
+    /// The arrival number of each queued message, by its ID.
+    pubsub_by_id: BTreeMap<P2pNetworkPubsubMessageCacheId, u64>,
+    pubsub_next: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct QueuedMessage {
+    id: P2pNetworkPubsubMessageCacheId,
+    peer_id: PeerId,
+    commands: Vec<TransactionWithHash>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -64,8 +88,14 @@ impl TransactionPoolCandidatesState {
         Self::default()
     }
 
+    /// Candidates from peers, and the commands of queued pubsub messages.
     pub fn transactions_count(&self) -> usize {
         self.by_hash.len()
+            + self
+                .pubsub_queue
+                .values()
+                .map(|queued| queued.commands.len())
+                .sum::<usize>()
     }
 
     pub fn peer_transaction_count(&self, peer_id: &PeerId) -> usize {
@@ -77,7 +107,7 @@ impl TransactionPoolCandidatesState {
     }
 
     pub fn message_id_contains(&self, message_id: &P2pNetworkPubsubMessageCacheId) -> bool {
-        self.by_message_id.contains_key(message_id)
+        self.pubsub_by_id.contains_key(message_id)
     }
 
     pub fn peer_contains(&self, peer_id: PeerId, hash: &TransactionHash) -> bool {
@@ -215,25 +245,52 @@ impl TransactionPoolCandidatesState {
         self.by_peer.entry(peer_id).or_default().insert(hash, state);
     }
 
+    /// Queues a pubsub message, unless it holds no commands or the queue is
+    /// full. A message with the same commands as a queued one takes its ID and
+    /// relay, and keeps its place: the verdict on a message forwards it from
+    /// the gossip cache, so the newer copy, likelier to still be cached, is
+    /// the one to name, and the place keeps the commands ahead of any that
+    /// came after them. Returns whether it was queued.
     pub fn transactions_received(
         &mut self,
-        time: Timestamp,
+        _time: Timestamp,
         peer_id: PeerId,
         transactions: Vec<TransactionWithHash>,
         message_id: P2pNetworkPubsubMessageCacheId,
-    ) {
-        let transaction_hashes = transactions
-            .iter()
-            .map(TransactionWithHash::hash)
-            .cloned()
-            .collect::<Vec<_>>();
-
-        self.by_message_id
-            .insert(message_id, (peer_id, transaction_hashes));
-
-        transactions.into_iter().for_each(|transaction| {
-            self.transaction_received(time, peer_id, transaction);
-        })
+    ) -> bool {
+        if transactions.is_empty() {
+            return false;
+        }
+        let same_commands = self.pubsub_queue.iter_mut().find(|(_, queued)| {
+            queued.commands.len() == transactions.len()
+                && queued
+                    .commands
+                    .iter()
+                    .zip(&transactions)
+                    .all(|(a, b)| a.body() == b.body())
+        });
+        if let Some((&place, queued)) = same_commands {
+            self.pubsub_by_id.remove(&queued.id);
+            queued.id = message_id;
+            queued.peer_id = peer_id;
+            self.pubsub_by_id.insert(message_id, place);
+            return true;
+        }
+        if self.pubsub_queue.len() >= MAX_QUEUED_MESSAGES {
+            return false;
+        }
+        let place = self.pubsub_next;
+        self.pubsub_next += 1;
+        self.pubsub_queue.insert(
+            place,
+            QueuedMessage {
+                id: message_id,
+                peer_id,
+                commands: transactions,
+            },
+        );
+        self.pubsub_by_id.insert(message_id, place);
+        true
     }
 
     /// Get next batch of transactions to verify,
@@ -259,7 +316,13 @@ impl TransactionPoolCandidatesState {
                                 _ => None,
                             })
                             .cloned()
-                            .collect();
+                            .collect::<Vec<_>>();
+                        // A peer with nothing received to verify yields no
+                        // batch: an empty batch is never verified, and would
+                        // stay first.
+                        if transactions.is_empty() {
+                            continue;
+                        }
                         return Some((*peer_id, transactions, TransactionPoolMessageSource::None));
                     }
                 }
@@ -272,29 +335,15 @@ impl TransactionPoolCandidatesState {
         None
     }
 
+    /// The first queued pubsub message to arrive, whole: its own commands, in
+    /// its own order, so that one sender's commands reach the pool in nonce
+    /// order.
     fn next_batch_from_pubsub(&self) -> Option<NextBatch> {
-        let (message_id, (peer_id, transaction_hashes)) = self.by_message_id.iter().next()?;
-        let transactions = self
-            .by_peer
-            .get(peer_id)?
-            .iter()
-            .filter_map(|(hash, state)| {
-                let TransactionPoolCandidateState::Received { transaction, .. } = state else {
-                    return None;
-                };
-                if transaction_hashes.contains(hash) {
-                    Some(transaction)
-                } else {
-                    None
-                }
-            })
-            .cloned()
-            .collect();
-
+        let (_, queued) = self.pubsub_queue.first_key_value()?;
         Some((
-            *peer_id,
-            transactions,
-            TransactionPoolMessageSource::pubsub(*message_id),
+            queued.peer_id,
+            queued.commands.clone(),
+            TransactionPoolMessageSource::pubsub(queued.id),
         ))
     }
 
@@ -332,12 +381,8 @@ impl TransactionPoolCandidatesState {
     ) {
         match from_source {
             TransactionPoolMessageSource::Pubsub { id } => {
-                let Some((_, transactions)) = self.by_message_id.remove(id) else {
-                    return;
-                };
-
-                for hash in transactions {
-                    self.transaction_remove(&hash);
+                if let Some(place) = self.pubsub_by_id.remove(id) {
+                    self.pubsub_queue.remove(&place);
                 }
             }
             _ => {
@@ -458,5 +503,228 @@ impl TransactionPoolCandidateState {
             Self::VerifyPending { verify_id, .. } => Some(*verify_id),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod pubsub_queue_tests {
+    use redux::Timestamp;
+
+    use super::*;
+    use crate::{p2p::identity::SecretKey, transaction_pool::submission_tests::fixture_block};
+
+    /// The first `n` signed payments of the fixture block, all distinct.
+    fn signed(n: usize) -> Vec<TransactionWithHash> {
+        let diff = fixture_block().body.staged_ledger_diff.diff;
+        let signed = diff
+            .0
+            .commands
+            .into_iter()
+            .chain(diff.1.into_iter().flat_map(|d| d.commands))
+            .map(|c| c.data)
+            .filter(|c| matches!(c, Transaction::SignedCommand(_)))
+            .map(|c| TransactionWithHash::try_new(c).unwrap())
+            .take(n)
+            .collect::<Vec<_>>();
+        assert_eq!(signed.len(), n, "the fixture holds {n} signed commands");
+        signed
+    }
+
+    fn message(seqno: u64) -> P2pNetworkPubsubMessageCacheId {
+        let origin = SecretKey::from_bytes([9; 32]).public_key().peer_id();
+        P2pNetworkPubsubMessageCacheId {
+            source: origin.try_into().unwrap(),
+            seqno,
+            digest: [0; 32],
+        }
+    }
+
+    fn peer(byte: u8) -> PeerId {
+        SecretKey::from_bytes([byte; 32]).public_key().peer_id()
+    }
+
+    fn bodies(batch: &[TransactionWithHash]) -> Vec<Transaction> {
+        batch.iter().map(|tx| tx.body().clone()).collect()
+    }
+
+    /// Runs `VerifyNext`, `VerifyPending` and `VerifySuccess` on the state.
+    fn verify_next(state: &mut TransactionPoolCandidatesState) -> NextBatch {
+        let (from, batch, source) = state.get_batch_to_verify().expect("a batch");
+        let hashes = batch.iter().map(|tx| tx.hash().clone()).collect::<Vec<_>>();
+        state.verify_pending(Timestamp::ZERO, &from, (), &hashes);
+        state.verify_result(Timestamp::ZERO, &from, (), &source, Ok(()));
+        (from, batch, source)
+    }
+
+    /// The same payment in two messages, as when its sender rebroadcasts it.
+    /// A copy with the same commands as a queued message takes its place; one
+    /// arriving after the first left the queue is queued, and verified whole.
+    /// Neither leaves anything behind that could stop later messages.
+    #[test]
+    fn a_rebroadcast_payment_does_not_block_later_gossip() {
+        let txs = signed(2);
+        let (payment, later) = (txs[0].clone(), txs[1].clone());
+        let mut state = TransactionPoolCandidatesState::new();
+        assert!(state.transactions_received(
+            Timestamp::ZERO,
+            peer(1),
+            vec![payment.clone()],
+            message(1)
+        ));
+        // The same commands again: the newer message takes the queued one's
+        // place, so its verdict forwards the copy likelier to be cached.
+        assert!(state.transactions_received(
+            Timestamp::ZERO,
+            peer(2),
+            vec![payment.clone()],
+            message(2)
+        ));
+
+        let (from, batch, source) = verify_next(&mut state);
+        assert_eq!(from, peer(2));
+        assert_eq!(bodies(&batch), bodies(&[payment.clone()]));
+        assert!(matches!(source, TransactionPoolMessageSource::Pubsub { id } if id == message(2)));
+        assert!(state.transactions_received(
+            Timestamp::ZERO,
+            peer(2),
+            vec![payment.clone()],
+            message(3)
+        ));
+        assert!(state.transactions_received(
+            Timestamp::ZERO,
+            peer(1),
+            vec![later.clone()],
+            message(4)
+        ));
+        let (_, batch, _) = verify_next(&mut state);
+        assert_eq!(bodies(&batch), bodies(&[payment]));
+        let (_, batch, _) = verify_next(&mut state);
+        assert_eq!(bodies(&batch), bodies(&[later]));
+        assert!(state.get_batch_to_verify().is_none());
+    }
+
+    /// The queue holds at most `MAX_QUEUED_MESSAGES` messages.
+    #[test]
+    fn the_message_queue_is_bounded() {
+        let txs = signed(1);
+        let mut state = TransactionPoolCandidatesState::new();
+        for seqno in 0..MAX_QUEUED_MESSAGES as u64 {
+            // Distinct command lists: the payment repeated `seqno + 1` times.
+            let commands = vec![txs[0].clone(); seqno as usize + 1];
+            assert!(state.transactions_received(
+                Timestamp::ZERO,
+                peer(1),
+                commands,
+                message(seqno)
+            ));
+        }
+        assert!(!state.transactions_received(
+            Timestamp::ZERO,
+            peer(1),
+            vec![txs[0].clone(); MAX_QUEUED_MESSAGES + 1],
+            message(MAX_QUEUED_MESSAGES as u64),
+        ));
+    }
+
+    /// A message whose forwarding peer left is still verified under its own
+    /// pubsub source.
+    #[test]
+    fn a_departed_peers_message_keeps_its_source() {
+        let txs = signed(1);
+        let mut state = TransactionPoolCandidatesState::new();
+        state.transactions_received(Timestamp::ZERO, peer(1), txs.clone(), message(1));
+        state.peer_remove(peer(1));
+
+        let (from, batch, source) = verify_next(&mut state);
+        assert_eq!(from, peer(1));
+        assert_eq!(bodies(&batch), bodies(&txs));
+        assert!(matches!(source, TransactionPoolMessageSource::Pubsub { id } if id == message(1)));
+    }
+
+    /// One sender's commands in a message reach the pool in the message's
+    /// order, their nonce order; hash order rejected the later nonce.
+    #[test]
+    fn a_message_is_verified_in_its_own_order() {
+        let mut txs = signed(2);
+        txs.sort_by(|a, b| b.hash().cmp(a.hash()));
+        let mut state = TransactionPoolCandidatesState::new();
+        state.transactions_received(Timestamp::ZERO, peer(1), txs.clone(), message(1));
+
+        let (_, batch, _) = verify_next(&mut state);
+        assert_eq!(bodies(&batch), bodies(&txs));
+    }
+
+    /// Two copies of a command can share a hash and differ in their
+    /// signature, which the hash leaves out. Each message is verified with its
+    /// own copy, and neither copy replaces or removes the other.
+    #[test]
+    fn each_message_is_verified_with_its_own_copy() {
+        let txs = signed(2);
+        let good = txs[0].clone();
+        let Transaction::SignedCommand(mut forged) = good.body().clone() else {
+            unreachable!("signed() returns signed commands")
+        };
+        let Transaction::SignedCommand(other) = txs[1].body() else {
+            unreachable!("signed() returns signed commands")
+        };
+        forged.signature = other.signature.clone();
+        let forged = TransactionWithHash::try_new(Transaction::SignedCommand(forged)).unwrap();
+        assert_eq!(forged.hash(), good.hash());
+        assert_ne!(forged.body(), good.body());
+        let mut state = TransactionPoolCandidatesState::new();
+
+        // One relay sends both copies.
+        state.transactions_received(Timestamp::ZERO, peer(1), vec![forged.clone()], message(1));
+        state.transactions_received(Timestamp::ZERO, peer(1), vec![good.clone()], message(2));
+
+        let (_, batch, _) = verify_next(&mut state);
+        assert_eq!(bodies(&batch), bodies(&[forged]));
+        let (_, batch, _) = verify_next(&mut state);
+        assert_eq!(bodies(&batch), bodies(&[good]), "the valid copy was lost");
+        assert!(state.get_batch_to_verify().is_none());
+    }
+
+    /// A gossip message without commands is not queued.
+    #[test]
+    fn an_empty_message_is_not_queued() {
+        let mut state = TransactionPoolCandidatesState::new();
+        state.transactions_received(Timestamp::ZERO, peer(1), vec![], message(1));
+        assert!(state.get_batch_to_verify().is_none());
+        assert_eq!(state.transactions_count(), 0);
+    }
+
+    /// The queue keeps arrival order. One publisher sends A, then B at the
+    /// next nonce, then A again: A is still verified first, under its newer
+    /// ID, so B does not reach the pool ahead of it and fail as a nonce gap.
+    /// A message from a publisher whose ID sorts first still waits its turn.
+    #[test]
+    fn the_queue_keeps_arrival_order() {
+        let txs = signed(2);
+        let (a, b) = (vec![txs[0].clone()], vec![txs[1].clone()]);
+        let mut state = TransactionPoolCandidatesState::new();
+        let other = |seqno| P2pNetworkPubsubMessageCacheId {
+            source: SecretKey::from_bytes([1; 32])
+                .public_key()
+                .peer_id()
+                .try_into()
+                .unwrap(),
+            seqno,
+            digest: [0; 32],
+        };
+        assert!(state.transactions_received(Timestamp::ZERO, peer(1), a.clone(), message(5)));
+        assert!(state.transactions_received(Timestamp::ZERO, peer(1), b.clone(), message(6)));
+        assert!(state.transactions_received(Timestamp::ZERO, peer(2), a.clone(), message(7)));
+        let late = signed(3)[2..].to_vec();
+        assert!(state.transactions_received(Timestamp::ZERO, peer(3), late.clone(), other(0)));
+
+        let (from, batch, source) = verify_next(&mut state);
+        assert_eq!(bodies(&batch), bodies(&a));
+        assert_eq!(from, peer(2));
+        assert!(matches!(source, TransactionPoolMessageSource::Pubsub { id } if id == message(7)));
+        let (_, batch, _) = verify_next(&mut state);
+        assert_eq!(bodies(&batch), bodies(&b));
+        let (_, batch, _) = verify_next(&mut state);
+        assert_eq!(bodies(&batch), bodies(&late));
+        assert!(state.get_batch_to_verify().is_none());
     }
 }
