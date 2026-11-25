@@ -233,8 +233,10 @@ impl TransactionPoolCandidatesState {
         self.by_peer.entry(peer_id).or_default().insert(hash, state);
     }
 
-    /// Queues a pubsub message, unless it holds no commands, its commands
-    /// are those of a message already queued, or the queue is full. Returns
+    /// Queues a pubsub message, unless it holds no commands or the queue is
+    /// full. A message with the same commands as a queued one takes its place:
+    /// the verdict on a message forwards it from the gossip cache, so the
+    /// newer copy, likelier to still be cached, is the one to keep. Returns
     /// whether it was queued.
     pub fn transactions_received(
         &mut self,
@@ -243,17 +245,20 @@ impl TransactionPoolCandidatesState {
         transactions: Vec<TransactionWithHash>,
         message_id: P2pNetworkPubsubMessageCacheId,
     ) -> bool {
-        let same_commands = |(_, queued): &(PeerId, Vec<TransactionWithHash>)| {
-            queued.len() == transactions.len()
+        if transactions.is_empty() {
+            return false;
+        }
+        let same_commands = self.by_message_id.iter().find_map(|(id, (_, queued))| {
+            (queued.len() == transactions.len()
                 && queued
                     .iter()
                     .zip(&transactions)
-                    .all(|(a, b)| a.body() == b.body())
-        };
-        if transactions.is_empty()
-            || self.by_message_id.len() >= MAX_QUEUED_MESSAGES
-            || self.by_message_id.values().any(same_commands)
-        {
+                    .all(|(a, b)| a.body() == b.body()))
+            .then_some(*id)
+        });
+        if let Some(older) = same_commands {
+            self.by_message_id.remove(&older);
+        } else if self.by_message_id.len() >= MAX_QUEUED_MESSAGES {
             return false;
         }
         self.by_message_id
@@ -522,8 +527,8 @@ mod pubsub_queue_tests {
     }
 
     /// The same payment in two messages, as when its sender rebroadcasts it.
-    /// A copy with the same commands as a queued message is not queued; one
-    /// arriving after the first left the queue is, and is verified whole.
+    /// A copy with the same commands as a queued message takes its place; one
+    /// arriving after the first left the queue is queued, and verified whole.
     /// Neither leaves anything behind that could stop later messages.
     #[test]
     fn a_rebroadcast_payment_does_not_block_later_gossip() {
@@ -536,16 +541,19 @@ mod pubsub_queue_tests {
             vec![payment.clone()],
             message(1)
         ));
-        assert!(!state.transactions_received(
+        // The same commands again: the newer message takes the queued one's
+        // place, so its verdict forwards the copy likelier to be cached.
+        assert!(state.transactions_received(
             Timestamp::ZERO,
             peer(2),
             vec![payment.clone()],
             message(2)
         ));
 
-        let (_, batch, source) = verify_next(&mut state);
+        let (from, batch, source) = verify_next(&mut state);
+        assert_eq!(from, peer(2));
         assert_eq!(bodies(&batch), bodies(&[payment.clone()]));
-        assert!(matches!(source, TransactionPoolMessageSource::Pubsub { id } if id == message(1)));
+        assert!(matches!(source, TransactionPoolMessageSource::Pubsub { id } if id == message(2)));
         assert!(state.transactions_received(
             Timestamp::ZERO,
             peer(2),
