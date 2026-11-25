@@ -615,6 +615,10 @@ fn a_partly_taken_gossip_message_reaches_the_pool_but_is_not_forwarded() {
     use mina_core::transaction::TransactionWithHash;
 
     let ([shared, own], accounts) = two_payments();
+    let own_hash = TransactionWithHash::try_new(own.clone())
+        .unwrap()
+        .hash()
+        .clone();
     let (shared, own) = (
         TransactionWithHash::try_new(shared).unwrap(),
         TransactionWithHash::try_new(own).unwrap(),
@@ -660,6 +664,11 @@ fn a_partly_taken_gossip_message_reaches_the_pool_but_is_not_forwarded() {
         all
     };
 
+    let telemetry = |state: &State| {
+        let t = &state.transaction_pool.telemetry;
+        (t.transactions_added, t.diffs_broadcasted)
+    };
+
     let ran = verify_next(&mut state);
     assert!(matches!(
         applied_sources(&ran)[..],
@@ -667,6 +676,16 @@ fn a_partly_taken_gossip_message_reaches_the_pool_but_is_not_forwarded() {
     ));
     assert_eq!(state.transaction_pool.size(), 1);
     assert_eq!(pubsub_verdicts(&ran), 1, "message 1 got no verdict");
+    assert!(ran.iter().any(|action| matches!(
+        action,
+        Action::P2p(crate::p2p::P2pAction::Network(crate::p2p::P2pNetworkAction::Pubsub(
+            crate::p2p::P2pNetworkPubsubAction::BroadcastValidatedMessage {
+                message_id: crate::p2p::BroadcastMessageId::MessageId { message_id },
+            }
+        ))) if *message_id == message(1)
+    )));
+    // One command added, and one diff forwarded: the message itself.
+    assert_eq!(telemetry(&state), (1, 1));
 
     let ran = verify_next(&mut state);
     assert!(matches!(
@@ -675,13 +694,27 @@ fn a_partly_taken_gossip_message_reaches_the_pool_but_is_not_forwarded() {
     ));
     assert_eq!(state.transaction_pool.size(), 2);
     assert_eq!(pubsub_verdicts(&ran), 0, "message 2 got a verdict");
-    assert!(ran.iter().any(|action| matches!(
-        action,
-        Action::TransactionPool(TransactionPoolAction::Rebroadcast {
-            is_local: false,
-            ..
+    let rebroadcasts = ran
+        .iter()
+        .filter_map(|action| match action {
+            Action::TransactionPool(TransactionPoolAction::Rebroadcast {
+                accepted,
+                rejected,
+                is_local: false,
+            }) => Some((
+                accepted
+                    .iter()
+                    .map(|cmd| cmd.hash.clone())
+                    .collect::<Vec<_>>(),
+                rejected.len(),
+            )),
+            _ => None,
         })
-    )));
+        .collect::<Vec<_>>();
+    assert_eq!(rebroadcasts, vec![(vec![own_hash], 0)]);
+    // One command added, and one diff out: our rebroadcast of it, counted
+    // only when the rebroadcast ran, not when it was merely dispatched.
+    assert_eq!(telemetry(&state), (2, 2));
     assert!(state
         .transaction_pool
         .candidates
