@@ -228,11 +228,16 @@ impl P2pChannelsTransactionState {
                     .callbacks
                     .on_p2p_channels_transactions_libp2p_received
                 {
-                    let transactions = transactions
+                    // All or none: a verdict on the message covers every
+                    // command in it, so a command that can't be hashed must
+                    // not be dropped from a message that is still queued.
+                    let Ok(transactions) = transactions
                         .into_iter()
                         .map(TransactionWithHash::try_new)
-                        .filter_map(Result::ok)
-                        .collect();
+                        .collect::<Result<Vec<_>, _>>()
+                    else {
+                        return Ok(());
+                    };
 
                     dispatcher.push_callback(callback.clone(), (peer_id, transactions, message_id));
                 }

@@ -26,7 +26,9 @@ type NextBatch = (
 pub struct TransactionPoolCandidatesState {
     by_peer: BTreeMap<PeerId, BTreeMap<TransactionHash, TransactionPoolCandidateState>>,
     by_hash: BTreeMap<TransactionHash, BTreeSet<PeerId>>,
-    by_message_id: BTreeMap<P2pNetworkPubsubMessageCacheId, (PeerId, Vec<TransactionHash>)>,
+    /// Each queued pubsub message, with its forwarding peer and its own
+    /// commands in wire order: the exact bodies its verdict must cover.
+    by_message_id: BTreeMap<P2pNetworkPubsubMessageCacheId, (PeerId, Vec<TransactionWithHash>)>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -226,14 +228,8 @@ impl TransactionPoolCandidatesState {
         if transactions.is_empty() {
             return;
         }
-        let transaction_hashes = transactions
-            .iter()
-            .map(TransactionWithHash::hash)
-            .cloned()
-            .collect::<Vec<_>>();
-
         self.by_message_id
-            .insert(message_id, (peer_id, transaction_hashes));
+            .insert(message_id, (peer_id, transactions.clone()));
 
         transactions.into_iter().for_each(|transaction| {
             self.transaction_received(time, peer_id, transaction);
@@ -277,29 +273,31 @@ impl TransactionPoolCandidatesState {
     }
 
     /// The first pubsub message with a transaction still waiting from its
-    /// peer, as a batch in the message's own order, so that one sender's
-    /// commands reach the pool in nonce order.
+    /// peer, as a batch of the message's own commands in the message's own
+    /// order, so that one sender's commands reach the pool in nonce order.
     ///
     /// A message with no waiting transaction yields no batch: an empty batch
     /// is never verified, so it would stay first and stop every later message.
-    /// A message some of whose transactions were taken by another message is
-    /// verified without its pubsub source: accepting the source forwards the
-    /// whole message, and part of it was not verified here.
+    /// Accepting a pubsub source forwards the whole message, so the source is
+    /// kept only when the batch is the whole message: every command still
+    /// waits and no hash repeats. Otherwise the waiting commands are verified
+    /// without it, and the message is not forwarded.
     fn next_batch_from_pubsub(&self) -> Option<NextBatch> {
         self.by_message_id
             .iter()
-            .find_map(|(message_id, (peer_id, transaction_hashes))| {
+            .find_map(|(message_id, (peer_id, commands))| {
                 let peer_transactions = self.by_peer.get(peer_id)?;
                 let mut seen = BTreeSet::new();
                 let mut complete = true;
-                let mut transactions = Vec::with_capacity(transaction_hashes.len());
-                for hash in transaction_hashes {
-                    if !seen.insert(hash) {
+                let mut transactions = Vec::with_capacity(commands.len());
+                for command in commands {
+                    if !seen.insert(command.hash()) {
+                        complete = false;
                         continue;
                     }
-                    match peer_transactions.get(hash) {
-                        Some(TransactionPoolCandidateState::Received { transaction, .. }) => {
-                            transactions.push(transaction.clone());
+                    match peer_transactions.get(command.hash()) {
+                        Some(TransactionPoolCandidateState::Received { .. }) => {
+                            transactions.push(command.clone());
                         }
                         _ => complete = false,
                     }
@@ -320,12 +318,11 @@ impl TransactionPoolCandidatesState {
     /// their peer: another copy was verified first, or the peer left.
     fn prune_message_ids(&mut self) {
         let by_peer = &self.by_peer;
-        self.by_message_id
-            .retain(|_, (peer_id, transaction_hashes)| {
-                by_peer
-                    .get(peer_id)
-                    .is_some_and(|txs| transaction_hashes.iter().any(|hash| txs.contains_key(hash)))
-            });
+        self.by_message_id.retain(|_, (peer_id, commands)| {
+            by_peer
+                .get(peer_id)
+                .is_some_and(|txs| commands.iter().any(|tx| txs.contains_key(tx.hash())))
+        });
     }
 
     pub fn verify_pending(
@@ -362,12 +359,12 @@ impl TransactionPoolCandidatesState {
     ) {
         match from_source {
             TransactionPoolMessageSource::Pubsub { id } => {
-                let Some((_, transactions)) = self.by_message_id.remove(id) else {
+                let Some((_, commands)) = self.by_message_id.remove(id) else {
                     return;
                 };
 
-                for hash in transactions {
-                    self.transaction_remove(&hash);
+                for command in commands {
+                    self.transaction_remove(command.hash());
                 }
             }
             _ => {
@@ -695,5 +692,58 @@ mod stale_pubsub_entry_tests {
         state.transactions_received(Timestamp::ZERO, peer, vec![], message(1));
         assert!(state.by_message_id.is_empty());
         assert!(state.get_batch_to_verify().is_none());
+    }
+
+    /// Two copies of a command can share a hash and differ in their
+    /// signature, which the hash leaves out. A message is judged on its own
+    /// copy, not on one another message left in the peer's candidates.
+    #[test]
+    fn a_message_is_verified_with_its_own_copy() {
+        let peer = SecretKey::from_bytes([1; 32]).public_key().peer_id();
+        let txs = signed(2);
+        let good = txs[0].clone();
+        let Transaction::SignedCommand(mut forged) = good.body().clone() else {
+            unreachable!("signed() returns signed commands")
+        };
+        let Transaction::SignedCommand(other) = txs[1].body() else {
+            unreachable!("signed() returns signed commands")
+        };
+        forged.signature = other.signature.clone();
+        let forged = TransactionWithHash::try_new(Transaction::SignedCommand(forged)).unwrap();
+        assert_eq!(forged.hash(), good.hash());
+        assert_ne!(forged.body(), good.body());
+        let mut state = TransactionPoolCandidatesState::new();
+
+        state.transactions_received(Timestamp::ZERO, peer, vec![forged.clone()], message(1));
+        state.transactions_received(Timestamp::ZERO, peer, vec![good.clone()], message(2));
+
+        let (_, batch, source) = state.get_batch_to_verify().expect("a batch");
+        assert!(matches!(source, TransactionPoolMessageSource::Pubsub { id } if id == message(1)));
+        assert_eq!(batch.len(), 1);
+        assert_eq!(
+            batch[0].body(),
+            forged.body(),
+            "message 1 would be judged on message 2's copy"
+        );
+    }
+
+    /// A message that repeats a hash is not the batch verified for it, so it
+    /// is verified without its pubsub source.
+    #[test]
+    fn a_message_repeating_a_hash_is_not_forwarded() {
+        let peer = SecretKey::from_bytes([1; 32]).public_key().peer_id();
+        let (payment, _) = payments();
+        let mut state = TransactionPoolCandidatesState::new();
+
+        state.transactions_received(
+            Timestamp::ZERO,
+            peer,
+            vec![payment.clone(), payment.clone()],
+            message(1),
+        );
+
+        let (_, batch, source) = state.get_batch_to_verify().expect("a batch");
+        assert_eq!(hashes(&batch), vec![payment.hash().clone()]);
+        assert!(matches!(source, TransactionPoolMessageSource::None));
     }
 }
