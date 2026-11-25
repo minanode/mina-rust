@@ -18,7 +18,7 @@ use crate::{
 
 use super::{
     p2p_network_pubsub_state::{
-        source_from_message, P2pNetworkPubsubClientMeshAddingState,
+        compute_message_id, source_from_message, P2pNetworkPubsubClientMeshAddingState,
         P2pNetworkPubsubMessageCacheMessage,
     },
     pb::{self, Message},
@@ -841,6 +841,23 @@ impl P2pNetworkPubsubState {
             }
         } else {
             return Ok(None);
+        }
+
+        // A message ID is its publisher and the publisher's sequence number,
+        // and a publisher signs each ID once. A second message under an ID we
+        // saw, with another signature, is a duplicate, as go-libp2p treats it.
+        // Taken, it would replace the first in `mcache` while a verdict on the
+        // first was pending, and that verdict would forward it unchecked. A
+        // message without a valid ID is refused later, when it is cached.
+        if let Ok(id) = compute_message_id(message) {
+            let id = id.to_raw_bytes();
+            if self.seen_ids.contains(&id) {
+                return Ok(None);
+            }
+            self.seen_ids.push_back(id);
+            if self.seen_ids.len() > seen_limit {
+                self.seen_ids.pop_front();
+            }
         }
 
         // A message we can't decode exactly as OCaml does is dropped here, so
@@ -1729,5 +1746,49 @@ mod tests {
         let client = &state.clients[&peer()];
         assert_eq!(client.incoming_messages.len(), 1);
         assert!(client.buffer.is_empty());
+    }
+
+    /// A publisher signs each message ID once. A second message under a seen
+    /// ID, with another signature, is a duplicate: taken, it would replace the
+    /// first in `mcache` while a verdict on the first was pending.
+    #[test]
+    fn a_second_message_under_a_seen_id_is_a_duplicate() {
+        let block = mesa_block();
+        let first = message(block.clone(), 1);
+        let mut reused = first.clone();
+        reused.signature = Some(vec![4; 64]);
+        let mut next = message(block, 2);
+        next.signature = Some(vec![5; 64]);
+        assert_eq!(
+            compute_message_id(&first).unwrap(),
+            compute_message_id(&reused).unwrap()
+        );
+        let mut state = P2pNetworkPubsubState::default();
+
+        assert!(state
+            .reduce_incoming_message(&first, 100)
+            .unwrap()
+            .is_some());
+        assert!(
+            state
+                .reduce_incoming_message(&reused, 100)
+                .unwrap()
+                .is_none(),
+            "a reused ID was taken as a new message"
+        );
+        assert!(state.reduce_incoming_message(&next, 100).unwrap().is_some());
+    }
+
+    /// The ID memory is bounded like the signature memory.
+    #[test]
+    fn seen_ids_are_bounded() {
+        let block = mesa_block();
+        let mut state = P2pNetworkPubsubState::default();
+        for seqno in 0..5u8 {
+            let mut msg = message(block.clone(), seqno.into());
+            msg.signature = Some(vec![seqno; 64]);
+            assert!(state.reduce_incoming_message(&msg, 3).unwrap().is_some());
+        }
+        assert_eq!(state.seen_ids.len(), 3);
     }
 }
